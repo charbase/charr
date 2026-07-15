@@ -5,7 +5,7 @@ BUILD   := $(PACKAGE)_$(VERSION).tar.gz
 RLIBS   := $(shell Rscript -e 'cat(paste(.libPaths(), collapse = ":"))')
 
 .PHONY: doc build install check check-no-vignette test test-altrep bench \
-	pkgdown pkgdown-index clean-pkgdown clean clean-native \
+	pkgdown pkgdown-index clean-pkgdown clean clean-altrep \
 	clean-build-products
 
 check: $(BUILD)
@@ -17,24 +17,24 @@ check-no-vignette: $(BUILD)
 doc:
 	Rscript -e 'roxygen2::roxygenise(roclets = "rd")'
 
-$(BUILD): clean-native
+$(BUILD): clean-altrep
 	rm -f $(BUILD)
 	R CMD build .
-	$(MAKE) clean-native
+	$(MAKE) clean-altrep
 
 build: $(BUILD)
 
 install: $(BUILD)
-	$(MAKE) clean-native
+	$(MAKE) clean-altrep
 	R CMD INSTALL $(BUILD)
-	$(MAKE) clean-native
+	$(MAKE) clean-altrep
 	rm -f $(BUILD)
 
 # The stringr suite, backend switch off: must be green verbatim.
 test: install
 	cd tests && NOT_CRAN=true Rscript testthat.R
 
-# The same suite with the native backend on. The dual run is the
+# The same suite with backend-altrep enabled. The dual run is the
 # equivalence proof; both must pass identically.
 test-altrep: install
 	cd tests && NOT_CRAN=true CHARR_ALTREP=true Rscript testthat.R
@@ -76,12 +76,12 @@ test-valgrind:
 	done; \
 	rm -rf $$tmp_lib
 
-pkgdown: clean-native clean-pkgdown
+pkgdown: clean-altrep clean-pkgdown
 	$(MAKE) pkgdown-index
 	mkdir -p local/cache
 	XDG_CACHE_HOME=$(CURDIR)/local/cache R_USER_CACHE_DIR=$(CURDIR)/local/cache/R \
 	  IN_PKGDOWN=true Rscript -e 'pkgdown::build_site(new_process = FALSE, install = FALSE, quiet = FALSE, override = list(home = list(sidebar = FALSE)))'
-	$(MAKE) clean-native
+	$(MAKE) clean-altrep
 
 pkgdown-index:
 	mkdir -p pkgdown
@@ -91,9 +91,9 @@ clean-pkgdown:
 	rm -rf docs
 	rm -f pkgdown/index.md
 
-clean: clean-native clean-build-products
+clean: clean-altrep clean-build-products
 
-clean-native:
+clean-altrep:
 	find . -iname "*.a" -exec rm {} \;
 	find . -iname "*.o" -exec rm {} \;
 	find . -iname "*.so" -exec rm {} \;

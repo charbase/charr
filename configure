@@ -1,0 +1,144 @@
+#!/bin/sh
+# charr configure: choose the system ICU4C or the vendored bundle.
+#
+# CRAN prefers system libraries where available, so this script probes for a
+# usable system ICU4C with pkg-config and links against it when found;
+# otherwise (and always on Windows, which has no configure) charr compiles
+# its vendored, symbol-suffixed ICU 74.1 and installs the trimmed data
+# archive (see tools/trim-icudt.R). This is a hand-written POSIX sh script,
+# deliberately minimal: the only decision is system-vs-bundle. stringi's
+# other configure knobs (icudt download, endianness selection, pre-R-4.2
+# workarounds) are designed out: the data archive is committed, the bundled
+# archive is little-endian-only (guarded in src/install.libs.R), and charr
+# requires R >= 4.2.
+#
+# Controls:
+#   CHARR_SYSTEM_ICU=no   (or --without-system-icu)  force the bundle
+#   CHARR_SYSTEM_ICU=yes  (or --with-system-icu)     require system ICU; fail
+#                                                    instead of falling back
+#   unset                                            auto-detect
+#
+# Outputs: src/Makevars (from src/Makevars.in) and src/icu_mode (read by
+# src/install.libs.R to decide whether to install the bundled data archive).
+# `cleanup` removes both.
+
+set -u
+
+ICU_VERSION_NEEDED=61   # stringi's floor; the copied backend carries the
+                        # same version guards, so charr inherits it
+
+want="${CHARR_SYSTEM_ICU:-auto}"
+for arg in "$@"; do
+  case "$arg" in
+    --with-system-icu)    want=yes ;;
+    --without-system-icu) want=no ;;
+  esac
+done
+
+if [ -z "${R_HOME:-}" ]; then
+  R_HOME=$(R RHOME)
+fi
+
+emit() {
+  mode="$1" cppflags="$2" libs="$3" targets="$4"
+  sed -e "s|@ICU_CPPFLAGS@|$cppflags|" \
+      -e "s|@ICU_LIBS@|$libs|" \
+      -e "s|@ICU_STATIC_TARGETS@|$targets|" \
+      src/Makevars.in > src/Makevars.new
+  # Object files compiled under the other mode reference different symbols
+  # (the bundle suffixes every ICU symbol); purge them when flags change so
+  # a mode switch cannot link stale objects.
+  if [ -f src/Makevars ] && ! cmp -s src/Makevars.new src/Makevars; then
+    echo "* charr: build flags changed; removing cached object files"
+    rm -f src/*.o src/altrep_backend/*.o src/icu74/common/*.o \
+          src/icu74/i18n/*.o src/icu74/stubdata/*.o src/*.a
+  fi
+  mv src/Makevars.new src/Makevars
+  printf '%s\n' "$mode" > src/icu_mode
+  echo "* charr: using $mode ICU"
+}
+
+emit_bundle() {
+  emit bundle \
+    "-Iicu74 -Iicu74/unicode -Iicu74/common -Iicu74/i18n -DU_STATIC_IMPLEMENTATION -DU_COMMON_IMPLEMENTATION -DU_I18N_IMPLEMENTATION -D_REENTRANT -DUCONFIG_USE_LOCAL -DU_CHARSET_IS_UTF8=0 -DU_HAVE_ELF_H -DUCONFIG_NO_FILE_IO=1 -DSTRI_ICU_FOUND=0 -DU_HAVE_LIB_SUFFIX=1 -DU_LIB_SUFFIX_C_NAME=_charr -DCHARR_BUNDLED_ICU=1" \
+    "-L. -licu_i18n -licu_common -licu_stubdata" \
+    "libicu_common.a libicu_i18n.a libicu_stubdata.a"
+  exit 0
+}
+
+fail_or_bundle() {
+  echo "* charr: $1"
+  if [ "$want" = yes ]; then
+    echo "*** CHARR_SYSTEM_ICU=yes was set, so this is an error." >&2
+    exit 1
+  fi
+  emit_bundle
+}
+
+if [ "$want" = no ]; then
+  echo "* charr: system ICU disabled by request"
+  emit_bundle
+fi
+
+PKG_CONFIG="${PKG_CONFIG:-pkg-config}"
+if ! command -v "$PKG_CONFIG" >/dev/null 2>&1; then
+  fail_or_bundle "pkg-config not found"
+fi
+if ! "$PKG_CONFIG" --exists icu-i18n icu-uc 2>/dev/null; then
+  fail_or_bundle "pkg-config does not know icu-i18n/icu-uc"
+fi
+if ! "$PKG_CONFIG" --atleast-version="$ICU_VERSION_NEEDED" icu-i18n icu-uc; then
+  fail_or_bundle "system ICU4C is older than $ICU_VERSION_NEEDED"
+fi
+
+ICU_CFLAGS=$("$PKG_CONFIG" --cflags icu-i18n icu-uc)
+ICU_LIBS=$("$PKG_CONFIG" --libs icu-i18n icu-uc)
+
+# Compile, link, and RUN a probe against the advertised flags. Mirrors
+# stringi's configure test: linking is not enough, the ICU *data* must be
+# present (converters, locales), and the services charr needs must open.
+CXX=$("${R_HOME}/bin/R" CMD config CXX)
+CXXFLAGS=$("${R_HOME}/bin/R" CMD config CXXFLAGS)
+
+tmpd=$(mktemp -d "${TMPDIR:-/tmp}/charr-conf-XXXXXX") || exit 1
+trap 'rm -rf "$tmpd"' EXIT
+
+cat > "$tmpd/probe.cpp" <<'EOF'
+#include <unicode/uclean.h>
+#include <unicode/ucnv.h>
+#include <unicode/uloc.h>
+#include <unicode/ucol.h>
+#include <unicode/ubrk.h>
+#include <unicode/uvernum.h>
+#include <cstdio>
+int main() {
+    UErrorCode status = U_ZERO_ERROR;
+    u_init(&status);
+    if (U_FAILURE(status)) return 10;
+    if (ucnv_countAvailable() <= 0) return 11;   // converter data present?
+    if (uloc_countAvailable() <= 0) return 12;   // locale data present?
+    UCollator* coll = ucol_open("de@collation=phonebook", &status);
+    if (U_FAILURE(status) || coll == NULL) return 13;  // collation data?
+    ucol_close(coll);
+    UBreakIterator* brk = ubrk_open(UBRK_WORD, "en", NULL, 0, &status);
+    if (U_FAILURE(status) || brk == NULL) return 14;   // break data?
+    ubrk_close(brk);
+    std::printf("%s\n", U_ICU_VERSION);
+    return 0;
+}
+EOF
+
+# $CXX may legitimately contain flags (e.g. "g++ -std=gnu++20"): do not quote.
+if ! $CXX $CXXFLAGS $ICU_CFLAGS "$tmpd/probe.cpp" -o "$tmpd/probe" \
+     $ICU_LIBS >/dev/null 2>&1; then
+  fail_or_bundle "system ICU probe failed to compile/link"
+fi
+if ! version=$("$tmpd/probe"); then
+  fail_or_bundle "system ICU probe failed to run (missing/incomplete data?)"
+fi
+
+echo "* charr: system ICU4C $version is usable"
+emit system \
+  "$ICU_CFLAGS -D_REENTRANT -DSTRI_ICU_FOUND=1 -DCHARR_BUNDLED_ICU=0" \
+  "$ICU_LIBS" \
+  ""

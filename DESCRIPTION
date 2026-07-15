@@ -7,22 +7,25 @@ Authors@R: c(
     person("Hadley", "Wickham", , "hadley@posit.co", role = c("aut", "cph"),
            comment = "Author of stringr, of which charr is a fork"),
     person("Posit Software, PBC", role = c("cph", "fnd"),
-           comment = "Copyright holder of stringr")
+           comment = "Copyright holder of stringr"),
+    person("Unicode, Inc. and others", role = c("ctb", "cph"),
+           comment = "ICU4C source code and data (Unicode License v3)"),
+    person("Marek", "Gagolewski", role = c("ctb", "cph"),
+           comment = "Author of stringi; stringi implementation and ICU4C vendoring used by charr")
   )
-Description: An experimental hard fork of the 'stringr' package with an
-    ALTREP-aware native string engine built on 'charport'. With the
-    backend switch off (the default), every operation delegates to
-    'stringi' and behavior is identical to 'stringr'. With it on,
-    eligible operations read ALTREP character vectors through the
-    'charport' interface without materializing them, and fall back to
-    'stringi' wherever the native engine cannot guarantee identical
-    results.
+Description: An experimental hard fork of the 'stringr' package with
+    a private string backend copied from 'stringi' and being adapted to read
+    and return 'ALTREP' character vectors through 'charport'. A simple R
+    switch selects either installed 'stringi' or the private copy. The copied
+    backend initially preserves stringi's ordinary materializing behavior so
+    that semantic equivalence is established before 'ALTREP' adaptation.
 License: MIT + file LICENSE
 URL: https://charport.github.io/charr/, https://github.com/charport/charr
 BugReports: https://github.com/charport/charr/issues
 Depends:
-    R (>= 3.6)
+    R (>= 4.2.0)
 Imports:
+    charport,
     cli,
     glue (>= 1.6.1),
     lifecycle (>= 1.0.3),
@@ -30,6 +33,8 @@ Imports:
     rlang (>= 1.0.0),
     stringi (>= 1.5.3),
     vctrs (>= 0.4.0)
+LinkingTo:
+    charport
 Suggests:
     covr,
     dplyr,
@@ -40,6 +45,9 @@ Suggests:
     rmarkdown,
     testthat (>= 3.0.0),
     tibble
+Remotes: traversc/charport
+SystemRequirements: C++17, GNU make, ICU4C (>= 61, optional)
+Biarch: true
 Config/testthat/edition: 3
 Encoding: UTF-8
 LazyData: true

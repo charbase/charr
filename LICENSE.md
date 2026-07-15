@@ -23,3 +23,12 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+# Bundled ICU4C
+
+`src/icu74` contains the source of ICU4C 74.1 (Copyright (c) Unicode, Inc. and
+others), distributed under the Unicode License v3; the full text is in
+`src/icu74/LICENSE`. These sources are vendored from the stringi package's
+distribution (Copyright (c) Marek Gagolewski), which pins the same ICU version
+so that charr's Unicode results are byte-identical to stringi's. ICU's data
+file is not bundled; charr loads stringi's already-installed copy at runtime.

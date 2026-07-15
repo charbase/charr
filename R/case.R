@@ -41,7 +41,7 @@ str_to_title <- function(string, locale = "en") {
   check_string(locale)
   out <- ci_trans_totitle(
     string,
-    opts_brkiter = stri_opts_brkiter(locale = locale)
+    opts_brkiter = ci_opts_brkiter(locale = locale)
   )
   copy_names(string, out)
 }
@@ -51,7 +51,7 @@ str_to_sentence <- function(string, locale = "en") {
   check_string(locale)
   out <- ci_trans_totitle(
     string,
-    opts_brkiter = stri_opts_brkiter(type = "sentence", locale = locale)
+    opts_brkiter = ci_opts_brkiter(type = "sentence", locale = locale)
   )
   copy_names(string, out)
 }

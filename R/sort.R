@@ -49,7 +49,7 @@ str_order <- function(
   check_string(locale)
   check_bool(numeric)
 
-  opts <- stri_opts_collator(locale, numeric = numeric, ...)
+  opts <- ci_opts_collator(locale, numeric = numeric, ...)
   ci_order(
     x,
     decreasing = decreasing,
@@ -64,7 +64,7 @@ str_rank <- function(x, locale = "en", numeric = FALSE, ...) {
   check_string(locale)
   check_bool(numeric)
 
-  opts <- stri_opts_collator(locale, numeric = numeric, ...)
+  opts <- ci_opts_collator(locale, numeric = numeric, ...)
   ci_rank(x, opts_collator = opts)
 }
 
@@ -83,7 +83,7 @@ str_sort <- function(
   check_string(locale)
   check_bool(numeric)
 
-  opts <- stri_opts_collator(locale, numeric = numeric, ...)
+  opts <- ci_opts_collator(locale, numeric = numeric, ...)
   idx <- ci_order(
     x,
     decreasing = decreasing,

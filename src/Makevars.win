@@ -1,0 +1,49 @@
+CXX_STD = CXX17
+
+# --- Vendored ICU4C (src/icu74) --------------------------------------------
+# src/icu74 is ICU4C 74.1 (Unicode, Inc. and others; Unicode License v3, see
+# src/icu74/LICENSE), using stringi's source layout and portability patches
+# (BSD-3-Clause, see inst/COPYRIGHTS). The bundled-build preprocessor defines
+# below follow stringi's private static build. U_HAVE_LIB_SUFFIX /
+# U_LIB_SUFFIX_C_NAME rename every ICU C symbol to
+# ...74_charr so charr's statically linked ICU never collides with stringi's or
+# the system's.
+ICU_CPPFLAGS = -Ialtrep_backend -Iicu74 -Iicu74/unicode -Iicu74/common -Iicu74/i18n \
+  -DU_STATIC_IMPLEMENTATION -DU_COMMON_IMPLEMENTATION -DU_I18N_IMPLEMENTATION \
+  -D_REENTRANT -DUCONFIG_USE_LOCAL -DU_CHARSET_IS_UTF8=0 \
+  -DUCONFIG_NO_FILE_IO=1 -DSTRI_ICU_FOUND=0 \
+  -UDEBUG -DNDEBUG -DWINVER=0x0601 -D_WIN32_WINNT=0x0601 -DU_USE_STRTOD_L=0 \
+  -DU_HAVE_LIB_SUFFIX=1 -DU_LIB_SUFFIX_C_NAME=_charr -DCHARR_BUNDLED_ICU=1
+
+PKG_CPPFLAGS = -I. $(ICU_CPPFLAGS)
+PKG_CXXFLAGS = -pthread
+
+# On Windows, linking all ICU objects at once overflows the command line (see
+# stringi src/Makevars.win); collect them into static libs first.
+OBJECTS = $(patsubst %.cpp,%.o,$(wildcard *.cpp)) \
+  $(patsubst %.cpp,%.o,$(wildcard altrep_backend/*.cpp))
+
+ICU_COMMON_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu74/common/*.cpp))
+ICU_I18N_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu74/i18n/*.cpp))
+ICU_STUBDATA_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu74/stubdata/*.cpp))
+
+PKG_LIBS = -pthread -L. -licu_i18n -licu_common -licu_stubdata
+
+.PHONY: all clean
+all: $(SHLIB)
+
+$(SHLIB): $(OBJECTS) libicu_common.a libicu_i18n.a libicu_stubdata.a
+
+libicu_common.a: $(ICU_COMMON_OBJECTS)
+	$(AR) -rs $@ $^
+
+libicu_i18n.a: $(ICU_I18N_OBJECTS)
+	$(AR) -rs $@ $^
+
+libicu_stubdata.a: $(ICU_STUBDATA_OBJECTS)
+	$(AR) -rs $@ $^
+
+clean:
+	rm -f $(OBJECTS) $(ICU_COMMON_OBJECTS) $(ICU_I18N_OBJECTS) \
+		$(ICU_STUBDATA_OBJECTS) libicu_common.a libicu_i18n.a libicu_stubdata.a \
+		$(SHLIB) *.so *.dll

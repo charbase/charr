@@ -1,0 +1,41 @@
+CXX_STD = CXX17
+
+# Template: ../configure generates src/Makevars from this file, substituting
+# the three @...@ tokens for either the system ICU4C (pkg-config) or the
+# vendored bundle in src/icu74 (ICU4C 74.1; Unicode, Inc. and others; Unicode
+# License v3, see src/icu74/LICENSE; stringi's source layout and portability
+# patches, BSD-3-Clause, see inst/COPYRIGHTS). In bundle mode the
+# U_HAVE_LIB_SUFFIX / U_LIB_SUFFIX_C_NAME pair renames every ICU C symbol to
+# ...74_charr so charr's statically linked ICU never collides with stringi's
+# or the system's at runtime; in system mode the suffix is off and the
+# vendored headers stay OFF the include path.
+
+PKG_CPPFLAGS = -I. -Ialtrep_backend @ICU_CPPFLAGS@
+PKG_CXXFLAGS = -pthread
+PKG_LIBS = -pthread @ICU_LIBS@
+
+OBJECTS = $(patsubst %.cpp,%.o,$(wildcard *.cpp)) \
+  $(patsubst %.cpp,%.o,$(wildcard altrep_backend/*.cpp))
+
+ICU_COMMON_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu74/common/*.cpp))
+ICU_I18N_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu74/i18n/*.cpp))
+ICU_STUBDATA_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu74/stubdata/*.cpp))
+
+.PHONY: all clean
+all: $(SHLIB)
+
+$(SHLIB): $(OBJECTS) @ICU_STATIC_TARGETS@
+
+libicu_common.a: $(ICU_COMMON_OBJECTS)
+	$(AR) -rs $@ $^
+
+libicu_i18n.a: $(ICU_I18N_OBJECTS)
+	$(AR) -rs $@ $^
+
+libicu_stubdata.a: $(ICU_STUBDATA_OBJECTS)
+	$(AR) -rs $@ $^
+
+clean:
+	rm -f $(OBJECTS) $(ICU_COMMON_OBJECTS) $(ICU_I18N_OBJECTS) \
+		$(ICU_STUBDATA_OBJECTS) libicu_common.a libicu_i18n.a libicu_stubdata.a \
+		$(SHLIB) *.so *.dll

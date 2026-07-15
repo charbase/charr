@@ -6,7 +6,7 @@
 \alias{charr-package}
 \title{charr: Simple, Consistent Wrappers for Common String Operations, with ALTREP Interoperability}
 \description{
-An experimental hard fork of the 'stringr' package with an ALTREP-aware native string engine built on 'charport'. With the backend switch off (the default), every operation delegates to 'stringi' and behavior is identical to 'stringr'. With it on, eligible operations read ALTREP character vectors through the 'charport' interface without materializing them, and fall back to 'stringi' wherever the native engine cannot guarantee identical results.
+An experimental hard fork of the 'stringr' package with a private string backend copied from 'stringi' and being adapted to read and return 'ALTREP' character vectors through 'charport'. A simple R switch selects either installed 'stringi' or the private copy. The copied backend initially preserves stringi's ordinary materializing behavior so that semantic equivalence is established before 'ALTREP' adaptation.
 }
 \seealso{
 Useful links:
@@ -20,10 +20,17 @@ Useful links:
 \author{
 \strong{Maintainer}: Travers Ching \email{traversc@gmail.com} [copyright holder]
 
+Authors:
+\itemize{
+  \item Travers Ching \email{traversc@gmail.com} [copyright holder]
+  \item Hadley Wickham \email{hadley@posit.co} (Author of stringr, of which charr is a fork) [copyright holder]
+}
+
 Other contributors:
 \itemize{
-  \item Hadley Wickham \email{hadley@posit.co} (Author of stringr, of which charr is a fork) [author, copyright holder]
   \item Posit Software, PBC (Copyright holder of stringr) [copyright holder, funder]
+  \item Unicode, Inc. and others (ICU4C source code and data (Unicode License v3)) [contributor, copyright holder]
+  \item Marek Gagolewski (Author of stringi; stringi implementation and ICU4C vendoring used by charr) [contributor, copyright holder]
 }
 
 }

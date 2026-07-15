@@ -1,0 +1,3 @@
+#!/bin/sh
+# Remove configure-generated files (R CMD build and INSTALL --clean run this).
+rm -f src/Makevars src/icu_mode

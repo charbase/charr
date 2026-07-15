@@ -1,0 +1,157 @@
+# Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*.
+# kate: default-dictionary en_US
+
+## This file is part of the 'stringi' package for R.
+## Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
+## All rights reserved.
+##
+## Redistribution and use in source and binary forms, with or without
+## modification, are permitted provided that the following conditions are met:
+##
+## 1. Redistributions of source code must retain the above copyright notice,
+## this list of conditions and the following disclaimer.
+##
+## 2. Redistributions in binary form must reproduce the above copyright notice,
+## this list of conditions and the following disclaimer in the documentation
+## and/or other materials provided with the distribution.
+##
+## 3. Neither the name of the copyright holder nor the names of its
+## contributors may be used to endorse or promote products derived from
+## this software without specific prior written permission.
+##
+## THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+## 'AS IS' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING,
+## BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+## FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+## HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+## SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+## PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+## OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+## WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+## OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+## EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+# @title
+# General Text Transforms, Including Transliteration
+#
+# @description
+# \pkg{ICU} General transforms provide different ways
+# for processing Unicode text. They are useful in handling a variety
+# of different tasks, including:
+# \itemize{
+# \item    locale-independent upper case, lower case, title case,
+#     full/halfwidth conversions,
+# \item    normalization,
+# \item    hex and character name conversions,
+# \item    script to script conversion/transliteration.
+# }
+#
+#
+# @details
+# \pkg{ICU} Transforms were mainly designed to transliterate characters
+# from one script to another (for example, from Greek to Latin,
+# or Japanese Katakana to Latin).
+# However, these services are also capable of handling a much
+# broader range of tasks.
+# In particular, the Transforms include prebuilt transformations
+# for case conversions, for normalization conversions, for the removal
+# of given characters, and also for a variety of language and script
+# transliterations. Transforms can be chained together to perform
+# a series of operations and each step of the process can use a
+# UnicodeSet to restrict the characters that are affected.
+#
+# To get the list of available transforms,
+# call \code{\link{ci_trans_list}}.
+#
+# Note that transliterators are often combined in sequence
+# to achieve a desired transformation.
+# This is analogous to the composition of mathematical functions.
+# For example, given a script that converts lowercase ASCII characters
+# from Latin script to Katakana script, it is convenient to first
+# (1) separate input base characters and accents, and then (2)
+# convert uppercase to lowercase.
+# To achieve this, a compound transform can be specified as follows:
+# \code{NFKD; Lower; Latin-Katakana;} (with the default \code{rules=FALSE}).
+#
+# Custom rule-based transliteration is also supported, see the \pkg{ICU}
+# manual and below for some examples.
+#
+# Transliteration is not dependent on the current locale.
+#
+# @param str character vector
+# @param id a single string with transform identifier,
+#     see \code{\link{ci_trans_list}}, or custom transliteration rules
+# @param rules if \code{TRUE}, treat \code{id} as a string with
+#     semicolon-separated transliteration rules (see the \pkg{ICU} manual);
+# @param forward transliteration direction (\code{TRUE} for forward,
+#     \code{FALSE} for reverse)
+#
+# @return
+# Returns a character vector.
+#
+# @examples
+# ci_trans_general('gro\u00df', 'latin-ascii')
+# ci_trans_general('stringi', 'latin-greek')
+# ci_trans_general('stringi', 'latin-cyrillic')
+# ci_trans_general('stringi', 'upper') # see ci_trans_toupper
+# ci_trans_general('\u0104', 'nfd; lower') # compound id; see ci_trans_nfd
+# ci_trans_general('Marek G\u0105golewski', 'pl-pl_FONIPA')
+# ci_trans_general('\u2620', 'any-name') # character name
+# ci_trans_general('\\N{latin small letter a}', 'name-any') # decode name
+# ci_trans_general('\u2620', 'hex/c') # to hex
+# ci_trans_general("\u201C\u2026\u201D \u0105\u015B\u0107\u017C",
+#     "NFKD; NFC; [^\\p{L}] latin-ascii")
+#
+# x <- "\uC885\uB85C\uAD6C \uC0AC\uC9C1\uB3D9"
+# ci_trans_general(x, "Hangul-Latin")
+# # Deviate from the ICU rules of romanisation of Korean,
+# # see https://en.wikipedia.org/wiki/Romanization_of_Korean
+# id <- "
+#     :: NFD;
+#     \u11A8 > k;
+#     \u11AE > t;
+#     \u11B8 > p;
+#     \u1105 > r;
+#     :: Hangul-Latin;
+# "
+# ci_trans_general(x, id, rules=TRUE)
+#
+#
+# @references
+# \emph{General Transforms} -- ICU User Guide,
+# \url{https://unicode-org.github.io/icu/userguide/transforms/general/}
+#
+# @family transform
+# @export
+ci_trans_general <- function(str, id, rules=FALSE, forward=TRUE)
+{
+    .Call(C_ci_trans_general, str, id, rules, forward)
+}
+
+
+# @title
+# List Available Text Transforms and Transliterators
+#
+# @description
+# Returns a list of available text transform identifiers.
+# Each of them may be used in \code{\link{ci_trans_general}}
+# tasks.
+#
+# @return Returns a character vector.
+#
+# @references
+# \emph{General Transforms} -- ICU User Guide,
+# \url{https://unicode-org.github.io/icu/userguide/transforms/general/}
+#
+# @examples
+# ci_trans_list()
+#
+# @family transform
+# @export
+ci_trans_list <- function()
+{
+    ci_sort(
+        .Call(C_ci_trans_list), locale="en_US", numeric=TRUE, strength=1
+    )
+}

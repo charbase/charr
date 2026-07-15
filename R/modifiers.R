@@ -53,7 +53,7 @@ fixed <- function(pattern, ignore_case = FALSE) {
   pattern <- as_bare_character(pattern)
   check_bool(ignore_case)
 
-  options <- stri_opts_fixed(case_insensitive = ignore_case)
+  options <- ci_opts_fixed(case_insensitive = ignore_case)
 
   structure(
     pattern,
@@ -98,7 +98,7 @@ str_opts_collator <- function(
   ...
 ) {
   strength <- strength %||% if (ignore_case) 2L else 3L
-  stri_opts_collator(
+  ci_opts_collator(
     strength = strength,
     locale = locale,
     ...
@@ -132,7 +132,7 @@ regex <- function(
   check_bool(comments)
   check_bool(dotall)
 
-  options <- stri_opts_regex(
+  options <- ci_opts_regex(
     case_insensitive = ignore_case,
     multiline = multiline,
     comments = comments,
@@ -174,7 +174,7 @@ boundary <- function(
     skip_word_none <- type == "word"
   }
 
-  options <- stri_opts_brkiter(
+  options <- ci_opts_brkiter(
     type = type,
     skip_word_none = skip_word_none,
     ...
@@ -189,7 +189,7 @@ boundary <- function(
 
 opts <- function(x) {
   if (identical(x, "")) {
-    stri_opts_brkiter(type = "character")
+    ci_opts_brkiter(type = "character")
   } else {
     attr(x, "options")
   }
