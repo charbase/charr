@@ -34,16 +34,133 @@
 #include "ci_stringi.h"
 #include "ci_container_utf8.h"
 #include "ci_ucnv.h"
-#include "ci_string8buf.h"
+
+#include <memory>
+#include <utility>
+#include <vector>
+
+
+namespace {
+
+class CiUtf8Normalizer {
+private:
+    StriUcnv ucnv_latin1_;
+    StriUcnv ucnv_native_;
+    R_len_t outbuf_size_;
+    std::vector<char> outbuf_;
+
+public:
+    CiUtf8Normalizer()
+#if defined(_WIN32) || defined(_WIN64)
+        : ucnv_latin1_("WINDOWS-1252"), ucnv_native_(NULL),
+#else
+        : ucnv_latin1_("ISO-8859-1"), ucnv_native_(NULL),
+#endif
+          outbuf_size_(-1), outbuf_()
+    {
+    }
+
+    bool needs_conversion(const charport::StrView& value)
+    {
+        return !value.is_na() &&
+            (value.enc == cetype_ext_t::CE_LATIN1 ||
+             (value.enc == cetype_ext_t::CE_NATIVE &&
+              !ucnv_native_.isUTF8()));
+    }
+
+    bool needs_buffer() const
+    {
+        return outbuf_size_ < 0;
+    }
+
+    bool normalize(
+        String8& output, const charport::StrView& value,
+        R_len_t conversion_max_length
+    )
+    {
+        if (value.is_na())
+            return false;
+
+        if (value.enc == cetype_ext_t::CE_ASCII) {
+            output.initialize(
+                value.ptr, value.len, false, false, true
+            );
+            return true;
+        }
+
+        if (value.enc == cetype_ext_t::CE_UTF8 ||
+                value.enc == cetype_ext_t::CE_ASCII_OR_UTF8) {
+            // Deviation from stringi's CHARSXP path: only charport's
+            // deliberately ambiguous mark needs an ASCII scan. The explicit
+            // CE_ASCII and CE_UTF8 marks are authoritative.
+            const bool payload_is_ascii =
+                value.enc == cetype_ext_t::CE_ASCII_OR_UTF8 &&
+                ci::is_ascii(value.ptr, value.len);
+            output.initialize(
+                value.ptr, value.len, false,
+                !payload_is_ascii, payload_is_ascii
+            );
+            return true;
+        }
+
+        if (value.enc == cetype_ext_t::CE_BYTES)
+            throw StriException(MSG__BYTESENC);
+
+        UConverter* converter;
+        if (value.enc == cetype_ext_t::CE_LATIN1) {
+            converter = ucnv_latin1_.getConverter();
+        }
+        else if (value.enc == cetype_ext_t::CE_NATIVE) {
+            if (ucnv_native_.isUTF8()) {
+                output.initialize(
+                    value.ptr, value.len, false, true, false
+                );
+                return true;
+            }
+            converter = ucnv_native_.getConverter();
+        }
+        else {
+            throw StriException("unknown charport string encoding");
+        }
+
+        if (outbuf_size_ < 0) {
+            outbuf_size_ = UCNV_GET_MAX_BYTES_FOR_STRING(
+                conversion_max_length, 4
+            );
+            // Deviation from stringi: u_strToUTF8 receives explicit source
+            // and destination lengths, and String8 stores no terminator.
+            outbuf_.resize(static_cast<size_t>(outbuf_size_));
+        }
+
+        UErrorCode status = U_ZERO_ERROR;
+        UnicodeString tmp(
+            value.ptr, value.len, converter, status
+        );
+        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+
+        int output_length = 0;
+        u_strToUTF8(
+            outbuf_.data(), outbuf_size_, &output_length,
+            tmp.getBuffer(), tmp.length(), &status
+        );
+        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+
+        output.initialize(
+            outbuf_.data(), output_length, true, false, false
+        );
+        return false;
+    }
+};
+
+} // namespace
 
 /**
  * Default constructor
  *
  */
 StriContainerUTF8::StriContainerUTF8()
-    : StriContainerBase()
+    : StriContainerBase(), borrow(), str()
 {
-    str = NULL;
 }
 
 
@@ -57,291 +174,123 @@ StriContainerUTF8::StriContainerUTF8()
  * @version 1.0.6 (Marek Gagolewski, 2017-05-25)
  *    #270 latin-1 is windows-1252 on Windows
  *
- * @version 1.6.2 (Marek Gagolewski, 2021-05-14)
- *    #354 Force the copying of ALTREP data
+ * @version charr 0.1.0
+ *    Borrow one full charport view and copy only strings that need transcoding.
  */
-StriContainerUTF8::StriContainerUTF8(SEXP rstr, R_len_t _nrecycle, bool _shallowrecycle)
+StriContainerUTF8::StriContainerUTF8(
+    ci::ReaderContext& context, SEXP rstr,
+    R_len_t _nrecycle, bool _shallowrecycle
+) : StriContainerBase(), borrow(), str()
 {
-    this->str = NULL;
-
-#ifndef NDEBUG
-    if (!Rf_isString(rstr))
-        throw StriException("DEBUG: !Rf_isString in StriContainerUTF8::StriContainerUTF8(SEXP rstr)");
-#endif
-    R_len_t nrstr = LENGTH(rstr);
-    this->init_Base(nrstr, _nrecycle, _shallowrecycle, rstr); // calling LENGTH(rstr) fails on constructor call
+    R_len_t nrstr = ci::checked_r_len(
+        context.size(rstr), "character vectors"
+    );
+    this->init_Base(nrstr, _nrecycle, _shallowrecycle);
 
     if (this->n == 0)
         return; /* nothing more to do */
 
     STRI_ASSERT(this->n > 0);
-    this->str = new String8[this->n];
-    STRI_ASSERT(this->str);
-    if (!this->str) throw StriException(MSG__MEM_ALLOC_ERROR_WITH_SIZE,
-                                            this->n*sizeof(String8));
+    std::shared_ptr<ci::ReaderBorrow> new_borrow = context.acquire(rstr);
+    const charport::StrViews& views = new_borrow->views();
 
-    /* Important: ICU provides full internationalization functionality
-    without any conversion table data. The common library contains
-    code to handle several important encodings algorithmically: US-ASCII,
-    ISO-8859-1, UTF-7/8/16/32, SCSU, BOCU-1, CESU-8, and IMAP-mailbox-name */
-    // for conversion from non-UTF-8/ASCII native charsets:
-#if defined(_WIN32) || defined(_WIN64)
-    // #270: latin-1 is windows-1252 on Windows
-    StriUcnv ucnvLatin1("WINDOWS-1252");
-#else
-    // TODO: WINDOWS-1252 is a superset of ISO-8859-1, use the former??
-    StriUcnv ucnvLatin1("ISO-8859-1");
-#endif
-    StriUcnv ucnvNative(NULL);
-    R_len_t outbufsize = -1;
-    String8buf outbuf(0);
-//      int    tmpbufsize = -1;
-//      UChar* tmpbuf = NULL;
+    // Deviation from stringi: Reader access and conversion can throw, so keep
+    // the partially initialized array under RAII until construction succeeds.
+    std::unique_ptr<String8[]> new_str(new String8[this->n]);
+
+    CiUtf8Normalizer normalizer;
+    bool uses_borrowed_data = false;
 
     for (R_len_t i=0; i<nrstr; ++i) {
-        SEXP curs = STRING_ELT(rstr, i);
-        if (curs == NA_STRING) {
-            continue; // keep NA
-        }
-
-        if (IS_ASCII(curs)) {
-            // ASCII - ultra fast
-            bool memalloc = ALTREP(rstr);  // #354: force copying of ALTREP data
-            this->str[i].initialize(CHAR(curs), LENGTH(curs), memalloc/*!_shallowrecycle*/, false/*killbom*/, true/*isASCII*/);
-        }
-        else if (IS_UTF8(curs)) {
-            // UTF-8 - ultra fast
-            bool memalloc = ALTREP(rstr);  // #354: force copying of ALTREP data
-            this->str[i].initialize(CHAR(curs), LENGTH(curs), memalloc/*!_shallowrecycle*/, true/*killbom*/, false/*isASCII*/);
-            // the same is done for native encoding && ucnvNative_isUTF8
-            // @TODO: use macro (here & ucnvNative_isUTF8 below)
-        }
-        else if (IS_BYTES(curs)) {
-            // "bytes encoding" is not allowed except
-            // for some special functions which do encoding themselves
-            throw StriException(MSG__BYTESENC);
-        }
-        else {
-//             LATIN1 ------- OR ------ Native encoding
-
-            UConverter* ucnvCurrent;
-            if (IS_LATIN1(curs)) {
-                ucnvCurrent = ucnvLatin1.getConverter();
+        const charport::StrView curs = views[i];
+        R_len_t maxlen = curs.len;
+        if (normalizer.needs_buffer() && normalizer.needs_conversion(curs)) {
+            for (R_len_t z=i+1; z<nrstr; ++z) {
+                const charport::StrView candidate = views[z];
+                if (normalizer.needs_conversion(candidate) &&
+                        maxlen < candidate.len)
+                    maxlen = candidate.len;
             }
-            else { // "unknown" (native) encoding
-                // an "unknown" (native) encoding may be set to UTF-8 (speedup)
-                if (ucnvNative.isUTF8()) {
-                    // UTF-8 - ultra fast
-                    // @TODO: use macro
-                    bool memalloc = ALTREP(rstr);  // #354: force copying of ALTREP data
-                    this->str[i].initialize(CHAR(curs), LENGTH(curs),
-                                            memalloc/*!_shallowrecycle*/, true/*killbom*/, false/*isASCII*/);
-                    continue;
-                }
-
-                ucnvCurrent = ucnvNative.getConverter();
-            }
-
-            if (outbufsize < 0) {
-                // calculate max string length
-                R_len_t maxlen = LENGTH(curs);
-                for (R_len_t z=i+1; z<nrstr; ++z) {
-                    // start from the current string (there's no need to re-encode for < i)
-                    SEXP tmps = STRING_ELT(rstr, z);
-                    if ((tmps != NA_STRING)
-                            && !(IS_ASCII(tmps) || IS_UTF8(tmps) || IS_BYTES(tmps))
-                            && (maxlen < LENGTH(tmps)))
-                        maxlen = LENGTH(tmps);
-                }
-//                  tmpbufsize = UCNV_GET_MAX_BYTES_FOR_STRING(maxlen, 4)+1;
-//                  tmpbuf = new UChar[tmpbufsize];
-//                  if (!tmpbuf) throw StriException(MSG__MEM_ALLOC_ERROR);
-                // UCNV_GET_MAX_BYTES_FOR_STRING calculates the size
-                // of a buffer for conversion from Unicode to a charset.
-                // this may be overestimated
-                outbufsize = UCNV_GET_MAX_BYTES_FOR_STRING(maxlen, 4)+1;
-                outbuf.resize(outbufsize, false);
-            }
-
-
-            // version 1: use ucnv's pivot buffer (slower than v2)
-//               UErrorCode status = U_ZERO_ERROR;
-//               int realsize = ucnv_toAlgorithmic(UCNV_UTF8, ucnvCurrent,
-//                  outbuf, outbufsize, CHAR(curs), LENGTH(curs), &status);
-//               if (U_FAILURE(status)) { // STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-//                  CLEANUP_StriContainerUTF8
-//                  throw StriException(status);
-//               }
-
-            // @TODO: test ucnv_convertEx
-
-
-            // version 2: use u_strToUTF8 (faster than v1 and v2)
-            // latin1/native -> UTF16
-            UErrorCode status = U_ZERO_ERROR;
-            UnicodeString tmp(CHAR(curs), LENGTH(curs), ucnvCurrent, status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-            // UTF-16 -> UTF-8
-// // this is not faster than u_strToUTF8
-//               const UChar* tmpbuf = tmp.getBuffer();
-//               int tmpbufsize = tmp.length();
-//               // tmpbuf is a well-formed UTF-16 string
-//               int i1 = 0, outrealsize = 0;
-//               UChar32 c;
-//               while (i1 < tmpbufsize) {
-//                  U16_NEXT_UNSAFE(tmpbuf, i1, c);
-//                  U8_APPEND_UNSAFE(outbuf, outrealsize, c);
-//#ifndef NDEBUG
-//               if (outrealsize > outbufsize)
-//                  throw StriException(U_BUFFER_OVERFLOW_ERROR);
-//#endif
-//               }
-
-            int outrealsize = 0;
-            u_strToUTF8(outbuf.data(), outbuf.size(), &outrealsize,
-                        tmp.getBuffer(), tmp.length(), &status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-            this->str[i].initialize(outbuf.data(), outrealsize, true/*memalloc*/, false/*killbom*/, false/*isASCII*/);
-
-            // version 3: use tmpbuf (slower than v2)
-//               UErrorCode status = U_ZERO_ERROR;
-//               int tmprealsize = ucnv_toUChars(ucnvCurrent, tmpbuf, tmpbufsize,
-//                     CHAR(curs), LENGTH(curs), &status);
-//               if (U_FAILURE(status)) { // STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-//                  CLEANUP_FAILURE_StriContainerUTF8
-//                  throw StriException(status);
-//               }
-//
-//               // UTF-16 -> UTF-8
-//               int outrealsize = ucnv_fromUChars(ucnvUTF8,
-//                  outbuf, outbufsize, tmpbuf, tmprealsize, &status);
-//               if (U_FAILURE(status)) { // STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-//                  CLEANUP_FAILURE_StriContainerUTF8
-//                  throw StriException(status);
-//               }
         }
+        if (normalizer.normalize(new_str[i], curs, maxlen))
+            uses_borrowed_data = true;
     }
 
     if (!_shallowrecycle) {
         for (R_len_t i=nrstr; i<this->n; ++i) {
-            this->str[i] = str[i%nrstr];
+            new_str[i] = new_str[i%nrstr];
         }
     }
+
+    if (uses_borrowed_data)
+        this->borrow = new_borrow;
+    this->str = std::move(new_str);
+}
+
+
+StriContainerUTF8::StriContainerUTF8(
+    const std::shared_ptr<ci::ReaderBorrow>& source_borrow,
+    const charport::StrView& value,
+    R_len_t _nrecycle, bool _shallowrecycle
+) : StriContainerBase(), borrow(), str()
+{
+    this->init_Base(1, _nrecycle, _shallowrecycle);
+    if (this->n == 0)
+        return;
+
+    // Deviation from stringi: ci_sub_all selects one record from an existing
+    // full-vector Reader instead of materializing a one-element STRSXP.
+    std::unique_ptr<String8[]> new_str(new String8[this->n]);
+    CiUtf8Normalizer normalizer;
+    const bool uses_borrowed_data = normalizer.normalize(
+        new_str[0], value, value.len
+    );
+
+    if (!_shallowrecycle) {
+        for (R_len_t i=1; i<this->n; ++i)
+            new_str[i] = new_str[0];
+    }
+
+    if (uses_borrowed_data)
+        this->borrow = source_borrow;
+    this->str = std::move(new_str);
 }
 
 
 StriContainerUTF8::StriContainerUTF8(StriContainerUTF8& container)
-    :    StriContainerBase((StriContainerBase&)container)
+    : StriContainerBase((StriContainerBase&)container),
+      borrow(container.borrow), str()
 {
     if (container.str) {
-        this->str = new String8[this->n];
-        STRI_ASSERT(this->str);
-        if (!this->str) throw StriException(MSG__MEM_ALLOC_ERROR_WITH_SIZE,
-                                                this->n*sizeof(String8));
+        this->str.reset(new String8[this->n]);
         for (int i=0; i<this->n; ++i) {
             this->str[i] = container.str[i];
         }
-    }
-    else {
-        this->str = NULL;
     }
 }
 
 
 StriContainerUTF8& StriContainerUTF8::operator=(StriContainerUTF8& container)
 {
-    this->~StriContainerUTF8();
-    (StriContainerBase&) (*this) = (StriContainerBase&)container;
+    if (this == &container)
+        return *this;
 
+    std::unique_ptr<String8[]> new_str;
     if (container.str) {
-        this->str = new String8[this->n];
-        STRI_ASSERT(this->str);
-        if (!this->str) throw StriException(MSG__MEM_ALLOC_ERROR_WITH_SIZE,
-                                                this->n*sizeof(String8));
-        for (int i=0; i<this->n; ++i) {
-            this->str[i] = container.str[i];
+        new_str.reset(new String8[container.n]);
+        for (int i=0; i<container.n; ++i) {
+            new_str[i] = container.str[i];
         }
     }
-    else {
-        this->str = NULL;
-    }
+
+    // Deviation from stringi: explicit destruction followed by member reuse is
+    // invalid now that the container owns a non-trivial Reader lease.
+    this->str.reset();
+    (StriContainerBase&) (*this) = (StriContainerBase&)container;
+    this->borrow = container.borrow;
+    this->str = std::move(new_str);
     return *this;
 }
 
 
-StriContainerUTF8::~StriContainerUTF8()
-{
-    if (str) {
-//      for (int i=0; i<n; ++i) {
-//         if (str[i])
-//            delete str[i];
-//      }
-        delete [] str;
-        str = NULL;
-    }
-}
-
-
-/** Export character vector to R
- *  THE OUTPUT IS ALWAYS IN UTF-8
- *
- *  Recycle rule is applied, so length == nrecycle
- *
- * @return STRSXP
- *
- *
- * @version 0.1-?? (Marek Gagolewski)
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-03-22)
- *    returns original CHARSXP if possible for increased performance
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-02)
- *    call toR(int)
- */
-SEXP StriContainerUTF8::toR() const
-{
-    SEXP ret;
-    PROTECT(ret = Rf_allocVector(STRSXP, nrecycle));
-
-    for (R_len_t i=0; i<nrecycle; ++i) {
-        SET_STRING_ELT(ret, i, this->toR(i));
-    }
-
-    UNPROTECT(1);
-    return ret;
-}
-
-
-/** Export string to R
- *  THE OUTPUT IS ALWAYS IN UTF-8
- *
- * @param i index [with recycle]
- * @return CHARSXP
- *
- * @version 0.1-?? (Marek Gagolewski)
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-03-22)
- *    returns original CHARSXP if possible for increased performance
- */
-SEXP StriContainerUTF8::toR(R_len_t i) const
-{
-#ifndef NDEBUG
-    if (i < 0 || i >= nrecycle)
-        throw StriException("StriContainerUTF8::toR(): INDEX OUT OF BOUNDS");
-#endif
-
-    String8* curs = &(str[i%n]);
-    if (curs->isNA()) {
-        return NA_STRING;
-    }
-    else if (curs->isReadOnly()) {
-        // if ReadOnly, then surely in ASCII or UTF-8 and without BOMs (see SEXP-constructor)
-        return STRING_ELT(sexp, i%n);
-    }
-    else {
-        // This is already in UTF-8
-        return Rf_mkCharLenCE(curs->c_str(), curs->length(), CE_UTF8);
-    }
-}
+StriContainerUTF8::~StriContainerUTF8() = default;

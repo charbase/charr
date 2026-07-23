@@ -84,18 +84,20 @@ private:
 
 public:
 
-    static StriRegexMatcherOptions getRegexOptions(SEXP opts_regex);
+    static StriRegexMatcherOptions getRegexOptions(
+        ci::DeferredWarnings& warnings, SEXP opts_regex
+    );
 
     StriContainerRegexPattern();
-    StriContainerRegexPattern(SEXP rstr, R_len_t nrecycle, StriRegexMatcherOptions opts);
+    StriContainerRegexPattern(
+        ci::ReaderContext& context, SEXP rstr,
+        R_len_t nrecycle, StriRegexMatcherOptions opts
+    );
     StriContainerRegexPattern(StriContainerRegexPattern& container);
     ~StriContainerRegexPattern();
     StriContainerRegexPattern& operator=(StriContainerRegexPattern& container);
     RegexMatcher* getMatcher(R_len_t i);
     const std::vector<std::string>& getCaptureGroupNames(R_len_t i);
-
-    SEXP getCaptureGroupRDimnames(R_len_t i, R_len_t last_i=-1, SEXP ret=R_NilValue);
-    SEXP getCaptureGroupRNames(R_len_t i);  // TODO: allow reuse
 };
 
 #endif

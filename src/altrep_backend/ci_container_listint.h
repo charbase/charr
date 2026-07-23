@@ -37,6 +37,8 @@
 #include "ci_container_base.h"
 #include "ci_intvec.h"
 
+#include <memory>
+
 
 /**
  * Contains R lists of integer vectors or single integer vectors.

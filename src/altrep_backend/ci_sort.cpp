@@ -32,6 +32,7 @@
 
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
 #include "ci_container_utf8.h"
 #include "ci_container_utf16.h"
 #include "ci_string8buf.h"
@@ -41,6 +42,7 @@
 #include <deque>
 #include <algorithm>
 #include <set>
+#include <memory>
 
 
 # define STRI_SORTRANKORDER_SORT  1
@@ -65,15 +67,15 @@ struct StriSortComparer {
 //      if (col) {
         UErrorCode status = U_ZERO_ERROR;
         int ret = (int)ucol_strcollUTF8(col,
-            cont->get(a).c_str(), cont->get(a).length(),
-            cont->get(b).c_str(), cont->get(b).length(), &status);
+            cont->get(a).data(), cont->get(a).length(),
+            cont->get(b).data(), cont->get(b).length(), &status);
         STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
         return (decreasing)?(ret > 0):(ret < 0);
 //      }
 //      else {
 //         int ret = ci__cmp_codepoints(
-//            cont->get(a).c_str(), cont->get(a).length(),
-//            cont->get(b).c_str(), cont->get(b).length()
+//            cont->get(a).data(), cont->get(a).length(),
+//            cont->get(b).data(), cont->get(b).length()
 //         );
 //         return (decreasing)?(ret > 0):(ret < 0);
 //      }
@@ -137,120 +139,146 @@ SEXP ci_order_rank_or_sort(SEXP str, SEXP decreasing, SEXP na_last,
         Rf_error(MSG__INCORRECT_INTERNAL_ARG);
     }
 
-    // call ci__ucol_open after prepare_arg:
-    // if prepare_arg had failed, we would have a mem leak
     UCollator* col = NULL;
-    col = ci__ucol_open(opts_collator);
-
 
     STRI__ERROR_HANDLER_BEGIN(2)
+    // Deviation from stringi: catch R errors from collator option parsing so
+    // queued warnings and any opened collator are released before R resumes.
+    charport::unwind_protect([&]() -> SEXP {
+        col = ci__ucol_open(STRI__DEFERRED_WARNINGS, opts_collator);
+        return R_NilValue;
+    });
 
-    R_len_t vectorize_length = LENGTH(str);
-    StriContainerUTF8 str_cont(str, vectorize_length);
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t vectorize_length = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
 
-
-
-    deque<int> NA_pos;
-    vector<int> order(vectorize_length);
-
-    R_len_t k = 0;
-    for (R_len_t i=0; i<vectorize_length; ++i) {
-        if (!str_cont.isNA(i))
-            order[k++] = i;
-        else if (na_last_int != NA_LOGICAL)
-            NA_pos.push_back(i);
+    SEXP ret = R_NilValue;
+    int* ret_tab = NULL;
+    if (_type != STRI_SORTRANKORDER_SORT) {
+        // Deviation from stringi: allocate the integer shell before borrowing
+        // ALTREP data. ci_order may drop NAs, so shrink this fresh vector after
+        // the Reader has been released.
+        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+            return Rf_allocVector(INTSXP, vectorize_length);
+        }));
+        ret_tab = INTEGER(ret);
     }
-    order.resize(k); // this should be faster than creating a separate deque (not tested)
 
+    std::unique_ptr<charport::charvec::Builder> output;
+    R_len_t output_length = vectorize_length;
+    {
+        StriContainerUTF8 str_cont(context, str, vectorize_length);
 
-    // TO DO: collation-based cmp: think of using sort keys...
-    // however,  it's  very fast already now.
+        deque<int> NA_pos;
+        vector<int> order(vectorize_length);
 
-    StriSortComparer comp(&str_cont, col, decr);
-    std::stable_sort(order.begin(), order.end(), comp);
-
-
-    SEXP ret;
-    if (_type == STRI_SORTRANKORDER_SORT) {
-        // sort
-        STRI__PROTECT(ret = Rf_allocVector(STRSXP, k+NA_pos.size()));
-        R_len_t j = 0;
-        if (na_last_int != NA_LOGICAL && !na_last_int) {
-            // put NAs first
-            for (std::deque<int>::iterator it=NA_pos.begin(); it!=NA_pos.end(); ++it, ++j)
-                SET_STRING_ELT(ret, j, NA_STRING);
+        R_len_t k = 0;
+        for (R_len_t i=0; i<vectorize_length; ++i) {
+            if (!str_cont.isNA(i))
+                order[k++] = i;
+            else if (na_last_int != NA_LOGICAL)
+                NA_pos.push_back(i);
         }
+        order.resize(k); // this should be faster than creating a separate deque (not tested)
+        output_length = k + static_cast<R_len_t>(NA_pos.size());
 
-        for (std::vector<int>::iterator it=order.begin(); it!=order.end(); ++it, ++j)
-            SET_STRING_ELT(ret, j, str_cont.toR(*it));
 
-        if (na_last_int != NA_LOGICAL && na_last_int) {
-            // put NAs last
-            for (std::deque<int>::iterator it=NA_pos.begin(); it!=NA_pos.end(); ++it, ++j)
-                SET_STRING_ELT(ret, j, NA_STRING);
-        }
-    }
-    else if (_type == STRI_SORTRANKORDER_ORDER) {
-        STRI__PROTECT(ret = Rf_allocVector(INTSXP, k+NA_pos.size()));
-        int* ret_tab = INTEGER(ret);
+        // TO DO: collation-based cmp: think of using sort keys...
+        // however,  it's  very fast already now.
 
-        R_len_t j = 0;
-        if (na_last_int != NA_LOGICAL && !na_last_int) {
-            // put NAs first
-            for (std::deque<int>::iterator it=NA_pos.begin(); it!=NA_pos.end(); ++it, ++j)
-                ret_tab[j] = (*it)+1; // 1-based indices
-        }
+        StriSortComparer comp(&str_cont, col, decr);
+        std::stable_sort(order.begin(), order.end(), comp);
 
-        for (std::vector<int>::iterator it=order.begin(); it!=order.end(); ++it, ++j)
-            ret_tab[j] = (*it)+1; // 1-based indices
 
-        if (na_last_int != NA_LOGICAL && na_last_int) {
-            // put NAs last
-            for (std::deque<int>::iterator it=NA_pos.begin(); it!=NA_pos.end(); ++it, ++j)
-                ret_tab[j] = (*it)+1; // 1-based indices
-        }
-    }
-    else {       // (_type == STRI_SORTRANKORDER_RANK)
-        // NAs are always preserved, order is increasing
-        STRI__PROTECT(ret = Rf_allocVector(INTSXP, vectorize_length));
-        int* ret_tab = INTEGER(ret);
-        for (R_len_t i=0; i<vectorize_length; ++i)
-            ret_tab[i] = NA_INTEGER;
-
-        R_len_t j_first = 1;   // 1-based indices
-        R_len_t j_min = 1;
-        int last_idx = 0, cur_idx;
-        for (std::vector<int>::iterator it=order.begin(); it!=order.end(); ++it) {
-            cur_idx = *it;
-
-            if (j_first > 1) {
-                UErrorCode status = U_ZERO_ERROR;
-                if (
-                    0 != (int)ucol_strcollUTF8(
-                        col,
-                        str_cont.get(last_idx).c_str(),
-                        str_cont.get(last_idx).length(),
-                        str_cont.get(cur_idx).c_str(),
-                        str_cont.get(cur_idx).length(), &status
-                    )
-                ) {
-                    j_min = j_first;
-                }
-                // else reuse j_min == a tie.
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+        if (_type == STRI_SORTRANKORDER_SORT) {
+            // sort
+            output.reset(new charport::charvec::Builder(output_length));
+            R_len_t j = 0;
+            if (na_last_int != NA_LOGICAL && !na_last_int) {
+                // put NAs first
+                for (std::deque<int>::iterator it=NA_pos.begin(); it!=NA_pos.end(); ++it, ++j)
+                    output->set_na(j);
             }
 
+            for (std::vector<int>::iterator it=order.begin(); it!=order.end(); ++it, ++j)
+                ci::builder_set(*output, j, str_cont.get(*it));
 
-            ret_tab[cur_idx] = j_min;
-            last_idx = cur_idx;
-            j_first++;
+            if (na_last_int != NA_LOGICAL && na_last_int) {
+                // put NAs last
+                for (std::deque<int>::iterator it=NA_pos.begin(); it!=NA_pos.end(); ++it, ++j)
+                    output->set_na(j);
+            }
         }
+        else if (_type == STRI_SORTRANKORDER_ORDER) {
+            R_len_t j = 0;
+            if (na_last_int != NA_LOGICAL && !na_last_int) {
+                // put NAs first
+                for (std::deque<int>::iterator it=NA_pos.begin(); it!=NA_pos.end(); ++it, ++j)
+                    ret_tab[j] = (*it)+1; // 1-based indices
+            }
+
+            for (std::vector<int>::iterator it=order.begin(); it!=order.end(); ++it, ++j)
+                ret_tab[j] = (*it)+1; // 1-based indices
+
+            if (na_last_int != NA_LOGICAL && na_last_int) {
+                // put NAs last
+                for (std::deque<int>::iterator it=NA_pos.begin(); it!=NA_pos.end(); ++it, ++j)
+                    ret_tab[j] = (*it)+1; // 1-based indices
+            }
+        }
+        else {       // (_type == STRI_SORTRANKORDER_RANK)
+            // NAs are always preserved, order is increasing
+            for (R_len_t i=0; i<vectorize_length; ++i)
+                ret_tab[i] = NA_INTEGER;
+
+            R_len_t j_first = 1;   // 1-based indices
+            R_len_t j_min = 1;
+            int last_idx = 0, cur_idx;
+            for (std::vector<int>::iterator it=order.begin(); it!=order.end(); ++it) {
+                cur_idx = *it;
+
+                if (j_first > 1) {
+                    UErrorCode status = U_ZERO_ERROR;
+                    if (
+                        0 != (int)ucol_strcollUTF8(
+                            col,
+                            str_cont.get(last_idx).data(),
+                            str_cont.get(last_idx).length(),
+                            str_cont.get(cur_idx).data(),
+                            str_cont.get(cur_idx).length(), &status
+                        )
+                    ) {
+                        j_min = j_first;
+                    }
+                    // else reuse j_min == a tie.
+                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                }
+
+
+                ret_tab[cur_idx] = j_min;
+                last_idx = cur_idx;
+                j_first++;
+            }
+        }
+    }
+
+    if (_type == STRI_SORTRANKORDER_SORT) {
+        STRI__PROTECT(ret = output->to_sexp());
+        output.reset();
+    }
+    else if (output_length != vectorize_length) {
+        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+            return Rf_lengthgets(ret, output_length);
+        }));
     }
 
     if (col) {
         ucol_close(col);
         col = NULL;
     }
+    context.emitWarnings();
 
     STRI__UNPROTECT_ALL
     return ret;
@@ -339,47 +367,66 @@ SEXP ci_unique(SEXP str, SEXP opts_collator)
 {
     PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
 
-    // call ci__ucol_open after prepare_arg:
-    // if prepare_arg had failed, we would have a mem leak
     UCollator* col = NULL;
-    col = ci__ucol_open(opts_collator);
 
     STRI__ERROR_HANDLER_BEGIN(1)
+    // Deviation from stringi: catch R errors from collator option parsing so
+    // queued warnings and any opened collator are released before R resumes.
+    charport::unwind_protect([&]() -> SEXP {
+        col = ci__ucol_open(STRI__DEFERRED_WARNINGS, opts_collator);
+        return R_NilValue;
+    });
 
-    R_len_t vectorize_length = LENGTH(str);
-    StriContainerUTF8 str_cont(str, vectorize_length);
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t vectorize_length = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    std::unique_ptr<charport::charvec::Builder> output;
+    {
+        StriContainerUTF8 str_cont(context, str, vectorize_length);
 
-    StriSortComparer comp(&str_cont, col, true);
-    set<int,StriSortComparer> uniqueset(comp);
+        StriSortComparer comp(&str_cont, col, true);
+        set<int,StriSortComparer> uniqueset(comp);
 
-    bool was_na = false;
-    deque<SEXP> temp;
-    for (R_len_t i=0; i<vectorize_length; ++i) {
-        if (str_cont.isNA(i)) {
-            if (!was_na) {
-                was_na = true;
-                temp.push_back(NA_STRING);
+        bool was_na = false;
+        // Deviation from stringi: retain source indices instead of unprotected
+        // CHARSXPs, then copy through Builder while the Reader is still live.
+        deque<int> temp;
+        for (R_len_t i=0; i<vectorize_length; ++i) {
+            if (str_cont.isNA(i)) {
+                if (!was_na) {
+                    was_na = true;
+                    temp.push_back(-1);
+                }
+            }
+            else {
+                pair<set<int,StriSortComparer>::iterator,bool> result = uniqueset.insert(i);
+                if (result.second) {
+                    temp.push_back(i);
+                }
             }
         }
-        else {
-            pair<set<int,StriSortComparer>::iterator,bool> result = uniqueset.insert(i);
-            if (result.second) {
-                temp.push_back(str_cont.toR(i));
-            }
+
+        output.reset(new charport::charvec::Builder(
+            static_cast<R_xlen_t>(temp.size())
+        ));
+        R_len_t i = 0;
+        for (deque<int>::iterator it = temp.begin(); it != temp.end(); it++) {
+            if (*it < 0)
+                output->set_na(i++);
+            else
+                ci::builder_set(*output, i++, str_cont.get(*it));
         }
     }
 
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, temp.size()));
-    R_len_t i = 0;
-    for (deque<SEXP>::iterator it = temp.begin(); it != temp.end(); it++) {
-        SET_STRING_ELT(ret, i++, *it);
-    }
-
+    STRI__PROTECT(ret = output->to_sexp());
+    output.reset();
     if (col) {
         ucol_close(col);
         col = NULL;
     }
+    context.emitWarnings();
 
     STRI__UNPROTECT_ALL
     return ret;
@@ -413,56 +460,66 @@ SEXP ci_duplicated(SEXP str, SEXP fromLast, SEXP opts_collator)
     PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
     bool fromLastBool = ci__prepare_arg_logical_1_notNA(fromLast, "fromLast");
 
-    // call ci__ucol_open after prepare_arg:
-    // if prepare_arg had failed, we would have a mem leak
     UCollator* col = NULL;
-    col = ci__ucol_open(opts_collator);
 
     STRI__ERROR_HANDLER_BEGIN(1)
+    // Deviation from stringi: catch R errors from collator option parsing so
+    // queued warnings and any opened collator are released before R resumes.
+    charport::unwind_protect([&]() -> SEXP {
+        col = ci__ucol_open(STRI__DEFERRED_WARNINGS, opts_collator);
+        return R_NilValue;
+    });
 
-    R_len_t vectorize_length = LENGTH(str);
-    StriContainerUTF8 str_cont(str, vectorize_length);
-
-    StriSortComparer comp(&str_cont, col, true);
-    set<int,StriSortComparer> uniqueset(comp);
-
-    bool was_na = false;
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t vectorize_length = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(LGLSXP, vectorize_length));
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(LGLSXP, vectorize_length);
+    }));
     int* ret_tab = LOGICAL(ret);
 
-    if (fromLastBool) {
-        for (R_len_t i=vectorize_length-1; i>=0; --i) {
-            if (str_cont.isNA(i)) {
-                ret_tab[i] = was_na;
-                if (!was_na)
-                    was_na = true;
-            }
-            else {
-                pair<set<int,StriSortComparer>::iterator,bool> result = uniqueset.insert(i);
-                ret_tab[i] = !result.second;
-            }
-        }
-    }
-    else {
-        for (R_len_t i=0; i<vectorize_length; ++i) {
-            if (str_cont.isNA(i)) {
-                ret_tab[i] = was_na;
-                if (!was_na)
-                    was_na = true;
-            }
-            else {
-                pair<set<int,StriSortComparer>::iterator,bool> result = uniqueset.insert(i);
-                ret_tab[i] = !result.second;
-            }
-        }
-    }
+    {
+        StriContainerUTF8 str_cont(context, str, vectorize_length);
 
+        StriSortComparer comp(&str_cont, col, true);
+        set<int,StriSortComparer> uniqueset(comp);
+
+        bool was_na = false;
+        if (fromLastBool) {
+            for (R_len_t i=vectorize_length-1; i>=0; --i) {
+                if (str_cont.isNA(i)) {
+                    ret_tab[i] = was_na;
+                    if (!was_na)
+                        was_na = true;
+                }
+                else {
+                    pair<set<int,StriSortComparer>::iterator,bool> result = uniqueset.insert(i);
+                    ret_tab[i] = !result.second;
+                }
+            }
+        }
+        else {
+            for (R_len_t i=0; i<vectorize_length; ++i) {
+                if (str_cont.isNA(i)) {
+                    ret_tab[i] = was_na;
+                    if (!was_na)
+                        was_na = true;
+                }
+                else {
+                    pair<set<int,StriSortComparer>::iterator,bool> result = uniqueset.insert(i);
+                    ret_tab[i] = !result.second;
+                }
+            }
+        }
+    }
 
     if (col) {
         ucol_close(col);
         col = NULL;
     }
+    context.emitWarnings();
 
     STRI__UNPROTECT_ALL
     return ret;
@@ -496,69 +553,79 @@ SEXP ci_duplicated_any(SEXP str, SEXP fromLast, SEXP opts_collator)
     PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
     bool fromLastBool = ci__prepare_arg_logical_1_notNA(fromLast, "fromLast");
 
-    // call ci__ucol_open after prepare_arg:
-    // if prepare_arg had failed, we would have a mem leak
     UCollator* col = NULL;
-    col = ci__ucol_open(opts_collator);
 
     STRI__ERROR_HANDLER_BEGIN(1)
+    // Deviation from stringi: catch R errors from collator option parsing so
+    // queued warnings and any opened collator are released before R resumes.
+    charport::unwind_protect([&]() -> SEXP {
+        col = ci__ucol_open(STRI__DEFERRED_WARNINGS, opts_collator);
+        return R_NilValue;
+    });
 
-    R_len_t vectorize_length = LENGTH(str);
-    StriContainerUTF8 str_cont(str, vectorize_length);
-
-    StriSortComparer comp(&str_cont, col, true);
-    set<int,StriSortComparer> uniqueset(comp);
-
-    bool was_na = false;
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t vectorize_length = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(INTSXP, 1));
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(INTSXP, 1);
+    }));
     int* ret_tab = INTEGER(ret);
     ret_tab[0] = 0;
 
-    if (fromLastBool) {
-        for (R_len_t i=vectorize_length-1; i>=0; --i) {
-            if (str_cont.isNA(i)) {
-                if (!was_na)
-                    was_na = true;
-                else {
-                    ret_tab[0] = i+1;
-                    break;
-                }
-            }
-            else {
-                pair<set<int,StriSortComparer>::iterator,bool> result = uniqueset.insert(i);
-                if (!result.second) {
-                    ret_tab[0] = i+1;
-                    break;
-                }
-            }
-        }
-    }
-    else {
-        for (R_len_t i=0; i<vectorize_length; ++i) {
-            if (str_cont.isNA(i)) {
-                if (!was_na)
-                    was_na = true;
-                else {
-                    ret_tab[0] = i+1;
-                    break;
-                }
-            }
-            else {
-                pair<set<int,StriSortComparer>::iterator,bool> result = uniqueset.insert(i);
-                if (!result.second) {
-                    ret_tab[0] = i+1;
-                    break;
-                }
-            }
-        }
-    }
+    {
+        StriContainerUTF8 str_cont(context, str, vectorize_length);
 
+        StriSortComparer comp(&str_cont, col, true);
+        set<int,StriSortComparer> uniqueset(comp);
+
+        bool was_na = false;
+        if (fromLastBool) {
+            for (R_len_t i=vectorize_length-1; i>=0; --i) {
+                if (str_cont.isNA(i)) {
+                    if (!was_na)
+                        was_na = true;
+                    else {
+                        ret_tab[0] = i+1;
+                        break;
+                    }
+                }
+                else {
+                    pair<set<int,StriSortComparer>::iterator,bool> result = uniqueset.insert(i);
+                    if (!result.second) {
+                        ret_tab[0] = i+1;
+                        break;
+                    }
+                }
+            }
+        }
+        else {
+            for (R_len_t i=0; i<vectorize_length; ++i) {
+                if (str_cont.isNA(i)) {
+                    if (!was_na)
+                        was_na = true;
+                    else {
+                        ret_tab[0] = i+1;
+                        break;
+                    }
+                }
+                else {
+                    pair<set<int,StriSortComparer>::iterator,bool> result = uniqueset.insert(i);
+                    if (!result.second) {
+                        ret_tab[0] = i+1;
+                        break;
+                    }
+                }
+            }
+        }
+    }
 
     if (col) {
         ucol_close(col);
         col = NULL;
     }
+    context.emitWarnings();
 
     STRI__UNPROTECT_ALL
     return ret;
@@ -585,60 +652,74 @@ SEXP ci_duplicated_any(SEXP str, SEXP fromLast, SEXP opts_collator)
 SEXP ci_sort_key(SEXP str, SEXP opts_collator) {
     PROTECT(str = ci__prepare_arg_string(str, "str"));
 
-    // call ci__ucol_open after prepare_arg:
-    // if prepare_arg had failed, we would have a mem leak
-    UCollator* col = ci__ucol_open(opts_collator);
+    UCollator* col = NULL;
 
     STRI__ERROR_HANDLER_BEGIN(1)
+    // Deviation from stringi: catch R errors from collator option parsing so
+    // queued warnings and any opened collator are released before R resumes.
+    charport::unwind_protect([&]() -> SEXP {
+        col = ci__ucol_open(STRI__DEFERRED_WARNINGS, opts_collator);
+        return R_NilValue;
+    });
 
-    R_len_t length = LENGTH(str);
-    StriContainerUTF16 str_cont(str, length);
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t length = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    charport::charvec::Builder output(length);
+    {
+        StriContainerUTF16 str_cont(context, str, length);
 
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, length));
+//        UErrorCode status = U_ZERO_ERROR;
 
-//    UErrorCode status = U_ZERO_ERROR;
+        // Allocate temporary buffer to hold the current sort key
+        size_t key_buffer_size = 16384;
+        String8buf key_buffer(key_buffer_size);
+        uint8_t* p_key_buffer_u8 = (uint8_t*) key_buffer.data();
 
-    // Allocate temporary buffer to hold the current sort key
-    size_t key_buffer_size = 16384;
-    String8buf key_buffer(key_buffer_size);
-    uint8_t* p_key_buffer_u8 = (uint8_t*) key_buffer.data();
+        for (R_len_t i = 0; i < length; ++i) {
+            if (str_cont.isNA(i)) {
+                output.set_na(i);
+                continue;
+            }
 
-    for (R_len_t i = 0; i < length; ++i) {
-        if (str_cont.isNA(i)) {
-            SET_STRING_ELT(ret, i, NA_STRING);
-            continue;
+            const UnicodeString* p_str_cur_data = &(str_cont.get(i));
+            const UChar* p_str_cur = p_str_cur_data->getBuffer();
+            const int str_cur_length = p_str_cur_data->length();
+
+            int32_t key_size = ucol_getSortKey(col, p_str_cur, str_cur_length, p_key_buffer_u8, key_buffer_size);
+
+            // Reallocate a larger buffer and retry as required
+            if ((size_t)key_size > key_buffer_size) {
+                const int32_t key_padding = 100;
+                key_buffer_size = key_size + key_padding;
+
+                key_buffer.resize(key_buffer_size, false);
+                p_key_buffer_u8 = (uint8_t*) key_buffer.data();
+
+                // Try again
+                key_size = ucol_getSortKey(col, p_str_cur, str_cur_length, p_key_buffer_u8, key_buffer_size);
+            }
+
+            // `key_size` includes null terminator,
+            // which we don't want to copy into the R CHARSXP
+            R_len_t key_char_size = key_size - 1;
+
+            // Keep sort keys bytes-marked even when their payload is ASCII.
+            output.set(
+                i, key_buffer.data(), static_cast<size_t>(key_char_size),
+                cetype_ext_t::CE_BYTES
+            );
         }
-
-        const UnicodeString* p_str_cur_data = &(str_cont.get(i));
-        const UChar* p_str_cur = p_str_cur_data->getBuffer();
-        const int str_cur_length = p_str_cur_data->length();
-
-        int32_t key_size = ucol_getSortKey(col, p_str_cur, str_cur_length, p_key_buffer_u8, key_buffer_size);
-
-        // Reallocate a larger buffer and retry as required
-        if ((size_t)key_size > key_buffer_size) {
-            const int32_t key_padding = 100;
-            key_buffer_size = key_size + key_padding;
-
-            key_buffer.resize(key_buffer_size, false);
-            p_key_buffer_u8 = (uint8_t*) key_buffer.data();
-
-            // Try again
-            key_size = ucol_getSortKey(col, p_str_cur, str_cur_length, p_key_buffer_u8, key_buffer_size);
-        }
-
-        // `key_size` includes null terminator,
-        // which we don't want to copy into the R CHARSXP
-        R_len_t key_char_size = key_size - 1;
-
-        SET_STRING_ELT(ret, i, Rf_mkCharLenCE(key_buffer.data(), key_char_size, CE_BYTES));
     }
 
+    SEXP ret;
+    STRI__PROTECT(ret = output.to_sexp());
     if (col) {
         ucol_close(col);
         col = NULL;
     }
+    context.emitWarnings();
 
     STRI__UNPROTECT_ALL
     return ret;

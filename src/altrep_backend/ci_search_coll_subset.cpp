@@ -31,10 +31,12 @@
  */
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
 #include "ci_container_utf16.h"
 #include "ci_container_utf8.h"
 #include "ci_container_usearch.h"
 #include <unicode/uregex.h>
+#include <vector>
 
 
 /**
@@ -75,58 +77,97 @@ SEXP ci_subset_coll(SEXP str, SEXP pattern, SEXP omit_na, SEXP negate, SEXP opts
     PROTECT(str = ci__prepare_arg_string(str, "str"));
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
 
-    if (LENGTH(str) > 0 && LENGTH(str) < LENGTH(pattern))
-        Rf_error(MSG__WARN_RECYCLING_RULE2);
-
-    R_len_t vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
+    UCollator* collator = NULL;
+    STRI__ERROR_HANDLER_BEGIN(2)
+    R_len_t str_n = 0;
+    R_len_t pattern_n = 0;
+    R_len_t vectorize_length = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        str_n = LENGTH(str);
+        pattern_n = LENGTH(pattern);
+        // Deviation from stringi: keep controlled recycling conditions on the
+        // C++ path so R signalling happens after operation cleanup.
+        if (str_n > 0 && str_n < pattern_n)
+            throw StriException(MSG__WARN_RECYCLING_RULE2);
+        vectorize_length = ci__recycling_rule(
+            STRI__DEFERRED_WARNINGS, 2, str_n, pattern_n
+        );
+        return R_NilValue;
+    });
 
     if (vectorize_length == 0) {
-        UNPROTECT(2);
-        return Rf_allocVector(STRSXP, 0);
+        charport::charvec::Store output(0, 0);
+        SEXP ret;
+        STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+        STRI__UNPROTECT_ALL
+        return ret;
     }
 
-    // call ci__ucol_open after prepare_arg:
-    // if prepare_arg had failed, we would have a mem leak
-    UCollator* collator = NULL;
-    collator = ci__ucol_open(opts_collator);
+    // Deviation from stringi: catch R errors from collator option parsing so
+    // queued warnings and any opened collator are released before R resumes.
+    charport::unwind_protect([&]() -> SEXP {
+        collator = ci__ucol_open(
+            STRI__DEFERRED_WARNINGS, opts_collator
+        );
+        return R_NilValue;
+    });
 
-    STRI__ERROR_HANDLER_BEGIN(2)
-    StriContainerUTF16 str_cont(str, vectorize_length);
-    StriContainerUStringSearch pattern_cont(pattern, vectorize_length, collator);  // collator is not owned by pattern_cont
-
-    // BT: this cannot be done with deque, because pattern is reused so i does not
-    // go like 0,1,2...n but 0,pat_len,2*pat_len,1,pat_len+1 and so on
-    // MG: agreed
-    std::vector<int> which(vectorize_length);
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    charport::charvec::Store output(0, 0);
     int result_counter = 0;
-
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-        {if (omit_na1) which[i] = FALSE; else {
-                which[i] = NA_LOGICAL;
-                result_counter++;
-            }
-        },
-        {which[i] = negate_1; if (which[i]) result_counter++;})
+        StriContainerUTF16 str_cont(
+            context, str, vectorize_length
+        );
+        StriContainerUStringSearch pattern_cont(
+            context, pattern, vectorize_length, collator
+        );  // collator is not owned by pattern_cont
 
-        UStringSearch *matcher = pattern_cont.getMatcher(i, str_cont.get(i));
-        usearch_reset(matcher);
-        UErrorCode status = U_ZERO_ERROR;
-        which[i] = ((int)usearch_first(matcher, &status) != USEARCH_DONE);  // this is F*G slow! :-(
-        if (negate_1) which[i] = !which[i];
-        if (which[i]) result_counter++;
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+        // BT: this cannot be done with deque, because pattern is reused so i
+        // does not go like 0,1,2...n but 0,pat_len,2*pat_len,1,...
+        // MG: agreed
+        std::vector<int> which(vectorize_length);
+
+        for (R_len_t i = pattern_cont.vectorize_init();
+                i != pattern_cont.vectorize_end();
+                i = pattern_cont.vectorize_next(i))
+        {
+            STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(
+                str_cont, pattern_cont,
+            {   if (omit_na1)
+                    which[i] = FALSE;
+                else {
+                    which[i] = NA_LOGICAL;
+                    result_counter++;
+                }
+            },
+            {   which[i] = negate_1;
+                if (which[i]) result_counter++;
+            })
+
+            UStringSearch *matcher = pattern_cont.getMatcher(
+                i, str_cont.get(i)
+            );
+            usearch_reset(matcher);
+            UErrorCode status = U_ZERO_ERROR;
+            which[i] = (
+                (int)usearch_first(matcher, &status) != USEARCH_DONE
+            );  // this is F*G slow! :-(
+            if (negate_1) which[i] = !which[i];
+            if (which[i]) result_counter++;
+            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+        }
+
+        output = ci__subset_by_logical(str_cont, which, result_counter);
     }
 
+    SEXP ret;
+    STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
     if (collator) {
         ucol_close(collator);
         collator = NULL;
     }
-    SEXP ret;
-    STRI__PROTECT(ret = ci__subset_by_logical(str_cont, which, result_counter));
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(
@@ -163,70 +204,119 @@ SEXP ci_subset_coll_replacement(SEXP str, SEXP pattern, SEXP negate, SEXP opts_c
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
     PROTECT(value = ci__prepare_arg_string(value, "value"));
 
-    // we are subsetting `str`, therefore recycling is slightly different here
-    if (LENGTH(value) == 0) Rf_error(MSG__REPLACEMENT_ZERO);
-    if (LENGTH(pattern) == 0) Rf_error(MSG__WARN_EMPTY_VECTOR);
-    if (LENGTH(str) == 0) {
-        UNPROTECT(3);
-        return Rf_allocVector(STRSXP, 0);
-    }
-    if (LENGTH(str) < LENGTH(pattern))  // for LENGTH(value), we emit warning later on
-        Rf_error(MSG__WARN_RECYCLING_RULE2);
-    if ((LENGTH(str) % LENGTH(pattern)) != 0)
-        Rf_warning(MSG__WARN_RECYCLING_RULE);
-    R_len_t vectorize_length = LENGTH(str);
-
-    // call ci__ucol_open after prepare_arg:
-    // if prepare_arg had failed, we would have a mem leak
     UCollator* collator = NULL;
-    collator = ci__ucol_open(opts_collator);
-
     STRI__ERROR_HANDLER_BEGIN(3)
-    R_len_t value_length = LENGTH(value);
-    StriContainerUTF8 value_cont(value, value_length);
-    StriContainerUTF16 str_cont(str, vectorize_length);
-    StriContainerUStringSearch pattern_cont(pattern, vectorize_length, collator);  // collator is not owned by pattern_cont
+    R_len_t value_length = 0;
+    R_len_t pattern_length = 0;
+    R_len_t vectorize_length = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        value_length = LENGTH(value);
+        pattern_length = LENGTH(pattern);
+        vectorize_length = LENGTH(str);
 
+        // we are subsetting `str`, therefore recycling is slightly different
+        // Deviation from stringi: queue or throw controlled conditions so R
+        // handlers run only after operation cleanup.
+        if (value_length == 0)
+            throw StriException(MSG__REPLACEMENT_ZERO);
+        if (pattern_length == 0)
+            throw StriException(MSG__WARN_EMPTY_VECTOR);
+        if (vectorize_length > 0 && vectorize_length < pattern_length)
+            throw StriException(MSG__WARN_RECYCLING_RULE2);
+        if (vectorize_length > 0 &&
+                (vectorize_length % pattern_length) != 0)
+            STRI__DEFERRED_WARNINGS.push(MSG__WARN_RECYCLING_RULE);
+        return R_NilValue;
+    });
+
+    if (vectorize_length == 0) {
+        charport::charvec::Builder output(0);
+        SEXP ret;
+        STRI__PROTECT(ret = output.to_sexp());
+        STRI__UNPROTECT_ALL
+        return ret;
+    }
+
+    // Deviation from stringi: catch R errors from collator option parsing so
+    // queued warnings and any opened collator are released before R resumes.
+    charport::unwind_protect([&]() -> SEXP {
+        collator = ci__ucol_open(
+            STRI__DEFERRED_WARNINGS, opts_collator
+        );
+        return R_NilValue;
+    });
+
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, vectorize_length));
-
-    std::vector<int> detected(vectorize_length, 0);
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        if (pattern_cont.isNA(i)) {
-            // behave like `[<-`
-            detected[i] = false;
-            continue;
+        charport::charvec::Builder output(vectorize_length);
+        std::vector<int> detected(vectorize_length, 0);
+        {
+            StriContainerUTF8 value_cont(
+                context, value, value_length
+            );
+            StriContainerUTF16 str_cont(
+                context, str, vectorize_length
+            );
+            StriContainerUStringSearch pattern_cont(
+                context, pattern, vectorize_length, collator
+            );  // collator is not owned by pattern_cont
+
+            for (R_len_t i = pattern_cont.vectorize_init();
+                    i != pattern_cont.vectorize_end();
+                    i = pattern_cont.vectorize_next(i))
+            {
+                if (pattern_cont.isNA(i)) {
+                    // behave like `[<-`
+                    detected[i] = false;
+                    continue;
+                }
+                STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(
+                    str_cont, pattern_cont,
+                    {detected[i] = NA_INTEGER;},
+                    {detected[i] = negate_1;}
+                );
+
+                UStringSearch *matcher = pattern_cont.getMatcher(
+                    i, str_cont.get(i)
+                );
+                usearch_reset(matcher);
+                UErrorCode status = U_ZERO_ERROR;
+                detected[i] = (
+                    ((int)usearch_first(matcher, &status) != USEARCH_DONE &&
+                        !negate_1) ||
+                    (usearch_first(matcher, &status) == USEARCH_DONE &&
+                        negate_1)
+                );
+                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            }
+
+            vector<char> utf8_buffer;
+            R_len_t k = 0;  // we must traverse `str_cont` in order now
+            for (R_len_t i = 0; i<vectorize_length; ++i) {
+                if (detected[i] == NA_INTEGER)
+                    output.set_na(i);
+                else if (detected[i] == 0)
+                    ci::builder_set(
+                        output, i, str_cont.get(i), utf8_buffer
+                    );
+                else
+                    ci::builder_set(
+                        output, i, value_cont.get((k++)%value_length)
+                    );
+            }
+            if ((k % value_length) != 0)
+                context.warn(MSG_REPLACEMENT_MULTIPLE);
         }
-        STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-        {detected[i] = NA_INTEGER;},
-        {detected[i] = negate_1;})
 
-        UStringSearch *matcher = pattern_cont.getMatcher(i, str_cont.get(i));
-        usearch_reset(matcher);
-        UErrorCode status = U_ZERO_ERROR;
-        detected[i] = (((int)usearch_first(matcher, &status) != USEARCH_DONE && !negate_1)
-                || (usearch_first(matcher, &status) == USEARCH_DONE && negate_1));
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+        STRI__PROTECT(ret = output.to_sexp());
     }
-
-    R_len_t k = 0;  // we must traverse `str_cont` in order now
-    for (R_len_t i = 0; i<vectorize_length; ++i) {
-        if (detected[i] == NA_INTEGER)
-            SET_STRING_ELT(ret, i, NA_STRING);
-        else if (detected[i] == 0)
-            SET_STRING_ELT(ret, i, str_cont.toR(i));
-        else
-            SET_STRING_ELT(ret, i, value_cont.toR((k++)%value_length));
-    }
-    if ((k % value_length) != 0) Rf_warning(MSG_REPLACEMENT_MULTIPLE);
 
     if (collator) {
         ucol_close(collator);
         collator = NULL;
     }
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(

@@ -31,11 +31,14 @@
  */
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
 #include "ci_container_utf8.h"
 #include "ci_container_charclass.h"
 #include "ci_container_logical.h"
 #include <deque>
+#include <stdexcept>
 #include <utility>
+#include <vector>
 using namespace std;
 
 
@@ -67,58 +70,82 @@ SEXP ci__extract_firstlast_charclass(SEXP str, SEXP pattern, bool first)
 {
     PROTECT(str = ci__prepare_arg_string(str, "str"));
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
-    R_len_t vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
-
     STRI__ERROR_HANDLER_BEGIN(2)
-    StriContainerUTF8 str_cont(str, vectorize_length);
-    StriContainerCharClass pattern_cont(pattern, vectorize_length);
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, vectorize_length));
-
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        SET_STRING_ELT(ret, i, NA_STRING);
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t vectorize_length = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_length = ci__recycling_rule(
+            STRI__DEFERRED_WARNINGS, 2, str_n, pattern_n
+        );
+        return R_NilValue;
+    });
 
-        if (str_cont.isNA(i) || pattern_cont.isNA(i))
-            continue;
+    charport::charvec::Builder builder(vectorize_length);
+    {
+        StriContainerUTF8 str_cont(context, str, vectorize_length);
+        StriContainerCharClass pattern_cont(
+            context, pattern, vectorize_length
+        );
 
-        const UnicodeSet* pattern_cur = &pattern_cont.get(i);
-        R_len_t     str_cur_n = str_cont.get(i).length();
-        const char* str_cur_s = str_cont.get(i).c_str();
-        R_len_t j, jlast;
-        UChar32 chr;
+        for (R_len_t i = pattern_cont.vectorize_init();
+                i != pattern_cont.vectorize_end();
+                i = pattern_cont.vectorize_next(i))
+        {
+            builder.set_na(i);
 
-        if (first) {
-            for (jlast=j=0; j<str_cur_n; ) {
-                U8_NEXT(str_cur_s, j, str_cur_n, chr);
-                if (chr < 0) // invalid utf-8 sequence
-                    throw StriException(MSG__INVALID_UTF8);
-                if (pattern_cur->contains(chr)) {
-                    SET_STRING_ELT(ret, i,
-                                   Rf_mkCharLenCE(str_cur_s+jlast, j-jlast, CE_UTF8));
-                    break; // that's enough for first
+            if (str_cont.isNA(i) || pattern_cont.isNA(i))
+                continue;
+
+            const UnicodeSet* pattern_cur = &pattern_cont.get(i);
+            R_len_t     str_cur_n = str_cont.get(i).length();
+            const char* str_cur_s = str_cont.get(i).data();
+            R_len_t j, jlast;
+            UChar32 chr;
+
+            if (first) {
+                for (jlast=j=0; j<str_cur_n; ) {
+                    U8_NEXT(str_cur_s, j, str_cur_n, chr);
+                    if (chr < 0) // invalid utf-8 sequence
+                        throw StriException(MSG__INVALID_UTF8);
+                    if (pattern_cur->contains(chr)) {
+                        ci::builder_set(
+                            builder, i, str_cur_s+jlast, j-jlast,
+                            cetype_ext_t::CE_ASCII_OR_UTF8
+                        );
+                        break; // that's enough for first
+                    }
+                    jlast = j;
                 }
-                jlast = j;
             }
-        }
-        else {
-            for (jlast=j=str_cur_n; j>0; ) {
-                U8_PREV(str_cur_s, 0, j, chr); // go backwards
-                if (chr < 0) // invalid utf-8 sequence
-                    throw StriException(MSG__INVALID_UTF8);
-                if (pattern_cur->contains(chr)) {
-                    SET_STRING_ELT(ret, i,
-                                   Rf_mkCharLenCE(str_cur_s+j, jlast-j, CE_UTF8));
-                    break; // that's enough for last
+            else {
+                for (jlast=j=str_cur_n; j>0; ) {
+                    U8_PREV(str_cur_s, 0, j, chr); // go backwards
+                    if (chr < 0) // invalid utf-8 sequence
+                        throw StriException(MSG__INVALID_UTF8);
+                    if (pattern_cur->contains(chr)) {
+                        ci::builder_set(
+                            builder, i, str_cur_s+j, jlast-j,
+                            cetype_ext_t::CE_ASCII_OR_UTF8
+                        );
+                        break; // that's enough for last
+                    }
+                    jlast = j;
                 }
-                jlast = j;
             }
         }
     }
 
+    STRI__PROTECT(ret = builder.to_sexp());
+    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -201,64 +228,162 @@ SEXP ci_extract_all_charclass(SEXP str, SEXP pattern, SEXP merge, SEXP simplify,
     PROTECT(simplify = ci__prepare_arg_logical_1(simplify, "simplify"));
     PROTECT(str = ci__prepare_arg_string(str, "str"));
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
-    R_len_t vectorize_length = ci__recycling_rule(true, 2,
-                               LENGTH(str), LENGTH(pattern));
+    const int simplify1 = LOGICAL_RO(simplify)[0];
 
     STRI__ERROR_HANDLER_BEGIN(3)
-    StriContainerUTF8 str_cont(str, vectorize_length);
-    StriContainerCharClass pattern_cont(pattern, vectorize_length);
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(VECSXP, vectorize_length));
-
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        if (pattern_cont.isNA(i) || str_cont.isNA(i)) {
-            SET_VECTOR_ELT(ret, i, ci__vector_NA_strings(1));
-            continue;
-        }
-
-        R_len_t str_cur_n     = str_cont.get(i).length();
-        const char* str_cur_s = str_cont.get(i).c_str();
-        deque< pair<R_len_t, R_len_t> > occurrences;
-        StriContainerCharClass::locateAll(
-            occurrences, &pattern_cont.get(i),
-            str_cur_s, str_cur_n, merge_cur,
-            false /* byte-based indexes */
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t vectorize_length = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_length = ci__recycling_rule(
+            STRI__DEFERRED_WARNINGS, 2, str_n, pattern_n
         );
+        return R_NilValue;
+    });
 
-        R_len_t noccurrences = (R_len_t)occurrences.size();
-        if (noccurrences == 0) {
-            SET_VECTOR_ELT(ret, i, ci__vector_NA_strings(omit_no_match1?0:1));
-            continue;
-        }
+    vector<charport::charvec::Store> stores;
+    stores.reserve(static_cast<size_t>(vectorize_length));
+    for (R_len_t i=0; i<vectorize_length; ++i)
+        stores.push_back(charport::charvec::Store(0, 0));
 
-        SEXP cur_res;
-        STRI__PROTECT(cur_res = Rf_allocVector(STRSXP, noccurrences));
-        deque< pair<R_len_t, R_len_t> >::iterator iter = occurrences.begin();
-        for (R_len_t f = 0; iter != occurrences.end(); ++iter, ++f) {
-            pair<R_len_t, R_len_t> curo = *iter;
-            SET_STRING_ELT(cur_res, f,
-                           Rf_mkCharLenCE(str_cur_s+curo.first, curo.second-curo.first, CE_UTF8));
+    {
+        StriContainerUTF8 str_cont(context, str, vectorize_length);
+        StriContainerCharClass pattern_cont(
+            context, pattern, vectorize_length
+        );
+        charport::charvec::Builder builder(0);
+
+        for (R_len_t i = pattern_cont.vectorize_init();
+                i != pattern_cont.vectorize_end();
+                i = pattern_cont.vectorize_next(i))
+        {
+            charport::charvec::Store& current = stores[
+                static_cast<size_t>(i)
+            ];
+            if (pattern_cont.isNA(i) || str_cont.isNA(i)) {
+                current = charport::charvec::Store::scalar(
+                    nullptr, 0, cetype_ext_t::CE_NA
+                );
+                continue;
+            }
+
+            R_len_t str_cur_n     = str_cont.get(i).length();
+            const char* str_cur_s = str_cont.get(i).data();
+            deque< pair<R_len_t, R_len_t> > occurrences;
+            StriContainerCharClass::locateAll(
+                occurrences, &pattern_cont.get(i),
+                str_cur_s, str_cur_n, merge_cur,
+                false /* byte-based indexes */
+            );
+
+            R_len_t noccurrences = (R_len_t)occurrences.size();
+            if (noccurrences == 0) {
+                if (!omit_no_match1)
+                    current = charport::charvec::Store::scalar(
+                        nullptr, 0, cetype_ext_t::CE_NA
+                    );
+                continue;
+            }
+
+            if (noccurrences == 1) {
+                const pair<R_len_t, R_len_t>& curo = occurrences.front();
+                const char* value = str_cur_s+curo.first;
+                const size_t length = static_cast<size_t>(
+                    curo.second-curo.first
+                );
+                current = ci::scalar_store(
+                    value, length, cetype_ext_t::CE_ASCII_OR_UTF8
+                );
+                continue;
+            }
+
+            builder.reset(noccurrences);
+            R_xlen_t output_i = 0;
+            deque< pair<R_len_t, R_len_t> >::iterator iter = occurrences.begin();
+            for (; iter != occurrences.end(); ++iter) {
+                pair<R_len_t, R_len_t> curo = *iter;
+                ci::builder_set(
+                    builder, output_i++, str_cur_s+curo.first,
+                    curo.second-curo.first,
+                    cetype_ext_t::CE_ASCII_OR_UTF8
+                );
+            }
+            current = builder.release_store();
         }
-        SET_VECTOR_ELT(ret, i, cur_res);
-        STRI__UNPROTECT(1)
     }
 
-    if (LOGICAL(simplify)[0] == NA_LOGICAL || LOGICAL(simplify)[0]) {
-        SEXP robj_TRUE, robj_zero, robj_na_strings, robj_empty_strings;
-        STRI__PROTECT(robj_TRUE = Rf_ScalarLogical(TRUE));
-        STRI__PROTECT(robj_zero = Rf_ScalarInteger(0));
-        STRI__PROTECT(robj_na_strings = ci__vector_NA_strings(1));
-        STRI__PROTECT(robj_empty_strings = ci__vector_empty_strings(1));
-        STRI__PROTECT(ret = ci_list2matrix(ret, robj_TRUE,
-                                             (LOGICAL(simplify)[0] == NA_LOGICAL)?robj_na_strings
-                                             :robj_empty_strings,
-                                             robj_zero));
+    size_t max_columns = 0;
+    for (R_len_t i=0; i<vectorize_length; ++i) {
+        if (stores[i].size() > max_columns)
+            max_columns = stores[i].size();
     }
 
+    if (simplify1 != NA_LOGICAL && !simplify1) {
+        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+            return Rf_allocVector(VECSXP, vectorize_length);
+        }));
+        for (R_len_t i=0; i<vectorize_length; ++i) {
+            SEXP current;
+            STRI__PROTECT(current = charport::charvec::wrap(
+                std::move(stores[i])
+            ));
+            SET_VECTOR_ELT(ret, i, current);
+            STRI__UNPROTECT(1);
+        }
+    }
+    else {
+        // Deviation from stringi: the direct Store-to-Builder matrix path
+        // checks its dimensions before narrowing or multiplying them.
+        if (max_columns > static_cast<size_t>(R_LEN_T_MAX))
+            throw length_error("matrix columns exceed R's integer limit");
+        const R_xlen_t rows = vectorize_length;
+        const R_xlen_t columns = static_cast<R_xlen_t>(max_columns);
+        if (rows > 0 && columns > R_XLEN_T_MAX/rows)
+            throw length_error("matrix length exceeds R's vector limit");
+
+        charport::charvec::Builder matrix_builder(rows*columns);
+        for (R_xlen_t i=0; i<rows; ++i) {
+            const charport::charvec::Store& current = stores[i];
+            const R_xlen_t current_size = static_cast<R_xlen_t>(
+                current.size()
+            );
+            R_xlen_t j = 0;
+            for (; j<current_size; ++j)
+                matrix_builder.set(i+j*rows, current.view(j));
+            for (; j<columns; ++j) {
+                if (simplify1 == NA_LOGICAL) {
+                    matrix_builder.set_na(i+j*rows);
+                }
+                else {
+                    ci::builder_set(
+                        matrix_builder, i+j*rows, "", 0,
+                        cetype_ext_t::CE_ASCII
+                    );
+                }
+            }
+        }
+
+        STRI__PROTECT(ret = matrix_builder.to_sexp());
+        charport::unwind_protect([&]() -> SEXP {
+            SEXP dim;
+            PROTECT(dim = Rf_allocVector(INTSXP, 2));
+            INTEGER(dim)[0] = vectorize_length;
+            INTEGER(dim)[1] = static_cast<R_len_t>(max_columns);
+            Rf_setAttrib(ret, R_DimSymbol, dim);
+            UNPROTECT(1);
+            return R_NilValue;
+        });
+    }
+
+    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)

@@ -41,10 +41,208 @@
 #include <map>
 #include <vector>
 #include <algorithm>
+#include <cstring>
+#include <limits>
+#include <memory>
+#include <stdexcept>
 #include "ci_container_listraw.h"
 #include "ci_container_logical.h"
+#include "ci_builder.h"
 #include "ci_ucnv.h"
 using namespace std;
+
+
+namespace {
+
+struct CiCharsetDetectorCloser {
+    void operator()(UCharsetDetector* detector) const noexcept
+    {
+        if (detector)
+            ucsdet_close(detector);
+    }
+};
+
+
+struct CiLocaleDataCloser {
+    void operator()(ULocaleData* data) const noexcept
+    {
+        if (data)
+            ulocdata_close(data);
+    }
+};
+
+
+struct CiUSetCloser {
+    void operator()(USet* set) const noexcept
+    {
+        if (set)
+            uset_close(set);
+    }
+};
+
+
+static int ci__encoding_icu_c_string_length(const char* value)
+{
+    // Deviation from stringi: these ICU APIs expose only terminated names.
+    // Measure that boundary once, then keep all charr output length-delimited.
+    const size_t length = std::strlen(value);
+    if (length > static_cast<size_t>(std::numeric_limits<int>::max()))
+        throw std::length_error("ICU encoding name exceeds R's string limit");
+    return static_cast<int>(length);
+}
+
+
+static void ci__stage_encoding_icu_string(
+    charport::charvec::Builder& output, R_len_t i, const char* value
+)
+{
+    if (!value) {
+        output.set_na(i);
+        return;
+    }
+    // ICU charset and language identifiers use invariant ASCII bytes. Mark
+    // them directly instead of asking the Builder to inspect the payload.
+    ci::builder_set(
+        output, i, value, ci__encoding_icu_c_string_length(value),
+        cetype_ext_t::CE_ASCII
+    );
+}
+
+
+struct CiEncodingDetectionResult {
+    bool wrong;
+    charport::charvec::Store encoding;
+    charport::charvec::Store language;
+    std::vector<double> confidence;
+
+    CiEncodingDetectionResult()
+        : wrong(true), encoding(0, 0), language(0, 0), confidence()
+    {
+    }
+
+    CiEncodingDetectionResult(CiEncodingDetectionResult&&) noexcept = default;
+    CiEncodingDetectionResult& operator=(CiEncodingDetectionResult&&) noexcept = default;
+
+private:
+    CiEncodingDetectionResult(const CiEncodingDetectionResult&);
+    CiEncodingDetectionResult& operator=(const CiEncodingDetectionResult&);
+};
+
+
+static R_len_t ci__encoding_recycling_rule(
+    ci::DeferredWarnings& warnings, R_len_t first, R_len_t second
+)
+{
+    if (first <= 0 || second <= 0)
+        return 0;
+
+    const R_len_t vectorize_length = std::max(first, second);
+    if (vectorize_length % first != 0 || vectorize_length % second != 0) {
+        // Deviation from stringi: detect the copied recycling warning here,
+        // but emit it only after the Reader and detector have been released.
+        warnings.push(MSG__WARN_RECYCLING_RULE);
+    }
+    return vectorize_length;
+}
+
+
+static SEXP ci__encoding_detection_results_to_r(
+    std::vector<CiEncodingDetectionResult>& results
+)
+{
+    charport::charvec::Store wrong_encoding_store =
+        charport::charvec::Store::scalar(
+            NULL, 0, cetype_ext_t::CE_NA
+        );
+    charport::charvec::Store wrong_language_store =
+        charport::charvec::Store::scalar(
+            NULL, 0, cetype_ext_t::CE_NA
+        );
+
+    return charport::unwind_protect([&]() -> SEXP {
+        int protected_count = 0;
+        try {
+            const R_len_t result_length = static_cast<R_len_t>(results.size());
+            SEXP ret = PROTECT(Rf_allocVector(VECSXP, result_length));
+            ++protected_count;
+            SEXP names = PROTECT(Rf_allocVector(STRSXP, 3));
+            ++protected_count;
+            SET_STRING_ELT(names, 0, Rf_mkChar("Encoding"));
+            SET_STRING_ELT(names, 1, Rf_mkChar("Language"));
+            SET_STRING_ELT(names, 2, Rf_mkChar("Confidence"));
+
+            SEXP wrong = PROTECT(Rf_allocVector(VECSXP, 3));
+            ++protected_count;
+            SEXP wrong_encoding = PROTECT(charport::charvec::wrap(
+                std::move(wrong_encoding_store)
+            ));
+            ++protected_count;
+            SEXP wrong_language = PROTECT(charport::charvec::wrap(
+                std::move(wrong_language_store)
+            ));
+            ++protected_count;
+            SEXP wrong_confidence = PROTECT(Rf_allocVector(INTSXP, 1));
+            ++protected_count;
+            INTEGER(wrong_confidence)[0] = NA_INTEGER;
+            SET_VECTOR_ELT(wrong, 0, wrong_encoding);
+            SET_VECTOR_ELT(wrong, 1, wrong_language);
+            SET_VECTOR_ELT(wrong, 2, wrong_confidence);
+            Rf_setAttrib(wrong, R_NamesSymbol, names);
+            UNPROTECT(3);
+            protected_count -= 3;
+
+            for (R_len_t i=0; i<result_length; ++i) {
+                CiEncodingDetectionResult& current =
+                    results[static_cast<size_t>(i)];
+                if (current.wrong) {
+                    SET_VECTOR_ELT(ret, i, wrong);
+                    continue;
+                }
+
+                SEXP val_enc = PROTECT(charport::charvec::wrap(
+                    std::move(current.encoding)
+                ));
+                ++protected_count;
+                SEXP val_lang = PROTECT(charport::charvec::wrap(
+                    std::move(current.language)
+                ));
+                ++protected_count;
+                const R_len_t matches_found = static_cast<R_len_t>(
+                    current.confidence.size()
+                );
+                SEXP val_conf = PROTECT(Rf_allocVector(REALSXP, matches_found));
+                ++protected_count;
+                for (R_len_t j=0; j<matches_found; ++j) {
+                    REAL(val_conf)[j] =
+                        current.confidence[static_cast<size_t>(j)];
+                }
+
+                SEXP val = PROTECT(Rf_allocVector(VECSXP, 3));
+                ++protected_count;
+                SET_VECTOR_ELT(val, 0, val_enc);
+                SET_VECTOR_ELT(val, 1, val_lang);
+                SET_VECTOR_ELT(val, 2, val_conf);
+                Rf_setAttrib(val, R_NamesSymbol, names);
+                SET_VECTOR_ELT(ret, i, val);
+                UNPROTECT(4);
+                protected_count -= 4;
+            }
+
+            UNPROTECT(3);
+            protected_count -= 3;
+            return ret;
+        }
+        catch (...) {
+            // Deviation from stringi: nested charvec wrapping translates an R
+            // unwind into a C++ exception, so balance this helper's raw
+            // protections before letting the operation-level handler run.
+            UNPROTECT(protected_count);
+            throw;
+        }
+    });
+}
+
+} // namespace
 
 
 /** Check if a string may be valid 8-bit (including UTF-8) encoded
@@ -470,23 +668,47 @@ SEXP ci_enc_isenc(SEXP str, int _type)
     PROTECT(str = ci__prepare_arg_list_raw(str, "str"));
 
     STRI__ERROR_HANDLER_BEGIN(1)
-    StriContainerListRaw str_cont(str);
-    R_len_t str_length = str_cont.get_n();
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(LGLSXP, str_length));
-    int* ret_tab = LOGICAL(ret); // may be faster than LOGICAL(ret)[i] all the time
+    {
+        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+        R_len_t str_length = 0;
+        // Deviation from stringi: determine the result-shell length without
+        // opening a Reader, so R allocation happens before the borrow.
+        charport::unwind_protect([&]() -> SEXP {
+            if (Rf_isNull(str) || isRaw(str))
+                str_length = 1;
+            else if (Rf_isVectorList(str))
+                str_length = LENGTH(str);
+            else
+                str_length = ci::checked_r_len(
+                    context.size(str), "character vectors"
+                );
+            return R_NilValue;
+        });
 
-    for (R_len_t i=0; i < str_length; ++i) {
-        if (str_cont.isNA(i)) {
-            ret_tab[i] = NA_LOGICAL;
-            continue;
+        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+            return Rf_allocVector(LGLSXP, str_length);
+        }));
+        int* ret_tab = LOGICAL(ret); // may be faster than LOGICAL(ret)[i] all the time
+
+        {
+            StriContainerListRaw str_cont(context, str);
+            for (R_len_t i=0; i < str_length; ++i) {
+                if (str_cont.isNA(i)) {
+                    ret_tab[i] = NA_LOGICAL;
+                    continue;
+                }
+
+                bool get_confidence = false; // TO BE DONE
+                ret_tab[i] = isenc(
+                    str_cont.get(i).data(), str_cont.get(i).length(),
+                    get_confidence
+                ) != 0.0;
+            }
         }
-
-        bool get_confidence = false; // TO BE DONE
-        ret_tab[i] = isenc(str_cont.get(i).c_str(), str_cont.get(i).length(), get_confidence) != 0.0;
     }
 
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
 
@@ -592,109 +814,108 @@ SEXP ci_enc_detect(SEXP str, SEXP filter_angle_brackets)
     PROTECT(str = ci__prepare_arg_list_raw(str, "str"));
     PROTECT(filter_angle_brackets = ci__prepare_arg_logical(filter_angle_brackets, "filter_angle_brackets"));
 
-    UCharsetDetector* ucsdet = NULL;
-
-
     STRI__ERROR_HANDLER_BEGIN(2)
+    SEXP ret;
+    {
+        std::vector<CiEncodingDetectionResult> results;
+        {
+            UErrorCode status = U_ZERO_ERROR;
+            // Deviation from stringi: RAII closes the detector before either
+            // deferred warnings or translated errors reach R.
+            std::unique_ptr<UCharsetDetector, CiCharsetDetectorCloser> ucsdet(
+                ucsdet_open(&status)
+            );
+            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
 
-    UErrorCode status = U_ZERO_ERROR;
-    ucsdet = ucsdet_open(&status);
-    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            R_len_t filter_n = 0;
+            charport::unwind_protect([&]() -> SEXP {
+                filter_n = LENGTH(filter_angle_brackets);
+                return R_NilValue;
+            });
+            StriContainerLogical filter(filter_angle_brackets, filter_n);
 
-    StriContainerListRaw str_cont(str);
-    R_len_t str_n = str_cont.get_n();
+            ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+            {
+                StriContainerListRaw str_cont(context, str);
+                R_len_t str_n = str_cont.get_n();
+                R_len_t vectorize_length = ci__encoding_recycling_rule(
+                    STRI__DEFERRED_WARNINGS, str_n, filter_n
+                );
+                str_cont.set_nrecycle(vectorize_length);
+                filter.set_nrecycle(vectorize_length);
+                results.resize(static_cast<size_t>(vectorize_length));
+                charport::charvec::Builder encoding(0);
+                charport::charvec::Builder language(0);
 
-    R_len_t vectorize_length = ci__recycling_rule(true, 2, str_n, LENGTH(filter_angle_brackets));
-    str_cont.set_nrecycle(vectorize_length); // must be set after container creation
+                // Deviation from stringi: stage detector output while its
+                // pointers are valid, then build R objects after all borrows
+                // and ICU owners have been released.
+                for (R_len_t i=0; i<vectorize_length; ++i) {
+                    if (str_cont.isNA(i) || filter.isNA(i))
+                        continue;
 
-    SEXP ret, names, wrong;
-    STRI__PROTECT(ret = Rf_allocVector(VECSXP, vectorize_length));
+                    const char* str_cur_s = str_cont.get(i).data();
+                    R_len_t str_cur_n = str_cont.get(i).length();
 
-    STRI__PROTECT(names = Rf_allocVector(STRSXP, 3));
-    SET_STRING_ELT(names, 0, Rf_mkChar("Encoding"));
-    SET_STRING_ELT(names, 1, Rf_mkChar("Language"));
-    SET_STRING_ELT(names, 2, Rf_mkChar("Confidence"));
+                    status = U_ZERO_ERROR;
+                    ucsdet_setText(
+                        ucsdet.get(), str_cur_s, str_cur_n, &status
+                    );
+                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                    ucsdet_enableInputFilter(ucsdet.get(), filter.get(i));
 
-    STRI__PROTECT(wrong = Rf_allocVector(VECSXP, 3));
-    SET_VECTOR_ELT(wrong, 0, ci__vector_NA_strings(1));
-    SET_VECTOR_ELT(wrong, 1, ci__vector_NA_strings(1));
-    SET_VECTOR_ELT(wrong, 2, ci__vector_NA_integers(1));
-    Rf_setAttrib(wrong, R_NamesSymbol, names);
+                    status = U_ZERO_ERROR;
+                    int matches_found = 0;
+                    const UCharsetMatch** match = ucsdet_detectAll(
+                        ucsdet.get(), &matches_found, &status
+                    );
+                    if (U_FAILURE(status) || !match || matches_found <= 0)
+                        continue;
 
-    StriContainerLogical filter(filter_angle_brackets, vectorize_length);
-    for (R_len_t i=0; i<vectorize_length; ++i) {
-        if (str_cont.isNA(i) || filter.isNA(i)) {
-            SET_VECTOR_ELT(ret, i, wrong);
-            continue;
+                    encoding.reset(matches_found);
+                    language.reset(matches_found);
+                    CiEncodingDetectionResult& current =
+                        results[static_cast<size_t>(i)];
+                    current.confidence.resize(
+                        static_cast<size_t>(matches_found)
+                    );
+
+                    for (R_len_t j=0; j<matches_found; ++j) {
+                        status = U_ZERO_ERROR;
+                        const char* name = ucsdet_getName(match[j], &status);
+                        if (U_FAILURE(status) || !name)
+                            encoding.set_na(j);
+                        else
+                            ci__stage_encoding_icu_string(encoding, j, name);
+
+                        status = U_ZERO_ERROR;
+                        int32_t conf = ucsdet_getConfidence(match[j], &status);
+                        current.confidence[static_cast<size_t>(j)] =
+                            U_FAILURE(status) ? NA_REAL : (double)(conf)/100.0;
+
+                        status = U_ZERO_ERROR;
+                        const char* lang = ucsdet_getLanguage(match[j], &status);
+                        if (U_FAILURE(status) || !lang)
+                            language.set_na(j);
+                        else
+                            ci__stage_encoding_icu_string(language, j, lang);
+                    }
+
+                    current.encoding = encoding.release_store();
+                    current.language = language.release_store();
+                    current.wrong = false;
+                }
+            }
         }
 
-        const char* str_cur_s = str_cont.get(i).c_str();
-        R_len_t str_cur_n     = str_cont.get(i).length();
-
-        status = U_ZERO_ERROR;
-        ucsdet_setText(ucsdet, str_cur_s, str_cur_n, &status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-        ucsdet_enableInputFilter(ucsdet, filter.get(i));
-
-        status = U_ZERO_ERROR;
-        int matchesFound;
-        const UCharsetMatch** match = ucsdet_detectAll(ucsdet, &matchesFound, &status);
-        if (U_FAILURE(status) || !match || matchesFound <= 0) {
-            SET_VECTOR_ELT(ret, i, wrong);
-            continue;
-        }
-
-
-        SEXP val_enc, val_lang, val_conf;
-        STRI__PROTECT(val_enc  = Rf_allocVector(STRSXP, matchesFound));
-        STRI__PROTECT(val_lang = Rf_allocVector(STRSXP, matchesFound));
-        STRI__PROTECT(val_conf = Rf_allocVector(REALSXP, matchesFound));
-
-        for (R_len_t j=0; j<matchesFound; ++j) {
-            status = U_ZERO_ERROR;
-            const char* name = ucsdet_getName(match[j], &status);
-            if (U_FAILURE(status) || !name)
-                SET_STRING_ELT(val_enc, j, NA_STRING);
-            else
-                SET_STRING_ELT(val_enc, j, Rf_mkChar(name));
-
-            status = U_ZERO_ERROR;
-            int32_t conf = ucsdet_getConfidence(match[j], &status);
-            if (U_FAILURE(status))
-                REAL(val_conf)[j] = NA_REAL;
-            else
-                REAL(val_conf)[j] = (double)(conf)/100.0;
-
-            status = U_ZERO_ERROR;
-            const char* lang = ucsdet_getLanguage(match[j], &status);
-            if (U_FAILURE(status) || !lang)
-                SET_STRING_ELT(val_lang, j, NA_STRING);
-            else
-                SET_STRING_ELT(val_lang, j, Rf_mkChar(lang));
-        }
-
-        SEXP val;
-        STRI__PROTECT(val = Rf_allocVector(VECSXP, 3));
-        SET_VECTOR_ELT(val, 0, val_enc);
-        SET_VECTOR_ELT(val, 1, val_lang);
-        SET_VECTOR_ELT(val, 2, val_conf);
-        Rf_setAttrib(val, R_NamesSymbol, names);
-        SET_VECTOR_ELT(ret, i, val);
-        STRI__UNPROTECT(4);
+        STRI__PROTECT(ret = ci__encoding_detection_results_to_r(results));
     }
 
-    if (ucsdet) {
-        ucsdet_close(ucsdet);
-        ucsdet = NULL;
-    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
 
-    STRI__ERROR_HANDLER_END(
-    if (ucsdet) {
-    ucsdet_close(ucsdet);
-        ucsdet = NULL;
-    })
+    STRI__ERROR_HANDLER_END({ /* no-op on error */ })
 }
 
 
@@ -734,15 +955,16 @@ struct Converter8bit {
             return; // not an 8-bit converter
 
         //ucnv_obj.setCallBackSubstitute(); // restore default (no warn) callbacks
-        UConverter* ucnv = ucnv_obj.getConverter(false);
+        UConverter* ucnv = ucnv_obj.getConverter();
 
 
         // Check which characters in given encoding
         // are not mapped to Unicode [badChars]
-        char allChars[256+1]; // all bytes 0-255
+        // Deviation from stringi: the converter receives explicit source
+        // limits, so this byte table does not need a trailing terminator.
+        char allChars[256]; // all bytes 0-255
         for (R_len_t i=0; i<256; ++i)
             allChars[i] = (char)i;
-        allChars[256] = '\0';
 
         // reset tabs
         for (R_len_t i=0; i<256; ++i) {
@@ -913,26 +1135,35 @@ struct EncGuess {
         vector<Converter8bit> converters;
         if (!qloc) throw StriException(MSG__INTERNAL_ERROR); // just to be sure
 
-        UErrorCode status = U_ZERO_ERROR;
-        ULocaleData* uld = ulocdata_open(qloc, &status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+        {
+            // Deviation from stringi: own both locale handles so every error
+            // path releases them before the outer handler signals to R.
+            UErrorCode status = U_ZERO_ERROR;
+            std::unique_ptr<ULocaleData, CiLocaleDataCloser> uld(
+                ulocdata_open(qloc, &status)
+            );
+            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
 
-        USet* exset_tmp = ulocdata_getExemplarSet(uld, NULL,
-                          USET_ADD_CASE_MAPPINGS, ULOCDATA_ES_STANDARD, &status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-        UnicodeSet* exset = UnicodeSet::fromUSet(exset_tmp); // don't delete, just a pointer
-        exset->removeAllStrings();
+            std::unique_ptr<USet, CiUSetCloser> exset_tmp(
+                ulocdata_getExemplarSet(
+                    uld.get(), NULL, USET_ADD_CASE_MAPPINGS,
+                    ULOCDATA_ES_STANDARD, &status
+                )
+            );
+            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            UnicodeSet* exset = UnicodeSet::fromUSet(exset_tmp.get());
+            exset->removeAllStrings();
 
-
-        R_len_t ucnv_count = (R_len_t)ucnv_countAvailable();
-        for (R_len_t i=0; i<ucnv_count; ++i) { // for each converter
-            Converter8bit conv(ucnv_getAvailableName(i), StriUcnv::getFriendlyName(ucnv_getAvailableName(i)), exset);
-            if (!conv.isNA) converters.push_back(conv);
+            R_len_t ucnv_count = (R_len_t)ucnv_countAvailable();
+            for (R_len_t i=0; i<ucnv_count; ++i) { // for each converter
+                const char* converter_name = ucnv_getAvailableName(i);
+                Converter8bit conv(
+                    converter_name,
+                    StriUcnv::getFriendlyName(converter_name), exset
+                );
+                if (!conv.isNA) converters.push_back(conv);
+            }
         }
-
-        uset_close(exset_tmp);
-        exset = NULL;
-        ulocdata_close(uld);
 
         if (converters.size() <= 0)
             return;
@@ -1014,73 +1245,70 @@ SEXP ci_enc_detect2(SEXP str, SEXP loc)
     PROTECT(str = ci__prepare_arg_list_raw(str, "str"));
 
     STRI__ERROR_HANDLER_BEGIN(1)
+    SEXP ret;
+    {
+        std::vector<CiEncodingDetectionResult> results;
+        {
+            ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+            StriContainerListRaw str_cont(context, str);
+            R_len_t str_n = str_cont.get_n();
+            results.resize(static_cast<size_t>(str_n));
+            charport::charvec::Builder encoding(0);
+            charport::charvec::Builder language(0);
 
-    StriContainerListRaw str_cont(str);
-    R_len_t str_n = str_cont.get_n();
+            // Deviation from stringi: stage the variable-size character
+            // results until the Reader and all temporary converters are gone.
+            for (R_len_t i=0; i<str_n; ++i) {
+                if (str_cont.isNA(i))
+                    continue;
 
-    SEXP ret, names, wrong;
-    STRI__PROTECT(ret = Rf_allocVector(VECSXP, str_n));
+                const char* str_cur_s = str_cont.get(i).data();
+                R_len_t str_cur_n = str_cont.get(i).length();
+                if (str_cur_n <= 0)
+                    continue;
 
-    STRI__PROTECT(names = Rf_allocVector(STRSXP, 3));
-    SET_STRING_ELT(names, 0, Rf_mkChar("Encoding"));
-    SET_STRING_ELT(names, 1, Rf_mkChar("Language"));
-    SET_STRING_ELT(names, 2, Rf_mkChar("Confidence"));
+                vector<EncGuess> guesses;
+                guesses.reserve(6);
 
-    STRI__PROTECT(wrong = Rf_allocVector(VECSXP, 3));
-    SET_VECTOR_ELT(wrong, 0, ci__vector_NA_strings(1));
-    SET_VECTOR_ELT(wrong, 1, ci__vector_NA_strings(1));
-    SET_VECTOR_ELT(wrong, 2, ci__vector_NA_integers(1));
-    Rf_setAttrib(wrong, R_NamesSymbol, names);
+                EncGuess::do_utf32(guesses, str_cur_s, str_cur_n);
+                EncGuess::do_utf16(guesses, str_cur_s, str_cur_n);
+                EncGuess::do_8bit(
+                    guesses, str_cur_s, str_cur_n, qloc
+                );  // includes UTF-8
 
-    for (R_len_t i=0; i<str_n; ++i) {
-        if (str_cont.isNA(i)) {
-            SET_VECTOR_ELT(ret, i, wrong);
-            continue;
+                R_len_t matches_found = (R_len_t)guesses.size();
+                if (matches_found <= 0)
+                    continue;
+
+                std::stable_sort(guesses.begin(), guesses.end());
+
+                encoding.reset(matches_found);
+                language.reset(matches_found);
+                CiEncodingDetectionResult& current =
+                    results[static_cast<size_t>(i)];
+                current.confidence.resize(
+                    static_cast<size_t>(matches_found)
+                );
+
+                for (R_len_t j=0; j<matches_found; ++j) {
+                    ci__stage_encoding_icu_string(
+                        encoding, j, guesses[static_cast<size_t>(j)].friendlyname
+                    );
+                    current.confidence[static_cast<size_t>(j)] =
+                        guesses[static_cast<size_t>(j)].confidence;
+                    language.set_na(j); // always no lang
+                }
+
+                current.encoding = encoding.release_store();
+                current.language = language.release_store();
+                current.wrong = false;
+            }
         }
 
-        const char* str_cur_s = str_cont.get(i).c_str();
-        R_len_t str_cur_n     = str_cont.get(i).length();
-        if (str_cur_n <= 0) {
-            SET_VECTOR_ELT(ret, i, wrong);
-            continue;
-        }
-
-        vector<EncGuess> guesses;
-        guesses.reserve(6);
-
-        EncGuess::do_utf32(guesses, str_cur_s, str_cur_n);
-        EncGuess::do_utf16(guesses, str_cur_s, str_cur_n);
-        EncGuess::do_8bit(guesses, str_cur_s, str_cur_n, qloc);  // includes UTF-8
-
-        R_len_t matchesFound = (R_len_t)guesses.size();
-        if (matchesFound <= 0) {
-            SET_VECTOR_ELT(ret, i, wrong);
-            continue;
-        }
-
-        std::stable_sort(guesses.begin(), guesses.end());
-
-        SEXP val_enc, val_lang, val_conf;
-        STRI__PROTECT(val_enc  = Rf_allocVector(STRSXP, matchesFound));
-        STRI__PROTECT(val_lang = Rf_allocVector(STRSXP, matchesFound));
-        STRI__PROTECT(val_conf = Rf_allocVector(REALSXP, matchesFound));
-
-        for (R_len_t j=0; j<matchesFound; ++j) {
-            SET_STRING_ELT(val_enc, j, Rf_mkChar(guesses[j].friendlyname));
-            REAL(val_conf)[j] = guesses[j].confidence;
-            SET_STRING_ELT(val_lang, j, NA_STRING); // always no lang
-        }
-
-        SEXP val;
-        STRI__PROTECT(val = Rf_allocVector(VECSXP, 3));
-        SET_VECTOR_ELT(val, 0, val_enc);
-        SET_VECTOR_ELT(val, 1, val_lang);
-        SET_VECTOR_ELT(val, 2, val_conf);
-        Rf_setAttrib(val, R_NamesSymbol, names);
-        SET_VECTOR_ELT(ret, i, val);
-        STRI__UNPROTECT(4);
+        STRI__PROTECT(ret = ci__encoding_detection_results_to_r(results));
     }
 
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
 

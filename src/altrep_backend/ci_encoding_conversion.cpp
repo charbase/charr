@@ -32,16 +32,135 @@
 
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
 #include "ci_container_utf8.h"
 #include "ci_container_utf16.h"
 #include "ci_container_listraw.h"
 #include "ci_container_listint.h"
 #include "ci_string8buf.h"
 #include "ci_ucnv.h"
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
+#include <memory>
 #include <vector>
 
 
 #define BUF_MAX_LENGTH 2147483647
+
+
+namespace {
+
+static const char CI__EMBEDDED_NUL_MESSAGE[] =
+    "embedded nul in string";
+
+
+struct CiRawResult {
+    bool is_na;
+    std::vector<unsigned char> data;
+
+    CiRawResult() : is_na(true), data() {}
+};
+
+
+static cetype_ext_t ci__extended_encoding(cetype_t encoding)
+{
+    switch (encoding) {
+    case CE_UTF8:
+        return cetype_ext_t::CE_UTF8;
+    case CE_LATIN1:
+        return cetype_ext_t::CE_LATIN1;
+    case CE_BYTES:
+        return cetype_ext_t::CE_BYTES;
+    default:
+        return cetype_ext_t::CE_NATIVE;
+    }
+}
+
+
+static const char* ci__nonnull_bytes(const char* data, size_t length)
+{
+    return length == 0 && data == NULL ? "" : data;
+}
+
+
+static void ci__queue_formatted_warning(
+    ci::DeferredWarnings& warnings, const char* format, ...
+)
+{
+    char message[StriException_BUFSIZE];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(message, StriException_BUFSIZE, format, args);
+    va_end(args);
+    warnings.push(message);
+}
+
+
+static void ci__reject_embedded_nul(const char* data, size_t length)
+{
+    if (length > 0 && memchr(data, 0, length) != NULL)
+        throw StriException(CI__EMBEDDED_NUL_MESSAGE);
+}
+
+
+static void ci__set_validated_utf8(
+    charport::charvec::Builder& builder, R_xlen_t i,
+    const char* data, R_len_t length, cetype_ext_t encoding,
+    int validate, ci::ReaderContext& context
+)
+{
+    data = ci__nonnull_bytes(data, static_cast<size_t>(length));
+    if (validate == FALSE) {
+        ci::builder_set(builder, i, data, length, encoding);
+        return;
+    }
+
+    R_len_t j = 0;
+    UChar32 c = 0;
+    while (c >= 0 && j < length)
+        U8_NEXT(data, j, length, c);
+
+    if (c >= 0) {
+        ci::builder_set(builder, i, data, length, encoding);
+        return;
+    }
+
+    if (validate == NA_LOGICAL) {
+        context.warn(MSG__INVALID_CODE_POINT_REPLNA);
+        builder.set_na(i);
+        return;
+    }
+
+    size_t bufsize = static_cast<size_t>(length)*3;
+    String8buf buf(bufsize);
+    char* bufdata = buf.data();
+    j = 0;
+    size_t k = 0;
+    UBool err = FALSE;
+    while (!err && j < length) {
+        U8_NEXT(data, j, length, c);
+        if (c >= 0) {
+            U8_APPEND((uint8_t*)bufdata, k, bufsize, c, err);
+        }
+        else {
+            context.warn(MSG__INVALID_CODE_POINT_FIXING);
+            bufdata[k++] = (char)UCHAR_REPLACEMENT_UTF8_BYTE1;
+            bufdata[k++] = (char)UCHAR_REPLACEMENT_UTF8_BYTE2;
+            bufdata[k++] = (char)UCHAR_REPLACEMENT_UTF8_BYTE3;
+        }
+    }
+
+    if (err)
+        throw StriException(MSG__INTERNAL_ERROR);
+    ci::builder_set(
+        builder, i, bufdata, k,
+        cetype_ext_t::CE_UTF8
+    );
+}
+
+
+} // namespace
 
 
 /** Convert from UTF-32
@@ -63,50 +182,63 @@ SEXP ci_enc_fromutf32(SEXP vec)
     PROTECT(vec = ci__prepare_arg_list_integer(vec, "vec"));
 
     STRI__ERROR_HANDLER_BEGIN(1)
-    StriContainerListInt vec_cont(vec);
-    R_len_t vec_n = vec_cont.get_n();
-
-    // get required buf size
-    R_len_t bufsize = 0;
-    for (R_len_t i=0; i<vec_n; ++i) {
-        if (!vec_cont.isNA(i) && vec_cont.get(i).size() > bufsize)
-            bufsize = vec_cont.get(i).size();
-    }
-    bufsize = U8_MAX_LENGTH*bufsize+1; // this will surely be sufficient
-    String8buf buf(bufsize);
-    char* bufdata = buf.data();
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, vec_n));
+    {
+        StriContainerListInt vec_cont(vec);
+        R_len_t vec_n = vec_cont.get_n();
+        charport::charvec::Builder builder(vec_n);
 
-    for (R_len_t i=0; i<vec_n; ++i) {
-        if (vec_cont.isNA(i)) {
-            SET_STRING_ELT(ret, i, NA_STRING);
-            continue;
+        // get required buf size
+        R_len_t bufsize = 0;
+        for (R_len_t i=0; i<vec_n; ++i) {
+            if (!vec_cont.isNA(i) && vec_cont.get(i).size() > bufsize)
+                bufsize = vec_cont.get(i).size();
+        }
+        bufsize = U8_MAX_LENGTH*bufsize+1; // this will surely be sufficient
+        String8buf buf(bufsize);
+        char* bufdata = buf.data();
+
+        for (R_len_t i=0; i<vec_n; ++i) {
+            if (vec_cont.isNA(i)) {
+                builder.set_na(i);
+                continue;
+            }
+
+            const int* cur_data = vec_cont.get(i).data();
+            R_len_t    cur_n    = vec_cont.get(i).size();
+            UChar32 c = (UChar32)0;
+            R_len_t j = 0;
+            R_len_t k = 0;
+            UBool err = FALSE;
+            while (!err && k < cur_n) {
+                c = cur_data[k++];
+                U8_APPEND((uint8_t*)bufdata, j, bufsize, c, err);
+
+                // Rf_mkCharLenCE detects embedded nuls, but stops execution completely
+                if (c == 0) err = TRUE;
+            }
+
+            if (err) {
+                // Deviation from stringi: queue the copied per-record warning
+                // until local output resources have been released.
+                ci__queue_formatted_warning(
+                    STRI__DEFERRED_WARNINGS,
+                    MSG__INVALID_CODE_POINT, (int)c
+                );
+                builder.set_na(i);
+            }
+            else {
+                ci::builder_set(
+                    builder, i, bufdata, j,
+                    cetype_ext_t::CE_ASCII_OR_UTF8
+                );
+            }
         }
 
-        const int* cur_data = vec_cont.get(i).data();
-        R_len_t    cur_n    = vec_cont.get(i).size();
-        UChar32 c = (UChar32)0;
-        R_len_t j = 0;
-        R_len_t k = 0;
-        UBool err = FALSE;
-        while (!err && k < cur_n) {
-            c = cur_data[k++];
-            U8_APPEND((uint8_t*)bufdata, j, bufsize, c, err);
-
-            // Rf_mkCharLenCE detects embedded nuls, but stops execution completely
-            if (c == 0) err = TRUE;
-        }
-
-        if (err) {
-            Rf_warning(MSG__INVALID_CODE_POINT, (int)c);
-            SET_STRING_ELT(ret, i, NA_STRING);
-        }
-        else
-            SET_STRING_ELT(ret, i, Rf_mkCharLenCE(bufdata, j, CE_UTF8));
+        STRI__PROTECT(ret = builder.to_sexp());
     }
 
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL;
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -136,57 +268,86 @@ SEXP ci_enc_fromutf32(SEXP vec)
 SEXP ci_enc_toutf32(SEXP str)
 {
     PROTECT(str = ci__prepare_arg_string(str, "str"));
-    R_len_t n = LENGTH(str);
 
     STRI__ERROR_HANDLER_BEGIN(1)
-    StriContainerUTF8 str_cont(str, n);
-
-    R_len_t bufsize = 1; // to avoid allocating an empty buffer
-    for (R_len_t i=0; i<n; ++i) {
-        if (str_cont.isNA(i)) continue;
-        R_len_t ni = str_cont.get(i).length();
-        if (ni > bufsize) bufsize = ni;
-    }
-
-    UChar32* buf = (UChar32*)R_alloc((size_t)bufsize, (int)sizeof(UChar32)); // at most bufsize UChars32 (bufsize/4 min.)
-    STRI_ASSERT(buf);
-    if (!buf) throw StriException(MSG__MEM_ALLOC_ERROR);
-    // deque<UChar32> was slower than using a common, over-sized buf
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(VECSXP, n)); // all
+    {
+        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+        R_len_t n = ci::checked_r_len(
+            context.size(str), "character vectors"
+        );
+        // Deviation from stringi: stage data-dependent integer results until
+        // the Reader-backed UTF-8 container has been released.
+        std::vector< std::vector<int> > outputs(static_cast<size_t>(n));
+        std::vector<bool> missing(static_cast<size_t>(n), false);
+        {
+            StriContainerUTF8 str_cont(context, str, n);
 
-    for (R_len_t i=0; i<n; ++i) {
+            R_len_t bufsize = 1; // to avoid allocating an empty buffer
+            for (R_len_t i=0; i<n; ++i) {
+                if (str_cont.isNA(i)) continue;
+                R_len_t ni = str_cont.get(i).length();
+                if (ni > bufsize) bufsize = ni;
+            }
 
-        if (str_cont.isNA(i)) {
-            SET_VECTOR_ELT(ret, i, R_NilValue);
-            continue;
+            std::vector<UChar32> buf(static_cast<size_t>(bufsize));
+            // deque<UChar32> was slower than using a common, over-sized buf
+
+            for (R_len_t i=0; i<n; ++i) {
+                if (str_cont.isNA(i)) {
+                    missing[static_cast<size_t>(i)] = true;
+                    continue;
+                }
+
+                UChar32 c = (UChar32)0;
+                const char* s = str_cont.get(i).data();
+                R_len_t sn = str_cont.get(i).length();
+                R_len_t j = 0;
+                R_len_t k = 0;
+                while (c >= 0 && j < sn) {
+                    U8_NEXT(s, j, sn, c);
+                    buf[static_cast<size_t>(k++)] = (int)c;
+                }
+
+                if (c < 0) {
+                    throw StriException(MSG__INVALID_UTF8);
+//                     outputs[static_cast<size_t>(i)].clear();
+//                     continue;
+                }
+                else {
+                    outputs[static_cast<size_t>(i)].assign(
+                        buf.begin(), buf.begin()+k
+                    );
+                }
+            }
         }
 
-        UChar32 c = (UChar32)0;
-        const char* s = str_cont.get(i).c_str();
-        R_len_t sn = str_cont.get(i).length();
-        R_len_t j = 0;
-        R_len_t k = 0;
-        while (c >= 0 && j < sn) {
-            U8_NEXT(s, j, sn, c);
-            buf[k++] = (int)c;
-        }
+        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+            return Rf_allocVector(VECSXP, n);
+        }));
+        for (R_len_t i=0; i<n; ++i) {
+            if (missing[static_cast<size_t>(i)])
+                continue;
 
-        if (c < 0) {
-            throw StriException(MSG__INVALID_UTF8);
-//             SET_VECTOR_ELT(ret, i, R_NilValue);
-//             continue;
-        }
-        else {
+            const std::vector<int>& output = outputs[static_cast<size_t>(i)];
             SEXP conv;
-            STRI__PROTECT(conv = Rf_allocVector(INTSXP, k));
-            memcpy(INTEGER(conv), buf, (size_t)sizeof(int)*k);
+            STRI__PROTECT(conv = charport::unwind_protect([&]() -> SEXP {
+                return Rf_allocVector(
+                    INTSXP, static_cast<R_xlen_t>(output.size())
+                );
+            }));
+            if (!output.empty()) {
+                memcpy(
+                    INTEGER(conv), output.data(),
+                    sizeof(int)*output.size()
+                );
+            }
             SET_VECTOR_ELT(ret, i, conv);
             STRI__UNPROTECT(1);
         }
     }
 
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END({ /* do nothing on error */ })
@@ -225,119 +386,120 @@ SEXP ci_enc_toutf8(SEXP str, SEXP is_unknown_8bit, SEXP validate)
     bool is_unknown_8bit_logical =
         ci__prepare_arg_logical_1_notNA(is_unknown_8bit, "is_unknown_8bit");
     PROTECT(str = ci__prepare_arg_string(str, "str"));
-    R_len_t n = LENGTH(str);
+    const int validate1 = LOGICAL_RO(validate)[0];
 
     STRI__ERROR_HANDLER_BEGIN(2)
     SEXP ret;
-    if (!is_unknown_8bit_logical) {
-        // Trivial - everything we need is in StriContainerUTF8 :)
-        // which removes BOMs silently
-        StriContainerUTF8 str_cont(str, n);
-        STRI__PROTECT(ret = str_cont.toR());
-    }
-    else {
-        // get buf size
-        size_t bufsize = 0;
-        for (R_len_t i=0; i<n; ++i) {
-            SEXP curs = STRING_ELT(str, i);
-            if (curs == NA_STRING || IS_ASCII(curs) || IS_UTF8(curs))
-                continue;
-
-            size_t ni = LENGTH(curs);
-            if (ni > bufsize) bufsize = ni;
-        }
-        String8buf buf(bufsize*3); // either 1 byte < 127 or U+FFFD == 3 bytes UTF-8
-        char* bufdata = buf.data();
-
-        STRI__PROTECT(ret = Rf_allocVector(STRSXP, n));
-        for (R_len_t i=0; i<n; ++i) {
-            SEXP curs = STRING_ELT(str, i);
-            if (curs == NA_STRING) {
-                SET_STRING_ELT(ret, i, NA_STRING);
-                continue;
-            }
-
-            if (IS_ASCII(curs) || IS_UTF8(curs)) {
-                R_len_t curs_n = LENGTH(curs);
-                const char* curs_s = CHAR(curs);  // TODO: ALTREP will be problematic?
-                if (curs_n >= 3 &&
-                        (uint8_t)(curs_s[0]) == UTF8_BOM_BYTE1 &&
-                        (uint8_t)(curs_s[1]) == UTF8_BOM_BYTE2 &&
-                        (uint8_t)(curs_s[2]) == UTF8_BOM_BYTE3) {
-                    // has BOM - get rid of it
-                    SET_STRING_ELT(ret, i, Rf_mkCharLenCE(curs_s+3, curs_n-3, CE_UTF8));
-                }
-                else
-                    SET_STRING_ELT(ret, i, curs);
-
-                continue;
-            }
-
-            // otherwise, we have an 8-bit encoding
-            R_len_t curn = LENGTH(curs);
-            const char* curs_tab = CHAR(curs);  // TODO: ALTREP will be problematic?
-            R_len_t k = 0;
-            for (R_len_t j=0; j<curn; ++j) {
-                if (U8_IS_SINGLE(curs_tab[j]))
-                    bufdata[k++] = curs_tab[j];
-                else { // 0xEF 0xBF 0xBD
-                    bufdata[k++] = (char)UCHAR_REPLACEMENT_UTF8_BYTE1;
-                    bufdata[k++] = (char)UCHAR_REPLACEMENT_UTF8_BYTE2;
-                    bufdata[k++] = (char)UCHAR_REPLACEMENT_UTF8_BYTE3;
+    {
+        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+        R_len_t n = ci::checked_r_len(
+            context.size(str), "character vectors"
+        );
+        charport::charvec::Builder builder(n);
+        if (!is_unknown_8bit_logical) {
+            // Trivial - everything we need is in StriContainerUTF8 :)
+            // which removes BOMs silently
+            {
+                std::shared_ptr<ci::ReaderBorrow> borrow =
+                    context.acquire(str);
+                const charport::StrViews& views = borrow->views();
+                StriContainerUTF8 str_cont(context, str, n);
+                for (R_len_t i=0; i<n; ++i) {
+                    if (str_cont.isNA(i)) {
+                        builder.set_na(i);
+                        continue;
+                    }
+                    const String8& value = str_cont.get(i);
+                    const charport::StrView source = views[i];
+                    const cetype_ext_t encoding =
+                        value.data() == source.ptr &&
+                        value.length() == source.len ?
+                            source.enc : cetype_ext_t::CE_ASCII_OR_UTF8;
+                    ci__set_validated_utf8(
+                        builder, i, value.data(), value.length(), encoding,
+                        validate1, context
+                    );
                 }
             }
-            SET_STRING_ELT(ret, i, Rf_mkCharLenCE(bufdata, k, CE_UTF8));
         }
+        else {
+            std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(str);
+            const charport::StrViews& views = borrow->views();
 
-    }
+            // get buf size
+            size_t bufsize = 0;
+            for (R_len_t i=0; i<n; ++i) {
+                const charport::StrView curs = views[i];
+                if (curs.is_na() ||
+                        curs.enc == cetype_ext_t::CE_ASCII ||
+                        curs.enc == cetype_ext_t::CE_UTF8 ||
+                        curs.enc == cetype_ext_t::CE_ASCII_OR_UTF8)
+                    continue;
 
-    // validate utf8 byte stream
-    if (LOGICAL(validate)[0] != FALSE) { // NA or TRUE
-        R_len_t ret_n = LENGTH(ret);
-        for (R_len_t i=0; i<ret_n; ++i) {
-            SEXP curs = STRING_ELT(ret, i);
-            if (curs == NA_STRING) continue;
-
-            const char* s = CHAR(curs);  // TODO: ALTREP will be problematic?
-            R_len_t sn = LENGTH(curs);
-            R_len_t j = 0;
-            UChar32 c = 0;
-            while (c >= 0 && j < sn) {
-                U8_NEXT(s, j, sn, c);
+                if (static_cast<size_t>(curs.len) > bufsize)
+                    bufsize = static_cast<size_t>(curs.len);
             }
+            String8buf buf(bufsize*3); // either 1 byte < 127 or U+FFFD == 3 bytes UTF-8
+            char* bufdata = buf.data();
 
-            if (c >= 0) continue; // valid, nothing to do
+            for (R_len_t i=0; i<n; ++i) {
+                const charport::StrView curs = views[i];
+                if (curs.is_na()) {
+                    builder.set_na(i);
+                    continue;
+                }
 
-            if (LOGICAL(validate)[0] == NA_LOGICAL) {
-                Rf_warning(MSG__INVALID_CODE_POINT_REPLNA);
-                SET_STRING_ELT(ret, i, NA_STRING);
-            }
-            else {
-                size_t bufsize = sn*3; // maximum: 1 byte -> U+FFFD (3 bytes)
-                String8buf buf(bufsize); // maximum: 1 byte -> U+FFFD (3 bytes)
-                char* bufdata = buf.data();
+                if (curs.enc == cetype_ext_t::CE_ASCII ||
+                        curs.enc == cetype_ext_t::CE_UTF8 ||
+                        curs.enc == cetype_ext_t::CE_ASCII_OR_UTF8) {
+                    const char* curs_s = ci__nonnull_bytes(
+                        curs.ptr, static_cast<size_t>(curs.len)
+                    );
+                    if (curs.len >= 3 &&
+                            (uint8_t)(curs_s[0]) == UTF8_BOM_BYTE1 &&
+                            (uint8_t)(curs_s[1]) == UTF8_BOM_BYTE2 &&
+                            (uint8_t)(curs_s[2]) == UTF8_BOM_BYTE3) {
+                        // has BOM - get rid of it
+                        ci__set_validated_utf8(
+                            builder, i, curs_s+3, curs.len-3,
+                            cetype_ext_t::CE_ASCII_OR_UTF8,
+                            validate1, context
+                        );
+                    }
+                    else {
+                        ci__set_validated_utf8(
+                            builder, i, curs_s, curs.len, curs.enc,
+                            validate1, context
+                        );
+                    }
+                    continue;
+                }
 
-                j = 0;
-                size_t k = 0;
-                UBool err = FALSE;
-                while (!err && j < sn) {
-                    U8_NEXT(s, j, sn, c);
-                    if (c >= 0) {
-                        U8_APPEND((uint8_t*)bufdata, k, bufsize, c, err);
-                    } else {
-                        Rf_warning(MSG__INVALID_CODE_POINT_FIXING);
+                // otherwise, we have an 8-bit encoding
+                const char* curs_tab = ci__nonnull_bytes(
+                    curs.ptr, static_cast<size_t>(curs.len)
+                );
+                R_len_t k = 0;
+                for (R_len_t j=0; j<curs.len; ++j) {
+                    if (U8_IS_SINGLE(curs_tab[j]))
+                        bufdata[k++] = curs_tab[j];
+                    else { // 0xEF 0xBF 0xBD
                         bufdata[k++] = (char)UCHAR_REPLACEMENT_UTF8_BYTE1;
                         bufdata[k++] = (char)UCHAR_REPLACEMENT_UTF8_BYTE2;
                         bufdata[k++] = (char)UCHAR_REPLACEMENT_UTF8_BYTE3;
                     }
                 }
-
-                if (err) throw StriException(MSG__INTERNAL_ERROR);
-                SET_STRING_ELT(ret, i, Rf_mkCharLenCE(bufdata, k, CE_UTF8));
+                ci__set_validated_utf8(
+                    builder, i, bufdata, k,
+                    cetype_ext_t::CE_ASCII_OR_UTF8,
+                    validate1, context
+                );
             }
         }
-    }
 
+        STRI__PROTECT(ret = builder.to_sexp());
+    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -366,67 +528,93 @@ SEXP ci_enc_toutf8(SEXP str, SEXP is_unknown_8bit, SEXP validate)
 SEXP ci_enc_toascii(SEXP str)
 {
     PROTECT(str = ci__prepare_arg_string(str, "str"));
-    R_len_t n = LENGTH(str);
 
     STRI__ERROR_HANDLER_BEGIN(1)
-
-    // get buf size
-    size_t bufsize = 0;
-    for (R_len_t i=0; i<n; ++i) {
-        SEXP curs = STRING_ELT(str, i);
-        if (curs == NA_STRING)
-            continue;
-
-        size_t ni = LENGTH(curs);
-        if (ni > bufsize) bufsize = ni;
-    }
-    String8buf buf(bufsize); // no more bytes than this needed
-    char* bufdata = buf.data();
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, n));
-    for (R_len_t i=0; i<n; ++i) {
-        SEXP curs = STRING_ELT(str, i);
-        if (curs == NA_STRING || IS_ASCII(curs)) {
-            // nothing to do
-            SET_STRING_ELT(ret, i, curs);
-            continue;
+    {
+        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+        R_len_t n = ci::checked_r_len(
+            context.size(str), "character vectors"
+        );
+        charport::charvec::Builder builder(n);
+        {
+            std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(str);
+            const charport::StrViews& views = borrow->views();
+
+            // get buf size
+            size_t bufsize = 0;
+            for (R_len_t i=0; i<n; ++i) {
+                const charport::StrView curs = views[i];
+                if (curs.is_na())
+                    continue;
+
+                if (static_cast<size_t>(curs.len) > bufsize)
+                    bufsize = static_cast<size_t>(curs.len);
+            }
+            String8buf buf(bufsize); // no more bytes than this needed
+            char* bufdata = buf.data();
+
+            for (R_len_t i=0; i<n; ++i) {
+                const charport::StrView curs = views[i];
+                if (curs.is_na()) {
+                    builder.set_na(i);
+                    continue;
+                }
+
+                const char* curs_tab = ci__nonnull_bytes(
+                    curs.ptr, static_cast<size_t>(curs.len)
+                );
+                const bool ascii_mark =
+                    curs.enc == cetype_ext_t::CE_ASCII ||
+                    (curs.enc == cetype_ext_t::CE_ASCII_OR_UTF8 &&
+                     ci::is_ascii(curs_tab, curs.len));
+                if (ascii_mark) {
+                    // nothing to do
+                    ci::builder_set(
+                        builder, i, curs_tab, curs.len,
+                        cetype_ext_t::CE_ASCII
+                    );
+                    continue;
+                }
+
+                if (curs.enc == cetype_ext_t::CE_UTF8 ||
+                        curs.enc == cetype_ext_t::CE_ASCII_OR_UTF8) {
+                    R_len_t k = 0, j = 0;
+                    UChar32 c;
+                    while (j<curs.len) {
+                        U8_NEXT(curs_tab, j, curs.len, c);
+                        if (c < 0) {
+                            context.warn(MSG__INVALID_CODE_POINT_FIXING);
+                            bufdata[k++] = ASCII_SUBSTITUTE;
+                        }
+                        else if (c > ASCII_MAXCHARCODE)
+                            bufdata[k++] = ASCII_SUBSTITUTE;
+                        else
+                            bufdata[k++] = (char)c;
+                    }
+                    ci::builder_set(
+                        builder, i, bufdata, k, cetype_ext_t::CE_ASCII
+                    );
+                }
+                else { // some 8-bit encoding
+                    R_len_t k = 0;
+                    for (R_len_t j=0; j<curs.len; ++j) {
+                        if (U8_IS_SINGLE(curs_tab[j]))
+                            bufdata[k++] = curs_tab[j];
+                        else {
+                            bufdata[k++] = (char)ASCII_SUBSTITUTE; // subst char in ascii
+                        }
+                    }
+                    ci::builder_set(
+                        builder, i, bufdata, k, cetype_ext_t::CE_ASCII
+                    );
+                }
+            }
         }
 
-        R_len_t curn = LENGTH(curs);
-        const char* curs_tab = CHAR(curs);  // TODO: ALTREP will be problematic?
-
-        if (IS_UTF8(curs)) {
-            R_len_t k = 0, j = 0;
-            UChar32 c;
-            while (j<curn) {
-                U8_NEXT(curs_tab, j, curn, c);
-                if (c < 0) {
-                    Rf_warning(MSG__INVALID_CODE_POINT_FIXING);
-                    bufdata[k++] = ASCII_SUBSTITUTE;
-                }
-                else if (c > ASCII_MAXCHARCODE)
-                    bufdata[k++] = ASCII_SUBSTITUTE;
-                else
-                    bufdata[k++] = (char)c;
-            }
-            SET_STRING_ELT(ret, i, Rf_mkCharLenCE(bufdata, k, CE_UTF8));
-            // the string will be marked as ASCII anyway by mkCharLenCE
-        }
-        else { // some 8-bit encoding
-            R_len_t k = 0;
-            for (R_len_t j=0; j<curn; ++j) {
-                if (U8_IS_SINGLE(curs_tab[j]))
-                    bufdata[k++] = curs_tab[j];
-                else {
-                    bufdata[k++] = (char)ASCII_SUBSTITUTE; // subst char in ascii
-                }
-            }
-            SET_STRING_ELT(ret, i, Rf_mkCharLenCE(bufdata, k, CE_UTF8));
-            // the string will be marked as ASCII anyway by mkCharLenCE
-        }
+        STRI__PROTECT(ret = builder.to_sexp());
     }
-
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -463,83 +651,141 @@ SEXP ci_encode_from_marked(SEXP str, SEXP to, SEXP to_raw)
     const char* selected_to   = ci__prepare_arg_enc(to, "to", true); /* this is R_alloc'ed */
     bool to_raw_logical = ci__prepare_arg_logical_1_notNA(to_raw, "to_raw");
 
-    R_len_t str_n = LENGTH(str);
-    if (str_n <= 0) {
-        UNPROTECT(1);
-        return Rf_allocVector(to_raw_logical?VECSXP:STRSXP, 0);
-    }
-
     STRI__ERROR_HANDLER_BEGIN(1)
-    StriContainerUTF16 str_cont(str, str_n);
-
-    // get the number of strings to convert; if == 0, then you know what's the result
-
-    // Open converters
-    StriUcnv ucnv(selected_to);
-    UConverter* uconv_to = ucnv.getConverter(true /*register_callbacks*/);
-
-    // Get target encoding mark
-    cetype_t encmark_to = to_raw_logical?CE_BYTES:ucnv.getCE();
-
-    // Prepare out val
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(to_raw_logical?VECSXP:STRSXP, str_n));
+    {
+        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+        R_len_t str_n = ci::checked_r_len(
+            context.size(str), "character vectors"
+        );
+        std::vector<CiRawResult> raw_outputs;
+        std::unique_ptr<charport::charvec::Builder> builder;
+        if (to_raw_logical)
+            raw_outputs.resize(static_cast<size_t>(str_n));
+        else
+            builder.reset(new charport::charvec::Builder(str_n));
 
-    // calculate required buf size
-    size_t bufsize = 0;
-    for (R_len_t i=0; i<str_n; ++i) {
-        if (!str_cont.isNA(i) && (size_t)str_cont.get(i).length() > bufsize)
-            bufsize = str_cont.get(i).length();
-    }
-    bufsize = UCNV_GET_MAX_BYTES_FOR_STRING(bufsize, ucnv_getMaxCharSize(uconv_to));
-    // "The calculated size is guaranteed to be sufficient for this conversion."
-    if (bufsize > BUF_MAX_LENGTH)
-        bufsize = BUF_MAX_LENGTH;
-    String8buf buf(bufsize);
+        if (str_n > 0) {
+            {
+                StriContainerUTF16 str_cont(context, str, str_n);
 
-    for (R_len_t i=0; i<str_n; ++i) {
-        if (str_cont.isNA(i)) {
-            if (to_raw_logical) SET_VECTOR_ELT(ret, i, R_NilValue);
-            else                SET_STRING_ELT(ret, i, NA_STRING);
-            continue;
+                // Open converters
+                StriUcnv ucnv(selected_to, STRI__DEFERRED_WARNINGS);
+                UConverter* uconv_to = ucnv.getConverter();
+                // Deviation from stringi: converter callbacks queue their warnings
+                // until the converter and Reader-backed inputs have been released.
+
+                // Get target encoding mark
+                cetype_t encmark_to =
+                    to_raw_logical ? CE_BYTES : ucnv.getCE();
+                cetype_ext_t encmark_to2 =
+                    ci__extended_encoding(encmark_to);
+                if (encmark_to2 == cetype_ext_t::CE_UTF8)
+                    encmark_to2 = cetype_ext_t::CE_ASCII_OR_UTF8;
+
+                // calculate required buf size
+                size_t bufsize = 0;
+                for (R_len_t i=0; i<str_n; ++i) {
+                    if (!str_cont.isNA(i) &&
+                            (size_t)str_cont.get(i).length() > bufsize)
+                        bufsize = str_cont.get(i).length();
+                }
+                bufsize = UCNV_GET_MAX_BYTES_FOR_STRING(
+                    bufsize, ucnv_getMaxCharSize(uconv_to)
+                );
+                // "The calculated size is guaranteed to be sufficient for this conversion."
+                if (bufsize > BUF_MAX_LENGTH)
+                    bufsize = BUF_MAX_LENGTH;
+                String8buf buf(bufsize);
+
+                for (R_len_t i=0; i<str_n; ++i) {
+                    if (str_cont.isNA(i)) {
+                        if (!to_raw_logical)
+                            builder->set_na(i);
+                        continue;
+                    }
+
+                    R_len_t curn_tmp = str_cont.get(i).length();
+                    const UChar* curs_tmp = str_cont.get(i).getBuffer(); // The buffer content is (probably) not NUL-terminated.
+                    if (!curs_tmp)
+                        throw StriException(MSG__INTERNAL_ERROR);
+
+                    UErrorCode status = U_ZERO_ERROR;
+                    ucnv_resetFromUnicode(uconv_to);
+                    size_t bufneed = ucnv_fromUChars(
+                        uconv_to, buf.data(), buf.size(),
+                        curs_tmp, curn_tmp, &status
+                    );
+                    if (bufneed <= buf.size()) {
+                        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                    }
+                    else {// larger buffer needed
+                        if (bufneed > BUF_MAX_LENGTH)
+                            throw StriException(MSG__BUF_SIZE_EXCEEDED);
+                        buf.resize(bufneed, false/*destroy contents*/);
+                        status = U_ZERO_ERROR;
+                        ucnv_resetFromUnicode(uconv_to);
+                        bufneed = ucnv_fromUChars(
+                            uconv_to, buf.data(), buf.size(),
+                            curs_tmp, curn_tmp, &status
+                        );
+                        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                    }
+
+                    if (to_raw_logical) {
+                        CiRawResult& output =
+                            raw_outputs[static_cast<size_t>(i)];
+                        output.is_na = false;
+                        output.data.assign(
+                            reinterpret_cast<unsigned char*>(buf.data()),
+                            reinterpret_cast<unsigned char*>(buf.data())+bufneed
+                        );
+                    }
+                    else {
+                        // Deviation from stringi: Builder accepts zero bytes, so
+                        // preserve the copied character-output rejection locally.
+                        ci__reject_embedded_nul(buf.data(), bufneed);
+                        ci::builder_set(
+                            *builder, i, buf.data(), bufneed, encmark_to2
+                        );
+                    }
+                }
+            }
         }
 
-        R_len_t curn_tmp = str_cont.get(i).length();
-        const UChar* curs_tmp = str_cont.get(i).getBuffer(); // The buffer content is (probably) not NUL-terminated.
-        if (!curs_tmp)
-            throw StriException(MSG__INTERNAL_ERROR);
-
-        UErrorCode status = U_ZERO_ERROR;
-        ucnv_resetFromUnicode(uconv_to);
-        size_t bufneed = ucnv_fromUChars(uconv_to, buf.data(), buf.size(),
-                                         curs_tmp, curn_tmp, &status);
-        if (bufneed <= buf.size()) {
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-        }
-        else {// larger buffer needed
-            if (bufneed > BUF_MAX_LENGTH)
-                throw StriException(MSG__BUF_SIZE_EXCEEDED);
-            buf.resize(bufneed, false/*destroy contents*/);
-            status = U_ZERO_ERROR;
-            ucnv_resetFromUnicode(uconv_to);
-            bufneed = ucnv_fromUChars(uconv_to, buf.data(), buf.size(),
-                                      curs_tmp, curn_tmp, &status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-        }
-
-        if (to_raw_logical) {
-            SEXP outobj;
-            STRI__PROTECT(outobj = Rf_allocVector(RAWSXP, bufneed));
-            memcpy(RAW(outobj), buf.data(), (size_t)bufneed);
-            SET_VECTOR_ELT(ret, i, outobj);
-            STRI__UNPROTECT(1);
+        if (!to_raw_logical) {
+            STRI__PROTECT(ret = builder->to_sexp());
         }
         else {
-            SET_STRING_ELT(ret, i,
-                           Rf_mkCharLenCE(buf.data(), bufneed, encmark_to));
+            // Deviation from stringi: stage data-dependent raw results until the
+            // input and converter lifetimes have ended, then assemble the R list.
+            STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+                return Rf_allocVector(VECSXP, str_n);
+            }));
+            for (R_len_t i=0; i<str_n; ++i) {
+                const CiRawResult& output =
+                    raw_outputs[static_cast<size_t>(i)];
+                if (output.is_na)
+                    continue;
+
+                SEXP outobj;
+                STRI__PROTECT(outobj = charport::unwind_protect([&]() -> SEXP {
+                    return Rf_allocVector(
+                        RAWSXP, static_cast<R_xlen_t>(output.data.size())
+                    );
+                }));
+                if (!output.data.empty()) {
+                    memcpy(
+                        RAW(outobj), output.data.data(), output.data.size()
+                    );
+                }
+                SET_VECTOR_ELT(ret, i, outobj);
+                STRI__UNPROTECT(1);
+            }
         }
     }
 
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
 
@@ -592,97 +838,154 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
 
 
     STRI__ERROR_HANDLER_BEGIN(1)
-    StriContainerListRaw str_cont(str);
-    R_len_t str_n = str_cont.get_n();
-
-    // get the number of strings to convert; if == 0, then you know what's the result
-    if (str_n <= 0) {
-        STRI__UNPROTECT_ALL
-        return Rf_allocVector(to_raw_logical?VECSXP:STRSXP, 0);
-    }
-
-    // Open converters
-    StriUcnv ucnv1(selected_from);
-    StriUcnv ucnv2(selected_to);
-    UConverter* uconv_from = ucnv1.getConverter(true /*register_callbacks*/);
-    UConverter* uconv_to   = ucnv2.getConverter(true /*register_callbacks*/);
-
-    // Get target encoding mark
-    cetype_t encmark_to = to_raw_logical?CE_BYTES:ucnv2.getCE();
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(to_raw_logical?VECSXP:STRSXP, str_n));
+    {
+        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+        R_len_t str_n = 0;
+        std::vector<CiRawResult> raw_outputs;
+        std::unique_ptr<charport::charvec::Builder> builder;
+        {
+            StriContainerListRaw str_cont(context, str);
+            str_n = str_cont.get_n();
+            if (to_raw_logical)
+                raw_outputs.resize(static_cast<size_t>(str_n));
+            else
+                builder.reset(new charport::charvec::Builder(str_n));
 
+            // get the number of strings to convert; if == 0, then you know what's the result
+            if (str_n > 0) {
+                // Open converters
+                StriUcnv ucnv1(selected_from, STRI__DEFERRED_WARNINGS);
+                StriUcnv ucnv2(selected_to, STRI__DEFERRED_WARNINGS);
+                UConverter* uconv_from = ucnv1.getConverter();
+                UConverter* uconv_to   = ucnv2.getConverter();
+                // Deviation from stringi: converter callbacks queue their warnings
+                // until the converters and Reader-backed input have been released.
 
-//   // estimate required buf size
-//    size_t bufsize = 0;
-//    for (R_len_t i=0; i<str_n; ++i) {
-//       if (!str_cont.isNA(i) && (size_t)str_cont.get(i).length() > bufsize)
-//          bufsize = str_cont.get(i).length();
-//    }
-//    bufsize = bufsize*4; // this is just an estimate (for 8bit->utf8 conversions)
-//    String8buf buf(bufsize);
-    String8buf buf(0);
+                // Get target encoding mark
+                cetype_t encmark_to =
+                    to_raw_logical ? CE_BYTES : ucnv2.getCE();
+                cetype_ext_t encmark_to2 =
+                    ci__extended_encoding(encmark_to);
+                if (encmark_to2 == cetype_ext_t::CE_UTF8)
+                    encmark_to2 = cetype_ext_t::CE_ASCII_OR_UTF8;
 
+//               // estimate required buf size
+//                size_t bufsize = 0;
+//                for (R_len_t i=0; i<str_n; ++i) {
+//                   if (!str_cont.isNA(i) && (size_t)str_cont.get(i).length() > bufsize)
+//                      bufsize = str_cont.get(i).length();
+//                }
+//                bufsize = bufsize*4; // this is just an estimate (for 8bit->utf8 conversions)
+//                String8buf buf(bufsize);
+                String8buf buf(0);
 
-    for (R_len_t i=0; i<str_n; ++i) {
-        if (str_cont.isNA(i)) {
-            if (to_raw_logical) SET_VECTOR_ELT(ret, i, R_NilValue);
-            else                SET_STRING_ELT(ret, i, NA_STRING);
-            continue;
+                for (R_len_t i=0; i<str_n; ++i) {
+                    if (str_cont.isNA(i)) {
+                        if (!to_raw_logical)
+                            builder->set_na(i);
+                        continue;
+                    }
+
+                    const char* curs = str_cont.get(i).data();
+                    R_len_t curn     = str_cont.get(i).length();
+
+                    UErrorCode status = U_ZERO_ERROR;
+                    UnicodeString encs(curs, curn, uconv_from, status); // FROM -> UTF-16 [this is the slow part]
+                    if (status == U_ILLEGAL_ARGUMENT_ERROR)
+                        throw StriException(MSG__MEM_ALLOC_ERROR);  // see #395
+                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+
+                    R_len_t curn_tmp = encs.length();
+                    const UChar* curs_tmp = encs.getBuffer(); // The buffer contents is (probably) not NUL-terminated.
+                    if (!curs_tmp) {
+                        throw StriException(MSG__INTERNAL_ERROR);
+                    }
+
+                    size_t bufneed = UCNV_GET_MAX_BYTES_FOR_STRING(
+                        curn_tmp, ucnv_getMaxCharSize(uconv_to)
+                    );
+                    // "The calculated size is guaranteed to be sufficient for this conversion."
+                    if (bufneed > BUF_MAX_LENGTH)
+                        bufneed = BUF_MAX_LENGTH;
+                    buf.resize(bufneed, false/*destroy contents*/); // grows or stays as-is
+
+                    status = U_ZERO_ERROR;
+                    ucnv_resetFromUnicode(uconv_to);
+                    bufneed = ucnv_fromUChars(
+                        uconv_to, buf.data(), buf.size(), curs_tmp,
+                        curn_tmp, &status
+                    );
+                    if (bufneed <= buf.size()) {
+                        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                    }
+                    else {// larger buffer needed
+                        if (bufneed > BUF_MAX_LENGTH)
+                            throw StriException(MSG__BUF_SIZE_EXCEEDED);
+                        buf.resize(bufneed, false/*destroy contents*/);
+                        status = U_ZERO_ERROR;
+                        ucnv_resetFromUnicode(uconv_to);
+                        bufneed = ucnv_fromUChars(
+                            uconv_to, buf.data(), buf.size(), curs_tmp,
+                            curn_tmp, &status
+                        );
+                        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                    }
+
+                    if (to_raw_logical) {
+                        CiRawResult& output =
+                            raw_outputs[static_cast<size_t>(i)];
+                        output.is_na = false;
+                        output.data.assign(
+                            reinterpret_cast<unsigned char*>(buf.data()),
+                            reinterpret_cast<unsigned char*>(buf.data())+bufneed
+                        );
+                    }
+                    else {
+                        // Deviation from stringi: Builder accepts zero bytes, so
+                        // preserve the copied character-output rejection locally.
+                        ci__reject_embedded_nul(buf.data(), bufneed);
+                        ci::builder_set(
+                            *builder, i, buf.data(), bufneed, encmark_to2
+                        );
+                    }
+                }
+            }
         }
 
-        const char* curs = str_cont.get(i).c_str();
-        R_len_t curn     = str_cont.get(i).length();
-
-        UErrorCode status = U_ZERO_ERROR;
-        UnicodeString encs(curs, curn, uconv_from, status); // FROM -> UTF-16 [this is the slow part]
-        if (status == U_ILLEGAL_ARGUMENT_ERROR)
-            throw StriException(MSG__MEM_ALLOC_ERROR);  // see #395
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-        R_len_t curn_tmp = encs.length();
-        const UChar* curs_tmp = encs.getBuffer(); // The buffer contents is (probably) not NUL-terminated.
-        if (!curs_tmp) {
-            throw StriException(MSG__INTERNAL_ERROR);
-        }
-
-        size_t bufneed = UCNV_GET_MAX_BYTES_FOR_STRING(curn_tmp, ucnv_getMaxCharSize(uconv_to));
-        // "The calculated size is guaranteed to be sufficient for this conversion."
-        if (bufneed > BUF_MAX_LENGTH)
-            bufneed = BUF_MAX_LENGTH;
-        buf.resize(bufneed, false/*destroy contents*/); // grows or stays as-is
-
-        status = U_ZERO_ERROR;
-        ucnv_resetFromUnicode(uconv_to);
-        bufneed = ucnv_fromUChars(uconv_to, buf.data(), buf.size(), curs_tmp,
-                                  curn_tmp, &status);
-        if (bufneed <= buf.size()) {
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-        }
-        else {// larger buffer needed
-            if (bufneed > BUF_MAX_LENGTH)
-                throw StriException(MSG__BUF_SIZE_EXCEEDED);
-            buf.resize(bufneed, false/*destroy contents*/);
-            status = U_ZERO_ERROR;
-            ucnv_resetFromUnicode(uconv_to);
-            bufneed = ucnv_fromUChars(uconv_to, buf.data(), buf.size(), curs_tmp,
-                                      curn_tmp, &status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-        }
-
-        if (to_raw_logical) {
-            SEXP outobj;
-            STRI__PROTECT(outobj = Rf_allocVector(RAWSXP, bufneed));
-            memcpy(RAW(outobj), buf.data(), (size_t)bufneed);
-            SET_VECTOR_ELT(ret, i, outobj);
-            STRI__UNPROTECT(1);
+        if (!to_raw_logical) {
+            STRI__PROTECT(ret = builder->to_sexp());
         }
         else {
-            SET_STRING_ELT(ret, i, Rf_mkCharLenCE(buf.data(), bufneed, encmark_to));
+            // Deviation from stringi: stage data-dependent raw results until the
+            // input and converter lifetimes have ended, then assemble the R list.
+            STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+                return Rf_allocVector(VECSXP, str_n);
+            }));
+            for (R_len_t i=0; i<str_n; ++i) {
+                const CiRawResult& output =
+                    raw_outputs[static_cast<size_t>(i)];
+                if (output.is_na)
+                    continue;
+
+                SEXP outobj;
+                STRI__PROTECT(outobj = charport::unwind_protect([&]() -> SEXP {
+                    return Rf_allocVector(
+                        RAWSXP, static_cast<R_xlen_t>(output.data.size())
+                    );
+                }));
+                if (!output.data.empty()) {
+                    memcpy(
+                        RAW(outobj), output.data.data(), output.data.size()
+                    );
+                }
+                SET_VECTOR_ELT(ret, i, outobj);
+                STRI__UNPROTECT(1);
+            }
         }
     }
 
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
 

@@ -4,14 +4,13 @@
 \name{charr-package}
 \alias{charr}
 \alias{charr-package}
-\title{charr: Simple, Consistent Wrappers for Common String Operations, with ALTREP Interoperability}
+\title{charr: Record of an ALTREP Translation of Common String Operations}
 \description{
-An experimental hard fork of the 'stringr' package with a private string backend copied from 'stringi' and being adapted to read and return 'ALTREP' character vectors through 'charport'. A simple R switch selects either installed 'stringi' or the private copy. The copied backend initially preserves stringi's ordinary materializing behavior so that semantic equivalence is established before 'ALTREP' adaptation.
+A benchmark and record-keeping snapshot derived from the 'stringr' package. It contains a separate 'stringi'-derived backend that reads and returns 'ALTREP' character vectors through 'charport'. An R switch routes operations either to installed 'stringi' or to the separate translated backend. This package records the mechanical translation and is not intended as a complete replacement for 'stringr' or 'stringi'.
 }
 \seealso{
 Useful links:
 \itemize{
-  \item \url{https://charport.github.io/charr/}
   \item \url{https://github.com/charport/charr}
   \item Report bugs at \url{https://github.com/charport/charr/issues}
 }

@@ -46,7 +46,7 @@ class StriContainerDouble : public StriContainerBase {
 
 private:
 
-    double* data;
+    const double* data;
 
 public:
 
@@ -62,9 +62,15 @@ public:
         if (!Rf_isReal(rvec))
             throw StriException("DEBUG: !Rf_isReal in StriContainerDouble");
 #endif
-        R_len_t ndata = LENGTH(rvec);
+        R_len_t ndata = 0;
+        // Deviation from stringi: use read-only numeric ALTREP access and
+        // translate any R unwind back into C++ so live owners unwind normally.
+        charport::unwind_protect([&]() -> SEXP {
+            ndata = LENGTH(rvec);
+            this->data = REAL_RO(rvec);
+            return R_NilValue;
+        });
         this->init_Base(ndata, _nrecycle, true);
-        this->data = REAL(rvec);  // TODO: ALTREP will be problematic?
     }
 
     //  StriContainerDouble(StriContainerDouble& container); // default-shallow

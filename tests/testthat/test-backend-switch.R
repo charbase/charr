@@ -1,9 +1,9 @@
 test_that("the R switch covers the complete stringr-facing inventory", {
   map <- charr:::.charr_backend_map
 
-  expect_length(map, 67)
-  expect_length(unique(names(map)), 67)
-  expect_length(unique(unname(map)), 67)
+  expect_length(map, 69)
+  expect_length(unique(names(map)), 69)
+  expect_length(unique(unname(map)), 69)
   expect_setequal(
     names(map),
     sub("^stri_", "ci_", unname(map))
@@ -33,7 +33,7 @@ test_that("the R switch covers the complete stringr-facing inventory", {
   }
 })
 
-test_that("the copied backend is selected as one complete backend", {
+test_that("the ALTREP backend is selected as one complete backend", {
   probes <- list(
     fixed = function() str_detect(c("abc", NA), fixed("b")),
     regex = function() str_extract_all("a1 b2", "[[:alpha:]]")[[1]],
@@ -46,15 +46,15 @@ test_that("the copied backend is selected as one complete backend", {
 
   for (probe in probes) {
     reference <- with_altrep(FALSE, probe())
-    copied <- with_altrep(TRUE, {
+    altrep <- with_altrep(TRUE, {
       expect_gt(altrep_backend_calls(value <- probe()), 0)
       value
     })
-    expect_identical(copied, reference)
+    expect_identical(altrep, reference)
   }
 })
 
-test_that("charr's own ICU supports the copied backend scaffold", {
+test_that("charr's own ICU supports the ALTREP backend", {
   if (charr:::charr_icu_bundled()) {
     expect_identical(.Call(charr:::C_charr_icu_version), "74.1")
   } else {

@@ -31,6 +31,7 @@
  */
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
 #include "ci_container_utf16.h"
 #include "ci_container_utf8.h"
 #include "ci_container_regex.h"
@@ -75,52 +76,88 @@ SEXP ci_subset_regex(SEXP str, SEXP pattern, SEXP omit_na, SEXP negate, SEXP opt
     PROTECT(str = ci__prepare_arg_string(str, "str"));
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
 
-    if (LENGTH(str) > 0 && LENGTH(str) < LENGTH(pattern))
-        Rf_error(MSG__WARN_RECYCLING_RULE2);
-
-    R_len_t vectorize_length =
-        ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
+    STRI__ERROR_HANDLER_BEGIN(2)
+    SEXP ret;
+    {
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t vectorize_length = 0;
+    // Deviation from stringi: defer this controlled length error until the
+    // outer C++ boundary has released operation state.
+    charport::unwind_protect([&]() -> SEXP {
+        if (str_n > 0 && str_n < pattern_n)
+            throw StriException(MSG__WARN_RECYCLING_RULE2);
+        vectorize_length = ci__recycling_rule(
+            false, 2, str_n, pattern_n
+        );
+        return R_NilValue;
+    });
+    // Deviation from stringi: queue the recycling warning until regex/Reader
+    // owners have been released.
+    if (vectorize_length > 0 &&
+            (vectorize_length % str_n != 0 ||
+             vectorize_length % pattern_n != 0))
+        context.warn(MSG__WARN_RECYCLING_RULE);
 
     if (vectorize_length == 0) {
-        UNPROTECT(2);
-        return Rf_allocVector(STRSXP, 0);
+        charport::charvec::Store output(0, 0);
+        STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+        STRI__UNPROTECT_ALL
+        return ret;
     }
 
-    StriRegexMatcherOptions pattern_opts =
-        StriContainerRegexPattern::getRegexOptions(opts_regex);
+    StriRegexMatcherOptions pattern_opts;
+    charport::unwind_protect([&]() -> SEXP {
+        pattern_opts = StriContainerRegexPattern::getRegexOptions(
+            STRI__DEFERRED_WARNINGS, opts_regex
+        );
+        return R_NilValue;
+    });
 
-    STRI__ERROR_HANDLER_BEGIN(2)
-    StriContainerUTF16 str_cont(str, vectorize_length);
-    StriContainerRegexPattern pattern_cont(pattern, vectorize_length, pattern_opts);
-
-    // BT: this cannot be done with deque, because pattern is reused so i does not
-    // go like 0,1,2...n but 0,pat_len,2*pat_len,1,pat_len+1 and so on
-    // MG: agreed
-    std::vector<int> which(vectorize_length);
+    charport::charvec::Store output(0, 0);
     int result_counter = 0;
-
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        STRI__CONTINUE_ON_EMPTY_OR_NA_PATTERN(str_cont, pattern_cont,
-        {if (omit_na1) which[i] = FALSE; else {
-                which[i] = NA_LOGICAL;
-                result_counter++;
-            }
-        })
+        StriContainerUTF16 str_cont(context, str, vectorize_length);
+        StriContainerRegexPattern pattern_cont(
+            context, pattern, vectorize_length, pattern_opts
+        );
 
-        RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
-        matcher->reset(str_cont.get(i));
-        UErrorCode status = U_ZERO_ERROR;
-        which[i] = (int)matcher->find(status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-        if (negate_1) which[i] = !which[i];
-        if (which[i]) result_counter++;
+        // BT: this cannot be done with deque, because pattern is reused so i does not
+        // go like 0,1,2...n but 0,pat_len,2*pat_len,1,pat_len+1 and so on
+        // MG: agreed
+        std::vector<int> which(vectorize_length);
+
+        for (R_len_t i = pattern_cont.vectorize_init();
+                i != pattern_cont.vectorize_end();
+                i = pattern_cont.vectorize_next(i))
+        {
+            STRI__CONTINUE_ON_EMPTY_OR_NA_PATTERN(str_cont, pattern_cont,
+            {if (omit_na1) which[i] = FALSE; else {
+                    which[i] = NA_LOGICAL;
+                    result_counter++;
+                }
+            })
+
+            RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
+            matcher->reset(str_cont.get(i));
+            UErrorCode status = U_ZERO_ERROR;
+            which[i] = (int)matcher->find(status);
+            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            if (negate_1) which[i] = !which[i];
+            if (which[i]) result_counter++;
+        }
+
+        output = ci__subset_by_logical(str_cont, which, result_counter);
     }
 
-    SEXP ret;
-    STRI__PROTECT(ret = ci__subset_by_logical(str_cont, which, result_counter));
+    STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -155,72 +192,108 @@ SEXP ci_subset_regex_replacement(SEXP str, SEXP pattern, SEXP negate, SEXP opts_
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
     PROTECT(value = ci__prepare_arg_string(value, "value"));
 
-    // we are subsetting `str`, therefore recycling is slightly different here
-    if (LENGTH(value) == 0) Rf_error(MSG__REPLACEMENT_ZERO);
-    if (LENGTH(pattern) == 0) Rf_error(MSG__WARN_EMPTY_VECTOR);
-    if (LENGTH(str) == 0) {
-        UNPROTECT(3);
-        return Rf_allocVector(STRSXP, 0);
-    }
-    if (LENGTH(str) < LENGTH(pattern))  // for LENGTH(value), we emit warning later on
-        Rf_error(MSG__WARN_RECYCLING_RULE2);
-    if ((LENGTH(str) % LENGTH(pattern)) != 0)
-        Rf_warning(MSG__WARN_RECYCLING_RULE);
-    R_len_t vectorize_length = LENGTH(str);
-
-    StriRegexMatcherOptions pattern_opts =
-        StriContainerRegexPattern::getRegexOptions(opts_regex);
     UText* str_text = NULL; // might be slower, but definitely is more convenient!
 
     STRI__ERROR_HANDLER_BEGIN(3)
-    R_len_t value_length = LENGTH(value);
-    StriContainerUTF8 value_cont(value, value_length);
-    StriContainerUTF8 str_cont(str, vectorize_length);
-    StriContainerRegexPattern pattern_cont(pattern, vectorize_length, pattern_opts);
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, vectorize_length));
-
-    std::vector<int> detected(vectorize_length, 0);
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        if (pattern_cont.isNA(i)) {
-            // behave like `[<-`
-            detected[i] = false;
-            continue;
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t value_length = ci::checked_r_len(
+        context.size(value), "character vectors"
+    );
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+
+    // we are subsetting `str`, therefore recycling is slightly different here
+    charport::unwind_protect([&]() -> SEXP {
+        // Deviation from stringi: signal controlled validation failures only
+        // after the outer C++ boundary has released operation state.
+        if (value_length == 0) throw StriException(MSG__REPLACEMENT_ZERO);
+        if (pattern_n == 0) throw StriException(MSG__WARN_EMPTY_VECTOR);
+        if (str_n > 0 && str_n < pattern_n)  // for value_length, we emit warning later on
+            throw StriException(MSG__WARN_RECYCLING_RULE2);
+        return R_NilValue;
+    });
+    if (str_n == 0) {
+        charport::charvec::Builder output(0);
+        STRI__PROTECT(ret = output.to_sexp());
+        STRI__UNPROTECT_ALL
+        return ret;
+    }
+    // Deviation from stringi: queue the substitution recycling warning until
+    // regex/Reader/UText owners and the output Builder have been released.
+    if ((str_n % pattern_n) != 0)
+        context.warn(MSG__WARN_RECYCLING_RULE);
+    R_len_t vectorize_length = str_n;
+
+    StriRegexMatcherOptions pattern_opts;
+    charport::unwind_protect([&]() -> SEXP {
+        pattern_opts = StriContainerRegexPattern::getRegexOptions(
+            STRI__DEFERRED_WARNINGS, opts_regex
+        );
+        return R_NilValue;
+    });
+
+    charport::charvec::Builder output(vectorize_length);
+    std::vector<int> detected(vectorize_length, 0);
+    {
+        StriContainerUTF8 value_cont(context, value, value_length);
+        StriContainerUTF8 str_cont(context, str, vectorize_length);
+        StriContainerRegexPattern pattern_cont(
+            context, pattern, vectorize_length, pattern_opts
+        );
+
+        for (R_len_t i = pattern_cont.vectorize_init();
+                i != pattern_cont.vectorize_end();
+                i = pattern_cont.vectorize_next(i))
+        {
+            if (pattern_cont.isNA(i)) {
+                // behave like `[<-`
+                detected[i] = false;
+                continue;
+            }
+            STRI__CONTINUE_ON_EMPTY_OR_NA_PATTERN(str_cont, pattern_cont,
+            {detected[i] = NA_INTEGER;})
+
+            UErrorCode status = U_ZERO_ERROR;
+            RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
+            str_text = utext_openUTF8(
+                str_text, str_cont.get(i).data(),
+                str_cont.get(i).length(), &status
+            );
+            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            matcher->reset(str_text);
+
+            bool found = matcher->find(status);
+            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            detected[i] = ((found && !negate_1) || (!found && negate_1));
         }
-        STRI__CONTINUE_ON_EMPTY_OR_NA_PATTERN(str_cont, pattern_cont,
-        {detected[i] = NA_INTEGER;})
 
-        UErrorCode status = U_ZERO_ERROR;
-        RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
-        str_text = utext_openUTF8(str_text, str_cont.get(i).c_str(), str_cont.get(i).length(), &status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-        matcher->reset(str_text);
+        R_len_t k = 0;  // we must traverse `str_cont` in order now
+        for (R_len_t i = 0; i<vectorize_length; ++i) {
+            if (detected[i] == NA_INTEGER)
+                output.set_na(i);
+            else if (detected[i] == 0)
+                ci::builder_set(output, i, str_cont.get(i));
+            else
+                ci::builder_set(output, i, value_cont.get((k++)%value_length));
+        }
+        if ((k % value_length) != 0)
+            context.warn(MSG_REPLACEMENT_MULTIPLE);
 
-        bool found = matcher->find(status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-        detected[i] = ((found && !negate_1) || (!found && negate_1));
+        if (str_text) {
+            utext_close(str_text);
+            str_text = NULL;
+        }
     }
 
-    R_len_t k = 0;  // we must traverse `str_cont` in order now
-    for (R_len_t i = 0; i<vectorize_length; ++i) {
-        if (detected[i] == NA_INTEGER)
-            SET_STRING_ELT(ret, i, NA_STRING);
-        else if (detected[i] == 0)
-            SET_STRING_ELT(ret, i, str_cont.toR(i));
-        else
-            SET_STRING_ELT(ret, i, value_cont.toR((k++)%value_length));
+    STRI__PROTECT(ret = output.to_sexp());
     }
-    if ((k % value_length) != 0) Rf_warning(MSG_REPLACEMENT_MULTIPLE);
-
-    if (str_text) {
-        utext_close(str_text);
-        str_text = NULL;
-    }
-
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END({

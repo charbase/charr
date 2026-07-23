@@ -39,10 +39,11 @@
 
 
 /**
- * A class to represent a (TODO: read-only?) UTF-8 string.
+ * A class to represent a length-delimited UTF-8 string.
  *
  * It can mark string as missing (NA), count the number of Unicode code points,
- * remove BOMs
+ * and remove BOMs. There is deliberately no C-string accessor: every consumer
+ * must carry data() and length() together.
  *
  * @version 0.1-?? (Marek Gagolewski)
  *
@@ -75,7 +76,7 @@ class String8  {
 private:
 
     char* m_str;      ///< character data in UTF-8, NULL denotes NA
-    R_len_t m_n;      ///< string length (in bytes), not including NUL
+    R_len_t m_n;      ///< string length in bytes
     bool m_memalloc;  ///< should the memory be freed at the end?
     bool m_isASCII;   ///< ASCII or UTF-8?  TODO: is it used anywhere?
 
@@ -97,7 +98,7 @@ public:
      * but NA-initialized object)
      *
      * @param str character buffer
-     * @param n buffer length (not including NUL)
+     * @param n buffer length
      * @param memalloc should a deep copy of the buffer be done?
      * @param killbom whether to detect and delete UTF-8 BOMs
      * @param isASCII
@@ -107,7 +108,7 @@ public:
 
     /** constructor
      * @param str character buffer
-     * @param n buffer length (not including NUL)
+     * @param n buffer length
      * @param memalloc should a deep copy of the buffer be done?
      * @param killbom whether to detect and delete UTF-8 BOMs
      * @param isASCII
@@ -132,12 +133,14 @@ public:
     /** destructor */
     inline void setNA()
     {
-        if (this->m_str) {
-            if (this->m_memalloc) {
-                delete [] this->m_str;
-            }
-            this->m_str = NULL;
-        }
+        // Deviation from stringi: clear all ownership metadata. Otherwise a
+        // later copy can treat the missing value as an owned byte buffer.
+        if (this->m_str && this->m_memalloc)
+            delete [] this->m_str;
+        this->m_str = NULL;
+        this->m_n = 0;
+        this->m_memalloc = false;
+        this->m_isASCII = false;
     }
 
 
@@ -146,6 +149,9 @@ public:
 
     /** copy */
     String8& operator=(const String8& s);
+
+    /** replace with an owned copy, even when the source is borrowed */
+    void assignOwned(const String8& s);
 
     /** does this String8 represent a missing value? */
     inline bool isNA() const {
@@ -162,19 +168,12 @@ public:
         return !this->m_isASCII;
     }
 
-    /** Misleading name: did we allocate mem in String8
-     *  or is this string a shallow copy of some "external" resource?
-     */
-    inline bool isReadOnly() const {
-        return !this->m_memalloc;
-    }
-
-    /** return the char buffer */
-    inline const char* c_str() const
+    /** return the length-delimited byte buffer */
+    inline const char* data() const
     {
 #ifndef NDEBUG
         if (isNA())
-            throw StriException("String8::isNA() in c_str()");
+            throw StriException("String8::isNA() in data()");
 #endif
         return this->m_str;
     }

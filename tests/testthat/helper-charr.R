@@ -4,12 +4,6 @@ with_altrep <- function(on, code) {
   force(code)
 }
 
-with_threads <- function(n, code) {
-  old <- charr_threads(n)
-  on.exit(charr_threads(old), add = TRUE)
-  force(code)
-}
-
 altrep_backend_calls <- function(expr) {
   before <- charr:::charr_altrep_count()
   force(expr)

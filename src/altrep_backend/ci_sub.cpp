@@ -32,8 +32,10 @@
 
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
 #include "ci_container_utf8_indexable.h"
 #include "ci_string8buf.h"
+#include <limits>
 #include <stdexcept>
 
 
@@ -48,80 +50,105 @@
  *
  * @version 1.7.1 (Marek Gagolewski, 2021-07-08) use_matrix
  */
+// Deviation from stringi: callers with live operation state pass a queue so
+// controlled index diagnostics are signalled after that state is released.
 R_len_t ci__sub_prepare_from_to_length(SEXP& from, SEXP& to, SEXP& length,
         R_len_t& from_len, R_len_t& to_len, R_len_t& length_len,
-        int*& from_tab, int*& to_tab, int*& length_tab, bool use_matrix_1)
+        int*& from_tab, int*& to_tab, int*& length_tab, bool use_matrix_1,
+        ci::DeferredWarnings* warnings=NULL)
 {
     R_len_t sub_protected = 0;
-    bool from_ismatrix = use_matrix_1 && Rf_isMatrix(from);
-    if (from_ismatrix) {
-        SEXP t;
-        PROTECT(t = Rf_getAttrib(from, R_DimSymbol));
-        if (INTEGER(t)[1] == 1)
-            from_ismatrix = false; /* it's a column vector */
-        else if (INTEGER(t)[1] > 2) {
-            /* error() is allowed here */
-            UNPROTECT(1); // t
-            Rf_error(MSG__ARG_EXPECTED_MATRIX_WITH_GIVEN_COLUMNS, "from", 2);
-        }
-        UNPROTECT(1);  // t
-    }
-
-    sub_protected++;
-    PROTECT(from = ci__prepare_arg_integer(from, "from"));
-    /* may remove R_DimSymbol */
-
-    if (from_ismatrix) {
-        bool fromlength_matrix = false;
-        SEXP t;
-        PROTECT(t = Rf_getAttrib(from, R_DimNamesSymbol));
-        if (!Rf_isNull(t)) {
-            SEXP t2;
-            PROTECT(t2 = VECTOR_ELT(t, 1));
-            if (
-                Rf_isString(t2) && LENGTH(t2) == 2 &&
-                strcmp("length", CHAR(STRING_ELT(t2, 1))) == 0
-            ) {
-                fromlength_matrix = true;
+    try {
+        bool from_ismatrix = use_matrix_1 && Rf_isMatrix(from);
+        if (from_ismatrix) {
+            SEXP t;
+            PROTECT(t = Rf_getAttrib(from, R_DimSymbol));
+            if (INTEGER(t)[1] == 1)
+                from_ismatrix = false; /* it's a column vector */
+            else if (INTEGER(t)[1] > 2) {
+                /* error() is allowed here */
+                UNPROTECT(1); // t
+                if (warnings) {
+                    throw StriException(
+                        MSG__ARG_EXPECTED_MATRIX_WITH_GIVEN_COLUMNS,
+                        "from", 2
+                    );
+                }
+                Rf_error(
+                    MSG__ARG_EXPECTED_MATRIX_WITH_GIVEN_COLUMNS, "from", 2
+                );
             }
-            UNPROTECT(1);  // t2
+            UNPROTECT(1);  // t
         }
-        UNPROTECT(1);  // t
 
-        if (fromlength_matrix) {
-            from_len      = LENGTH(from)/2;
-            length_len    = from_len;
+        PROTECT(from = ci__prepare_arg_integer(
+            from, "from", true, true, warnings
+        ));
+        sub_protected++;
+        /* may remove R_DimSymbol */
+
+        if (from_ismatrix) {
+            bool fromlength_matrix = false;
+            SEXP t;
+            PROTECT(t = Rf_getAttrib(from, R_DimNamesSymbol));
+            if (!Rf_isNull(t)) {
+                SEXP t2;
+                PROTECT(t2 = VECTOR_ELT(t, 1));
+                if (
+                    Rf_isString(t2) && LENGTH(t2) == 2 &&
+                    strcmp("length", CHAR(STRING_ELT(t2, 1))) == 0
+                ) {
+                    fromlength_matrix = true;
+                }
+                UNPROTECT(1);  // t2
+            }
+            UNPROTECT(1);  // t
+
+            if (fromlength_matrix) {
+                from_len      = LENGTH(from)/2;
+                length_len    = from_len;
+                from_tab      = INTEGER(from);
+                length_tab    = from_tab+from_len;
+            }
+            else {
+                from_len      = LENGTH(from)/2;
+                to_len        = from_len;
+                from_tab      = INTEGER(from);
+                to_tab        = from_tab+from_len;
+            }
+            //PROTECT(to); /* fake - not to provoke stack imbalance */
+            //PROTECT(length); /* fake - not to provoke stack imbalance */
+        }
+        else if (Rf_isNull(length)) {
+            PROTECT(to = ci__prepare_arg_integer(
+                to, "to", true, true, warnings
+            ));
+            sub_protected++;
+            from_len      = LENGTH(from);
             from_tab      = INTEGER(from);
-            length_tab    = from_tab+from_len;
+            to_len        = LENGTH(to);
+            to_tab        = INTEGER(to);
+            //PROTECT(length); /* fake - not to provoke stack imbalance */
         }
         else {
-            from_len      = LENGTH(from)/2;
-            to_len        = from_len;
+            PROTECT(length = ci__prepare_arg_integer(
+                length, "length", true, true, warnings
+            ));
+            sub_protected++;
+            from_len      = LENGTH(from);
             from_tab      = INTEGER(from);
-            to_tab        = from_tab+from_len;
+            length_len    = LENGTH(length);
+            length_tab    = INTEGER(length);
+            //PROTECT(to); /* fake - not to provoke stack imbalance */
         }
-        //PROTECT(to); /* fake - not to provoke stack imbalance */
-        //PROTECT(length); /* fake - not to provoke stack imbalance */
+        return sub_protected;
     }
-    else if (Rf_isNull(length)) {
-        sub_protected++;
-        PROTECT(to    = ci__prepare_arg_integer(to, "to"));
-        from_len      = LENGTH(from);
-        from_tab      = INTEGER(from);
-        to_len        = LENGTH(to);
-        to_tab        = INTEGER(to);
-        //PROTECT(length); /* fake - not to provoke stack imbalance */
+    catch (...) {
+        // Deviation from stringi: deferred argument errors are C++
+        // exceptions, so release any protections acquired before the error.
+        UNPROTECT(sub_protected);
+        throw;
     }
-    else {
-        sub_protected++;
-        PROTECT(length= ci__prepare_arg_integer(length, "length"));
-        from_len      = LENGTH(from);
-        from_tab      = INTEGER(from);
-        length_len    = LENGTH(length);
-        length_tab    = INTEGER(length);
-        //PROTECT(to); /* fake - not to provoke stack imbalance */
-    }
-    return sub_protected;
 
     /* rchk reports that this function
      * [PB] has possible protection stack imbalance
@@ -155,6 +182,266 @@ inline void ci__sub_get_indices(StriContainerUTF8_indexable& str_cont, R_len_t& 
         cur_to  = -cur_to - 1;
         cur_to2 = str_cont.UChar32_to_UTF8_index_back(i, cur_to);
     }
+}
+
+
+// Deviation from stringi: share the Builder-producing core with `ci_sub_all`
+// so it does not create a scalar CHARSXP and call back through `ci_sub()`.
+charport::charvec::Store ci__sub_build(
+    StriContainerUTF8_indexable& str_cont,
+    R_len_t from_len, R_len_t to_len, R_len_t length_len,
+    int* from_tab, int* to_tab, int* length_tab,
+    bool ignore_negative_length,
+    charport::charvec::Builder& builder,
+    charport::charvec::Builder& filtered
+)
+{
+    const R_len_t vectorize_len = str_cont.get_nrecycle();
+    if (vectorize_len == 1) {
+        R_len_t i = str_cont.vectorize_init();
+        R_len_t cur_from = from_tab[i % from_len];
+        R_len_t cur_to = to_tab
+            ? to_tab[i % to_len]
+            : length_tab[i % length_len];
+        if (str_cont.isNA(i) || cur_from == NA_INTEGER ||
+                cur_to == NA_INTEGER) {
+            return charport::charvec::Store::scalar(
+                NULL, 0, cetype_ext_t::CE_NA
+            );
+        }
+
+        if (length_tab) {
+            if (cur_to == 0) {
+                return ci::scalar_store(
+                    "", 0, cetype_ext_t::CE_ASCII
+                );
+            }
+            else if (cur_to < 0) {
+                if (ignore_negative_length)
+                    return charport::charvec::Store(0, 0);
+                return charport::charvec::Store::scalar(
+                    NULL, 0, cetype_ext_t::CE_NA
+                );
+            }
+
+            cur_to = cur_from + cur_to - 1;
+            if (cur_from < 0 && cur_to >= 0)
+                cur_to = -1;
+        }
+
+        const char* str_cur_s = str_cont.get(i).data();
+        R_len_t cur_from2;
+        R_len_t cur_to2;
+        ci__sub_get_indices(
+            str_cont, i, cur_from, cur_to, cur_from2, cur_to2
+        );
+        if (cur_to2 > cur_from2) {
+            return ci::scalar_store(
+                str_cur_s+cur_from2,
+                static_cast<size_t>(cur_to2-cur_from2),
+                cetype_ext_t::CE_ASCII_OR_UTF8
+            );
+        }
+        return ci::scalar_store(
+            "", 0, cetype_ext_t::CE_ASCII
+        );
+    }
+
+    builder.reset(vectorize_len);
+    R_len_t num_negative_length = 0;
+
+    for (R_len_t i = str_cont.vectorize_init();
+            i != str_cont.vectorize_end();
+            i = str_cont.vectorize_next(i))
+    {
+        R_len_t cur_from = from_tab[i % from_len];
+        R_len_t cur_to = to_tab
+            ? to_tab[i % to_len]
+            : length_tab[i % length_len];
+        if (str_cont.isNA(i) || cur_from == NA_INTEGER ||
+                cur_to == NA_INTEGER) {
+            builder.set_na(i);
+            continue;
+        }
+
+        if (length_tab) {
+            if (cur_to == 0) {
+                ci::builder_set(
+                    builder, i, "", 0, cetype_ext_t::CE_ASCII
+                );
+                continue;
+            }
+            else if (cur_to < 0) {
+                builder.set_na(i);
+                num_negative_length++;
+                continue;
+            }
+
+            cur_to = cur_from + cur_to - 1;
+            if (cur_from < 0 && cur_to >= 0)
+                cur_to = -1;
+        }
+
+        const char* str_cur_s = str_cont.get(i).data();
+        R_len_t cur_from2;
+        R_len_t cur_to2;
+
+        ci__sub_get_indices(
+            str_cont, i, cur_from, cur_to, cur_from2, cur_to2
+        );
+
+        if (cur_to2 > cur_from2) {
+            ci::builder_set(
+                builder, i, str_cur_s+cur_from2, cur_to2-cur_from2,
+                cetype_ext_t::CE_ASCII_OR_UTF8
+            );
+        }
+        else {
+            ci::builder_set(
+                builder, i, "", 0, cetype_ext_t::CE_ASCII
+            );
+        }
+    }
+
+    if (num_negative_length > 0 && ignore_negative_length) {
+        STRI_ASSERT(length_tab)
+        charport::charvec::Store unfiltered = builder.release_store();
+        const R_len_t filtered_len = vectorize_len-num_negative_length;
+        if (filtered_len == 1) {
+            for (R_len_t i = str_cont.vectorize_init();
+                    i != str_cont.vectorize_end();
+                    i = str_cont.vectorize_next(i))
+            {
+                R_len_t cur_from = from_tab[i % from_len];
+                R_len_t cur_to = length_tab[i % length_len];
+                if (!str_cont.isNA(i) && cur_from != NA_INTEGER &&
+                        cur_to != NA_INTEGER && cur_to < 0) {
+                    continue;
+                }
+                const charport::StrView value = unfiltered.view(
+                    static_cast<size_t>(i)
+                );
+                return charport::charvec::Store::scalar(
+                    value.ptr, static_cast<size_t>(value.len), value.enc
+                );
+            }
+            throw std::logic_error("substring result count mismatch");
+        }
+
+        filtered.reset(filtered_len);
+        R_len_t k = 0;
+        for (R_len_t i = str_cont.vectorize_init();
+                i != str_cont.vectorize_end();
+                i = str_cont.vectorize_next(i))
+        {
+            R_len_t cur_from = from_tab[i % from_len];
+            R_len_t cur_to = length_tab[i % length_len];
+            if (!str_cont.isNA(i) && cur_from != NA_INTEGER &&
+                    cur_to != NA_INTEGER && cur_to < 0) {
+                continue;
+            }
+            filtered.set(k++, unfiltered.view(static_cast<size_t>(i)));
+        }
+        return filtered.release_store();
+    }
+
+    return builder.release_store();
+}
+
+
+charport::charvec::Store ci__sub_build(
+    StriContainerUTF8_indexable& str_cont,
+    R_len_t from_len, R_len_t to_len, R_len_t length_len,
+    int* from_tab, int* to_tab, int* length_tab,
+    bool ignore_negative_length
+)
+{
+    charport::charvec::Builder builder(0);
+    charport::charvec::Builder filtered(0);
+    return ci__sub_build(
+        str_cont, from_len, to_len, length_len,
+        from_tab, to_tab, length_tab, ignore_negative_length,
+        builder, filtered
+    );
+}
+
+
+struct CiOwnedString8 {
+    bool is_na;
+    bool is_ascii;
+    std::string value;
+
+    CiOwnedString8() : is_na(true), is_ascii(false), value()
+    {
+    }
+};
+
+
+std::vector<CiOwnedString8> ci__sub_read_owned(
+    ci::ReaderContext& context, SEXP str
+)
+{
+    const R_len_t str_len = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    std::vector<CiOwnedString8> output(
+        static_cast<size_t>(str_len)
+    );
+    if (str_len <= 0)
+        return output;
+
+    // Deviation from stringi: own normalized records before later R
+    // validation so the Reader borrow can be released first.
+    {
+        StriContainerUTF8 str_cont(context, str, str_len);
+        for (R_len_t i=0; i<str_len; ++i) {
+            CiOwnedString8& current = output[static_cast<size_t>(i)];
+            current.is_na = str_cont.isNA(i);
+            if (current.is_na)
+                continue;
+            const String8& value = str_cont.get(i);
+            current.is_ascii = value.isASCII();
+            if (value.length() > 0) {
+                current.value.assign(
+                    value.data(), static_cast<size_t>(value.length())
+                );
+            }
+        }
+    }
+    return output;
+}
+
+
+const char* ci__sub_owned_data(const CiOwnedString8& value)
+{
+    return value.value.empty() ? "" : value.value.data();
+}
+
+
+// Deviation from stringi: cumulative replacement output stays in size_t, and
+// growth arithmetic is checked before Builder applies R's string-length limit.
+size_t ci__sub_checked_output_size(size_t current, size_t additional)
+{
+    if (additional > std::numeric_limits<size_t>::max()-current)
+        throw std::length_error("character output size overflow");
+    return current+additional;
+}
+
+
+void ci__sub_builder_set_owned(
+    charport::charvec::Builder& builder, R_len_t i,
+    const CiOwnedString8& value
+)
+{
+    if (value.is_na) {
+        builder.set_na(i);
+        return;
+    }
+    ci::builder_set(
+        builder, i, ci__sub_owned_data(value),
+        value.value.size(), value.is_ascii ?
+            cetype_ext_t::CE_ASCII : cetype_ext_t::CE_UTF8
+    );
 }
 
 
@@ -204,7 +491,6 @@ SEXP ci_sub(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix, SEXP ign
     bool use_matrix_1 = ci__prepare_arg_logical_1_notNA(use_matrix, "use_matrix");
     bool ignore_negative_length_1 = ci__prepare_arg_logical_1_notNA(ignore_negative_length, "ignore_negative_length");
 
-    R_len_t str_len       = LENGTH(str);
     R_len_t from_len      = 0;
     R_len_t to_len        = 0;
     R_len_t length_len    = 0;
@@ -212,89 +498,52 @@ SEXP ci_sub(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix, SEXP ign
     int* to_tab           = 0;
     int* length_tab       = 0;
 
-    R_len_t sub_protected =  1+  /* how many objects to PROTECT on ret? */
-                             ci__sub_prepare_from_to_length(from, to, length,
-                                     from_len, to_len, length_len, from_tab, to_tab, length_tab, use_matrix_1);
+    STRI__ERROR_HANDLER_BEGIN(1)
+    R_len_t sub_protected = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        sub_protected = ci__sub_prepare_from_to_length(
+            from, to, length,
+            from_len, to_len, length_len,
+            from_tab, to_tab, length_tab,
+            use_matrix_1, &STRI__DEFERRED_WARNINGS
+        );
+        return R_NilValue;
+    });
+    __ci_protected_sexp_num += sub_protected;
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    const R_len_t str_len = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t vectorize_len = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_len = ci__recycling_rule(
+            STRI__DEFERRED_WARNINGS, 3, str_len, from_len,
+            (to_len>length_len)?to_len:length_len
+        );
+        return R_NilValue;
+    });
 
-    R_len_t vectorize_len = ci__recycling_rule(true, 3,
-                            str_len, from_len, (to_len>length_len)?to_len:length_len);
-
-    if (vectorize_len <= 0) {
-        UNPROTECT(sub_protected);
-        return Rf_allocVector(STRSXP, 0);
-    }
-
-    STRI__ERROR_HANDLER_BEGIN(sub_protected)
-    StriContainerUTF8_indexable str_cont(str, vectorize_len);
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, vectorize_len));
-
-    R_len_t num_negative_length = 0;
-    for (R_len_t i = str_cont.vectorize_init();
-            i != str_cont.vectorize_end();
-            i = str_cont.vectorize_next(i))
     {
-        R_len_t cur_from     = from_tab[i % from_len];
-        R_len_t cur_to       = (to_tab)?to_tab[i % to_len]:length_tab[i % length_len];
-        if (str_cont.isNA(i) || cur_from == NA_INTEGER || cur_to == NA_INTEGER) {
-            SET_STRING_ELT(ret, i, NA_STRING);
-            continue;
-        }
-
-        if (length_tab) {
-            if (cur_to == 0) {
-                SET_STRING_ELT(ret, i, R_BlankString);
-                continue;
-            }
-            else if (cur_to < 0) {
-                SET_STRING_ELT(ret, i, NA_STRING);
-                num_negative_length++;
-                continue;
-            }
-
-            cur_to = cur_from + cur_to - 1;
-            if (cur_from < 0 && cur_to >= 0) cur_to = -1;
-        }
-
-        const char* str_cur_s = str_cont.get(i).c_str();
-
-        R_len_t cur_from2; // UTF-8 byte indices
-        R_len_t cur_to2;   // UTF-8 byte indices
-
-        ci__sub_get_indices(str_cont, i, cur_from, cur_to, cur_from2, cur_to2);
-
-        if (cur_to2 > cur_from2) { // just copy
-            SET_STRING_ELT(ret, i, Rf_mkCharLenCE(str_cur_s+cur_from2, cur_to2-cur_from2, CE_UTF8));
+        charport::charvec::Store output(0, 0);
+        if (vectorize_len <= 0) {
+            charport::charvec::Builder builder(0);
+            output = builder.release_store();
         }
         else {
-            // maybe a warning here?
-            SET_STRING_ELT(ret, i, Rf_mkCharLen(NULL, 0));
+            StriContainerUTF8_indexable str_cont(
+                context, str, vectorize_len
+            );
+            output = ci__sub_build(
+                str_cont, from_len, to_len, length_len,
+                from_tab, to_tab, length_tab, ignore_negative_length_1
+            );
         }
+
+        STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
     }
 
-    if (num_negative_length > 0 && ignore_negative_length_1) {
-        // stringx: ignore items corresponding to length<0
-        STRI_ASSERT(length_tab)
-
-        SEXP ret_old = ret;
-        STRI__PROTECT(ret = Rf_allocVector(STRSXP, vectorize_len-num_negative_length));
-        R_len_t k = 0;
-        for (R_len_t i = str_cont.vectorize_init();
-            i != str_cont.vectorize_end();
-            i = str_cont.vectorize_next(i))
-        {
-            R_len_t cur_from     = from_tab[i % from_len];
-            R_len_t cur_to       = length_tab[i % length_len];
-            if (!str_cont.isNA(i) && cur_from != NA_INTEGER && cur_to != NA_INTEGER && cur_to < 0) {
-                // ignore
-            }
-            else {
-                SET_STRING_ELT(ret, k, STRING_ELT(ret_old, i));
-                ++k;
-            }
-        }
-    }
-
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -357,8 +606,6 @@ SEXP ci_sub_replacement(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit_na,
     bool omit_na_1 = ci__prepare_arg_logical_1_notNA(omit_na, "omit_na");
     bool use_matrix_1 = ci__prepare_arg_logical_1_notNA(use_matrix, "use_matrix");
 
-    R_len_t value_len     = LENGTH(value);
-    R_len_t str_len       = LENGTH(str);
     R_len_t from_len      = 0; // see below
     R_len_t to_len        = 0; // see below
     R_len_t length_len    = 0; // see below
@@ -366,91 +613,185 @@ SEXP ci_sub_replacement(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit_na,
     int* to_tab           = 0; // see below
     int* length_tab       = 0; // see below
 
-    R_len_t sub_protected =  2+ /* how many objects to PROTECT on ret? */
-                             ci__sub_prepare_from_to_length(from, to, length,
-                                     from_len, to_len, length_len, from_tab, to_tab, length_tab, use_matrix_1);
+    STRI__ERROR_HANDLER_BEGIN(2)
+    R_len_t sub_protected = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        sub_protected = ci__sub_prepare_from_to_length(
+            from, to, length,
+            from_len, to_len, length_len,
+            from_tab, to_tab, length_tab,
+            use_matrix_1, &STRI__DEFERRED_WARNINGS
+        );
+        return R_NilValue;
+    });
+    __ci_protected_sexp_num += sub_protected;
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    const R_len_t value_len = ci::checked_r_len(
+        context.size(value), "character vectors"
+    );
+    const R_len_t str_len = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t vectorize_len = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_len = ci__recycling_rule(
+            STRI__DEFERRED_WARNINGS, 4,
+            str_len, value_len, from_len,
+            (to_len>length_len)?to_len:length_len
+        );
+        return R_NilValue;
+    });
 
-    R_len_t vectorize_len = ci__recycling_rule(true, 4,
-                            str_len, value_len, from_len, (to_len>length_len)?to_len:length_len);
-
-    if (vectorize_len <= 0) {
-        UNPROTECT(sub_protected);
-        return Rf_allocVector(STRSXP, 0);
-    }
-
-    STRI__ERROR_HANDLER_BEGIN(sub_protected)
-    StriContainerUTF8_indexable str_cont(str, vectorize_len);
-    StriContainerUTF8 value_cont(value, vectorize_len);
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, vectorize_len));
-    String8buf buf(0); // @TODO: estimate bufsize a priori
-
-    for (R_len_t i = str_cont.vectorize_init();
-            i != str_cont.vectorize_end();
-            i = str_cont.vectorize_next(i))
     {
-        R_len_t cur_from     = from_tab[i % from_len];
-        R_len_t cur_to       = (to_tab)?to_tab[i % to_len]:length_tab[i % length_len];
+        charport::charvec::Builder builder(vectorize_len);
+        if (vectorize_len > 0) {
+            StriContainerUTF8_indexable str_cont(
+                context, str, vectorize_len
+            );
+            StriContainerUTF8 value_cont(context, value, vectorize_len);
+            String8buf buf(0); // @TODO: estimate bufsize a priori
 
-        if (str_cont.isNA(i)) {
-            SET_STRING_ELT(ret, i, NA_STRING);
-            continue;
+            for (R_len_t i = str_cont.vectorize_init();
+                    i != str_cont.vectorize_end();
+                    i = str_cont.vectorize_next(i))
+            {
+                R_len_t cur_from = from_tab[i % from_len];
+                R_len_t cur_to = to_tab
+                    ? to_tab[i % to_len]
+                    : length_tab[i % length_len];
+
+                if (str_cont.isNA(i)) {
+                    builder.set_na(i);
+                    continue;
+                }
+
+                if (cur_from == NA_INTEGER || cur_to == NA_INTEGER ||
+                        value_cont.isNA(i)) {
+                    if (omit_na_1)
+                        ci::builder_set(builder, i, str_cont.get(i));
+                    else
+                        builder.set_na(i);
+                    continue;
+                }
+
+                if (!to_tab && cur_to/*length*/ < 0) {
+                    ci::builder_set(builder, i, str_cont.get(i));
+                    continue;
+                }
+
+                if (length_tab) {
+                    if (cur_to <= 0) {
+                        cur_to = 0;
+                    }
+                    else {
+                        cur_to = cur_from + cur_to - 1;
+                        if (cur_from < 0 && cur_to >= 0)
+                            cur_to = -1;
+                    }
+                }
+
+                const char* str_cur_s = str_cont.get(i).data();
+                R_len_t str_cur_n = str_cont.get(i).length();
+                const char* value_cur_s = value_cont.get(i).data();
+                R_len_t value_cur_n = value_cont.get(i).length();
+                R_len_t cur_from2;
+                R_len_t cur_to2;
+
+                ci__sub_get_indices(
+                    str_cont, i, cur_from, cur_to, cur_from2, cur_to2
+                );
+                if (cur_to2 < cur_from2)
+                    cur_to2 = cur_from2;
+
+                R_len_t buflen =
+                    str_cur_n-(cur_to2-cur_from2)+value_cur_n;
+                buf.resize(buflen, false/*destroy contents*/);
+                if (cur_from2 > 0)
+                    memcpy(buf.data(), str_cur_s, (size_t)cur_from2);
+                if (value_cur_n > 0) {
+                    memcpy(
+                        buf.data()+cur_from2, value_cur_s,
+                        (size_t)value_cur_n
+                    );
+                }
+                if (str_cur_n-cur_to2 > 0) {
+                    memcpy(
+                        buf.data()+cur_from2+value_cur_n,
+                        str_cur_s+cur_to2, (size_t)str_cur_n-cur_to2
+                    );
+                }
+                ci::builder_set(
+                    builder, i, buf.data(), buflen,
+                    cetype_ext_t::CE_ASCII_OR_UTF8
+                );
+            }
         }
 
-        if (cur_from == NA_INTEGER || cur_to == NA_INTEGER || value_cont.isNA(i)) {
-            if (omit_na_1) {
-                SET_STRING_ELT(ret, i, str_cont.toR(i));
-            }
-            else {
-                SET_STRING_ELT(ret, i, NA_STRING);
-            }
-            continue;
-        }
-
-        if (!to_tab && cur_to/*length*/ < 0) {  // so not NA
-            SET_STRING_ELT(ret, i, str_cont.toR(i));
-            continue;
-        }
-
-        if (length_tab) {
-            if (cur_to <= 0) {
-                // SET_STRING_ELT(ret, i, R_BlankString);
-                // continue;
-                cur_to = 0;
-            }
-            else {
-                cur_to = cur_from + cur_to - 1;
-                if (cur_from < 0 && cur_to >= 0) cur_to = -1;
-            }
-        }
-
-        const char* str_cur_s   = str_cont.get(i).c_str();
-        R_len_t str_cur_n       = str_cont.get(i).length();
-        const char* value_cur_s = value_cont.get(i).c_str();
-        R_len_t value_cur_n     = value_cont.get(i).length();
-
-        R_len_t cur_from2; // UTF-8 byte indices
-        R_len_t cur_to2;   // UTF-8 byte indices
-
-        ci__sub_get_indices(str_cont, i, cur_from, cur_to, cur_from2, cur_to2);
-        if (cur_to2 < cur_from2) cur_to2 = cur_from2;
-
-        R_len_t buflen = str_cur_n-(cur_to2-cur_from2)+value_cur_n;
-        buf.resize(buflen, false/*destroy contents*/);
-        if (cur_from2 > 0)
-            memcpy(buf.data(), str_cur_s, (size_t)cur_from2);
-        if (value_cur_n > 0)
-            memcpy(buf.data()+cur_from2, value_cur_s, (size_t)value_cur_n);
-        if (str_cur_n-cur_to2 > 0)
-            memcpy(buf.data()+cur_from2+value_cur_n, str_cur_s+cur_to2, (size_t)str_cur_n-cur_to2);
-        SET_STRING_ELT(ret, i, Rf_mkCharLenCE(buf.data(), buflen, CE_UTF8));
+        STRI__PROTECT(ret = builder.to_sexp());
     }
 
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
 }
 
+
+
+bool ci__sub_all_plain_logical_scalar_not_na(SEXP value)
+{
+    return TYPEOF(value) == LGLSXP &&
+        !Rf_isObject(value) && !ALTREP(value) &&
+        LENGTH(value) == 1 && LOGICAL_RO(value)[0] != NA_LOGICAL;
+}
+
+
+bool ci__sub_all_plain_integer_elements(SEXP values, R_len_t values_len)
+{
+    if (ALTREP(values))
+        return false;
+
+    for (R_len_t i=0; i<values_len; ++i) {
+        SEXP value = VECTOR_ELT(values, i);
+        if (Rf_isNull(value))
+            continue;
+        if (TYPEOF(value) != INTSXP ||
+                Rf_isObject(value) || ALTREP(value)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+
+// Sharing the source Reader is safe only when per-element preparation cannot
+// dispatch or emit an immediate R condition. Other index forms keep the
+// copied prepare/read order and use a short source borrow for each element.
+bool ci__sub_all_can_share_reader(
+    SEXP from, R_len_t from_len,
+    SEXP to, R_len_t to_len,
+    SEXP length, R_len_t length_len,
+    SEXP use_matrix, SEXP ignore_negative_length,
+    bool has_to, bool has_length
+)
+{
+    if (!ci__sub_all_plain_logical_scalar_not_na(use_matrix) ||
+            !ci__sub_all_plain_logical_scalar_not_na(
+                ignore_negative_length
+            )) {
+        return false;
+    }
+    if (!ci__sub_all_plain_integer_elements(from, from_len))
+        return false;
+    if (has_to && !ci__sub_all_plain_integer_elements(to, to_len))
+        return false;
+    if (has_length &&
+            !ci__sub_all_plain_integer_elements(length, length_len)) {
+        return false;
+    }
+    return true;
+}
 
 
 /**
@@ -478,69 +819,247 @@ SEXP ci_sub_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix, SEXP
     PROTECT(from   = ci__prepare_arg_list(from, "from"));
     PROTECT(to     = ci__prepare_arg_list(to, "to"));
     PROTECT(length = ci__prepare_arg_list(length, "length"));
-//     bool use_matrix_1 = ci__prepare_arg_logical_1_notNA(use_matrix, "use_matrix");
 
-    R_len_t str_len       = LENGTH(str);
-    R_len_t from_len      = LENGTH(from);
-    // R_len_t to_len        = LENGTH(to);
-    // R_len_t length_len    = LENGTH(length);
-
-
-    R_len_t vectorize_len;
-    if (!Rf_isNull(to))
-        vectorize_len = ci__recycling_rule(true, 3,
-                                             str_len, from_len, LENGTH(to));
-    else if (!Rf_isNull(length))
-        vectorize_len = ci__recycling_rule(true, 3,
-                                             str_len, from_len, LENGTH(length));
-    else
-        vectorize_len = ci__recycling_rule(true, 2, str_len, from_len);
-
-    if (vectorize_len <= 0) {
-        UNPROTECT(4);
-        return Rf_allocVector(VECSXP, 0);
-    }
-
-
-    // no STRI__ERROR_HANDLER_BEGIN  block ---- ci_sub can longjmp with Rf_error...
-
-    SEXP ret, str_tmp, tmp;
-    PROTECT(ret = Rf_allocVector(VECSXP, vectorize_len)); //5
-    PROTECT(str_tmp = Rf_allocVector(STRSXP, 1));         //6
-
-    for (R_len_t i = 0; i<vectorize_len; ++i)
-    {
-        PROTECT(tmp = STRING_ELT(str, i%str_len));
-        SET_STRING_ELT(str_tmp, 0, tmp);
-        UNPROTECT(1); //tmp
-
-        if (!Rf_isNull(to)) {
-            PROTECT(tmp = ci_sub(
-                str_tmp, VECTOR_ELT(from, i%from_len), VECTOR_ELT(to, i%LENGTH(to)), R_NilValue, use_matrix, ignore_negative_length
-            ));
+    STRI__ERROR_HANDLER_BEGIN(4)
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    const R_len_t str_len = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t from_len = 0;
+    R_len_t to_len = 0;
+    R_len_t length_len = 0;
+    bool has_to = false;
+    bool has_length = false;
+    R_len_t vectorize_len = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        from_len = LENGTH(from);
+        to_len = LENGTH(to);
+        length_len = LENGTH(length);
+        has_to = !Rf_isNull(to);
+        has_length = !Rf_isNull(length);
+        if (has_to) {
+            vectorize_len = ci__recycling_rule(
+                STRI__DEFERRED_WARNINGS, 3,
+                str_len, from_len, to_len
+            );
         }
-        else if (!Rf_isNull(length)) {
-            PROTECT(tmp = ci_sub(
-                str_tmp, VECTOR_ELT(from, i%from_len), R_NilValue, VECTOR_ELT(length, i%LENGTH(length)), use_matrix, ignore_negative_length
-            ));
+        else if (has_length) {
+            vectorize_len = ci__recycling_rule(
+                STRI__DEFERRED_WARNINGS, 3,
+                str_len, from_len, length_len
+            );
         }
         else {
-            PROTECT(tmp = ci_sub(
-                str_tmp, VECTOR_ELT(from, i%from_len), R_NilValue, R_NilValue, use_matrix, ignore_negative_length
-            ));
+            vectorize_len = ci__recycling_rule(
+                STRI__DEFERRED_WARNINGS, 2, str_len, from_len
+            );
         }
+        return R_NilValue;
+    });
 
-        SET_VECTOR_ELT(ret, i, tmp);
-        UNPROTECT(1); //tmp
+    SEXP ret;
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(VECSXP, vectorize_len);
+    }));
+
+    const bool can_share_reader = ci__sub_all_can_share_reader(
+        from, from_len, to, to_len, length, length_len,
+        use_matrix, ignore_negative_length, has_to, has_length
+    );
+
+    // Deviation from stringi: the copied loop creates a scalar STRSXP and
+    // calls ci_sub() for every element. Plain scalar flags and integer indices
+    // need no user callback, so one Reader and one unwind boundary can serve
+    // that same loop. Finished Stores wait in native memory until the shared
+    // borrow has ended.
+    std::vector<charport::charvec::Store> staged_outputs;
+    if (can_share_reader)
+        staged_outputs.reserve(static_cast<size_t>(vectorize_len));
+
+    if (can_share_reader) {
+        const bool use_matrix_1 = LOGICAL_RO(use_matrix)[0] != 0;
+        const bool ignore_negative_length_1 =
+            LOGICAL_RO(ignore_negative_length)[0] != 0;
+        std::shared_ptr<ci::ReaderBorrow> shared_source_borrow;
+        const charport::StrViews* source_views = NULL;
+        std::unique_ptr<StriContainerUTF8_indexable> str_cont;
+        charport::charvec::Builder inner_builder(0);
+        charport::charvec::Builder filtered_builder(0);
+        charport::charvec::Store inner_output(0, 0);
+
+        charport::unwind_protect([&]() -> SEXP {
+            for (R_len_t i=0; i<vectorize_len; ++i) {
+                ci::UnwindCallbackProtector callback_protector;
+                SEXP inner_from = R_NilValue;
+                SEXP inner_to = R_NilValue;
+                SEXP inner_length = R_NilValue;
+                R_len_t inner_from_len = 0;
+                R_len_t inner_to_len = 0;
+                R_len_t inner_length_len = 0;
+                int* inner_from_tab = NULL;
+                int* inner_to_tab = NULL;
+                int* inner_length_tab = NULL;
+                R_len_t inner_protected = 0;
+
+                inner_from = VECTOR_ELT(from, i%from_len);
+                if (has_to)
+                    inner_to = VECTOR_ELT(to, i%to_len);
+                else if (has_length)
+                    inner_length = VECTOR_ELT(length, i%length_len);
+                inner_protected = ci__sub_prepare_from_to_length(
+                    inner_from, inner_to, inner_length,
+                    inner_from_len, inner_to_len, inner_length_len,
+                    inner_from_tab, inner_to_tab, inner_length_tab,
+                    use_matrix_1, &STRI__DEFERRED_WARNINGS
+                );
+                callback_protector.adopt(inner_protected);
+                const R_len_t inner_vectorize_len = ci__recycling_rule(
+                    STRI__DEFERRED_WARNINGS, 3, 1, inner_from_len,
+                    (inner_to_len>inner_length_len)
+                        ? inner_to_len : inner_length_len
+                );
+
+                if (inner_vectorize_len <= 0) {
+                    inner_builder.reset(0);
+                    inner_output = inner_builder.release_store();
+                }
+                else {
+                    if (!shared_source_borrow) {
+                        shared_source_borrow = context.acquire(str);
+                        source_views = &shared_source_borrow->views();
+                    }
+                    str_cont.reset(new StriContainerUTF8_indexable(
+                        shared_source_borrow,
+                        (*source_views)[static_cast<R_xlen_t>(i%str_len)],
+                        inner_vectorize_len, true
+                    ));
+                    inner_output = ci__sub_build(
+                        *str_cont,
+                        inner_from_len, inner_to_len, inner_length_len,
+                        inner_from_tab, inner_to_tab, inner_length_tab,
+                        ignore_negative_length_1,
+                        inner_builder, filtered_builder
+                    );
+                    str_cont.reset();
+                }
+
+                callback_protector.unprotect(inner_protected);
+                staged_outputs.push_back(std::move(inner_output));
+            }
+            return R_NilValue;
+        });
+    }
+    else {
+        charport::charvec::Builder inner_builder(0);
+        charport::charvec::Builder filtered_builder(0);
+
+        for (R_len_t i=0; i<vectorize_len; ++i) {
+            SEXP inner_from = R_NilValue;
+            SEXP inner_to = R_NilValue;
+            SEXP inner_length = R_NilValue;
+            R_len_t inner_from_len = 0;
+            R_len_t inner_to_len = 0;
+            R_len_t inner_length_len = 0;
+            int* inner_from_tab = NULL;
+            int* inner_to_tab = NULL;
+            int* inner_length_tab = NULL;
+            R_len_t inner_protected = 0;
+            R_len_t inner_vectorize_len = 0;
+            bool use_matrix_1 = false;
+            bool ignore_negative_length_1 = false;
+
+            charport::unwind_protect([&]() -> SEXP {
+                use_matrix_1 = ci__prepare_arg_logical_1_notNA(
+                    use_matrix, "use_matrix", &STRI__DEFERRED_WARNINGS
+                );
+                ignore_negative_length_1 =
+                    ci__prepare_arg_logical_1_notNA(
+                        ignore_negative_length, "ignore_negative_length",
+                        &STRI__DEFERRED_WARNINGS
+                    );
+                inner_from = VECTOR_ELT(from, i%from_len);
+                if (has_to)
+                    inner_to = VECTOR_ELT(to, i%to_len);
+                else if (has_length)
+                    inner_length = VECTOR_ELT(length, i%length_len);
+                inner_protected = ci__sub_prepare_from_to_length(
+                    inner_from, inner_to, inner_length,
+                    inner_from_len, inner_to_len, inner_length_len,
+                    inner_from_tab, inner_to_tab, inner_length_tab,
+                    use_matrix_1, &STRI__DEFERRED_WARNINGS
+                );
+                return R_NilValue;
+            });
+            __ci_protected_sexp_num += inner_protected;
+            inner_vectorize_len = ci__recycling_rule(
+                STRI__DEFERRED_WARNINGS, 3, 1, inner_from_len,
+                (inner_to_len>inner_length_len)
+                    ? inner_to_len : inner_length_len
+            );
+
+            charport::charvec::Store inner_output(0, 0);
+            if (inner_vectorize_len <= 0) {
+                inner_builder.reset(0);
+                inner_output = inner_builder.release_store();
+            }
+            else {
+                {
+                    std::shared_ptr<ci::ReaderBorrow> source_borrow;
+                    charport::StrView source_view;
+                    source_borrow.reset(new ci::ReaderBorrow(str));
+                    if (source_borrow->size() != str_len) {
+                        throw std::runtime_error(
+                            "character vector length changed during an operation"
+                        );
+                    }
+                    source_view = source_borrow->view(
+                        static_cast<R_xlen_t>(i%str_len)
+                    );
+                    StriContainerUTF8_indexable str_cont(
+                        source_borrow, source_view,
+                        inner_vectorize_len, true
+                    );
+                    inner_output = ci__sub_build(
+                        str_cont,
+                        inner_from_len, inner_to_len, inner_length_len,
+                        inner_from_tab, inner_to_tab, inner_length_tab,
+                        ignore_negative_length_1,
+                        inner_builder, filtered_builder
+                    );
+                }
+            }
+
+            STRI__UNPROTECT(inner_protected);
+            SEXP tmp;
+            STRI__PROTECT(tmp = charport::charvec::wrap(
+                std::move(inner_output)
+            ));
+            SET_VECTOR_ELT(ret, i, tmp);
+            STRI__UNPROTECT(1);
+        }
     }
 
-    UNPROTECT(6);
+    if (can_share_reader) {
+        charport::unwind_protect([&]() -> SEXP {
+            for (R_len_t i=0; i<vectorize_len; ++i) {
+                SEXP tmp = PROTECT(charport::charvec::wrap(
+                    std::move(staged_outputs[static_cast<size_t>(i)])
+                ));
+                SET_VECTOR_ELT(ret, i, tmp);
+                UNPROTECT(1);
+            }
+            return R_NilValue;
+        });
+    }
+
+    context.emitWarnings();
+    STRI__UNPROTECT_ALL
     return ret;
+    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
 }
 
 
 /** internal function - replace multiple substrings in a single string
- * can raise Rf_error
  *
  *  @version 1.3.2 (Marek Gagolewski, 2019-02-23)
  *
@@ -557,176 +1076,167 @@ SEXP ci_sub_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix, SEXP
  * @version 1.7.1 (Marek Gagolewski, 2021-07-08)
  *    use_matrix
  */
-SEXP ci__sub_replacement_all_single(
-    SEXP curs,
-    SEXP from, SEXP to, SEXP length, bool omit_na_1, bool use_matrix_1, SEXP value
-) {
-    // curs is a CHARSXP in UTF-8
-
-    PROTECT(value = ci_enc_toutf8(value, Rf_ScalarLogical(FALSE), Rf_ScalarLogical(FALSE)));
-    R_len_t value_len     = LENGTH(value);
-
-    R_len_t from_len      = 0; // see below
-    R_len_t to_len        = 0; // see below
-    R_len_t length_len    = 0; // see below
-    int* from_tab         = 0; // see below
-    int* to_tab           = 0; // see below
-    int* length_tab       = 0; // see below
-
-    R_len_t sub_protected = 1+ /* how many objects to PROTECT on ret? */
-                            ci__sub_prepare_from_to_length(from, to, length,
-                                    from_len, to_len, length_len, from_tab, to_tab, length_tab, use_matrix_1);
-
-    R_len_t vectorize_len = ci__recycling_rule(true, 2, // does not care about value_len
-                            from_len, (to_len>length_len)?to_len:length_len);
-
-    if (vectorize_len <= 0) { // "nothing" is being replaced -> return the input as-is
-        UNPROTECT(sub_protected);
-        return curs;
-    }
-    if (value_len <= 0) { // things are supposed to be replaced with "nothing"...
-        UNPROTECT(sub_protected);
-        Rf_warning(MSG__REPLACEMENT_ZERO);
-        return NA_STRING;
+void ci__sub_replacement_all_single(
+    charport::charvec::Builder& builder, R_len_t output_index,
+    const CiOwnedString8& source,
+    const std::vector<CiOwnedString8>& replacements,
+    R_len_t from_len, R_len_t to_len, R_len_t length_len,
+    int* from_tab, int* to_tab, int* length_tab,
+    R_len_t vectorize_len, bool omit_na,
+    ci::ReaderContext& context
+)
+{
+    if (vectorize_len <= 0) {
+        ci__sub_builder_set_owned(builder, output_index, source);
+        return;
     }
 
-    const char* curs_s = CHAR(curs); // already in UTF-8  // TODO: ALTREP will be problematic?
-    R_len_t curs_n = LENGTH(curs);
+    const R_len_t value_len = static_cast<R_len_t>(replacements.size());
+    if (value_len <= 0) {
+        context.warn(MSG__REPLACEMENT_ZERO);
+        builder.set_na(output_index);
+        return;
+    }
 
-    // first check for NAs....
-    if (!omit_na_1) {
+    if (!omit_na) {
         for (R_len_t i=0; i<vectorize_len; ++i) {
-            R_len_t cur_from     = from_tab[i % from_len];
-            R_len_t cur_to       = (to_tab)?to_tab[i % to_len]:length_tab[i % length_len];
+            const R_len_t cur_from = from_tab[i % from_len];
+            const R_len_t cur_to = to_tab
+                ? to_tab[i % to_len]
+                : length_tab[i % length_len];
             if (cur_from == NA_INTEGER || cur_to == NA_INTEGER) {
-                UNPROTECT(sub_protected);
-                if (omit_na_1) return curs;
-                else return NA_STRING;
+                builder.set_na(output_index);
+                return;
             }
         }
 
         for (R_len_t i=0; i<vectorize_len; ++i) {
-            if (STRING_ELT(value, i%value_len) == NA_STRING) {
-                UNPROTECT(sub_protected);
-                return NA_STRING;
+            if (replacements[static_cast<size_t>(i % value_len)].is_na) {
+                builder.set_na(output_index);
+                return;
             }
         }
     }
 
-
-
-    // get the number of code points in curs, if required (for negative indexes)
-    R_len_t curs_m = -1;
-    if (IS_ASCII(curs)) curs_m = curs_n;
-    else { // is UTF-8
-        curs_m = 0;    // code points count
-        R_len_t j = 0; // byte pos
-        while (j < curs_n) {
-            U8_FWD_1_UNSAFE(curs_s, j);
-            ++curs_m;
+    const char* source_data = ci__sub_owned_data(source);
+    const R_len_t source_length = static_cast<R_len_t>(source.value.size());
+    R_len_t source_codepoints = -1;
+    if (source.is_ascii) {
+        source_codepoints = source_length;
+    }
+    else {
+        source_codepoints = 0;
+        R_len_t j = 0;
+        while (j < source_length) {
+            U8_FWD_1_UNSAFE(source_data, j);
+            ++source_codepoints;
         }
     }
 
-    STRI__ERROR_HANDLER_BEGIN(sub_protected)
-    std::vector<char> buf; // convenience >> speed
-
+    std::vector<char> buf;
     R_len_t num_replaced = 0;
     R_len_t last_pos = 0;
     R_len_t byte_pos = 0;
     for (R_len_t i=0; i<vectorize_len; ++i) {
-        R_len_t cur_from     = from_tab[i % from_len];
-        R_len_t cur_to       = (to_tab)?to_tab[i % to_len]:length_tab[i % length_len];
+        R_len_t cur_from = from_tab[i % from_len];
+        R_len_t cur_to = to_tab
+            ? to_tab[i % to_len]
+            : length_tab[i % length_len];
+        const CiOwnedString8& replacement =
+            replacements[static_cast<size_t>(i % value_len)];
 
-        if (
-            cur_from == NA_INTEGER ||
-            cur_to == NA_INTEGER ||
-            STRING_ELT(value, i%value_len) == NA_STRING ||
-            (!to_tab && cur_to/*length*/ < 0)
-        ) {
-            // omit_na is true or negative length
+        if (cur_from == NA_INTEGER || cur_to == NA_INTEGER ||
+                replacement.is_na || (!to_tab && cur_to < 0)) {
             continue;
         }
 
         num_replaced++;
 
-        if (cur_from < 0) cur_from = curs_m+cur_from+1;
-        if (cur_from <= 0) cur_from = 1;
-        cur_from--; // 1-based -> 0-based index
-        if (cur_from >= curs_m) cur_from = curs_m;
-
-        // cur_from is in [0, curs_m]
+        if (cur_from < 0)
+            cur_from = source_codepoints+cur_from+1;
+        if (cur_from <= 0)
+            cur_from = 1;
+        cur_from--;
+        if (cur_from >= source_codepoints)
+            cur_from = source_codepoints;
 
         if (length_tab) {
-            if (cur_to < 0) cur_to = 0;
+            if (cur_to < 0)
+                cur_to = 0;
             cur_to = cur_from+cur_to;
         }
         else {
-            if (cur_to < 0)  cur_to = curs_m+cur_to+1;
-            if (cur_to < cur_from) cur_to = cur_from; // insertion
+            if (cur_to < 0)
+                cur_to = source_codepoints+cur_to+1;
+            if (cur_to < cur_from)
+                cur_to = cur_from;
         }
-        if (cur_to >= curs_m) cur_to = curs_m;
-
-        // the chunk to replace is at code points [cur_from, cur_to)
-
-        // Rprintf("orig [%d,%d) repl [%d,%d)\n", last_pos, cur_from, cur_from, cur_to);
+        if (cur_to >= source_codepoints)
+            cur_to = source_codepoints;
 
         if (last_pos > cur_from)
             throw StriException(MSG__OVERLAPPING_OR_UNSORTED_INDEXES);
 
-        // first, copy [last_pos, cur_from)
-        R_len_t byte_pos_last = byte_pos;
+        const R_len_t byte_pos_last = byte_pos;
         while (last_pos < cur_from) {
-            U8_FWD_1_UNSAFE(curs_s, byte_pos);
+            U8_FWD_1_UNSAFE(source_data, byte_pos);
             ++last_pos;
         }
 
         if (byte_pos-byte_pos_last > 0) {
-            R_len_t buf_size = buf.size();
-            buf.resize(buf_size+byte_pos-byte_pos_last);
-            if (!buf.data() || !curs_s)
+            const size_t buf_size = buf.size();
+            const size_t copy_length = static_cast<size_t>(
+                byte_pos-byte_pos_last
+            );
+            buf.resize(ci__sub_checked_output_size(buf_size, copy_length));
+            if (!buf.data() || !source_data)
                 throw StriException(MSG__MEM_ALLOC_ERROR);
-            memcpy(buf.data()+buf_size, curs_s+byte_pos_last, byte_pos-byte_pos_last);
+            memcpy(
+                buf.data()+buf_size, source_data+byte_pos_last,
+                copy_length
+            );
         }
 
-        // then, copy the corresponding replacement string
-        SEXP value_cur = STRING_ELT(value, i%value_len);
-        const char* value_s = CHAR(value_cur);  // TODO: ALTREP will be problematic?
-        R_len_t value_n = LENGTH(value_cur);
-        if (value_n > 0) {
-            R_len_t buf_size = buf.size();
-            buf.resize(buf_size+value_n);
-            if (!buf.data() || !value_s)
+        const size_t replacement_length = replacement.value.size();
+        if (replacement_length > 0) {
+            const size_t buf_size = buf.size();
+            buf.resize(ci__sub_checked_output_size(
+                buf_size, replacement_length
+            ));
+            const char* replacement_data = ci__sub_owned_data(replacement);
+            if (!buf.data() || !replacement_data)
                 throw StriException(MSG__MEM_ALLOC_ERROR);
-            memcpy(buf.data()+buf_size, value_s, value_n);
+            memcpy(
+                buf.data()+buf_size, replacement_data, replacement_length
+            );
         }
 
-
-        // lastly, update last_pos
-        // ---> last_pos = cur_to;
         while (last_pos < cur_to) {
-            U8_FWD_1_UNSAFE(curs_s, byte_pos);
+            U8_FWD_1_UNSAFE(source_data, byte_pos);
             ++last_pos;
         }
     }
 
-    // finally, copy [last_pos, curs_m)
-    if (curs_n-byte_pos > 0) {
-        R_len_t buf_size = buf.size();
-        buf.resize(buf_size+curs_n-byte_pos);
-        if (!buf.data() || !curs_s)
+    if (source_length-byte_pos > 0) {
+        const size_t buf_size = buf.size();
+        const size_t copy_length = static_cast<size_t>(
+            source_length-byte_pos
+        );
+        buf.resize(ci__sub_checked_output_size(buf_size, copy_length));
+        if (!buf.data() || !source_data)
             throw StriException(MSG__MEM_ALLOC_ERROR);
-        memcpy(buf.data()+buf_size, curs_s+byte_pos, curs_n-byte_pos);
+        memcpy(
+            buf.data()+buf_size, source_data+byte_pos, copy_length
+        );
     }
 
-    // only warn if not NA
     if (num_replaced > 0 && vectorize_len % value_len != 0)
-        Rf_warning(MSG__WARN_RECYCLING_RULE2);
+        context.warn(MSG__WARN_RECYCLING_RULE2);
 
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_mkCharLenCE(buf.data(), buf.size(), CE_UTF8));
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
+    ci::builder_set(
+        builder, output_index, buf.empty() ? "" : buf.data(),
+        buf.size(), cetype_ext_t::CE_ASCII_OR_UTF8
+    );
 }
 
 
@@ -757,70 +1267,147 @@ SEXP ci__sub_replacement_all_single(
  */
 SEXP ci_sub_replacement_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit_na, SEXP value, SEXP use_matrix)
 {
-    //PROTECT(str    = ci__prepare_arg_string(str, "str"));
-    PROTECT(str = ci_enc_toutf8(str, Rf_ScalarLogical(FALSE), Rf_ScalarLogical(FALSE)));
-    PROTECT(from   = ci__prepare_arg_list(from, "from"));
-    PROTECT(to     = ci__prepare_arg_list(to, "to"));
-    PROTECT(length = ci__prepare_arg_list(length, "length"));
-    PROTECT(value  = ci__prepare_arg_list(value, "value"));
-    bool omit_na_1 = ci__prepare_arg_logical_1_notNA(omit_na, "omit_na");
-    bool use_matrix_1 = ci__prepare_arg_logical_1_notNA(use_matrix, "use_matrix");
+    PROTECT(str = ci__prepare_arg_string(str, "str"));
 
-    R_len_t str_len       = LENGTH(str);
-    R_len_t from_len      = LENGTH(from);
-    R_len_t value_len     = LENGTH(value);
-
-
-    R_len_t vectorize_len;
-    if (!Rf_isNull(to))
-        vectorize_len = ci__recycling_rule(true, 4,
-                                             str_len, from_len, value_len, LENGTH(to));
-    else if (!Rf_isNull(length))
-        vectorize_len = ci__recycling_rule(true, 4,
-                                             str_len, from_len, value_len, LENGTH(length));
-    else
-        vectorize_len = ci__recycling_rule(true, 3, str_len, from_len, value_len);
-
-    if (vectorize_len <= 0) {
-        UNPROTECT(5);
-        return Rf_allocVector(STRSXP, 0);
-    }
-
-// no STRI__ERROR_HANDLER_BEGIN  block ---- below we can longjmp with Rf_error...
-
-    SEXP ret, curs, tmp;
-    PROTECT(ret = Rf_allocVector(STRSXP, vectorize_len)); // 6
-    for (R_len_t i = 0; i<vectorize_len; ++i)
+    STRI__ERROR_HANDLER_BEGIN(1)
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    SEXP ret;
     {
-        curs = STRING_ELT(str, i%str_len);
-        if (curs == NA_STRING) {
-            SET_STRING_ELT(ret, i, NA_STRING);
-            continue;
+        const std::vector<CiOwnedString8> strings =
+            ci__sub_read_owned(context, str);
+
+        const auto prepare_list = [&](SEXP& arg, const char* name) {
+            SEXP prepared = R_NilValue;
+            charport::unwind_protect([&]() -> SEXP {
+                prepared = ci__prepare_arg_list(
+                    arg, name, &STRI__DEFERRED_WARNINGS
+                );
+                PROTECT(prepared);
+                return R_NilValue;
+            });
+            arg = prepared;
+            ++__ci_protected_sexp_num;
+        };
+        prepare_list(from, "from");
+        prepare_list(to, "to");
+        prepare_list(length, "length");
+        prepare_list(value, "value");
+
+        bool omit_na_1 = false;
+        bool use_matrix_1 = false;
+        R_len_t str_len = 0;
+        R_len_t from_len = 0;
+        R_len_t to_len = 0;
+        R_len_t length_len = 0;
+        R_len_t value_len = 0;
+        R_len_t vectorize_len = 0;
+        bool has_to = false;
+        bool has_length = false;
+        charport::unwind_protect([&]() -> SEXP {
+            omit_na_1 = ci__prepare_arg_logical_1_notNA(
+                omit_na, "omit_na", &STRI__DEFERRED_WARNINGS
+            );
+            use_matrix_1 = ci__prepare_arg_logical_1_notNA(
+                use_matrix, "use_matrix", &STRI__DEFERRED_WARNINGS
+            );
+            str_len = static_cast<R_len_t>(strings.size());
+            from_len = LENGTH(from);
+            to_len = LENGTH(to);
+            length_len = LENGTH(length);
+            value_len = LENGTH(value);
+            has_to = !Rf_isNull(to);
+            has_length = !Rf_isNull(length);
+            if (has_to) {
+                vectorize_len = ci__recycling_rule(
+                    STRI__DEFERRED_WARNINGS, 4,
+                    str_len, from_len, value_len, to_len
+                );
+            }
+            else if (has_length) {
+                vectorize_len = ci__recycling_rule(
+                    STRI__DEFERRED_WARNINGS, 4,
+                    str_len, from_len, value_len, length_len
+                );
+            }
+            else {
+                vectorize_len = ci__recycling_rule(
+                    STRI__DEFERRED_WARNINGS, 3,
+                    str_len, from_len, value_len
+                );
+            }
+            return R_NilValue;
+        });
+
+        charport::charvec::Builder builder(vectorize_len);
+        for (R_len_t i=0; i<vectorize_len; ++i) {
+            const CiOwnedString8& source =
+                strings[static_cast<size_t>(i % str_len)];
+            if (source.is_na) {
+                builder.set_na(i);
+                continue;
+            }
+
+            SEXP inner_value = R_NilValue;
+            charport::unwind_protect([&]() -> SEXP {
+                inner_value = ci__prepare_arg_string(
+                    VECTOR_ELT(value, i % value_len), "str", true,
+                    &STRI__DEFERRED_WARNINGS
+                );
+                PROTECT(inner_value);
+                return R_NilValue;
+            });
+            ++__ci_protected_sexp_num;
+            const std::vector<CiOwnedString8> replacements =
+                ci__sub_read_owned(context, inner_value);
+            STRI__UNPROTECT(1);
+
+            SEXP inner_from = R_NilValue;
+            SEXP inner_to = R_NilValue;
+            SEXP inner_length = R_NilValue;
+            R_len_t inner_from_len = 0;
+            R_len_t inner_to_len = 0;
+            R_len_t inner_length_len = 0;
+            int* inner_from_tab = NULL;
+            int* inner_to_tab = NULL;
+            int* inner_length_tab = NULL;
+            R_len_t inner_protected = 0;
+            R_len_t inner_vectorize_len = 0;
+
+            charport::unwind_protect([&]() -> SEXP {
+                inner_from = VECTOR_ELT(from, i % from_len);
+                if (has_to)
+                    inner_to = VECTOR_ELT(to, i % to_len);
+                else if (has_length)
+                    inner_length = VECTOR_ELT(length, i % length_len);
+                inner_protected = ci__sub_prepare_from_to_length(
+                    inner_from, inner_to, inner_length,
+                    inner_from_len, inner_to_len, inner_length_len,
+                    inner_from_tab, inner_to_tab, inner_length_tab,
+                    use_matrix_1, &STRI__DEFERRED_WARNINGS
+                );
+                return R_NilValue;
+            });
+            __ci_protected_sexp_num += inner_protected;
+            inner_vectorize_len = ci__recycling_rule(
+                STRI__DEFERRED_WARNINGS, 2, inner_from_len,
+                (inner_to_len>inner_length_len)
+                    ? inner_to_len : inner_length_len
+            );
+
+            ci__sub_replacement_all_single(
+                builder, i, source, replacements,
+                inner_from_len, inner_to_len, inner_length_len,
+                inner_from_tab, inner_to_tab, inner_length_tab,
+                inner_vectorize_len, omit_na_1, context
+            );
+            STRI__UNPROTECT(inner_protected);
         }
 
-        if (!Rf_isNull(to)) {
-            PROTECT(tmp = ci__sub_replacement_all_single(curs,
-                          VECTOR_ELT(from, i%from_len),
-                          VECTOR_ELT(to, i%LENGTH(to)), R_NilValue,
-                          omit_na_1, use_matrix_1, VECTOR_ELT(value, i%value_len)));
-        }
-        else if (!Rf_isNull(length)) {
-            PROTECT(tmp = ci__sub_replacement_all_single(curs,
-                          VECTOR_ELT(from, i%from_len),
-                          R_NilValue, VECTOR_ELT(length, i%LENGTH(length)),
-                          omit_na_1, use_matrix_1, VECTOR_ELT(value, i%value_len)));
-        }
-        else {
-            PROTECT(tmp = ci__sub_replacement_all_single(curs,
-                          VECTOR_ELT(from, i%from_len),
-                          R_NilValue, R_NilValue,
-                          omit_na_1, use_matrix_1, VECTOR_ELT(value, i%value_len)));
-        }
-
-        SET_STRING_ELT(ret, i, tmp);
-        UNPROTECT(1); //tmp
+        STRI__PROTECT(ret = builder.to_sexp());
     }
 
-    UNPROTECT(6);
+    context.emitWarnings();
+    STRI__UNPROTECT_ALL
     return ret;
+    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
 }

@@ -36,6 +36,9 @@
 #include "ci_container_integer.h"
 #include "ci_brkiter.h"
 
+#include <deque>
+#include <utility>
+
 
 /**
  * Locate first or last boundaries
@@ -55,63 +58,87 @@ SEXP ci__locate_firstlast_boundaries(
     SEXP str, SEXP opts_brkiter, bool first, bool get_length1
 ) {
     PROTECT(str = ci__prepare_arg_string(str, "str"));
-    StriBrkIterOptions opts_brkiter2(opts_brkiter, "line_break");
 
     STRI__ERROR_HANDLER_BEGIN(1)
-    R_len_t str_length = LENGTH(str);
-    StriContainerUTF8_indexable str_cont(str, str_length);
-    StriRuleBasedBreakIterator brkiter(opts_brkiter2);
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocMatrix(INTSXP, str_length, 2));
-    ci__locate_set_dimnames_matrix(ret, get_length1);
+    {
+    // Deviation from stringi: keep the option's ICU storage inside the
+    // unwind-safe scope so it is released before warning replay.
+    StriBrkIterOptions opts_brkiter2(
+        opts_brkiter, "line_break", STRI__DEFERRED_WARNINGS
+    );
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_length = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocMatrix(INTSXP, str_length, 2);
+    }));
     int* ret_tab = INTEGER(ret);
 
-    for (R_len_t i = 0; i < str_length; ++i)
     {
-        ret_tab[i]            = NA_INTEGER;
-        ret_tab[i+str_length] = NA_INTEGER;
+        StriContainerUTF8_indexable str_cont(
+            context, str, str_length
+        );
+        StriRuleBasedBreakIterator brkiter(opts_brkiter2);
 
-        if (str_cont.isNA(i))
-            continue;
+        for (R_len_t i = 0; i < str_length; ++i)
+        {
+            ret_tab[i]            = NA_INTEGER;
+            ret_tab[i+str_length] = NA_INTEGER;
 
-        if (get_length1) {
-            ret_tab[i]            = -1;
-            ret_tab[i+str_length] = -1;
-        }
+            if (str_cont.isNA(i))
+                continue;
 
-        if (str_cont.get(i).length() == 0) {
-            continue;
-        }
+            if (get_length1) {
+                ret_tab[i]            = -1;
+                ret_tab[i+str_length] = -1;
+            }
 
-        brkiter.setupMatcher(str_cont.get(i).c_str(), str_cont.get(i).length());
-        pair<R_len_t,R_len_t> curpair;
-
-        if (first) {
-            brkiter.first();
-            if (!brkiter.next(curpair)) {
+            if (str_cont.get(i).length() == 0) {
                 continue;
             }
-        }
-        else {
-            brkiter.last();
-            if (!brkiter.previous(curpair)) {
-                continue;
+
+            brkiter.setupMatcher(
+                str_cont.get(i).data(), str_cont.get(i).length(),
+                STRI__DEFERRED_WARNINGS
+            );
+            pair<R_len_t,R_len_t> curpair;
+
+            if (first) {
+                brkiter.first();
+                if (!brkiter.next(curpair)) {
+                    continue;
+                }
             }
+            else {
+                brkiter.last();
+                if (!brkiter.previous(curpair)) {
+                    continue;
+                }
+            }
+
+            ret_tab[i]            = curpair.first;
+            ret_tab[i+str_length] = curpair.second;
+
+            // Adjust UTF8 byte index -> UChar32 index
+            str_cont.UTF8_to_UChar32_index(i,
+                                           ret_tab+i, ret_tab+i+str_length, 1,
+                                           1, // 0-based index -> 1-based
+                                           0  // end returns position of next character after match
+                                          );
+
+            if (get_length1) ret_tab[i+str_length] -= ret_tab[i] - 1;  // to->length
         }
-
-        ret_tab[i]            = curpair.first;
-        ret_tab[i+str_length] = curpair.second;
-
-        // Adjust UTF8 byte index -> UChar32 index
-        str_cont.UTF8_to_UChar32_index(i,
-                                       ret_tab+i, ret_tab+i+str_length, 1,
-                                       1, // 0-based index -> 1-based
-                                       0  // end returns position of next character after match
-                                      );
-
-        if (get_length1) ret_tab[i+str_length] -= ret_tab[i] - 1;  // to->length
     }
+
+    charport::unwind_protect([&]() -> SEXP {
+        ci__locate_set_dimnames_matrix(ret, get_length1);
+        return R_NilValue;
+    });
+    }
+    STRI__DEFERRED_WARNINGS.emit();
 
     STRI__UNPROTECT_ALL
     return ret;
@@ -190,68 +217,98 @@ SEXP ci_locate_all_boundaries(SEXP str, SEXP omit_no_match, SEXP opts_brkiter, S
     bool omit_no_match1 = ci__prepare_arg_logical_1_notNA(omit_no_match, "omit_no_match");
     bool get_length1 = ci__prepare_arg_logical_1_notNA(get_length, "get_length");
     PROTECT(str = ci__prepare_arg_string(str, "str"));
-    StriBrkIterOptions opts_brkiter2(opts_brkiter, "line_break");
 
     STRI__ERROR_HANDLER_BEGIN(1)
-    R_len_t str_length = LENGTH(str);
-    StriContainerUTF8_indexable str_cont(str, str_length);
-    StriRuleBasedBreakIterator brkiter(opts_brkiter2);
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(VECSXP, str_length));
-
-    for (R_len_t i = 0; i < str_length; ++i)
     {
-        if (str_cont.isNA(i)) {
-            SET_VECTOR_ELT(ret, i, ci__matrix_NA_INTEGER(1, 2));
-            continue;
-        }
+    // Deviation from stringi: keep the option's ICU storage inside the
+    // unwind-safe scope so it is released before warning replay.
+    StriBrkIterOptions opts_brkiter2(
+        opts_brkiter, "line_break", STRI__DEFERRED_WARNINGS
+    );
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_length = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
 
-        brkiter.setupMatcher(str_cont.get(i).c_str(), str_cont.get(i).length());
-        brkiter.first();
+    {
+        StriContainerUTF8_indexable str_cont(
+            context, str, str_length
+        );
+        StriRuleBasedBreakIterator brkiter(opts_brkiter2);
+        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+            return Rf_allocVector(VECSXP, str_length);
+        }));
+        std::deque< std::pair<R_len_t, R_len_t> > occurrences;
+        std::pair<R_len_t, R_len_t> curpair;
 
-        deque< pair<R_len_t,R_len_t> > occurrences;
-        pair<R_len_t,R_len_t> curpair;
-        while (brkiter.next(curpair))
-            occurrences.push_back(curpair);
+        // Deviation from stringi: one loop-level unwind bridge protects every
+        // child allocation and list write while the Reader and ICU owners are
+        // live. The reusable scratch deque lives outside the callback, so it
+        // is destroyed on an R error without paying one bridge per child.
+        charport::unwind_protect([&]() -> SEXP {
+          for (R_len_t i = 0; i < str_length; ++i)
+          {
+            ci::UnwindCallbackProtector protector;
+            occurrences.clear();
+            if (str_cont.isNA(i)) {
+                SEXP ans;
+                ans = protector.protect(ci__matrix_NA_INTEGER(1, 2));
+                SET_VECTOR_ELT(ret, i, ans);
+                continue;
+            }
 
-        R_len_t noccurrences = (R_len_t)occurrences.size();
-        if (noccurrences <= 0) {
-            SET_VECTOR_ELT(
-                ret, i,
-                ci__matrix_NA_INTEGER(omit_no_match1?0:1, 2, get_length1?-1:NA_INTEGER)
+            brkiter.setupMatcher(
+                str_cont.get(i).data(), str_cont.get(i).length(),
+                STRI__DEFERRED_WARNINGS
             );
-            continue;
-        }
+            brkiter.first();
 
-        SEXP ans;
-        STRI__PROTECT(ans = Rf_allocMatrix(INTSXP, noccurrences, 2));
-        int* ans_tab = INTEGER(ans);
-        deque< pair<R_len_t, R_len_t> >::iterator iter = occurrences.begin();
-        for (R_len_t j = 0; iter != occurrences.end(); ++iter, ++j) {
-            pair<R_len_t, R_len_t> cur_match = *iter;
-            ans_tab[j]              = cur_match.first;
-            ans_tab[j+noccurrences] = cur_match.second;
-        }
+            while (brkiter.next(curpair))
+                occurrences.push_back(curpair);
 
-        // Adjust UChar index -> UChar32 index (1-2 byte UTF16 to 1 byte UTF32-code points)
-        str_cont.UTF8_to_UChar32_index(i, ans_tab,
-                                       ans_tab+noccurrences, noccurrences,
-                                       1, // 0-based index -> 1-based
-                                       0  // end returns position of next character after match
-                                      );
+            R_len_t noccurrences = (R_len_t)occurrences.size();
+            if (noccurrences <= 0) {
+                SEXP ans;
+                ans = protector.protect(ci__matrix_NA_INTEGER(
+                    omit_no_match1?0:1, 2,
+                    get_length1?-1:NA_INTEGER
+                ));
+                SET_VECTOR_ELT(ret, i, ans);
+                continue;
+            }
 
-        if (get_length1) {
-            for (R_len_t j=0; j < noccurrences; ++j)
-                ans_tab[j+noccurrences] -= ans_tab[j] - 1;  // to->length
-        }
+            SEXP ans;
+            ans = protector.protect(Rf_allocMatrix(
+                INTSXP, noccurrences, 2
+            ));
+            int* ans_tab = INTEGER(ans);
+            for (R_len_t j = 0; j < noccurrences; ++j) {
+                ans_tab[j] = occurrences[j].first;
+                ans_tab[j+noccurrences] = occurrences[j].second;
+            }
 
+            // Adjust UChar index -> UChar32 index (1-2 byte UTF16 to 1 byte UTF32-code points)
+            str_cont.UTF8_to_UChar32_index(i, ans_tab,
+                                           ans_tab+noccurrences, noccurrences,
+                                           1, // 0-based index -> 1-based
+                                           0  // end returns position of next character after match
+                                          );
 
-        SET_VECTOR_ELT(ret, i, ans);
-        STRI__UNPROTECT(1);
+            if (get_length1) {
+                for (R_len_t j=0; j < noccurrences; ++j)
+                    ans_tab[j+noccurrences] -= ans_tab[j] - 1;  // to->length
+            }
+
+            SET_VECTOR_ELT(ret, i, ans);
+          }
+
+          ci__locate_set_dimnames_list(ret, get_length1);
+          return R_NilValue;
+        });
     }
-
-    ci__locate_set_dimnames_list(ret, get_length1);
+    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END({ /* nothing special t.b.d. on error */ })

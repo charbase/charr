@@ -1,4 +1,4 @@
-CXX_STD = CXX17
+CXX_STD = CXX11
 
 # --- Vendored ICU4C (src/icu74) --------------------------------------------
 # src/icu74 is ICU4C 74.1 (Unicode, Inc. and others; Unicode License v3, see
@@ -16,7 +16,6 @@ ICU_CPPFLAGS = -Ialtrep_backend -Iicu74 -Iicu74/unicode -Iicu74/common -Iicu74/i
   -DU_HAVE_LIB_SUFFIX=1 -DU_LIB_SUFFIX_C_NAME=_charr -DCHARR_BUNDLED_ICU=1
 
 PKG_CPPFLAGS = -I. $(ICU_CPPFLAGS)
-PKG_CXXFLAGS = -pthread
 
 # On Windows, linking all ICU objects at once overflows the command line (see
 # stringi src/Makevars.win); collect them into static libs first.
@@ -27,7 +26,7 @@ ICU_COMMON_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu74/common/*.cpp))
 ICU_I18N_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu74/i18n/*.cpp))
 ICU_STUBDATA_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu74/stubdata/*.cpp))
 
-PKG_LIBS = -pthread -L. -licu_i18n -licu_common -licu_stubdata
+PKG_LIBS = -L. -licu_i18n -licu_common -licu_stubdata
 
 .PHONY: all clean
 all: $(SHLIB)

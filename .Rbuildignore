@@ -7,15 +7,10 @@
 ^local$
 ^.*\.tar\.gz$
 ^charr\.Rcheck$
-^vignettes/.*\.html$
 ^LICENSE\.md$
 ^Makefile$
 ^inst/extra$
 ^scratch$
 ^tools$
-^vignettes/.*_files$
-^vignettes/\.quarto$
-^docs$
-^pkgdown$
-^_pkgdown\.yml$
 ^tests/testthat/_problems$
+^CLAUDE\.md$

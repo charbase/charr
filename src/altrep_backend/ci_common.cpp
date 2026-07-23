@@ -32,6 +32,11 @@
 
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
+#include "ci_reader.h"
+#include <cstring>
+#include <limits>
+#include <utility>
 #include <vector>
 
 
@@ -78,16 +83,30 @@ void ci__set_names(SEXP object, R_len_t numnames, ...)
 SEXP ci__make_character_vector_char_ptr(R_len_t numnames, ...)
 {
     va_list arguments;
-    SEXP names;
-    PROTECT(names = Rf_allocVector(STRSXP, numnames));
+    charport::charvec::Builder output(numnames);
 
     va_start(arguments, numnames);
-    for (R_len_t i = 0; i < numnames; ++i)
-        SET_STRING_ELT(names, i, Rf_mkCharCE(va_arg(arguments, char*), CE_UTF8));
+    try {
+        for (R_len_t i = 0; i < numnames; ++i) {
+            const char* value = va_arg(arguments, char*);
+            // Deviation from stringi: these fixed or ICU-owned ASCII metadata
+            // strings enter through a terminated API, but Builder keeps the
+            // character result lazy.
+            ci::builder_set(
+                output, i, value, std::strlen(value),
+                cetype_ext_t::CE_ASCII
+            );
+        }
+    }
+    catch (...) {
+        va_end(arguments);
+        throw;
+    }
     va_end(arguments);
 
-    UNPROTECT(1);
-    return names;
+    return charport::unwind_protect([&]() -> SEXP {
+        return output.to_sexp();
+    });
 }
 
 
@@ -103,20 +122,28 @@ SEXP ci__make_character_vector_char_ptr(R_len_t numnames, ...)
 SEXP ci__make_character_vector_UnicodeString_ptr(R_len_t numnames, ...)
 {
     va_list arguments;
-    SEXP names;
-    PROTECT(names = Rf_allocVector(STRSXP, numnames));
+    charport::charvec::Builder output(numnames);
+    std::vector<char> utf8_buffer;
 
     va_start(arguments, numnames);
-    for (R_len_t i = 0; i < numnames; ++i) {
-        UnicodeString* cur_str16 = (UnicodeString*)va_arg(arguments, UnicodeString*);
-        std::string cur_str8;
-        cur_str16->toUTF8String(cur_str8);
-        SET_STRING_ELT(names, i, Rf_mkCharCE(cur_str8.c_str(), CE_UTF8));
+    try {
+        for (R_len_t i = 0; i < numnames; ++i) {
+            UnicodeString* cur_str16 =
+                (UnicodeString*)va_arg(arguments, UnicodeString*);
+            // Deviation from stringi: convert with an explicit length and
+            // keep the character result lazy.
+            ci::builder_set(output, i, *cur_str16, utf8_buffer);
+        }
+    }
+    catch (...) {
+        va_end(arguments);
+        throw;
     }
     va_end(arguments);
 
-    UNPROTECT(1);
-    return names;
+    return charport::unwind_protect([&]() -> SEXP {
+        return output.to_sexp();
+    });
 }
 
 
@@ -167,6 +194,51 @@ R_len_t ci__recycling_rule(bool enableWarning, int n, ...)
 }
 
 
+/** Apply R's recycling rule and queue a nonconforming-length warning.
+ *
+ * Deviation from stringi: operations with live C++ owners or helper-held
+ * protections use this overload so R warning handlers run after cleanup.
+ *
+ * @param warnings operation-level deferred warning queue
+ * @param n number of vectors to recycle
+ * @param ... vector lengths
+ * @return max of the given lengths or 0 if any length is <= 0
+ */
+R_len_t ci__recycling_rule(ci::DeferredWarnings& warnings, int n, ...)
+{
+    R_len_t nsm = 0;
+    va_list arguments;
+
+    va_start(arguments, n);
+    for (R_len_t i=0; i<n; ++i) {
+        R_len_t curlen = va_arg(arguments, R_len_t);
+        if (curlen <= 0) {
+            va_end(arguments);
+            return 0;
+        }
+        if (curlen > nsm)
+            nsm = curlen;
+    }
+    va_end(arguments);
+
+    bool warn = false;
+    va_start(arguments, n);
+    for (R_len_t i=0; i<n; ++i) {
+        R_len_t curlen = va_arg(arguments, R_len_t);
+        if (nsm % curlen != 0) {
+            warn = true;
+            break;
+        }
+    }
+    va_end(arguments);
+
+    if (warn)
+        warnings.push(MSG__WARN_RECYCLING_RULE);
+
+    return nsm;
+}
+
+
 /**
  *  Creates a character vector filled with NA_character_
  *
@@ -182,13 +254,13 @@ SEXP ci__vector_NA_strings(R_len_t howmany)
         howmany = 0;
     }
 
-    SEXP ret;
-    PROTECT(ret = Rf_allocVector(STRSXP, howmany));
+    charport::charvec::Builder output(howmany);
     for (R_len_t i=0; i<howmany; ++i)
-        SET_STRING_ELT(ret, i, NA_STRING);
-    UNPROTECT(1);
+        output.set_na(i);
 
-    return ret;
+    return charport::unwind_protect([&]() -> SEXP {
+        return output.to_sexp();
+    });
 }
 
 
@@ -232,13 +304,15 @@ SEXP ci__vector_empty_strings(R_len_t howmany)
         howmany = 0;
     }
 
-    SEXP ret;
-    PROTECT(ret = Rf_allocVector(STRSXP, howmany));
+    charport::charvec::Builder output(howmany);
     for (R_len_t i=0; i<howmany; ++i)
-        SET_STRING_ELT(ret, i, R_BlankString);
-    UNPROTECT(1);
+        ci::builder_set(
+            output, i, "", 0, cetype_ext_t::CE_ASCII
+        );
 
-    return ret;
+    return charport::unwind_protect([&]() -> SEXP {
+        return output.to_sexp();
+    });
 }
 
 
@@ -282,18 +356,40 @@ SEXP ci__matrix_NA_INTEGER(R_len_t nrow, R_len_t ncol, int filler)
  */
 SEXP ci__matrix_NA_STRING(R_len_t nrow, R_len_t ncol)
 {
-    SEXP x;
-    PROTECT(x = Rf_allocMatrix(STRSXP, nrow, ncol));
-    for (R_len_t i=0; i<nrow*ncol; ++i)
-        SET_STRING_ELT(x, i, NA_STRING);
+    if (nrow < 0 || ncol < 0)
+        Rf_error("negative extents to matrix");
+
+    const R_xlen_t size =
+        static_cast<R_xlen_t>(nrow)*static_cast<R_xlen_t>(ncol);
+    SEXP x = R_NilValue;
+    {
+        charport::charvec::Builder output(size);
+        for (R_xlen_t i=0; i<size; ++i)
+            output.set_na(i);
+        x = charport::unwind_protect([&]() -> SEXP {
+            return output.to_sexp();
+        });
+    }
+
+    PROTECT(x);
+    charport::unwind_protect([&]() -> SEXP {
+        SEXP dim;
+        PROTECT(dim = Rf_allocVector(INTSXP, 2));
+        INTEGER(dim)[0] = nrow;
+        INTEGER(dim)[1] = ncol;
+        Rf_setAttrib(x, R_DimSymbol, dim);
+        UNPROTECT(1);
+        return R_NilValue;
+    });
     UNPROTECT(1);
     return x;
 }
 
 
-/** Match an option from a set of options
+/** Match an explicit-length option from a set of C string literals.
  *
- * @param option an option
+ * @param option option bytes
+ * @param option_length option length in bytes
  * @param set a set of options to match
  * @return index in set, negative value for no match
  *
@@ -302,26 +398,32 @@ SEXP ci__matrix_NA_STRING(R_len_t nrow, R_len_t ncol)
  * @version 0.2-2 (Marek Gagolewski, 2014-04-24)
  *          proper handling of "word" in {"word", "word-second"}
  */
-int ci__match_arg(const char* option, const char** set) {
+int ci__match_arg(
+    const char* option, R_len_t option_length,
+    const char* const* set
+) {
+    // Deviation from stringi: option bytes are borrowed from Reader and have
+    // no trailing terminator. Exact matches still take precedence over a
+    // longer option with the same prefix.
     int set_length = 0;
     while (set[set_length] != NULL) ++set_length;
     if (set_length <= 0) return -1;
     // this could be substituted for a linked list:
     std::vector<bool> excluded((size_t)set_length, false);
 
-    for (int k=0; option[k] != '\0'; ++k) {
+    for (R_len_t k=0; k<option_length; ++k) {
         for (int i=0; i<set_length; ++i) {
-            if (excluded[i]) continue;
+            if (excluded[static_cast<size_t>(i)]) continue;
             if (set[i][k] == '\0' || set[i][k] != option[k])
-                excluded[i] = true;
-            else if (set[i][k+1] == '\0' && option[k+1] == '\0')
+                excluded[static_cast<size_t>(i)] = true;
+            else if (set[i][k+1] == '\0' && k+1 == option_length)
                 return i; // exact match
         }
     }
 
     int which = -1;
     for (int i=0; i<set_length; ++i) {
-        if (excluded[i]) continue;
+        if (excluded[static_cast<size_t>(i)]) continue;
         if (which < 0) which = i;
         else return -1; // more than one match
     }

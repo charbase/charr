@@ -84,10 +84,16 @@ private:
 
 public:
 
-    static uint32_t getByteSearchFlags(SEXP opts_fixed, bool allow_overlap=false);
+    static uint32_t getByteSearchFlags(
+        SEXP opts_fixed, bool allow_overlap=false,
+        ci::DeferredWarnings* warnings=NULL
+    );
 
     StriContainerByteSearch();
-    StriContainerByteSearch(SEXP rstr, R_len_t nrecycle, uint32_t flags);
+    StriContainerByteSearch(
+        ci::ReaderContext& context, SEXP rstr,
+        R_len_t nrecycle, uint32_t flags
+    );
     StriContainerByteSearch(StriContainerByteSearch& container);
     ~StriContainerByteSearch();
     StriContainerByteSearch& operator=(StriContainerByteSearch& container);

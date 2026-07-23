@@ -69,7 +69,10 @@ private:
 public:
 
     StriContainerUStringSearch();
-    StriContainerUStringSearch(SEXP rstr, R_len_t nrecycle, UCollator* col);
+    StriContainerUStringSearch(
+        ci::ReaderContext& context, SEXP rstr,
+        R_len_t nrecycle, UCollator* col
+    );
     StriContainerUStringSearch(StriContainerUStringSearch& container);
     ~StriContainerUStringSearch();
     StriContainerUStringSearch& operator=(StriContainerUStringSearch& container);

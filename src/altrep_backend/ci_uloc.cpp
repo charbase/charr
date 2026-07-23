@@ -32,6 +32,9 @@
 
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
+#include <cstring>
+#include <utility>
 #include <unicode/uloc.h>
 
 
@@ -61,17 +64,24 @@ SEXP ci_locale_set(SEXP loc)
  */
 SEXP ci_locale_list()
 {
-    R_len_t c = (R_len_t)uloc_countAvailable();
+    STRI__ERROR_HANDLER_BEGIN(0)
+    const R_len_t c = static_cast<R_len_t>(uloc_countAvailable());
     SEXP ret;
-    PROTECT(ret = Rf_allocVector(STRSXP, c));
-
-    for (R_len_t i=0; i<c; ++i) {
-        const char* name = uloc_getAvailable(i);
-        SET_STRING_ELT(ret, i, Rf_mkChar(name));
+    {
+        charport::charvec::Builder output(c);
+        for (R_len_t i=0; i<c; ++i) {
+            const char* name = uloc_getAvailable(i);
+            ci::builder_set(
+                output, i, name, std::strlen(name),
+                cetype_ext_t::CE_ASCII
+            );
+        }
+        STRI__PROTECT(ret = output.to_sexp());
     }
 
-    UNPROTECT(1);
+    STRI__UNPROTECT_ALL
     return ret;
+    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
 }
 
 
@@ -97,22 +107,28 @@ SEXP ci_locale_info(SEXP loc)
 
     UErrorCode err = U_ZERO_ERROR;
     char buf[ULOC_FULLNAME_CAPACITY];  // this is sufficient
+    const auto make_scalar = [](const char* value) -> SEXP {
+        charport::charvec::Store output = ci::scalar_store(
+            value, std::strlen(value), cetype_ext_t::CE_ASCII
+        );
+        return charport::charvec::wrap(std::move(output));
+    };
 
     uloc_getLanguage(qloc, buf, ULOC_FULLNAME_CAPACITY, &err);
     if (U_FAILURE(err)) err = U_ZERO_ERROR;
-    else SET_VECTOR_ELT(vals, 0, ci__make_character_vector_char_ptr(1, buf));
+    else SET_VECTOR_ELT(vals, 0, make_scalar(buf));
 
     uloc_getCountry(qloc, buf, ULOC_FULLNAME_CAPACITY, &err);
     if (U_FAILURE(err)) err = U_ZERO_ERROR;
-    else SET_VECTOR_ELT(vals, 1, ci__make_character_vector_char_ptr(1, buf));
+    else SET_VECTOR_ELT(vals, 1, make_scalar(buf));
 
     uloc_getVariant(qloc, buf, ULOC_FULLNAME_CAPACITY, &err);
     if (U_FAILURE(err)) err = U_ZERO_ERROR;
-    else SET_VECTOR_ELT(vals, 2, ci__make_character_vector_char_ptr(1, buf));
+    else SET_VECTOR_ELT(vals, 2, make_scalar(buf));
 
     uloc_canonicalize(qloc, buf, ULOC_FULLNAME_CAPACITY, &err);
     if (U_FAILURE(err)) err = U_ZERO_ERROR;
-    else SET_VECTOR_ELT(vals, 3, ci__make_character_vector_char_ptr(1, buf));
+    else SET_VECTOR_ELT(vals, 3, make_scalar(buf));
 
     ci__set_names(vals, 4, "Language", "Country", "Variant", "Name");
     UNPROTECT(1);

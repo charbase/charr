@@ -69,46 +69,73 @@ SEXP ci_startswith_fixed(SEXP str, SEXP pattern, SEXP from, SEXP negate, SEXP op
     PROTECT(from = ci__prepare_arg_integer(from, "from"));
 
     STRI__ERROR_HANDLER_BEGIN(3)
-    int vectorize_length = ci__recycling_rule(true, 3,
-                           LENGTH(str), LENGTH(pattern), LENGTH(from));
-    StriContainerUTF8_indexable str_cont(str, vectorize_length);
-    StriContainerByteSearch pattern_cont(pattern, vectorize_length, pattern_flags);
+    SEXP ret;
+    {
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t from_n = ci::checked_r_len(
+        context.size(from), "integer vectors"
+    );
+    R_len_t vectorize_length = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_length = ci__recycling_rule(
+            STRI__DEFERRED_WARNINGS, 3, str_n, pattern_n, from_n
+        );
+        return R_NilValue;
+    });
+
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(LGLSXP, vectorize_length);
+    }));
+    int* ret_tab = LOGICAL(ret);
     StriContainerInteger from_cont(from, vectorize_length);
 
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(LGLSXP, vectorize_length));
-    int* ret_tab = LOGICAL(ret);
-
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-                ret_tab[i] = NA_LOGICAL,
-                ret_tab[i] = negate_1)
+        StriContainerUTF8_indexable str_cont(
+            context, str, vectorize_length
+        );
+        StriContainerByteSearch pattern_cont(
+            context, pattern, vectorize_length, pattern_flags
+        );
 
-        if (from_cont.isNA(i)) {
-            ret_tab[i] = NA_LOGICAL;
-            continue;
+        for (R_len_t i = pattern_cont.vectorize_init();
+                i != pattern_cont.vectorize_end();
+                i = pattern_cont.vectorize_next(i))
+        {
+            STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
+                    ret_tab[i] = NA_LOGICAL,
+                    ret_tab[i] = negate_1)
+
+            if (from_cont.isNA(i)) {
+                ret_tab[i] = NA_LOGICAL;
+                continue;
+            }
+
+            R_len_t from_cur = from_cont.get(i);
+            if (from_cur == 1)
+                from_cur = 0; /* most commonly used case */
+            else if (from_cur >= 0)
+                from_cur = str_cont.UChar32_to_UTF8_index_fwd(i, from_cur-1);
+            else
+                from_cur = str_cont.UChar32_to_UTF8_index_back(i, -from_cur);
+            // now surely from_cur >= 0 && from_cur <= cur_n
+
+            ret_tab[i] = (int)(str_cont.get(i).startsWith(from_cur,
+                               pattern_cont.get(i).data(), pattern_cont.get(i).length(),
+                               pattern_cont.isCaseInsensitive()));
+
+            if (negate_1)
+                ret_tab[i] = !ret_tab[i];
         }
-
-        R_len_t from_cur = from_cont.get(i);
-        if (from_cur == 1)
-            from_cur = 0; /* most commonly used case */
-        else if (from_cur >= 0)
-            from_cur = str_cont.UChar32_to_UTF8_index_fwd(i, from_cur-1);
-        else
-            from_cur = str_cont.UChar32_to_UTF8_index_back(i, -from_cur);
-        // now surely from_cur >= 0 && from_cur <= cur_n
-
-        ret_tab[i] = (int)(str_cont.get(i).startsWith(from_cur,
-                           pattern_cont.get(i).c_str(), pattern_cont.get(i).length(),
-                           pattern_cont.isCaseInsensitive()));
-
-        if (negate_1)
-            ret_tab[i] = !ret_tab[i];
     }
 
+    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END( ;/* do nothing special on error */ )
@@ -146,45 +173,72 @@ SEXP ci_endswith_fixed(SEXP str, SEXP pattern, SEXP to, SEXP negate, SEXP opts_f
     PROTECT(to = ci__prepare_arg_integer(to, "to"));
 
     STRI__ERROR_HANDLER_BEGIN(3)
-    int vectorize_length = ci__recycling_rule(true, 3,
-                           LENGTH(str), LENGTH(pattern), LENGTH(to));
-    StriContainerUTF8_indexable str_cont(str, vectorize_length);
-    StriContainerByteSearch pattern_cont(pattern, vectorize_length, pattern_flags);
+    SEXP ret;
+    {
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t to_n = ci::checked_r_len(
+        context.size(to), "integer vectors"
+    );
+    R_len_t vectorize_length = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_length = ci__recycling_rule(
+            STRI__DEFERRED_WARNINGS, 3, str_n, pattern_n, to_n
+        );
+        return R_NilValue;
+    });
+
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(LGLSXP, vectorize_length);
+    }));
+    int* ret_tab = LOGICAL(ret);
     StriContainerInteger to_cont(to, vectorize_length);
 
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(LGLSXP, vectorize_length));
-    int* ret_tab = LOGICAL(ret);
-
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-                ret_tab[i] = NA_LOGICAL,
-                ret_tab[i] = negate_1)
+        StriContainerUTF8_indexable str_cont(
+            context, str, vectorize_length
+        );
+        StriContainerByteSearch pattern_cont(
+            context, pattern, vectorize_length, pattern_flags
+        );
 
-        if (to_cont.isNA(i)) {
-            ret_tab[i] = NA_LOGICAL;
-            continue;
+        for (R_len_t i = pattern_cont.vectorize_init();
+                i != pattern_cont.vectorize_end();
+                i = pattern_cont.vectorize_next(i))
+        {
+            STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
+                    ret_tab[i] = NA_LOGICAL,
+                    ret_tab[i] = negate_1)
+
+            if (to_cont.isNA(i)) {
+                ret_tab[i] = NA_LOGICAL;
+                continue;
+            }
+
+            R_len_t to_cur = to_cont.get(i);
+            if (to_cur == -1)
+                to_cur = str_cont.get(i).length(); /* most commonly used case */
+            else if (to_cur >= 0)
+                to_cur = str_cont.UChar32_to_UTF8_index_fwd(i, to_cur);
+            else
+                to_cur = str_cont.UChar32_to_UTF8_index_back(i, -to_cur-1);
+            // now surely to_cur >= 0 && to_cur <= cur_n
+
+            ret_tab[i] = (int)(str_cont.get(i).endsWith(to_cur,
+                               pattern_cont.get(i).data(), pattern_cont.get(i).length(),
+                               pattern_cont.isCaseInsensitive()));
+            if (negate_1)
+                ret_tab[i] = !ret_tab[i];
         }
-
-        R_len_t to_cur = to_cont.get(i);
-        if (to_cur == -1)
-            to_cur = str_cont.get(i).length(); /* most commonly used case */
-        else if (to_cur >= 0)
-            to_cur = str_cont.UChar32_to_UTF8_index_fwd(i, to_cur);
-        else
-            to_cur = str_cont.UChar32_to_UTF8_index_back(i, -to_cur-1);
-        // now surely to_cur >= 0 && to_cur <= cur_n
-
-        ret_tab[i] = (int)(str_cont.get(i).endsWith(to_cur,
-                           pattern_cont.get(i).c_str(), pattern_cont.get(i).length(),
-                           pattern_cont.isCaseInsensitive()));
-        if (negate_1)
-            ret_tab[i] = !ret_tab[i];
     }
 
+    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END( ;/* do nothing special on error */ )

@@ -71,54 +71,78 @@ SEXP ci__locate_firstlast_charclass(SEXP str, SEXP pattern, bool first, bool get
 {
     PROTECT(str = ci__prepare_arg_string(str, "str"));
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
-    R_len_t vectorize_length =
-        ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
-
     STRI__ERROR_HANDLER_BEGIN(2)
-    StriContainerUTF8 str_cont(str, vectorize_length);
-    StriContainerCharClass pattern_cont(pattern, vectorize_length);
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocMatrix(INTSXP, vectorize_length, 2));
-    ci__locate_set_dimnames_matrix(ret, get_length1);
+    {
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t vectorize_length = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_length = ci__recycling_rule(
+            STRI__DEFERRED_WARNINGS, 2, str_n, pattern_n
+        );
+        return R_NilValue;
+    });
+
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocMatrix(INTSXP, vectorize_length, 2);
+    }));
     int* ret_tab = INTEGER(ret);
 
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        ret_tab[i]                  = NA_INTEGER;
-        ret_tab[i+vectorize_length] = NA_INTEGER;
+        StriContainerUTF8 str_cont(context, str, vectorize_length);
+        StriContainerCharClass pattern_cont(
+            context, pattern, vectorize_length
+        );
 
-        if (str_cont.isNA(i) || pattern_cont.isNA(i))
-            continue;
+        for (R_len_t i = pattern_cont.vectorize_init();
+                i != pattern_cont.vectorize_end();
+                i = pattern_cont.vectorize_next(i))
+        {
+            ret_tab[i]                  = NA_INTEGER;
+            ret_tab[i+vectorize_length] = NA_INTEGER;
 
-        if (get_length1) {
-            ret_tab[i]                  = -1;
-            ret_tab[i+vectorize_length] = -1;
-        }
+            if (str_cont.isNA(i) || pattern_cont.isNA(i))
+                continue;
 
-        const UnicodeSet* pattern_cur = &pattern_cont.get(i);
-        R_len_t     str_cur_n = str_cont.get(i).length();
-        const char* str_cur_s = str_cont.get(i).c_str();
-        R_len_t j;
-        R_len_t k = 0;
-        UChar32 chr;
+            if (get_length1) {
+                ret_tab[i]                  = -1;
+                ret_tab[i+vectorize_length] = -1;
+            }
 
-        for (j=0; j<str_cur_n; ) {
-            U8_NEXT(str_cur_s, j, str_cur_n, chr);
-            if (chr < 0) // invalid UTF-8 sequence
-                throw StriException(MSG__INVALID_UTF8);
-            k++; // 1-based index
-            if (pattern_cur->contains(chr)) {
-                ret_tab[i]      = k;
-                ret_tab[i+vectorize_length] = get_length1 ? 1 : ret_tab[i];
-                if (first) break; // that's enough for first
-                // note that for last, we can't go backwards from the end, as we need a proper index!
+            const UnicodeSet* pattern_cur = &pattern_cont.get(i);
+            R_len_t     str_cur_n = str_cont.get(i).length();
+            const char* str_cur_s = str_cont.get(i).data();
+            R_len_t j;
+            R_len_t k = 0;
+            UChar32 chr;
+
+            for (j=0; j<str_cur_n; ) {
+                U8_NEXT(str_cur_s, j, str_cur_n, chr);
+                if (chr < 0) // invalid UTF-8 sequence
+                    throw StriException(MSG__INVALID_UTF8);
+                k++; // 1-based index
+                if (pattern_cur->contains(chr)) {
+                    ret_tab[i]      = k;
+                    ret_tab[i+vectorize_length] = get_length1 ? 1 : ret_tab[i];
+                    if (first) break; // that's enough for first
+                    // note that for last, we can't go backwards from the end, as we need a proper index!
+                }
             }
         }
     }
 
+    }
+    charport::unwind_protect([&]() -> SEXP {
+        ci__locate_set_dimnames_matrix(ret, get_length1);
+        return R_NilValue;
+    });
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -208,52 +232,93 @@ SEXP ci_locate_all_charclass(SEXP str, SEXP pattern, SEXP merge, SEXP omit_no_ma
     bool merge_cur = ci__prepare_arg_logical_1_notNA(merge, "merge");
     PROTECT(str     = ci__prepare_arg_string(str, "str"));
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
-    R_len_t vectorize_length = ci__recycling_rule(true, 2,
-                               LENGTH(str), LENGTH(pattern));
 
     STRI__ERROR_HANDLER_BEGIN(2)
-    StriContainerUTF8 str_cont(str, vectorize_length);
-    StriContainerCharClass pattern_cont(pattern, vectorize_length);
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(VECSXP, vectorize_length));
-
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        if (pattern_cont.isNA(i) || str_cont.isNA(i)) {
-            SET_VECTOR_ELT(ret, i, ci__matrix_NA_INTEGER(1, 2));
-            continue;
-        }
-
-        deque< pair<R_len_t, R_len_t> > occurrences;
-        StriContainerCharClass::locateAll(
-            occurrences, &pattern_cont.get(i),
-            str_cont.get(i).c_str(), str_cont.get(i).length(), merge_cur,
-            true /* code point-based indexes */
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t vectorize_length = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_length = ci__recycling_rule(
+            STRI__DEFERRED_WARNINGS, 2, str_n, pattern_n
         );
+        return R_NilValue;
+    });
 
-        R_len_t noccurrences = (R_len_t)occurrences.size();
-        if (noccurrences == 0) {
-            SET_VECTOR_ELT(ret, i, ci__matrix_NA_INTEGER(omit_no_match1?0:1, 2, get_length1?-1:NA_INTEGER));
-            continue;
-        }
+    // Deviation from stringi: route result allocation through the unwind
+    // boundary so ReaderContext bookkeeping is released on an R error.
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(VECSXP, vectorize_length);
+    }));
 
-        SEXP cur_res;
-        STRI__PROTECT(cur_res = Rf_allocMatrix(INTSXP, noccurrences, 2));
-        int* cur_res_int = INTEGER(cur_res);
-        deque< pair<R_len_t, R_len_t> >::iterator iter = occurrences.begin();
-        for (R_len_t f = 0; iter != occurrences.end(); ++iter, ++f) {
-            pair<R_len_t, R_len_t> curoccur = *iter;
-            cur_res_int[f] = curoccur.first+1; // 0-based => 1-based
-            cur_res_int[f+noccurrences] = get_length1?(curoccur.second-cur_res_int[f]+1):curoccur.second;
-        }
-        SET_VECTOR_ELT(ret, i, cur_res);
-        STRI__UNPROTECT(1)
+    {
+        StriContainerUTF8 str_cont(context, str, vectorize_length);
+        StriContainerCharClass pattern_cont(
+            context, pattern, vectorize_length
+        );
+        deque< pair<R_len_t, R_len_t> > occurrences;
+
+        // Deviation from stringi: one loop-level unwind bridge covers the R
+        // matrices allocated while the Reader-backed containers are live.
+        // Reusing scratch state outside the callback also avoids one bridge
+        // and one deque allocation per output element.
+        charport::unwind_protect([&]() -> SEXP {
+          for (R_len_t i = pattern_cont.vectorize_init();
+                  i != pattern_cont.vectorize_end();
+                  i = pattern_cont.vectorize_next(i))
+          {
+            ci::UnwindCallbackProtector protector;
+            occurrences.clear();
+            if (pattern_cont.isNA(i) || str_cont.isNA(i)) {
+                SEXP cur_res;
+                cur_res = protector.protect(ci__matrix_NA_INTEGER(1, 2));
+                SET_VECTOR_ELT(ret, i, cur_res);
+                continue;
+            }
+
+            StriContainerCharClass::locateAll(
+                occurrences, &pattern_cont.get(i),
+                str_cont.get(i).data(), str_cont.get(i).length(), merge_cur,
+                true /* code point-based indexes */
+            );
+
+            R_len_t noccurrences = static_cast<R_len_t>(occurrences.size());
+            SEXP cur_res;
+            if (noccurrences == 0) {
+                cur_res = protector.protect(ci__matrix_NA_INTEGER(
+                    omit_no_match1?0:1, 2,
+                    get_length1?-1:NA_INTEGER
+                ));
+            }
+            else {
+                cur_res = protector.protect(Rf_allocMatrix(
+                    INTSXP, noccurrences, 2
+                ));
+                int* cur_res_int = INTEGER(cur_res);
+                deque< pair<R_len_t, R_len_t> >::const_iterator iter =
+                    occurrences.begin();
+                for (R_len_t f = 0; iter != occurrences.end(); ++iter, ++f) {
+                    pair<R_len_t, R_len_t> curoccur = *iter;
+                    cur_res_int[f] = curoccur.first+1; // 0-based => 1-based
+                    cur_res_int[f+noccurrences] = get_length1?
+                        (curoccur.second-cur_res_int[f]+1):curoccur.second;
+                }
+            }
+            SET_VECTOR_ELT(ret, i, cur_res);
+          }
+
+          ci__locate_set_dimnames_list(ret, get_length1);
+          return R_NilValue;
+        });
     }
-
-    ci__locate_set_dimnames_list(ret, get_length1);
+    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)

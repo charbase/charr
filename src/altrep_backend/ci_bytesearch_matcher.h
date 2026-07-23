@@ -37,6 +37,8 @@
 
 #include "ci_stringi.h"
 
+#include <memory>
+
 #ifndef USEARCH_DONE
 #define USEARCH_DONE -1
 #endif
@@ -302,27 +304,30 @@ public:
     }
 
     StriByteSearchMatcherKMPci(const char* patternStr, R_len_t patternLen, bool optOverlap)
-        : StriByteSearchMatcher(patternStr, patternLen, optOverlap)
+        : StriByteSearchMatcher(patternStr, patternLen, optOverlap),
+          m_kmpNext(NULL), m_patternPos(0),
+          m_patternLenCaseInsensitive(0), m_patternStrCaseInsensitive(NULL)
     {
         int kmpMaxSize = patternLen+1; // that's sufficient
-        this->m_kmpNext = new int[kmpMaxSize];
-        if (!this->m_kmpNext) throw StriException(MSG__MEM_ALLOC_ERROR);
-        this->m_kmpNext[0] = -100; // magic constant for an uninitialized KMP table
+        // Deviation from stringi: stage both allocations under RAII. If the
+        // second allocation or UTF-8 decoding fails, the first cannot leak.
+        std::unique_ptr<int[]> new_kmp_next(new int[kmpMaxSize]);
+        std::unique_ptr<UChar32[]> new_pattern(new UChar32[kmpMaxSize]);
+        new_kmp_next[0] = -100; // magic constant for an uninitialized KMP table
 
-        this->m_patternStrCaseInsensitive = new UChar32[kmpMaxSize];
-        if (!this->m_patternStrCaseInsensitive) throw StriException(MSG__MEM_ALLOC_ERROR);
         UChar32 c = 0;
         R_len_t j = 0;
-        m_patternLenCaseInsensitive = 0;
         while (j < patternLen) {
             U8_NEXT(patternStr, j, patternLen, c);
 #ifndef NDEBUG
             if (m_patternLenCaseInsensitive >= kmpMaxSize)
                 throw StriException("!NDEBUG: StriByteSearchMatcherKMPci::StriByteSearchMatcherKMPci()");
 #endif
-            m_patternStrCaseInsensitive[m_patternLenCaseInsensitive++] = u_toupper(c);
+            new_pattern[m_patternLenCaseInsensitive++] = u_toupper(c);
         }
-        m_patternStrCaseInsensitive[m_patternLenCaseInsensitive] = 0;
+
+        this->m_kmpNext = new_kmp_next.release();
+        this->m_patternStrCaseInsensitive = new_pattern.release();
     }
 
     virtual void reset(const char* searchStr, R_len_t searchLen) {
@@ -352,7 +357,9 @@ public:
             for (R_len_t i=0; i<m_patternLenCaseInsensitive; ++i) {
                 m_kmpNext[i+1] = m_kmpNext[i]+1;
                 while (m_kmpNext[i+1] > 0 &&
-                        m_patternStrCaseInsensitive[m_patternLen-i-1] !=
+                        // Deviation from stringi: index the initialized
+                        // code-point array, not the original UTF-8 byte length.
+                        m_patternStrCaseInsensitive[m_patternLenCaseInsensitive-i-1] !=
                         m_patternStrCaseInsensitive[m_patternLenCaseInsensitive-(m_kmpNext[i+1]-1)-1])
                     m_kmpNext[i+1] = m_kmpNext[m_kmpNext[i+1]-1]+1;
             }
@@ -407,7 +414,13 @@ protected:
             return USEARCH_DONE;
         }
 
-        const char* res = strchr(m_searchStr+startPos, m_patternStr[0]);
+        // Deviation from stringi: String8 is length-delimited, so bounded
+        // search replaces the sentinel-dependent C string operation.
+        const char* res = static_cast<const char*>(memchr(
+            m_searchStr+startPos,
+            static_cast<unsigned char>(m_patternStr[0]),
+            static_cast<size_t>(m_searchLen-startPos)
+        ));
         if (res) {
             m_searchPos = (int)(res-m_searchStr);
             m_searchEnd = m_searchPos+1;
@@ -448,14 +461,13 @@ public:
     }
 
     virtual R_len_t findLast()  {
-        R_len_t startPos = m_searchLen;
-        if (startPos+1 < m_patternLen) { // check OK, case-sensitive search
+        if (m_searchLen < m_patternLen) { // check OK, case-sensitive search
             m_searchPos = m_searchEnd = m_searchLen;
             return USEARCH_DONE;
         }
 
         unsigned char pat = (unsigned char)m_patternStr[0];
-        for (m_searchPos = startPos-0; m_searchPos>=0; --m_searchPos) {
+        for (m_searchPos = m_searchLen-1; m_searchPos>=0; --m_searchPos) {
             if (pat == (unsigned char)m_searchStr[m_searchPos]) {
                 m_searchEnd = m_searchPos + 1;
                 return m_searchPos;
@@ -483,21 +495,45 @@ protected:
         if (!m_searchStr) throw StriException("!m_searchStr");
 #endif
 
+        if (m_patternLen <= 0) {
+            // Empty fixed patterns are unsupported by the container contract.
+            m_searchPos = m_searchEnd = m_searchLen;
+            return USEARCH_DONE;
+        }
+
         if (startPos > m_searchLen-m_patternLen) { // this check is OK, we do a case-sensitive search
             m_searchPos = m_searchEnd = m_searchLen;
             return USEARCH_DONE;
         }
 
-        const char* res = strstr(m_searchStr+startPos, m_patternStr);
-        if (res) {
-            m_searchPos = (int)(res-m_searchStr);
-            m_searchEnd = m_searchPos+m_patternLen;
-            return m_searchPos;
+        // Deviation from stringi: neither operand has a trailing sentinel.
+        // Keep the candidate scan and comparison inside their declared lengths.
+        const R_len_t lastPos = m_searchLen-m_patternLen;
+        const char* current = m_searchStr+startPos;
+        const char* const last = m_searchStr+lastPos;
+        while (current <= last) {
+            const char* candidate = static_cast<const char*>(memchr(
+                current,
+                static_cast<unsigned char>(m_patternStr[0]),
+                static_cast<size_t>(last-current+1)
+            ));
+            if (!candidate)
+                break;
+
+            if (m_patternLen == 1 || 0 == memcmp(
+                    candidate+1,
+                    m_patternStr+1,
+                    static_cast<size_t>(m_patternLen-1))) {
+                m_searchPos = static_cast<R_len_t>(candidate-m_searchStr);
+                m_searchEnd = m_searchPos+m_patternLen;
+                return m_searchPos;
+            }
+
+            current = candidate+1;
         }
-        else {
-            m_searchPos = m_searchEnd = m_searchLen;
-            return USEARCH_DONE;
-        }
+
+        m_searchPos = m_searchEnd = m_searchLen;
+        return USEARCH_DONE;
     }
 
 
@@ -514,10 +550,18 @@ public:
     }
 
     virtual R_len_t findLast()  {
+        if (m_patternLen <= 0) {
+            m_searchPos = m_searchEnd = m_searchLen;
+            return USEARCH_DONE;
+        }
+
         R_len_t startPos = m_searchLen;
 
         for (m_searchPos = startPos-m_patternLen; m_searchPos>=0; --m_searchPos) {
-            if (0 == strncmp(m_searchStr+m_searchPos, m_patternStr, m_patternLen)) {
+            if (0 == memcmp(
+                    m_searchStr+m_searchPos,
+                    m_patternStr,
+                    static_cast<size_t>(m_patternLen))) {
                 m_searchEnd = m_searchPos + m_patternLen;
                 return m_searchPos;
             }

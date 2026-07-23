@@ -58,8 +58,23 @@ StriContainerUTF8_indexable::StriContainerUTF8_indexable()
  *  @version 0.2-1 (2014-03-20)
  *           separated StriContainerUTF8_indexable class
  */
-StriContainerUTF8_indexable::StriContainerUTF8_indexable(SEXP rstr, R_len_t _nrecycle, bool _shallowrecycle)
-    : StriContainerUTF8(rstr, _nrecycle, _shallowrecycle)
+StriContainerUTF8_indexable::StriContainerUTF8_indexable(
+    ci::ReaderContext& context, SEXP rstr,
+    R_len_t _nrecycle, bool _shallowrecycle
+) : StriContainerUTF8(context, rstr, _nrecycle, _shallowrecycle)
+{
+    last_ind_back_str = NULL;
+    last_ind_fwd_str = NULL;
+}
+
+
+StriContainerUTF8_indexable::StriContainerUTF8_indexable(
+    const std::shared_ptr<ci::ReaderBorrow>& source_borrow,
+    const charport::StrView& value,
+    R_len_t _nrecycle, bool _shallowrecycle
+) : StriContainerUTF8(
+        source_borrow, value, _nrecycle, _shallowrecycle
+    )
 {
     last_ind_back_str = NULL;
     last_ind_fwd_str = NULL;
@@ -86,7 +101,9 @@ StriContainerUTF8_indexable::StriContainerUTF8_indexable(StriContainerUTF8_index
  */
 StriContainerUTF8_indexable& StriContainerUTF8_indexable::operator=(StriContainerUTF8_indexable& container)
 {
-    ((StriContainerUTF8*)this)->~StriContainerUTF8();
+    if (this == &container)
+        return *this;
+
     (StriContainerUTF8&) (*this) = (StriContainerUTF8&)container;
 
     last_ind_back_str = NULL;
@@ -127,7 +144,7 @@ R_len_t StriContainerUTF8_indexable::UChar32_to_UTF8_index_back(R_len_t i, R_len
     R_len_t cur_n = get(i).length();
     if (wh <= 0) return cur_n;
     if (get(i).isASCII()) return std::max(cur_n-wh, 0);
-    const char* cur_s = get(i).c_str();
+    const char* cur_s = get(i).data();
 
 #ifndef NDEBUG
     if (!cur_s)
@@ -215,7 +232,7 @@ R_len_t StriContainerUTF8_indexable::UChar32_to_UTF8_index_fwd(R_len_t i, R_len_
     if (get(i).isASCII()) return std::min(wh, get(i).length());
 
     R_len_t cur_n = get(i).length();
-    const char* cur_s = get(i).c_str();
+    const char* cur_s = get(i).data();
 
 #ifndef NDEBUG
     if (!cur_s)
@@ -301,7 +318,7 @@ void StriContainerUTF8_indexable::UTF8_to_UChar32_index(R_len_t i,
         return;
     }
 
-    const char* cstr = get(i).c_str();
+    const char* cstr = get(i).data();
     const int nstr = get(i).length();
 
     int j1 = 0;

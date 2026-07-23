@@ -53,8 +53,10 @@ StriContainerByteSearch::StriContainerByteSearch()
  * @param rstr R character vector
  * @param _nrecycle extend length [vectorization]
  */
-StriContainerByteSearch::StriContainerByteSearch(SEXP rstr, R_len_t _nrecycle, uint32_t _flags)
-    : StriContainerUTF8(rstr, _nrecycle, true)
+StriContainerByteSearch::StriContainerByteSearch(
+    ci::ReaderContext& context, SEXP rstr,
+    R_len_t _nrecycle, uint32_t _flags
+) : StriContainerUTF8(context, rstr, _nrecycle, true)
 {
     this->flags = _flags;
     this->matcher = NULL;
@@ -62,7 +64,10 @@ StriContainerByteSearch::StriContainerByteSearch(SEXP rstr, R_len_t _nrecycle, u
     R_len_t n = get_n();
     for (R_len_t i=0; i<n; ++i) {
         if (!isNA(i) && get(i).length() <= 0) {
-            Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+            // Deviation from stringi: defer warnings until the operation has
+            // destroyed every Reader-owning container. R handlers may touch
+            // any input alias and invalidate a live borrow.
+            context.warn(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
         }
     }
 }
@@ -85,8 +90,15 @@ StriContainerByteSearch::StriContainerByteSearch(StriContainerByteSearch& contai
  */
 StriContainerByteSearch& StriContainerByteSearch::operator=(StriContainerByteSearch& container)
 {
-    this->~StriContainerByteSearch();
+    if (this == &container)
+        return *this;
+
+    // Deviation from stringi: replace owned state without explicitly ending
+    // and then reusing this object's lifetime; assignment also copies flags.
+    delete matcher;
+    matcher = NULL;
     (StriContainerUTF8&) (*this) = (StriContainerUTF8&)container;
+    flags = container.flags;
     return *this;
 }
 
@@ -107,7 +119,7 @@ StriContainerByteSearch::~StriContainerByteSearch()
  * @version 0.5-1 (Marek Gagolewski, 2015-02-14)
  */
 StriByteSearchMatcher* StriContainerByteSearch::getMatcher(R_len_t i) {
-    if (i >= n && matcher && matcher->getPatternStr() == get(i).c_str()) {
+    if (i >= n && matcher && matcher->getPatternStr() == get(i).data()) {
         // matcher reuse
     }
     else {
@@ -117,13 +129,13 @@ StriByteSearchMatcher* StriContainerByteSearch::getMatcher(R_len_t i) {
         }
 
         if (isCaseInsensitive())
-            matcher = new StriByteSearchMatcherKMPci(get(i).c_str(), get(i).length(), isOverlap());
+            matcher = new StriByteSearchMatcherKMPci(get(i).data(), get(i).length(), isOverlap());
         else if (get(i).length() == 1)
-            matcher = new StriByteSearchMatcher1(get(i).c_str(), get(i).length(), isOverlap());
+            matcher = new StriByteSearchMatcher1(get(i).data(), get(i).length(), isOverlap());
         else if (get(i).length() < 16)
-            matcher = new StriByteSearchMatcherShort(get(i).c_str(), get(i).length(), isOverlap());
+            matcher = new StriByteSearchMatcherShort(get(i).data(), get(i).length(), isOverlap());
         else
-            matcher = new StriByteSearchMatcherKMP(get(i).c_str(), get(i).length(), isOverlap());
+            matcher = new StriByteSearchMatcherKMP(get(i).data(), get(i).length(), isOverlap());
     }
 
     return matcher;
@@ -383,10 +395,11 @@ StriByteSearchMatcher* StriContainerByteSearch::getMatcher(R_len_t i) {
 
 /** Read settings flags from a list
  *
- * may call Rf_error
+ * Direct mode may call R error helpers.
  *
  * @param opts_fixed list
  * @param allow_overlap
+ * @param warnings optional operation-level deferred warning queue
  * @return flags
  *
  * @version 0.4-1 (Marek Gagolewski, 2014-12-07)
@@ -397,23 +410,38 @@ StriByteSearchMatcher* StriContainerByteSearch::getMatcher(R_len_t i) {
  * @version 1.1.6 (Marek Gagolewski, 2017-11-10)
  *    PROTECT STRING_ELT(names, i)
  */
-uint32_t StriContainerByteSearch::getByteSearchFlags(SEXP opts_fixed, bool allow_overlap)
+uint32_t StriContainerByteSearch::getByteSearchFlags(
+    SEXP opts_fixed, bool allow_overlap, ci::DeferredWarnings* warnings
+)
 {
     uint32_t flags = 0;
-    if (!Rf_isNull(opts_fixed) && !Rf_isVectorList(opts_fixed))
-        Rf_error(MSG__ARG_EXPECTED_LIST, "opts_fixed"); // error() call allowed here
+    if (!Rf_isNull(opts_fixed) && !Rf_isVectorList(opts_fixed)) {
+        if (warnings)
+            throw StriException(MSG__ARG_EXPECTED_LIST, "opts_fixed");
+        Rf_error(MSG__ARG_EXPECTED_LIST, "opts_fixed");
+    }
 
     R_len_t narg = Rf_isNull(opts_fixed)?0:LENGTH(opts_fixed);
 
     if (narg > 0) {
 
         SEXP names = PROTECT(Rf_getAttrib(opts_fixed, R_NamesSymbol));
-        if (names == R_NilValue || LENGTH(names) != narg)
-            Rf_error(MSG__FIXED_CONFIG_FAILED); // error() call allowed here
+        if (names == R_NilValue || LENGTH(names) != narg) {
+            if (warnings) {
+                UNPROTECT(1);
+                throw StriException(MSG__FIXED_CONFIG_FAILED);
+            }
+            Rf_error(MSG__FIXED_CONFIG_FAILED);
+        }
 
         for (R_len_t i=0; i<narg; ++i) {
-            if (STRING_ELT(names, i) == NA_STRING)
-                Rf_error(MSG__FIXED_CONFIG_FAILED); // error() call allowed here
+            if (STRING_ELT(names, i) == NA_STRING) {
+                if (warnings) {
+                    UNPROTECT(1);
+                    throw StriException(MSG__FIXED_CONFIG_FAILED);
+                }
+                Rf_error(MSG__FIXED_CONFIG_FAILED);
+            }
 
             SEXP tmp_arg;
             PROTECT(tmp_arg = STRING_ELT(names, i));
@@ -421,14 +449,36 @@ uint32_t StriContainerByteSearch::getByteSearchFlags(SEXP opts_fixed, bool allow
             UNPROTECT(1);
 
             PROTECT(tmp_arg = VECTOR_ELT(opts_fixed, i));
-            if  (!strcmp(curname, "case_insensitive")) {
-                bool val = ci__prepare_arg_logical_1_notNA(tmp_arg, "case_insensitive");
-                if (val) flags |= BYTESEARCH_CASE_INSENSITIVE;
-            } else if  (!strcmp(curname, "overlap") && allow_overlap) {
-                bool val = ci__prepare_arg_logical_1_notNA(tmp_arg, "overlap");
-                if (val) flags |= BYTESEARCH_OVERLAP;
-            } else {
-                Rf_warning(MSG__INCORRECT_FIXED_OPTION, curname);
+            try {
+                if  (!strcmp(curname, "case_insensitive")) {
+                    bool val = ci__prepare_arg_logical_1_notNA(
+                        tmp_arg, "case_insensitive", warnings
+                    );
+                    if (val) flags |= BYTESEARCH_CASE_INSENSITIVE;
+                }
+                else if (!strcmp(curname, "overlap") && allow_overlap) {
+                    bool val = ci__prepare_arg_logical_1_notNA(
+                        tmp_arg, "overlap", warnings
+                    );
+                    if (val) flags |= BYTESEARCH_OVERLAP;
+                }
+                else if (warnings) {
+                    // Deviation from stringi: retain this diagnostic until the
+                    // caller has released its operation state.
+                    std::string warning("incorrect opts_fixed setting: '");
+                    warning += curname;
+                    warning += "'; ignoring";
+                    warnings->push(warning.c_str());
+                }
+                else {
+                    Rf_warning(MSG__INCORRECT_FIXED_OPTION, curname);
+                }
+            }
+            catch (...) {
+                // Deferred validation throws through C++, so balance the
+                // current option and names protections before propagating it.
+                UNPROTECT(2);
+                throw;
             }
             UNPROTECT(1);
         }

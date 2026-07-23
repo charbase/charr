@@ -32,12 +32,39 @@
 
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
 #include "ci_container_utf8_indexable.h"
 #include <deque>
 #include <vector>
 #include <utility>
 #include <unicode/brkiter.h>
 #include <unicode/uniset.h>
+
+
+namespace {
+
+struct CiWrapIcuState {
+    BreakIterator* iterator;
+    UText* text;
+
+    explicit CiWrapIcuState(BreakIterator* iterator1)
+        : iterator(iterator1), text(NULL)
+    {
+    }
+
+    ~CiWrapIcuState()
+    {
+        if (iterator)
+            delete iterator;
+        if (text)
+            utext_close(text);
+    }
+
+    CiWrapIcuState(const CiWrapIcuState&) = delete;
+    CiWrapIcuState& operator=(const CiWrapIcuState&) = delete;
+};
+
+}
 
 
 /** Greedy word wrap algorithm
@@ -193,10 +220,10 @@ struct StriWrapLineStart {
     R_len_t width;
 
     StriWrapLineStart(const String8& s, R_len_t v) :
-        str(s.c_str()) {
+        str(s.data(), static_cast<std::size_t>(s.length())) {
         nbytes  = s.length()+v;
         count   = s.countCodePoints()+v;
-        width   = ci__width_string(s.c_str(), s.length())+v;
+        width   = ci__width_string(s.data(), s.length())+v;
         str.append(std::string(v, ' '));
     }
 };
@@ -262,15 +289,22 @@ SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent,
 
 
     const char* qloc = ci__prepare_arg_locale(locale, "locale"); /* this is R_alloc'ed */
-    Locale loc = Locale::createFromName(qloc);
     PROTECT(str     = ci__prepare_arg_string(str, "str"));
     PROTECT(prefix  = ci__prepare_arg_string_1(prefix, "prefix"));
     PROTECT(initial = ci__prepare_arg_string_1(initial, "initial"));
 
     BreakIterator* briter = NULL;
-    UText* str_text = NULL;
 
     STRI__ERROR_HANDLER_BEGIN(3)
+    SEXP ret;
+    {
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_length = 0;
+    std::vector<charport::charvec::Store> stores;
+    {
+    // Deviation from stringi: scope ICU state with the Reader-backed work so
+    // it is gone before deferred warnings or R output assembly can unwind.
+    Locale loc = Locale::createFromName(qloc);
     UErrorCode status = U_ZERO_ERROR;
     briter = BreakIterator::createLineInstance(loc, status);
     STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
@@ -279,14 +313,31 @@ SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent,
     if (status == U_USING_DEFAULT_WARNING && qloc) {
         UErrorCode status2 = U_ZERO_ERROR;
         const char* valid_locale = briter->getLocaleID(ULOC_VALID_LOCALE, status2);
-        if (valid_locale && !strcmp(valid_locale, "root"))
-            Rf_warning("%s", ICUError::getICUerrorName(status));
+        if (valid_locale && !strcmp(valid_locale, "root")) {
+            // Deviation from stringi: queue the controllable warning so
+            // Reader and ICU resources are released before R handles it.
+            context.warn(ICUError::getICUerrorName(status));
+        }
     }
 
-    R_len_t str_length = LENGTH(str);
-    StriContainerUTF8_indexable str_cont(str, str_length);
-    StriContainerUTF8 prefix_cont(prefix, 1);
-    StriContainerUTF8 initial_cont(initial, 1);
+    str_length = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    // Deviation from stringi: retain each lazy child as a Store until list
+    // assembly. The line count is known before a child is constructed, so its
+    // storage is exact rather than growable.
+    stores.reserve(static_cast<std::size_t>(str_length));
+    {
+        StriContainerUTF8_indexable str_cont(
+            context, str, str_length
+        );
+        StriContainerUTF8 prefix_cont(context, prefix, 1);
+        StriContainerUTF8 initial_cont(context, initial, 1);
+        // Deviation from stringi: this guard is declared after the Reader
+        // containers so exception unwinding releases ICU's borrowed view
+        // before it releases the Reader borrow.
+        CiWrapIcuState icu_state(briter);
+        briter = NULL;
 
 
     // prepare indent/exdent/prefix/initial stuff:
@@ -309,29 +360,32 @@ SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent,
     UnicodeSet uset_whitespaces(UnicodeString::fromUTF8("\\p{White_space}"), status);
     STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
     uset_whitespaces.freeze();
+    charport::charvec::Builder output(0);
 
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(VECSXP, str_length));
     for (R_len_t i = 0; i < str_length; ++i)
     {
         if (str_cont.isNA(i) || prefix_cont.isNA(0) || initial_cont.isNA(0)) {
-            SET_VECTOR_ELT(ret, i, ci__vector_NA_strings(1));
+            stores.push_back(charport::charvec::Store::scalar(
+                NULL, 0, cetype_ext_t::CE_NA
+            ));
             continue;
         }
 
         status = U_ZERO_ERROR;
-        const char* str_cur_s = str_cont.get(i).c_str();
+        const char* str_cur_s = str_cont.get(i).data();
         R_len_t str_cur_n = str_cont.get(i).length();
-        str_text = utext_openUTF8(str_text, str_cur_s, str_cont.get(i).length(), &status);
+        icu_state.text = utext_openUTF8(
+            icu_state.text, str_cur_s, str_cur_n, &status
+        );
         STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
 
         status = U_ZERO_ERROR;
-        briter->setText(str_text, status);
+        icu_state.iterator->setText(icu_state.text, status);
         STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
 
         // first generate a list of positions of line breaks
         deque< R_len_t > occurrences_list; // this could be an R_len_t queue
-        R_len_t match = briter->first();
+        R_len_t match = icu_state.iterator->first();
         while (match != BreakIterator::DONE) {
 
             if (!whitespace_only_val)
@@ -347,12 +401,12 @@ SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent,
                     occurrences_list.push_back(match);
             }
 
-            match = briter->next();
+            match = icu_state.iterator->next();
         }
 
         R_len_t noccurrences = (R_len_t)occurrences_list.size(); // number of boundaries
         if (noccurrences <= 1) { // no match (1 boundary == 0)
-            SET_VECTOR_ELT(ret, i, Rf_ScalarString(str_cont.toR(i)));
+            stores.push_back(ci::scalar_store(str_cont.get(i)));
             continue;
         }
 
@@ -462,8 +516,22 @@ SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent,
         // wrap_after.size() line breaks => wrap_after.size()+1 lines
         R_len_t nlines = (R_len_t)wrap_after.size()+1;
         R_len_t last_pos = 0;
-        SEXP ans;
-        STRI__PROTECT(ans = Rf_allocVector(STRSXP, nlines));
+
+        if (nlines == 1) {
+            std::string cs;
+            if (i == 0) cs = ii.str;
+            else        cs = pi.str;
+            cs.append(
+                str_cur_s,
+                static_cast<std::size_t>(end_pos_trim[nwords-1])
+            );
+            stores.push_back(ci::scalar_store(
+                cs, cetype_ext_t::CE_ASCII_OR_UTF8
+            ));
+            continue;
+        }
+
+        output.reset(nlines);
         deque<R_len_t>::iterator iter_wrap = wrap_after.begin();
         for (R_len_t u = 0; iter_wrap != wrap_after.end(); ++iter_wrap, ++u) {
             R_len_t wrap_after_cur = *iter_wrap;
@@ -474,7 +542,9 @@ SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent,
             else if (i > 0 && u == 0) cs = pi.str;
             else                      cs = pe.str;
             cs.append(str_cur_s+last_pos, cur_pos-last_pos);
-            SET_STRING_ELT(ans, u, Rf_mkCharLenCE(cs.c_str(), cs.size(), CE_UTF8));
+            ci::builder_set(
+                output, u, cs, cetype_ext_t::CE_ASCII_OR_UTF8
+            );
 
             last_pos = end_pos_orig[wrap_after_cur];
         }
@@ -485,30 +555,36 @@ SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent,
         else if (i > 0 && nlines-1 == 0) cs = pi.str;
         else                             cs = pe.str;
         cs.append(str_cur_s+last_pos, end_pos_trim[nwords-1]-last_pos);
-        SET_STRING_ELT(ans, nlines-1, Rf_mkCharLenCE(cs.c_str(), cs.size(), CE_UTF8));
+        ci::builder_set(
+            output, nlines-1, cs, cetype_ext_t::CE_ASCII_OR_UTF8
+        );
+        stores.push_back(output.release_store());
+    }
+    }
+    }
 
+    // Deviation from stringi: protect the complete lazy list, then release
+    // its staging Stores before deferred warnings are replayed.
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(VECSXP, str_length);
+    }));
+    for (R_len_t i=0; i<str_length; ++i) {
+        SEXP ans;
+        STRI__PROTECT(ans = charport::charvec::wrap(
+            std::move(stores[i])
+        ));
         SET_VECTOR_ELT(ret, i, ans);
         STRI__UNPROTECT(1);
     }
+    }
+    STRI__DEFERRED_WARNINGS.emit();
 
-    if (briter) {
-        delete briter;
-        briter = NULL;
-    }
-    if (str_text) {
-        utext_close(str_text);
-        str_text = NULL;
-    }
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END({
         if (briter) {
             delete briter;
             briter = NULL;
-        }
-        if (str_text) {
-            utext_close(str_text);
-            str_text = NULL;
         }
     })
 }

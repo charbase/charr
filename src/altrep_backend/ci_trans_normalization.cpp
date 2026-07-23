@@ -31,6 +31,7 @@
  */
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
 #include "ci_container_utf16.h"
 #include <unicode/normalizer2.h>
 
@@ -134,21 +135,44 @@ SEXP ci_trans_nf(SEXP str, int type)
         ci__normalizer_get(type); // auto `type` check here, call before ERROR_HANDLER
 
     PROTECT(str = ci__prepare_arg_string(str, "str"));    // prepare string argument
-    R_len_t str_length = LENGTH(str);
 
     STRI__ERROR_HANDLER_BEGIN(1)
-    StriContainerUTF16 str_cont(str, str_length, false); // writable, no recycle
+    SEXP ret;
+    {
+        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+        R_len_t str_length = ci::checked_r_len(
+            context.size(str), "character vectors"
+        );
+        charport::charvec::Builder builder(str_length);
+        std::vector<char> utf8_buffer;
+        {
+            StriContainerUTF16 str_cont(
+                context, str, str_length, false
+            ); // writable, no recycle
 
-    for (R_len_t i=0; i<str_length; ++i) {
-        if (str_cont.isNA(i)) continue;
-        UErrorCode status = U_ZERO_ERROR;
-        str_cont.set(i, normalizer->normalize(str_cont.get(i), status));
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            for (R_len_t i=0; i<str_length; ++i) {
+                if (str_cont.isNA(i)) continue;
+                UErrorCode status = U_ZERO_ERROR;
+                str_cont.set(i, normalizer->normalize(str_cont.get(i), status));
+                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            }
+
+            for (R_len_t i=0; i<str_length; ++i) {
+                if (str_cont.isNA(i)) {
+                    builder.set_na(i);
+                    continue;
+                }
+                ci::builder_set(builder, i, str_cont.get(i), utf8_buffer);
+            }
+        }
+
+        // normalizer shall not be deleted at all
+        STRI__PROTECT(ret = builder.to_sexp());
     }
 
-    // normalizer shall not be deleted at all
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
-    return str_cont.toR();
+    return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
 }
 
@@ -181,33 +205,45 @@ SEXP ci_trans_isnf(SEXP str, int type)
         ci__normalizer_get(type); // auto `type` check here, call before ERROR_HANDLER
 
     PROTECT(str = ci__prepare_arg_string(str, "str"));    // prepare string argument
-    R_len_t str_length = LENGTH(str);
 
     STRI__ERROR_HANDLER_BEGIN(1)
-    StriContainerUTF16 str_cont(str, str_length);
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(LGLSXP, str_length));
-    int* ret_tab = LOGICAL(ret);
-
-    for (R_len_t i = str_cont.vectorize_init();
-            i != str_cont.vectorize_end();
-            i = str_cont.vectorize_next(i))
     {
-        if (str_cont.isNA(i)) {
-            ret_tab[i] = NA_LOGICAL;
-            continue;
+        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+        R_len_t str_length = ci::checked_r_len(
+            context.size(str), "character vectors"
+        );
+
+        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+            return Rf_allocVector(LGLSXP, str_length);
+        }));
+        int* ret_tab = LOGICAL(ret);
+
+        {
+            StriContainerUTF16 str_cont(context, str, str_length);
+
+            for (R_len_t i = str_cont.vectorize_init();
+                    i != str_cont.vectorize_end();
+                    i = str_cont.vectorize_next(i))
+            {
+                if (str_cont.isNA(i)) {
+                    ret_tab[i] = NA_LOGICAL;
+                    continue;
+                }
+
+                // C API will not be faster here
+                // as it is a simple wrapper for C++ API
+
+                UErrorCode status = U_ZERO_ERROR;
+                ret_tab[i] = normalizer->isNormalized(str_cont.get(i), status) ? TRUE : FALSE;
+                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            }
         }
 
-        // C API will not be faster here
-        // as it is a simple wrapper for C++ API
-
-        UErrorCode status = U_ZERO_ERROR;
-        ret_tab[i] = normalizer->isNormalized(str_cont.get(i), status) ? TRUE : FALSE;
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+        // normalizer shall not be deleted at all
     }
 
-    // normalizer shall not be deleted at all
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)

@@ -45,34 +45,24 @@ void String8::initialize(const char* str, R_len_t n, bool memalloc, bool killbom
             (uint8_t)(str[0]) == UTF8_BOM_BYTE1 &&
             (uint8_t)(str[1]) == UTF8_BOM_BYTE2 &&
             (uint8_t)(str[2]) == UTF8_BOM_BYTE3) {
-        // has BOM - get rid of it
-        this->m_memalloc = true; // ignore memalloc val
-        this->m_n = n-3;
-        this->m_isASCII = isASCII;
-        this->m_str = new char[this->m_n+1];
+        // Deviation from stringi: a borrowed view drops the BOM without copying.
+        str += 3;
+        n -= 3;
+    }
+
+    this->m_memalloc = memalloc;
+    this->m_n = n;
+    this->m_isASCII = isASCII;
+    if (memalloc) {
+        this->m_str = new char[this->m_n];
         STRI_ASSERT(this->m_str);
         if (!this->m_str)
-            throw StriException(MSG__MEM_ALLOC_ERROR_WITH_SIZE, this->m_n+1);
-        memcpy(this->m_str, str+3, (size_t)this->m_n);
-        this->m_str[this->m_n] = '\0';
+            throw StriException(MSG__MEM_ALLOC_ERROR_WITH_SIZE, this->m_n);
+        if (this->m_n > 0)
+            memcpy(this->m_str, str, (size_t)this->m_n);
     }
     else {
-        this->m_memalloc = memalloc;
-        this->m_n = n;
-        this->m_isASCII = isASCII;
-        if (memalloc) {
-            this->m_str = new char[this->m_n+1];
-            STRI_ASSERT(this->m_str);
-            if (!this->m_str)
-                throw StriException(MSG__MEM_ALLOC_ERROR_WITH_SIZE, this->m_n+1);
-            // memcpy may be very fast in some libc implementations
-            memcpy(this->m_str, str, (size_t)this->m_n);
-            this->m_str[this->m_n] = '\0';
-        }
-        else {
-            this->m_str = (char*)(str); // we know what we're doing
-            // str is zero-terminated
-        }
+        this->m_str = (char*)(str); // the Reader lease owns the storage
     }
 }
 
@@ -85,12 +75,12 @@ String8::String8(const String8& s)
     this->m_n = s.m_n;
     this->m_isASCII = s.m_isASCII;
     if (s.m_memalloc) {
-        this->m_str = new char[this->m_n+1];
+        this->m_str = new char[this->m_n];
         STRI_ASSERT(this->m_str);
         if (!this->m_str)
-            throw StriException(MSG__MEM_ALLOC_ERROR_WITH_SIZE, this->m_n+1);
-        memcpy(this->m_str, s.m_str, (size_t)this->m_n);
-        this->m_str[this->m_n] = '\0';
+            throw StriException(MSG__MEM_ALLOC_ERROR_WITH_SIZE, this->m_n);
+        if (this->m_n > 0)
+            memcpy(this->m_str, s.m_str, (size_t)this->m_n);
     }
     else {
         this->m_str = s.m_str;
@@ -100,27 +90,57 @@ String8::String8(const String8& s)
 /** copy */
 String8& String8::operator=(const String8& s)
 {
-    if (this->m_str && this->m_memalloc)
-        delete [] this->m_str;
+    if (this == &s)
+        return *this;
 
+    // Deviation from stringi: allocate before replacing the current value so
+    // assignment is safe for self-assignment and allocation failure.
+    char* replacement = s.m_str;
+    if (s.m_memalloc) {
+        replacement = new char[s.m_n];
+        STRI_ASSERT(replacement);
+        if (!replacement)
+            throw StriException(MSG__MEM_ALLOC_ERROR_WITH_SIZE, s.m_n);
+        if (s.m_n > 0)
+            memcpy(replacement, s.m_str, (size_t)s.m_n);
+    }
+
+    char* old_str = this->m_str;
+    bool old_memalloc = this->m_memalloc;
+    this->m_str = replacement;
     this->m_memalloc = s.m_memalloc;
     this->m_n = s.m_n;
     this->m_isASCII = s.m_isASCII;
-    if (s.m_memalloc) {
-        this->m_str = new char[this->m_n+1];
-        STRI_ASSERT(this->m_str);
-        if (!this->m_str)
-            throw StriException(MSG__MEM_ALLOC_ERROR_WITH_SIZE, this->m_n+1);
-        memcpy(this->m_str, s.m_str, (size_t)this->m_n);
-        this->m_str[this->m_n] = '\0';
-    }
-    else {
-        this->m_str = s.m_str;
-    }
+    if (old_str && old_memalloc)
+        delete [] old_str;
 
     return *this;
 }
 
+
+void String8::assignOwned(const String8& s)
+{
+    if (s.isNA()) {
+        setNA();
+        return;
+    }
+
+    char* replacement = new char[s.m_n];
+    STRI_ASSERT(replacement);
+    if (!replacement)
+        throw StriException(MSG__MEM_ALLOC_ERROR_WITH_SIZE, s.m_n);
+    if (s.m_n > 0)
+        memcpy(replacement, s.m_str, static_cast<size_t>(s.m_n));
+
+    char* old_str = this->m_str;
+    bool old_memalloc = this->m_memalloc;
+    this->m_str = replacement;
+    this->m_n = s.m_n;
+    this->m_memalloc = true;
+    this->m_isASCII = s.m_isASCII;
+    if (old_str && old_memalloc)
+        delete [] old_str;
+}
 
 
 bool String8::endsWith(R_len_t byteindex, const char* patternStr, R_len_t patternLen, bool caseInsensitive) const
@@ -189,7 +209,7 @@ void String8::replaceAllAtPos(R_len_t buf_size,
     char* old_str = this->m_str;
     int old_n = this->m_n;
     bool old_memalloc = this->m_memalloc;
-    this->m_str = new char[buf_size+1];
+    this->m_str = new char[buf_size];
     this->m_n = buf_size;
     this->m_memalloc = true;
     this->m_isASCII = true; /* TO DO */
@@ -227,8 +247,6 @@ void String8::replaceAllAtPos(R_len_t buf_size,
     if (buf_used != this->m_n)
         throw StriException("!NDEBUG: String8::replaceAllAtPos: buf_used > buf_size");
 #endif
-    this->m_str[this->m_n] = '\0';
-
     if (old_str && old_memalloc)
         delete [] old_str;
 }

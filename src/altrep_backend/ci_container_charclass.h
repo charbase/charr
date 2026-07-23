@@ -36,6 +36,7 @@
 
 #include "ci_container_base.h"
 #include "ci_container_utf8.h"
+#include <memory>
 #include <unicode/uniset.h>
 
 
@@ -67,47 +68,55 @@ public:
         data = NULL;
     }
 
-    StriContainerCharClass(SEXP rvec, R_len_t _nrecycle, bool negate=false)
+    StriContainerCharClass(
+        ci::ReaderContext& context, SEXP rvec,
+        R_len_t _nrecycle, bool negate=false
+    )
     {
 #ifndef NDEBUG
         if (!Rf_isString(rvec))
             throw StriException("DEBUG: !Rf_isString in StriContainerCharClass::StriContainerCharClass(SEXP rvec)");
 #endif
-        int _n = LENGTH(rvec);
+        R_len_t _n = ci::checked_r_len(
+            context.size(rvec), "character vectors"
+        );
         this->init_Base(_n, _nrecycle, true);
 
         this->data = NULL;
         if (_n > 0) {
-            StriContainerUTF8 rvec_cont(rvec, _n, true);
-            this->data = new UnicodeSet[_n];
+            StriContainerUTF8 rvec_cont(context, rvec, _n, true);
+            std::unique_ptr<UnicodeSet[]> new_data(new UnicodeSet[_n]);
             for (int i=0; i<_n; ++i) {
                 if (rvec_cont.isNA(i))
-                    this->data[i].setToBogus();
+                    new_data[i].setToBogus();
                 else {
                     UErrorCode status = U_ZERO_ERROR;
-                    this->data[i].applyPattern(
-                        UnicodeString::fromUTF8(rvec_cont.get(i).c_str()),
+                    new_data[i].applyPattern(
+                        UnicodeString::fromUTF8(StringPiece(
+                            rvec_cont.get(i).data(), rvec_cont.get(i).length()
+                        )),
                         status
                     );
-                    STRI__CHECKICUSTATUS_THROW(status, {delete [] data; data = NULL;})
+                    STRI__CHECKICUSTATUS_THROW(status, {/* RAII owns new_data */})
                     if (negate)
-                        this->data[i].complement();
-                    this->data[i].freeze();
+                        new_data[i].complement();
+                    new_data[i].freeze();
                 }
             }
+            this->data = new_data.release();
         }
     }
 
     StriContainerCharClass(StriContainerCharClass& container)
         :StriContainerBase((StriContainerBase&)container)
     {
+        this->data = NULL;
         if (container.data) {
-            this->data = new UnicodeSet[container.n];
+            std::unique_ptr<UnicodeSet[]> new_data(new UnicodeSet[container.n]);
             for (int i=0; i<container.n; ++i)
-                this->data[i] = container.data[i];
+                new_data[i] = container.data[i];
+            this->data = new_data.release();
         }
-        else
-            this->data = NULL;
     }
 
     ~StriContainerCharClass() {
@@ -116,15 +125,21 @@ public:
 
     StriContainerCharClass& operator=(StriContainerCharClass& container)
     {
-        this->~StriContainerCharClass();
-        (StriContainerBase&) (*this) = (StriContainerBase&)container;
+        if (this == &container)
+            return *this;
+
+        std::unique_ptr<UnicodeSet[]> new_data;
         if (container.data) {
-            this->data = new UnicodeSet[container.n];
+            new_data.reset(new UnicodeSet[container.n]);
             for (int i=0; i<container.n; ++i)
-                this->data[i] = container.data[i];
+                new_data[i] = container.data[i];
         }
-        else
-            this->data = NULL;
+
+        // Deviation from stringi: do not reuse an object after explicitly
+        // ending its lifetime.
+        delete [] this->data;
+        (StriContainerBase&) (*this) = (StriContainerBase&)container;
+        this->data = new_data.release();
         return *this;
     }
 

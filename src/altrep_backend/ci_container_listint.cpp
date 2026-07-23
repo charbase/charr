@@ -40,9 +40,8 @@
  *
  */
 StriContainerListInt::StriContainerListInt()
-    : StriContainerBase()
+    : StriContainerBase(), data(NULL)
 {
-    data = NULL;
 }
 
 
@@ -53,67 +52,88 @@ StriContainerListInt::StriContainerListInt()
  * if you want nrecycle > n, call set_nrecycle
  */
 StriContainerListInt::StriContainerListInt(SEXP rstr)
+    : StriContainerBase(), data(NULL)
 {
-    this->data = NULL;
-
     if (Rf_isNull(rstr)) {
         this->init_Base(1, 1, true);
-        this->data = new IntVec[this->n]; // 1 vector, NA/NULL
-        if (!this->data) throw StriException(MSG__MEM_ALLOC_ERROR);
+        std::unique_ptr<IntVec[]> new_data(new IntVec[this->n]);
+        this->data = new_data.release(); // 1 vector, NA/NULL
     }
     else if (Rf_isInteger(rstr)) {
         this->init_Base(1, 1, true);
-        this->data = new IntVec[this->n];
-        if (!this->data) throw StriException(MSG__MEM_ALLOC_ERROR);
-        this->data[0].initialize((const int*)INTEGER(rstr), LENGTH(rstr)); // shallow copy // TODO: ALTREP will be problematic?
+        std::unique_ptr<IntVec[]> new_data(new IntVec[this->n]);
+        const int* values = NULL;
+        R_len_t values_length = 0;
+        // Deviation from stringi: numeric ALTREP access can unwind. Keep the
+        // partially built shallow-wrapper array under RAII and request only a
+        // read-only pointer while translating that R boundary into C++.
+        charport::unwind_protect([&]() -> SEXP {
+            values_length = LENGTH(rstr);
+            values = INTEGER_RO(rstr);
+            return R_NilValue;
+        });
+        new_data[0].initialize(values, values_length);
+        this->data = new_data.release();
     }
     else // if (Rf_isVectorList(rstr)) -- args already checked
     {
-        R_len_t nv = LENGTH(rstr);
+        R_len_t nv = 0;
+        charport::unwind_protect([&]() -> SEXP {
+            nv = LENGTH(rstr);
+            return R_NilValue;
+        });
         this->init_Base(nv, nv, true);
-        this->data = new IntVec[this->n];
-        if (!this->data) throw StriException(MSG__MEM_ALLOC_ERROR);
+        std::unique_ptr<IntVec[]> new_data(new IntVec[this->n]);
         for (R_len_t i=0; i<this->n; ++i) {
-            SEXP cur = VECTOR_ELT(rstr, i);
+            SEXP cur = R_NilValue;
+            const int* values = NULL;
+            R_len_t values_length = 0;
+            charport::unwind_protect([&]() -> SEXP {
+                cur = VECTOR_ELT(rstr, i);
+                if (!Rf_isNull(cur)) {
+                    values_length = LENGTH(cur);
+                    values = INTEGER_RO(cur);
+                }
+                return R_NilValue;
+            });
             if (!Rf_isNull(cur))
-                this->data[i].initialize((const int*)INTEGER(cur), LENGTH(cur)); // shallow copy // TODO: ALTREP will be problematic?
+                new_data[i].initialize(values, values_length);
             // else leave as-is, i.e., NULL/NA
         }
+        this->data = new_data.release();
     }
 }
 
 
 StriContainerListInt::StriContainerListInt(StriContainerListInt& container)
-    :    StriContainerBase((StriContainerBase&)container)
+    : StriContainerBase((StriContainerBase&)container), data(NULL)
 {
     if (container.data) {
-        this->data = new IntVec[this->n];
-        if (!this->data) throw StriException(MSG__MEM_ALLOC_ERROR);
+        std::unique_ptr<IntVec[]> new_data(new IntVec[this->n]);
         for (int i=0; i<this->n; ++i) {
-            this->data[i] = container.data[i];
+            new_data[i] = container.data[i];
         }
-    }
-    else {
-        this->data = NULL;
+        this->data = new_data.release();
     }
 }
 
 
 StriContainerListInt& StriContainerListInt::operator=(StriContainerListInt& container)
 {
-    this->~StriContainerListInt();
-    (StriContainerBase&) (*this) = (StriContainerBase&)container;
+    if (this == &container)
+        return *this;
 
+    std::unique_ptr<IntVec[]> new_data;
     if (container.data) {
-        this->data = new IntVec[this->n];
-        if (!this->data) throw StriException(MSG__MEM_ALLOC_ERROR);
-        for (int i=0; i<this->n; ++i) {
-            this->data[i] = container.data[i];
+        new_data.reset(new IntVec[container.n]);
+        for (int i=0; i<container.n; ++i) {
+            new_data[i] = container.data[i];
         }
     }
-    else {
-        this->data = NULL;
-    }
+
+    delete [] this->data;
+    (StriContainerBase&) (*this) = (StriContainerBase&)container;
+    this->data = new_data.release();
     return *this;
 }
 

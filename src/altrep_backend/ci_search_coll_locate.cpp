@@ -72,67 +72,106 @@ SEXP ci__locate_firstlast_coll(SEXP str, SEXP pattern, SEXP opts_collator, bool 
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
 
     UCollator* collator = NULL;
-    collator = ci__ucol_open(opts_collator);
 
     STRI__ERROR_HANDLER_BEGIN(2)
-    R_len_t vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
-    StriContainerUTF16 str_cont(str, vectorize_length);
-    StriContainerUStringSearch pattern_cont(pattern, vectorize_length, collator);  // collator is not owned by pattern_cont
+    // Deviation from stringi: catch R errors from collator option parsing so
+    // queued warnings and any opened collator are released before R resumes.
+    charport::unwind_protect([&]() -> SEXP {
+        collator = ci__ucol_open(
+            STRI__DEFERRED_WARNINGS, opts_collator
+        );
+        return R_NilValue;
+    });
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t vectorize_length = 0;
+    // Deviation from stringi: queue recycling warnings while the collator is
+    // live and emit them after the collator closes.
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_length = ci__recycling_rule(
+            false, 2, str_n, pattern_n
+        );
+        if (vectorize_length > 0 &&
+                (vectorize_length%str_n != 0 ||
+                 vectorize_length%pattern_n != 0))
+            STRI__DEFERRED_WARNINGS.push(MSG__WARN_RECYCLING_RULE);
+        return R_NilValue;
+    });
 
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocMatrix(INTSXP, vectorize_length, 2));
-    ci__locate_set_dimnames_matrix(ret, get_length1);
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocMatrix(INTSXP, vectorize_length, 2);
+    }));
     int* ret_tab = INTEGER(ret);
 
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        ret_tab[i]                  = NA_INTEGER;
-        ret_tab[i+vectorize_length] = NA_INTEGER;
-        STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(
-            str_cont, pattern_cont,
-            ;/*nothing on NA - keep NA_INTEGER*/,
-            { if (get_length1) ret_tab[i] = ret_tab[i+vectorize_length] = -1; }
-        )
+        StriContainerUTF16 str_cont(
+            context, str, vectorize_length
+        );
+        StriContainerUStringSearch pattern_cont(
+            context, pattern, vectorize_length, collator
+        );  // collator is not owned by pattern_cont
 
-        UStringSearch *matcher = pattern_cont.getMatcher(i, str_cont.get(i));
-        usearch_reset(matcher);
-        UErrorCode status = U_ZERO_ERROR;
+        for (R_len_t i = pattern_cont.vectorize_init();
+                i != pattern_cont.vectorize_end();
+                i = pattern_cont.vectorize_next(i))
+        {
+            ret_tab[i]                  = NA_INTEGER;
+            ret_tab[i+vectorize_length] = NA_INTEGER;
+            STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(
+                str_cont, pattern_cont,
+                ;/*nothing on NA - keep NA_INTEGER*/,
+                { if (get_length1) ret_tab[i] = ret_tab[i+vectorize_length] = -1; }
+            )
 
-        int start;
-        if (first) {
-            start = usearch_first(matcher, &status);
-        } else {
-            start = usearch_last(matcher, &status);
+            UStringSearch *matcher = pattern_cont.getMatcher(i, str_cont.get(i));
+            usearch_reset(matcher);
+            UErrorCode status = U_ZERO_ERROR;
+
+            int start;
+            if (first) {
+                start = usearch_first(matcher, &status);
+            } else {
+                start = usearch_last(matcher, &status);
+            }
+            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+
+
+            if (start != USEARCH_DONE) {  // there is a match
+                ret_tab[i]                  = start;
+                ret_tab[i+vectorize_length] = start + usearch_getMatchedLength(matcher);
+
+                // Adjust UChar index -> UChar32 index (1-2 byte UTF16 to 1 byte UTF32-code points)
+                str_cont.UChar16_to_UChar32_index(i,
+                                                  ret_tab+i, ret_tab+i+vectorize_length, 1,
+                                                  1, // 0-based index -> 1-based
+                                                  0  // end returns position of next character after match
+                                                 );
+
+                if (get_length1) ret_tab[i+vectorize_length] -= ret_tab[i] - 1;  // to->length
+            }
+            else if (get_length1) {
+                // not found
+                ret_tab[i+vectorize_length] = ret_tab[i] = -1;
+            }
+            // else NA_INTEGER already
         }
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-
-        if (start != USEARCH_DONE) {  // there is a match
-            ret_tab[i]                  = start;
-            ret_tab[i+vectorize_length] = start + usearch_getMatchedLength(matcher);
-
-            // Adjust UChar index -> UChar32 index (1-2 byte UTF16 to 1 byte UTF32-code points)
-            str_cont.UChar16_to_UChar32_index(i,
-                                              ret_tab+i, ret_tab+i+vectorize_length, 1,
-                                              1, // 0-based index -> 1-based
-                                              0  // end returns position of next character after match
-                                             );
-
-            if (get_length1) ret_tab[i+vectorize_length] -= ret_tab[i] - 1;  // to->length
-        }
-        else if (get_length1) {
-            // not found
-            ret_tab[i+vectorize_length] = ret_tab[i] = -1;
-        }
-        // else NA_INTEGER already
     }
 
+    charport::unwind_protect([&]() -> SEXP {
+        ci__locate_set_dimnames_matrix(ret, get_length1);
+        return R_NilValue;
+    });
     if (collator) {
         ucol_close(collator);
         collator=NULL;
     }
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(
@@ -237,75 +276,138 @@ SEXP ci_locate_all_coll(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_co
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
 
     UCollator* collator = NULL;
-    collator = ci__ucol_open(opts_collator);
 
     STRI__ERROR_HANDLER_BEGIN(2)
-    R_len_t vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
-    StriContainerUTF16 str_cont(str, vectorize_length);
-    StriContainerUStringSearch pattern_cont(pattern, vectorize_length, collator);  // collator is not owned by pattern_cont
+    // Deviation from stringi: catch R errors from collator option parsing so
+    // queued warnings and any opened collator are released before R resumes.
+    charport::unwind_protect([&]() -> SEXP {
+        collator = ci__ucol_open(
+            STRI__DEFERRED_WARNINGS, opts_collator
+        );
+        return R_NilValue;
+    });
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t vectorize_length = 0;
+    // Deviation from stringi: queue recycling warnings while the collator is
+    // live and emit them after the collator closes.
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_length = ci__recycling_rule(
+            false, 2, str_n, pattern_n
+        );
+        if (vectorize_length > 0 &&
+                (vectorize_length%str_n != 0 ||
+                 vectorize_length%pattern_n != 0))
+            STRI__DEFERRED_WARNINGS.push(MSG__WARN_RECYCLING_RULE);
+        return R_NilValue;
+    });
 
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(VECSXP, vectorize_length));
-
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-                SET_VECTOR_ELT(ret, i, ci__matrix_NA_INTEGER(1, 2));,
-                SET_VECTOR_ELT(ret, i, ci__matrix_NA_INTEGER(omit_no_match1?0:1, 2, get_length1?-1:NA_INTEGER));)
-
-        UStringSearch *matcher = pattern_cont.getMatcher(i, str_cont.get(i));
-        usearch_reset(matcher);
-
-        UErrorCode status = U_ZERO_ERROR;
-        int start = (int)usearch_first(matcher, &status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-        if (start == USEARCH_DONE) {
-            SET_VECTOR_ELT(ret, i, ci__matrix_NA_INTEGER(omit_no_match1?0:1, 2, get_length1?-1:NA_INTEGER));
-            continue;
-        }
-
+        StriContainerUTF16 str_cont(
+            context, str, vectorize_length
+        );
+        StriContainerUStringSearch pattern_cont(
+            context, pattern, vectorize_length, collator
+        );  // collator is not owned by pattern_cont
+        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+            return Rf_allocVector(VECSXP, vectorize_length);
+        }));
         deque< pair<R_len_t, R_len_t> > occurrences;
-        while (start != USEARCH_DONE) {
-            occurrences.push_back(pair<R_len_t, R_len_t>(start, start+usearch_getMatchedLength(matcher)));
-            start = usearch_next(matcher, &status);
+
+        // Deviation from stringi: one loop-level unwind bridge protects every
+        // child allocation and list write while the Reader and ICU owners are
+        // live. The reusable scratch deque lives outside the callback, so it
+        // is destroyed on an R error without paying one bridge per child.
+        charport::unwind_protect([&]() -> SEXP {
+          for (R_len_t i = pattern_cont.vectorize_init();
+                  i != pattern_cont.vectorize_end();
+                  i = pattern_cont.vectorize_next(i))
+          {
+            ci::UnwindCallbackProtector protector;
+            occurrences.clear();
+            if (str_cont.isNA(i) || pattern_cont.isNA(i) ||
+                    pattern_cont.get(i).length() <= 0) {
+                SEXP ans;
+                ans = protector.protect(ci__matrix_NA_INTEGER(1, 2));
+                SET_VECTOR_ELT(ret, i, ans);
+                continue;
+            }
+            else if (str_cont.get(i).length() <= 0) {
+                SEXP ans;
+                ans = protector.protect(ci__matrix_NA_INTEGER(
+                    omit_no_match1?0:1, 2,
+                    get_length1?-1:NA_INTEGER
+                ));
+                SET_VECTOR_ELT(ret, i, ans);
+                continue;
+            }
+
+            UStringSearch *matcher = pattern_cont.getMatcher(i, str_cont.get(i));
+            usearch_reset(matcher);
+
+            UErrorCode status = U_ZERO_ERROR;
+            int start = (int)usearch_first(matcher, &status);
             STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-        }
 
-        R_len_t noccurrences = (R_len_t)occurrences.size();
-        SEXP ans;
-        STRI__PROTECT(ans = Rf_allocMatrix(INTSXP, noccurrences, 2));
-        int* ans_tab = INTEGER(ans);
-        deque< pair<R_len_t, R_len_t> >::iterator iter = occurrences.begin();
-        for (R_len_t j = 0; iter != occurrences.end(); ++iter, ++j) {
-            pair<R_len_t, R_len_t> match = *iter;
-            ans_tab[j]              = match.first;
-            ans_tab[j+noccurrences] = match.second;
-        }
+            if (start == USEARCH_DONE) {
+                SEXP ans;
+                ans = protector.protect(ci__matrix_NA_INTEGER(
+                    omit_no_match1?0:1, 2,
+                    get_length1?-1:NA_INTEGER
+                ));
+                SET_VECTOR_ELT(ret, i, ans);
+                continue;
+            }
 
-        // Adjust UChar index -> UChar32 index (1-2 byte UTF16 to 1 byte UTF32-code points)
-        str_cont.UChar16_to_UChar32_index(i, ans_tab,
-                                          ans_tab+noccurrences, noccurrences,
-                                          1, // 0-based index -> 1-based
-                                          0  // end returns position of next character after match
-                                         );
+            while (start != USEARCH_DONE) {
+                occurrences.push_back(pair<R_len_t, R_len_t>(
+                    start, start+usearch_getMatchedLength(matcher)
+                ));
+                start = usearch_next(matcher, &status);
+                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            }
 
-        if (get_length1) {
-            for (R_len_t j=0; j < noccurrences; ++j)
-                ans_tab[j+noccurrences] -= ans_tab[j] - 1;  // to->length
-        }
+            R_len_t noccurrences = (R_len_t)occurrences.size();
+            SEXP ans;
+            ans = protector.protect(Rf_allocMatrix(
+                INTSXP, noccurrences, 2
+            ));
+            int* ans_tab = INTEGER(ans);
+            for (R_len_t j = 0; j < noccurrences; ++j) {
+                ans_tab[j] = occurrences[j].first;
+                ans_tab[j+noccurrences] = occurrences[j].second;
+            }
 
-        SET_VECTOR_ELT(ret, i, ans);
-        STRI__UNPROTECT(1);
+            // Adjust UChar index -> UChar32 index (1-2 byte UTF16 to 1 byte UTF32-code points)
+            str_cont.UChar16_to_UChar32_index(i, ans_tab,
+                                              ans_tab+noccurrences, noccurrences,
+                                              1, // 0-based index -> 1-based
+                                              0  // end returns position of next character after match
+                                             );
+
+            if (get_length1) {
+                for (R_len_t j=0; j < noccurrences; ++j)
+                    ans_tab[j+noccurrences] -= ans_tab[j] - 1;  // to->length
+            }
+
+            SET_VECTOR_ELT(ret, i, ans);
+          }
+
+          ci__locate_set_dimnames_list(ret, get_length1);
+          return R_NilValue;
+        });
     }
-
-    ci__locate_set_dimnames_list(ret, get_length1);
     if (collator) {
         ucol_close(collator);
         collator=NULL;
     }
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(

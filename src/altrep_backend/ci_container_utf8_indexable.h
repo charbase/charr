@@ -66,7 +66,15 @@ private:
 public:
 
     StriContainerUTF8_indexable();
-    StriContainerUTF8_indexable(SEXP rstr, R_len_t nrecycle, bool shallowrecycle=true);
+    StriContainerUTF8_indexable(
+        ci::ReaderContext& context, SEXP rstr,
+        R_len_t nrecycle, bool shallowrecycle=true
+    );
+    StriContainerUTF8_indexable(
+        const std::shared_ptr<ci::ReaderBorrow>& source_borrow,
+        const charport::StrView& value,
+        R_len_t nrecycle, bool shallowrecycle
+    );
     StriContainerUTF8_indexable(StriContainerUTF8_indexable& container);
     StriContainerUTF8_indexable& operator=(StriContainerUTF8_indexable& container);
 

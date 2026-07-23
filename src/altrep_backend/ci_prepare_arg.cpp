@@ -32,7 +32,55 @@
 
 
 #include "ci_stringi.h"
+#include "ci_container_utf8.h"
+#include <cstdio>
+#include <cstring>
 #include <unicode/uloc.h>
+
+
+namespace {
+
+void ci__prepare_arg_list_warning(ci::DeferredWarnings* warnings)
+{
+    // Deviation from stringi: lazy coercions can run while an operation owns
+    // output staging, so charr can queue its own list-coercion diagnostic.
+    if (warnings)
+        warnings->push(MSG__WARN_LIST_COERCION);
+    else
+        Rf_warning(MSG__WARN_LIST_COERCION);
+}
+
+
+void ci__prepare_arg_error(
+    ci::DeferredWarnings* warnings, const char* message, const char* argname
+)
+{
+    // Deviation from stringi: a warning-aware lazy coercion reports charr's
+    // own argument failures through the outer C++ boundary instead of
+    // signalling to R while the caller still owns output staging.
+    if (warnings)
+        throw StriException(message, argname);
+    Rf_error(message, argname);
+}
+
+
+void ci__prepare_arg_scalar_warning(
+    ci::DeferredWarnings* warnings, const char* message, const char* argname
+)
+{
+    if (!warnings) {
+        Rf_warning(message, argname);
+        return;
+    }
+
+    char formatted[StriException_BUFSIZE];
+    std::snprintf(
+        formatted, StriException_BUFSIZE, message, argname
+    );
+    warnings->push(formatted);
+}
+
+} // namespace
 
 
 
@@ -141,13 +189,15 @@ bool ci__check_list_of_scalars(SEXP x)
  *
  * @version 1.3.2 (Marek Gagolewski, 2019-02-21)
  */
-SEXP ci__prepare_arg_list(SEXP x, const char* argname)
+SEXP ci__prepare_arg_list(
+    SEXP x, const char* argname, ci::DeferredWarnings* warnings
+)
 {
     if ((SEXP*)argname == (SEXP*)R_NilValue)
         argname = "<noname>";
 
     if (!Rf_isNull(x) && !Rf_isVectorList(x))
-        Rf_error(MSG__ARG_EXPECTED_LIST, argname); // error() allowed here
+        ci__prepare_arg_error(warnings, MSG__ARG_EXPECTED_LIST, argname);
 
     return x;
 }
@@ -333,7 +383,10 @@ SEXP ci__prepare_arg_list_string(SEXP x, const char* argname)
  * @version 1.6.3 (Marek Gagolewski, 2021-05-20)
  *    allow_error
  */
-SEXP ci__prepare_arg_string(SEXP x, const char* argname, bool allow_error)
+SEXP ci__prepare_arg_string(
+    SEXP x, const char* argname, bool allow_error,
+    ci::DeferredWarnings* warnings
+)
 {
     if ((SEXP*)argname == (SEXP*)R_NilValue)
         argname = "<noname>";
@@ -341,7 +394,7 @@ SEXP ci__prepare_arg_string(SEXP x, const char* argname, bool allow_error)
     if (Rf_isVectorList(x) || Rf_isObject(x))  // factor is an object too
     {
         if (Rf_isVectorList(x) && !ci__check_list_of_scalars(x))
-            Rf_warning(MSG__WARN_LIST_COERCION);
+            ci__prepare_arg_list_warning(warnings);
 
 #if defined(R_VERSION) && R_VERSION >= R_Version(3, 5, 0)
         if (allow_error)
@@ -359,7 +412,9 @@ SEXP ci__prepare_arg_string(SEXP x, const char* argname, bool allow_error)
     else if ((bool)Rf_isSymbol(x))
         return Rf_ScalarString(PRINTNAME(x));
 
-    Rf_error(MSG__ARG_EXPECTED_STRING, argname); // allowed here
+    ci__prepare_arg_error(
+        warnings, MSG__ARG_EXPECTED_STRING, argname
+    );
     return x; // avoid compiler warning
 }
 
@@ -399,7 +454,10 @@ SEXP ci__prepare_arg_string(SEXP x, const char* argname, bool allow_error)
  * @version 1.6.3 (Marek Gagolewski, 2021-05-19)
  *    factors_as_strings, allow_error
  */
-SEXP ci__prepare_arg_double(SEXP x, const char* argname, bool factors_as_strings, bool allow_error)
+SEXP ci__prepare_arg_double(
+    SEXP x, const char* argname, bool factors_as_strings,
+    bool allow_error, ci::DeferredWarnings* warnings
+)
 {
     if ((SEXP*)argname == (SEXP*)R_NilValue)
         argname = "<noname>";
@@ -434,7 +492,7 @@ SEXP ci__prepare_arg_double(SEXP x, const char* argname, bool factors_as_strings
     else if (Rf_isVectorList(x) || Rf_isObject(x))  // factor is an object too
     {
         if (Rf_isVectorList(x) && !ci__check_list_of_scalars(x))
-            Rf_warning(MSG__WARN_LIST_COERCION);
+            ci__prepare_arg_list_warning(warnings);
 
 #if defined(R_VERSION) && R_VERSION >= R_Version(3, 5, 0)
         if (allow_error)
@@ -450,7 +508,9 @@ SEXP ci__prepare_arg_double(SEXP x, const char* argname, bool factors_as_strings
     else if (Rf_isVectorAtomic(x) || Rf_isNull(x))
         return Rf_coerceVector(x, REALSXP);
 
-    Rf_error(MSG__ARG_EXPECTED_NUMERIC, argname); // allowed here
+    ci__prepare_arg_error(
+        warnings, MSG__ARG_EXPECTED_NUMERIC, argname
+    );
     return x; // avoid compiler warning
 }
 
@@ -491,7 +551,10 @@ SEXP ci__prepare_arg_double(SEXP x, const char* argname, bool factors_as_strings
  * @version 1.6.3 (Marek Gagolewski, 2021-05-19)
  *    factors_as_strings, allow_error
  */
-SEXP ci__prepare_arg_integer(SEXP x, const char* argname, bool factors_as_strings, bool allow_error)
+SEXP ci__prepare_arg_integer(
+    SEXP x, const char* argname, bool factors_as_strings,
+    bool allow_error, ci::DeferredWarnings* warnings
+)
 {
     if ((SEXP*)argname == (SEXP*)R_NilValue)
         argname = "<noname>";
@@ -526,7 +589,7 @@ SEXP ci__prepare_arg_integer(SEXP x, const char* argname, bool factors_as_string
     else if (Rf_isVectorList(x) || Rf_isObject(x))  // factor is an object too
     {
         if (Rf_isVectorList(x) && !ci__check_list_of_scalars(x))
-            Rf_warning(MSG__WARN_LIST_COERCION);
+            ci__prepare_arg_list_warning(warnings);
 
 #if defined(R_VERSION) && R_VERSION >= R_Version(3, 5, 0)
         if (allow_error)
@@ -542,7 +605,9 @@ SEXP ci__prepare_arg_integer(SEXP x, const char* argname, bool factors_as_string
     else if (Rf_isVectorAtomic(x) || Rf_isNull(x))
         return Rf_coerceVector(x, INTSXP);
 
-    Rf_error(MSG__ARG_EXPECTED_INTEGER, argname); //allowed here
+    ci__prepare_arg_error(
+        warnings, MSG__ARG_EXPECTED_INTEGER, argname
+    );
     return x; // avoid compiler warning
 }
 
@@ -586,7 +651,10 @@ SEXP ci__prepare_arg_integer(SEXP x, const char* argname, bool factors_as_string
  * @version 1.6.3 (Marek Gagolewski, 2021-05-20)
  *    allow_error
  */
-SEXP ci__prepare_arg_logical(SEXP x, const char* argname, bool allow_error)
+SEXP ci__prepare_arg_logical(
+    SEXP x, const char* argname, bool allow_error,
+    ci::DeferredWarnings* warnings
+)
 {
     if ((SEXP*)argname == (SEXP*)R_NilValue)
         argname = "<noname>";
@@ -610,7 +678,7 @@ SEXP ci__prepare_arg_logical(SEXP x, const char* argname, bool allow_error)
     else if (Rf_isVectorList(x) || Rf_isObject(x))
     {
         if (Rf_isVectorList(x) && !ci__check_list_of_scalars(x))
-            Rf_warning(MSG__WARN_LIST_COERCION);
+            ci__prepare_arg_list_warning(warnings);
 
 #if defined(R_VERSION) && R_VERSION >= R_Version(3, 5, 0)
         if (allow_error)
@@ -626,7 +694,9 @@ SEXP ci__prepare_arg_logical(SEXP x, const char* argname, bool allow_error)
     else if (Rf_isVectorAtomic(x) || Rf_isNull(x))
         return Rf_coerceVector(x, LGLSXP);
 
-    Rf_error(MSG__ARG_EXPECTED_LOGICAL, argname); // allowed here
+    ci__prepare_arg_error(
+        warnings, MSG__ARG_EXPECTED_LOGICAL, argname
+    );
     return x; // avoid compiler warning
 }
 
@@ -661,7 +731,10 @@ SEXP ci__prepare_arg_logical(SEXP x, const char* argname, bool allow_error)
  * @version 1.6.3 (Marek Gagolewski, 2021-05-19)
  *    factors_as_strings, allow_error
  */
-SEXP ci__prepare_arg_raw(SEXP x, const char* argname, bool factors_as_strings, bool allow_error)
+SEXP ci__prepare_arg_raw(
+    SEXP x, const char* argname, bool factors_as_strings,
+    bool allow_error, ci::DeferredWarnings* warnings
+)
 {
     if ((SEXP*)argname == (SEXP*)R_NilValue)
         argname = "<noname>";
@@ -695,7 +768,7 @@ SEXP ci__prepare_arg_raw(SEXP x, const char* argname, bool factors_as_strings, b
     else if (Rf_isVectorList(x) || Rf_isObject(x))
     {
         if (Rf_isVectorList(x) && !ci__check_list_of_scalars(x))
-            Rf_warning(MSG__WARN_LIST_COERCION);
+            ci__prepare_arg_list_warning(warnings);
 
 #if defined(R_VERSION) && R_VERSION >= R_Version(3, 5, 0)
         if (allow_error)
@@ -711,7 +784,9 @@ SEXP ci__prepare_arg_raw(SEXP x, const char* argname, bool factors_as_strings, b
     else if (Rf_isVectorAtomic(x) || Rf_isNull(x))
         return Rf_coerceVector(x, RAWSXP);
 
-    Rf_error(MSG__ARG_EXPECTED_RAW, argname); // allowed here
+    ci__prepare_arg_error(
+        warnings, MSG__ARG_EXPECTED_RAW, argname
+    );
     return x; // avoid compiler warning
 }
 
@@ -791,12 +866,14 @@ SEXP ci__prepare_arg_POSIXct(SEXP x, const char* argname)
  *    #285: warn if coercing from a non-trivial list
  *    refactor: use ci__prepare_arg_xxx (again, as in pre-64651ed-commits)
  */
-SEXP ci__prepare_arg_string_1(SEXP x, const char* argname)
+SEXP ci__prepare_arg_string_1(
+    SEXP x, const char* argname, ci::DeferredWarnings* warnings
+)
 {
     if ((SEXP*)argname == (SEXP*)R_NilValue)
         argname = "<noname>";
 
-    PROTECT(x = ci__prepare_arg_string(x, argname));
+    PROTECT(x = ci__prepare_arg_string(x, argname, true, warnings));
     int nprotect = 1;
 
 //     if ((SEXP*)argname == (SEXP*)R_NilValue)
@@ -846,17 +923,28 @@ SEXP ci__prepare_arg_string_1(SEXP x, const char* argname)
 
     if (nx <= 0) {
         UNPROTECT(nprotect);
-        Rf_error(MSG__ARG_EXPECTED_NOT_EMPTY, argname); // allowed here
+        ci__prepare_arg_error(
+            warnings, MSG__ARG_EXPECTED_NOT_EMPTY, argname
+        );
         // won't come here anyway
         return x; // avoid compiler warning
     }
     else if (nx > 1) {
-        Rf_warning(MSG__ARG_EXPECTED_1_STRING, argname);
+        if (!warnings)
+            ci__prepare_arg_scalar_warning(
+                NULL, MSG__ARG_EXPECTED_1_STRING, argname
+            );
         SEXP xold = x;
         PROTECT(x = Rf_allocVector(STRSXP, 1));
         nprotect++;
         SET_STRING_ELT(x, 0, STRING_ELT(xold, 0));
         UNPROTECT(nprotect);
+        // Deviation from stringi: in the deferred path, release the local R
+        // protection before the warning queue performs a C++ allocation.
+        if (warnings)
+            ci__prepare_arg_scalar_warning(
+                warnings, MSG__ARG_EXPECTED_1_STRING, argname
+            );
         return x;
     }
     else { // if (nx == 1)
@@ -891,12 +979,17 @@ SEXP ci__prepare_arg_string_1(SEXP x, const char* argname)
  *    factors_as_strings
  *    refactor: use ci__prepare_arg_xxx (again, as in pre-64651ed-commits)
  */
-SEXP ci__prepare_arg_double_1(SEXP x, const char* argname, bool factors_as_strings)
+SEXP ci__prepare_arg_double_1(
+    SEXP x, const char* argname, bool factors_as_strings,
+    ci::DeferredWarnings* warnings
+)
 {
     if ((SEXP*)argname == (SEXP*)R_NilValue)
         argname = "<noname>";
 
-    PROTECT(x = ci__prepare_arg_double(x, argname, factors_as_strings));
+    PROTECT(x = ci__prepare_arg_double(
+        x, argname, factors_as_strings, true, warnings
+    ));
     int nprotect = 1;
 
 //     if ((SEXP*)argname == (SEXP*)R_NilValue)
@@ -943,17 +1036,26 @@ SEXP ci__prepare_arg_double_1(SEXP x, const char* argname, bool factors_as_strin
 
     if (nx <= 0) {
         UNPROTECT(nprotect);
-        Rf_error(MSG__ARG_EXPECTED_NOT_EMPTY, argname); // allowed here
+        ci__prepare_arg_error(
+            warnings, MSG__ARG_EXPECTED_NOT_EMPTY, argname
+        );
         // won't come here anyway
         return x; // avoid compiler warning
     }
     else if (nx > 1) {
-        Rf_warning(MSG__ARG_EXPECTED_1_NUMERIC, argname);
-        double x0 = REAL(x)[0];
+        if (!warnings)
+            ci__prepare_arg_scalar_warning(
+                NULL, MSG__ARG_EXPECTED_1_NUMERIC, argname
+            );
+        double x0 = REAL_RO(x)[0];
         PROTECT(x = Rf_allocVector(REALSXP, 1));
         nprotect++;
         REAL(x)[0] = x0;
         UNPROTECT(nprotect);
+        if (warnings)
+            ci__prepare_arg_scalar_warning(
+                warnings, MSG__ARG_EXPECTED_1_NUMERIC, argname
+            );
         return x;
     }
     else {// if (nx == 1)
@@ -988,12 +1090,17 @@ SEXP ci__prepare_arg_double_1(SEXP x, const char* argname, bool factors_as_strin
  *    factors_as_strings
  *    refactor: use ci__prepare_arg_xxx (again, as in pre-64651ed-commits)
  */
-SEXP ci__prepare_arg_integer_1(SEXP x, const char* argname, bool factors_as_strings)
+SEXP ci__prepare_arg_integer_1(
+    SEXP x, const char* argname, bool factors_as_strings,
+    ci::DeferredWarnings* warnings
+)
 {
     if ((SEXP*)argname == (SEXP*)R_NilValue)
         argname = "<noname>";
 
-    PROTECT(x = ci__prepare_arg_integer(x, argname, factors_as_strings));
+    PROTECT(x = ci__prepare_arg_integer(
+        x, argname, factors_as_strings, true, warnings
+    ));
     int nprotect = 1;
 
 //     if ((SEXP*)argname == (SEXP*)R_NilValue)
@@ -1040,17 +1147,26 @@ SEXP ci__prepare_arg_integer_1(SEXP x, const char* argname, bool factors_as_stri
 
     if (nx <= 0) {
         UNPROTECT(nprotect);
-        Rf_error(MSG__ARG_EXPECTED_NOT_EMPTY, argname); // allowed here
+        ci__prepare_arg_error(
+            warnings, MSG__ARG_EXPECTED_NOT_EMPTY, argname
+        );
         // won't come here anyway
         return x; // avoid compiler warning
     }
     else if (nx > 1) {
-        Rf_warning(MSG__ARG_EXPECTED_1_INTEGER, argname);
-        int x0 = INTEGER(x)[0];
+        if (!warnings)
+            ci__prepare_arg_scalar_warning(
+                NULL, MSG__ARG_EXPECTED_1_INTEGER, argname
+            );
+        int x0 = INTEGER_RO(x)[0];
         PROTECT(x = Rf_allocVector(INTSXP, 1));
         nprotect++;
         INTEGER(x)[0] = x0;
         UNPROTECT(nprotect);
+        if (warnings)
+            ci__prepare_arg_scalar_warning(
+                warnings, MSG__ARG_EXPECTED_1_INTEGER, argname
+            );
         return x;
     }
     else { // if (nx == 1)
@@ -1087,12 +1203,16 @@ SEXP ci__prepare_arg_integer_1(SEXP x, const char* argname, bool factors_as_stri
  * @version 1.6.3 (Marek Gagolewski, 2021-05-20)
  *    refactor: use ci__prepare_arg_xxx (again, as in pre-64651ed-commits)
  */
-SEXP ci__prepare_arg_logical_1(SEXP x, const char* argname)
+SEXP ci__prepare_arg_logical_1(
+    SEXP x, const char* argname, ci::DeferredWarnings* warnings
+)
 {
     if ((SEXP*)argname == (SEXP*)R_NilValue)
         argname = "<noname>";
 
-    PROTECT(x = ci__prepare_arg_logical(x, argname));
+    PROTECT(x = ci__prepare_arg_logical(
+        x, argname, true, warnings
+    ));
     int nprotect = 1;
 
 //     int nprotect = 0;
@@ -1145,17 +1265,26 @@ SEXP ci__prepare_arg_logical_1(SEXP x, const char* argname)
 
     if (nx <= 0) {
         UNPROTECT(nprotect);
-        Rf_error(MSG__ARG_EXPECTED_NOT_EMPTY, argname); // allowed here
+        ci__prepare_arg_error(
+            warnings, MSG__ARG_EXPECTED_NOT_EMPTY, argname
+        );
         // won't come here anyway
         return x; // avoid compiler warning
     }
     else if (nx > 1) {
-        Rf_warning(MSG__ARG_EXPECTED_1_LOGICAL, argname);
-        int x0 = LOGICAL(x)[0];
+        if (!warnings)
+            ci__prepare_arg_scalar_warning(
+                NULL, MSG__ARG_EXPECTED_1_LOGICAL, argname
+            );
+        int x0 = LOGICAL_RO(x)[0];
         PROTECT(x = Rf_allocVector(LGLSXP, 1));
         nprotect++;
         LOGICAL(x)[0] = x0;
         UNPROTECT(nprotect);
+        if (warnings)
+            ci__prepare_arg_scalar_warning(
+                warnings, MSG__ARG_EXPECTED_1_LOGICAL, argname
+            );
         return x;
     }
     else { // if (nx == 1)
@@ -1183,13 +1312,17 @@ SEXP ci__prepare_arg_logical_1(SEXP x, const char* argname)
  * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
  *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
  */
-bool ci__prepare_arg_logical_1_notNA(SEXP x, const char* argname)
+bool ci__prepare_arg_logical_1_notNA(
+    SEXP x, const char* argname, ci::DeferredWarnings* warnings
+)
 {
-    PROTECT(x = ci__prepare_arg_logical_1(x, argname));
-    int xval = LOGICAL(x)[0];
+    PROTECT(x = ci__prepare_arg_logical_1(x, argname, warnings));
+    int xval = LOGICAL_RO(x)[0];
     UNPROTECT(1);
     if (xval == NA_LOGICAL)
-        Rf_error(MSG__ARG_EXPECTED_NOT_NA, argname); // allowed here
+        ci__prepare_arg_error(
+            warnings, MSG__ARG_EXPECTED_NOT_NA, argname
+        );
     return (bool)xval;
 }
 
@@ -1213,7 +1346,7 @@ bool ci__prepare_arg_logical_1_notNA(SEXP x, const char* argname)
 int ci__prepare_arg_logical_1_NA(SEXP x, const char* argname)
 {
     PROTECT(x = ci__prepare_arg_logical_1(x, argname));
-    int xval = LOGICAL(x)[0];
+    int xval = LOGICAL_RO(x)[0];
     UNPROTECT(1);
     return xval;
 }
@@ -1237,13 +1370,19 @@ int ci__prepare_arg_logical_1_NA(SEXP x, const char* argname)
  * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
  *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
  */
-int ci__prepare_arg_integer_1_notNA(SEXP x, const char* argname)
+int ci__prepare_arg_integer_1_notNA(
+    SEXP x, const char* argname, ci::DeferredWarnings* warnings
+)
 {
-    PROTECT(x = ci__prepare_arg_integer_1(x, argname));
-    int xval = INTEGER(x)[0];
+    PROTECT(x = ci__prepare_arg_integer_1(
+        x, argname, true, warnings
+    ));
+    int xval = INTEGER_RO(x)[0];
     UNPROTECT(1);
     if (xval == NA_INTEGER)
-        Rf_error(MSG__ARG_EXPECTED_NOT_NA, argname); // allowed here
+        ci__prepare_arg_error(
+            warnings, MSG__ARG_EXPECTED_NOT_NA, argname
+        );
     return (int)xval;
 }
 
@@ -1266,7 +1405,7 @@ int ci__prepare_arg_integer_1_notNA(SEXP x, const char* argname)
 int ci__prepare_arg_integer_1_NA(SEXP x, const char* argname)
 {
     PROTECT(x = ci__prepare_arg_integer_1(x, argname));
-    int xval = INTEGER(x)[0];
+    int xval = INTEGER_RO(x)[0];
     UNPROTECT(1);
     return (int)xval;
 }
@@ -1290,13 +1429,19 @@ int ci__prepare_arg_integer_1_NA(SEXP x, const char* argname)
  * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
  *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
  */
-double ci__prepare_arg_double_1_notNA(SEXP x, const char* argname)
+double ci__prepare_arg_double_1_notNA(
+    SEXP x, const char* argname, ci::DeferredWarnings* warnings
+)
 {
-    PROTECT(x = ci__prepare_arg_double_1(x, argname));
-    double xval = REAL(x)[0];
+    PROTECT(x = ci__prepare_arg_double_1(
+        x, argname, true, warnings
+    ));
+    double xval = REAL_RO(x)[0];
     UNPROTECT(1);
     if (ISNA(xval))
-        Rf_error(MSG__ARG_EXPECTED_NOT_NA, argname); // allowed here
+        ci__prepare_arg_error(
+            warnings, MSG__ARG_EXPECTED_NOT_NA, argname
+        );
     return (double)xval;
 }
 
@@ -1319,7 +1464,7 @@ double ci__prepare_arg_double_1_notNA(SEXP x, const char* argname)
 double ci__prepare_arg_double_1_NA(SEXP x, const char* argname)
 {
     PROTECT(x = ci__prepare_arg_double_1(x, argname));
-    double xval = REAL(x)[0];
+    double xval = REAL_RO(x)[0];
     UNPROTECT(1);
     return (double)xval;
 }
@@ -1356,68 +1501,6 @@ const char* ci__copy_string_Ralloc(SEXP x, const char* argname)
     return ret;
 }
 
-
-
-/** Prepare string argument - one value, can be NA [no re-encoding done!!!]
- *
- * If there are 0 elements -> error
- * If there are >1 elements -> warning
- *
- * WARNING: this function is allowed to call the error() function.
- * Use before STRI__ERROR_HANDLER_BEGIN (with other prepareargs).
- *
- *
- * @param x R object to be checked/coerced
- * @param argname argument name (message formatting)
- * @return a character string or NULL
- *
- * @version 1.6.3 (Marek Gagolewski, 2021-05-21)
- */
-const char* ci__prepare_arg_string_1_NA(SEXP x, const char* argname)
-{
-    PROTECT(x = ci__prepare_arg_string_1(x, argname));
-    if (STRING_ELT(x, 0) == NA_STRING) {
-        UNPROTECT(1);
-        return nullptr;
-    }
-    const char* ret_tmp = (const char*)CHAR(STRING_ELT(x, 0)); // ret may be gc'ed
-    size_t ret_n = strlen(ret_tmp);
-    /* R_alloc ==  Here R will reclaim the memory at the end of the call to .Call */
-    char* ret = R_alloc(ret_n+1, (int)sizeof(char));
-    STRI_ASSERT(ret);
-    if (!ret) {
-        UNPROTECT(1);
-        Rf_error(MSG__MEM_ALLOC_ERROR);
-    }
-    memcpy(ret, ret_tmp, ret_n+1);
-    UNPROTECT(1);
-    return ret;
-}
-
-
-
-/** Prepare string argument - one value, not NA [no re-encoding done!!!]
- *
- * If there are 0 elements -> error
- * If there are >1 elements -> warning
- *
- * WARNING: this function is allowed to call the error() function.
- * Use before STRI__ERROR_HANDLER_BEGIN (with other prepareargs).
- *
- *
- * @param x R object to be checked/coerced
- * @param argname argument name (message formatting)
- * @return a character string
- *
- * @version 0.5-1 (Marek Gagolewski, 2014-12-25)
- */
-const char* ci__prepare_arg_string_1_notNA(SEXP x, const char* argname)
-{
-    const char* ret = ci__prepare_arg_string_1_NA(x, argname);
-    if (ret == nullptr)
-        Rf_error(MSG__ARG_EXPECTED_NOT_NA, argname); // allowed here
-    return ret;
-}
 
 
 /**
@@ -1483,7 +1566,8 @@ const char* ci__prepare_arg_locale(
     SEXP loc,
     const char* argname,
     bool allowdefault,
-    bool allownull
+    bool allownull,
+    ci::DeferredWarnings* warnings
 ) {
     const char* default_locale = (allownull)?NULL:uloc_getDefault();
 
@@ -1492,27 +1576,37 @@ const char* ci__prepare_arg_locale(
 
     if (Rf_isNull(loc)) {
         if (allowdefault) return default_locale;
-        else Rf_error(MSG__ARG_EXPECTED_NOT_NULL, argname); // Rf_error allowed here
+        else ci__prepare_arg_error(
+            warnings, MSG__ARG_EXPECTED_NOT_NULL, argname
+        );
     }
 
-    PROTECT(loc = ci__prepare_arg_string_1(loc, argname));
+    PROTECT(loc = ci__prepare_arg_string_1(loc, argname, warnings));
     if (STRING_ELT(loc, 0) == NA_STRING) {
         UNPROTECT(1);
-        Rf_error(MSG__ARG_EXPECTED_NOT_NA, argname); // Rf_error allowed here
+        ci__prepare_arg_error(
+            warnings, MSG__ARG_EXPECTED_NOT_NA, argname
+        );
     }
 
     const char* qloc = CHAR(STRING_ELT(loc, 0));
     if (qloc[0] == '\0') {  // empty string
         UNPROTECT(1);
         if (allowdefault) return default_locale;
-        else Rf_error(MSG__LOCALE_INCORRECT_ID); // Rf_error allowed here
+        else ci__prepare_arg_error(
+            warnings, MSG__LOCALE_INCORRECT_ID, argname
+        );
     }
 
     UErrorCode err = U_ZERO_ERROR;
     char buf[ULOC_FULLNAME_CAPACITY];
     uloc_canonicalize(qloc, buf, ULOC_FULLNAME_CAPACITY, &err);
     UNPROTECT(1); // qloc, loc no longer used
-    STRI__CHECKICUSTATUS_RFERROR(err, {;})
+    if (U_FAILURE(err)) {
+        if (warnings)
+            throw StriException(err);
+        STRI__CHECKICUSTATUS_RFERROR(err, {;})
+    }
 
     R_len_t ret_n = strlen(buf);
     char* ret = R_alloc(ret_n+1, (int)sizeof(char));
@@ -1530,7 +1624,9 @@ const char* ci__prepare_arg_locale(
 
     if (ret_n == 0) {
         if (allowdefault) return default_locale;
-        else Rf_error(MSG__LOCALE_INCORRECT_ID); // Rf_error allowed here
+        else ci__prepare_arg_error(
+            warnings, MSG__LOCALE_INCORRECT_ID, argname
+        );
     }
 
     if (ci__is_C_locale(ret))
@@ -1538,9 +1634,10 @@ const char* ci__prepare_arg_locale(
 
     if (ret[0] == ULOC_KEYWORD_SEPARATOR) {  // length is > 0
         // no locale specifier, just keywords
-        if (!allowdefault) {
-            Rf_error(MSG__LOCALE_INCORRECT_ID);
-        }
+        if (!allowdefault)
+            ci__prepare_arg_error(
+                warnings, MSG__LOCALE_INCORRECT_ID, argname
+            );
         const char* ret_default;
         if (default_locale) ret_default = default_locale;
         else {
@@ -1565,29 +1662,36 @@ const char* ci__prepare_arg_locale(
  * If the \code{tz} argument is incorrect, then an error is generated.
  * If something goes wrong, a warning is given.
  *
- * WARNING: this function is allowed to call the error() function.
- * Use before STRI__ERROR_HANDLER_BEGIN (with other prepareargs).
+ * The caller prepares and protects tz before entering the shared error
+ * boundary. This function reports validation failures with C++ exceptions.
  *
- *
- * @param tz generally, a single character string or NULL
- * @param defaulttz default time zone to be used here
+ * @param warnings operation-level deferred warning queue
+ * @param tz a prepared, protected scalar character vector or NULL
+ * @param allowdefault whether NULL or an empty ID selects the default zone
  * @return TimeZone object - owned by the caller
  *
  *
  * @version 0.5-1 (Marek Gagolewski, 2014-12-24)
  */
-TimeZone* ci__prepare_arg_timezone(SEXP tz, const char* argname, bool allowdefault)
+TimeZone* ci__prepare_arg_timezone(
+    ci::DeferredWarnings& warnings,
+    SEXP tz, const char* argname, bool allowdefault
+)
 {
     UnicodeString tz_val("");
 
     if (!Rf_isNull(tz)) {
-        PROTECT(tz = ci__prepare_arg_string_1(tz, argname));
-        if (STRING_ELT(tz, 0) == NA_STRING) {
-            UNPROTECT(1);
-            Rf_error(MSG__ARG_EXPECTED_NOT_NA, argname); // Rf_error allowed here
+        // Deviation from stringi: read the prepared scalar through the common
+        // UTF-8 adapter and pass ICU an explicit byte length.
+        ci::ReaderContext context(warnings);
+        StriContainerUTF8 tz_cont(context, tz, 1);
+        if (tz_cont.isNA(0)) {
+            throw StriException(MSG__ARG_EXPECTED_NOT_NA, argname);
         }
-        tz_val.setTo(UnicodeString((const char*)CHAR(STRING_ELT(tz, 0))));
-        UNPROTECT(1);
+        const String8& value = tz_cont.get(0);
+        tz_val.setTo(UnicodeString::fromUTF8(
+            StringPiece(value.data(), value.length())
+        ));
     }
 
 //   if (tz_val.length() == 0 && !Rf_isNull(defaulttz)) {
@@ -1601,14 +1705,15 @@ TimeZone* ci__prepare_arg_timezone(SEXP tz, const char* argname, bool allowdefau
 //   }
 
     if (tz_val.length() == 0) {
-        if (!allowdefault) Rf_error(MSG__TIMEZONE_INCORRECT_ID);
+        if (!allowdefault)
+            throw StriException(MSG__TIMEZONE_INCORRECT_ID);
         return TimeZone::createDefault();
     }
     else {
         TimeZone* ret = TimeZone::createTimeZone(tz_val);
         if (*ret == TimeZone::getUnknown()) {
             delete ret;
-            Rf_error(MSG__TIMEZONE_INCORRECT_ID); // allowed here
+            throw StriException(MSG__TIMEZONE_INCORRECT_ID);
         }
         else
             return ret;
@@ -1688,6 +1793,31 @@ const char* ci__prepare_arg_enc(SEXP enc, const char* argname, bool allowdefault
 
 
 
+/** Copy the diagnostic wrappers' argument name to terminated storage. */
+static const char* ci__prepare_arg_test_argname(SEXP argname)
+{
+    // The diagnostic wrappers pass this value to printf-style error helpers.
+    // Keep their one narrow terminated adapter instead of exposing a generic
+    // scalar-character-to-C-string preparation function.
+    PROTECT(argname = ci__prepare_arg_string_1(argname, "argname"));
+    if (STRING_ELT(argname, 0) == NA_STRING) {
+        UNPROTECT(1);
+        Rf_error(MSG__ARG_EXPECTED_NOT_NA, "argname");
+    }
+
+    const char* value = CHAR(STRING_ELT(argname, 0));
+    const size_t size = std::strlen(value);
+    char* copy = R_alloc(size+1, static_cast<int>(sizeof(char)));
+    if (!copy) {
+        UNPROTECT(1);
+        Rf_error(MSG__MEM_ALLOC_ERROR);
+    }
+    std::memcpy(copy, value, size+1);
+    UNPROTECT(1);
+    return copy;
+}
+
+
 /* Wrapper for ci__prepare_arg_*, mainly for testing purposes
  *
  * Can call error()
@@ -1700,7 +1830,7 @@ const char* ci__prepare_arg_enc(SEXP enc, const char* argname, bool allowdefault
  */
 SEXP ci_prepare_arg_string_1(SEXP x, SEXP argname)
 {
-    const char* argname_s = ci__prepare_arg_string_1_notNA(argname, "argname");
+    const char* argname_s = ci__prepare_arg_test_argname(argname);
     return ci__prepare_arg_string_1(x, argname_s);
 }
 
@@ -1717,7 +1847,7 @@ SEXP ci_prepare_arg_string_1(SEXP x, SEXP argname)
  */
 SEXP ci_prepare_arg_double_1(SEXP x, SEXP argname) // TODO: factors_as_strings
 {
-    const char* argname_s = ci__prepare_arg_string_1_notNA(argname, "argname");
+    const char* argname_s = ci__prepare_arg_test_argname(argname);
     return ci__prepare_arg_double_1(x, argname_s);
 }
 
@@ -1734,7 +1864,7 @@ SEXP ci_prepare_arg_double_1(SEXP x, SEXP argname) // TODO: factors_as_strings
  */
 SEXP ci_prepare_arg_integer_1(SEXP x, SEXP argname) // TODO: factors_as_strings
 {
-    const char* argname_s = ci__prepare_arg_string_1_notNA(argname, "argname");
+    const char* argname_s = ci__prepare_arg_test_argname(argname);
     return ci__prepare_arg_integer_1(x, argname_s);
 }
 
@@ -1751,7 +1881,7 @@ SEXP ci_prepare_arg_integer_1(SEXP x, SEXP argname) // TODO: factors_as_strings
  */
 SEXP ci_prepare_arg_logical_1(SEXP x, SEXP argname)
 {
-    const char* argname_s = ci__prepare_arg_string_1_notNA(argname, "argname");
+    const char* argname_s = ci__prepare_arg_test_argname(argname);
     return ci__prepare_arg_logical_1(x, argname_s);
 }
 
@@ -1768,7 +1898,7 @@ SEXP ci_prepare_arg_logical_1(SEXP x, SEXP argname)
  */
 SEXP ci_prepare_arg_string(SEXP x, SEXP argname)
 {
-    const char* argname_s = ci__prepare_arg_string_1_notNA(argname, "argname");
+    const char* argname_s = ci__prepare_arg_test_argname(argname);
     return ci__prepare_arg_string(x, argname_s);
 }
 
@@ -1785,7 +1915,7 @@ SEXP ci_prepare_arg_string(SEXP x, SEXP argname)
  */
 SEXP ci_prepare_arg_double(SEXP x, SEXP argname) // TODO: factors_as_strings
 {
-    const char* argname_s = ci__prepare_arg_string_1_notNA(argname, "argname");
+    const char* argname_s = ci__prepare_arg_test_argname(argname);
     return ci__prepare_arg_double(x, argname_s);
 }
 
@@ -1802,7 +1932,7 @@ SEXP ci_prepare_arg_double(SEXP x, SEXP argname) // TODO: factors_as_strings
  */
 SEXP ci_prepare_arg_integer(SEXP x, SEXP argname) // TODO: factors_as_strings
 {
-    const char* argname_s = ci__prepare_arg_string_1_notNA(argname, "argname");
+    const char* argname_s = ci__prepare_arg_test_argname(argname);
     return ci__prepare_arg_integer(x, argname_s);
 }
 
@@ -1819,7 +1949,7 @@ SEXP ci_prepare_arg_integer(SEXP x, SEXP argname) // TODO: factors_as_strings
  */
 SEXP ci_prepare_arg_logical(SEXP x, SEXP argname)
 {
-    const char* argname_s = ci__prepare_arg_string_1_notNA(argname, "argname");
+    const char* argname_s = ci__prepare_arg_test_argname(argname);
     return ci__prepare_arg_logical(x, argname_s);
 }
 
@@ -1836,6 +1966,6 @@ SEXP ci_prepare_arg_logical(SEXP x, SEXP argname)
  */
 SEXP ci_prepare_arg_raw(SEXP x, SEXP argname)  // TODO: factors_as_strings
 {
-    const char* argname_s = ci__prepare_arg_string_1_notNA(argname, "argname");
+    const char* argname_s = ci__prepare_arg_test_argname(argname);
     return ci__prepare_arg_raw(x, argname_s);
 }

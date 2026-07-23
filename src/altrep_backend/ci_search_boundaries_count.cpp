@@ -54,33 +54,54 @@
 SEXP ci_count_boundaries(SEXP str, SEXP opts_brkiter)
 {
     PROTECT(str = ci__prepare_arg_string(str, "str"));
-    StriBrkIterOptions opts_brkiter2(opts_brkiter, "line_break");
 
     STRI__ERROR_HANDLER_BEGIN(1)
-    R_len_t str_length = LENGTH(str);
-    StriContainerUTF8_indexable str_cont(str, str_length);
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(INTSXP, str_length));
-    StriRuleBasedBreakIterator brkiter(opts_brkiter2);
-
-    for (R_len_t i = 0; i < str_length; ++i)
     {
-        if (str_cont.isNA(i)) {
-            INTEGER(ret)[i] = NA_INTEGER;
-            continue;
+    // Deviation from stringi: keep the option's ICU storage inside the
+    // unwind-safe scope so it is released before warning replay.
+    StriBrkIterOptions opts_brkiter2(
+        opts_brkiter, "line_break", STRI__DEFERRED_WARNINGS
+    );
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_length = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(INTSXP, str_length);
+    }));
+    int* ret_tab = INTEGER(ret);
+
+    {
+        StriContainerUTF8_indexable str_cont(
+            context, str, str_length
+        );
+        StriRuleBasedBreakIterator brkiter(opts_brkiter2);
+
+        for (R_len_t i = 0; i < str_length; ++i)
+        {
+            if (str_cont.isNA(i)) {
+                ret_tab[i] = NA_INTEGER;
+                continue;
+            }
+
+            brkiter.setupMatcher(
+                str_cont.get(i).data(), str_cont.get(i).length(),
+                STRI__DEFERRED_WARNINGS
+            );
+            brkiter.first();
+
+            R_len_t cur_count = 0;
+            while (brkiter.next())
+                ++cur_count;
+
+            ret_tab[i] = cur_count;
         }
-
-        brkiter.setupMatcher(str_cont.get(i).c_str(), str_cont.get(i).length());
-        brkiter.first();
-
-        R_len_t cur_count = 0;
-        while (brkiter.next())
-            ++cur_count;
-
-        INTEGER(ret)[i] = cur_count;
     }
 
+    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END({ /* no action */  })

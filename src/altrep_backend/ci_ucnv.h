@@ -57,6 +57,7 @@ private:
 
     UConverter* m_ucnv; // converter
     const char* m_name; // encoding, owned by caller
+    ci::DeferredWarnings* m_warnings; // optional queue, owned by caller
     int m_isutf8;
     int m_is8bit;
 
@@ -77,7 +78,7 @@ private:
         UConverterCallbackReason reason,
         UErrorCode* err);
 
-    void openConverter(bool register_callbacks);
+    void openConverter();
 
 public:
 
@@ -85,6 +86,16 @@ public:
     StriUcnv(const char* name=NULL) {
         m_name = name;
         m_ucnv = NULL; // lazy
+        m_warnings = NULL;
+        m_isutf8 = NA_LOGICAL;
+        m_is8bit = NA_LOGICAL;
+    }
+
+    /** The warning queue must outlive this converter. */
+    StriUcnv(const char* name, ci::DeferredWarnings& warnings) {
+        m_name = name;
+        m_ucnv = NULL; // lazy
+        m_warnings = &warnings;
         m_isutf8 = NA_LOGICAL;
         m_is8bit = NA_LOGICAL;
     }
@@ -100,6 +111,7 @@ public:
     StriUcnv(const StriUcnv& obj) {
         m_name = obj.m_name;
         m_ucnv = NULL;
+        m_warnings = obj.m_warnings;
         m_isutf8 = NA_LOGICAL;
         m_is8bit = NA_LOGICAL;
     }
@@ -109,6 +121,7 @@ public:
         this->~StriUcnv();
         m_name = obj.m_name;
         m_ucnv = NULL;
+        m_warnings = obj.m_warnings;
         m_isutf8 = NA_LOGICAL;
         m_is8bit = NA_LOGICAL;
         return *this;
@@ -118,7 +131,7 @@ public:
     bool isUTF8() {
         if (m_isutf8 != NA_LOGICAL) return m_isutf8;
 
-        openConverter(false);
+        openConverter();
         UErrorCode status = U_ZERO_ERROR;
         // get "official" encoder name
         const char* ucnv_name = ucnv_getName(m_ucnv, &status);
@@ -131,18 +144,18 @@ public:
     bool is8bit() {
         if (m_is8bit != NA_LOGICAL) return m_is8bit;
 
-        openConverter(false);
+        openConverter();
         m_is8bit = (ucnv_getMaxCharSize(m_ucnv) == 1);
         return m_is8bit;
     }
 
 
-    UConverter* getConverter(bool register_callbacks=false);
+    UConverter* getConverter();
 
-    bool hasASCIIsubset();
-    bool is1to1Unicode();
+    bool hasASCIIsubset(ci::DeferredWarnings& warnings);
+    bool is1to1Unicode(ci::DeferredWarnings& warnings);
 
-    static vector<const char*> getStandards();
+    static vector<const char*> getStandards(ci::DeferredWarnings& warnings);
     static const char* getFriendlyName(const char* canname);
 
 
@@ -164,7 +177,7 @@ public:
      * get R's cetype_t corresponding to this converter
      */
     cetype_t getCE() {
-        openConverter(false);
+        openConverter();
         UErrorCode status = U_ZERO_ERROR;
         const char* ucnv_name = ucnv_getName(m_ucnv, &status);
         STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})

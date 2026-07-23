@@ -32,9 +32,13 @@
 
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
 #include "ci_container_utf8_indexable.h"
 #include "ci_container_integer.h"
 #include "ci_brkiter.h"
+#include <stdexcept>
+#include <utility>
+#include <vector>
 
 
 /** Split a string at BreakIterator boundaries
@@ -73,91 +77,210 @@ SEXP ci_split_boundaries(SEXP str, SEXP n, SEXP tokens_only, SEXP simplify, SEXP
     PROTECT(simplify = ci__prepare_arg_logical_1(simplify, "simplify"));
     PROTECT(str = ci__prepare_arg_string(str, "str"));
     PROTECT(n = ci__prepare_arg_integer(n, "n"));
-    StriBrkIterOptions opts_brkiter2(opts_brkiter, "line_break");
+    int simplify1 = NA_LOGICAL;
 
     STRI__ERROR_HANDLER_BEGIN(3)
-    R_len_t vectorize_length = ci__recycling_rule(true, 2,
-                               LENGTH(str), LENGTH(n));
-    StriContainerUTF8_indexable str_cont(str, vectorize_length);
-    StriContainerInteger n_cont(n, vectorize_length);
-    StriRuleBasedBreakIterator brkiter(opts_brkiter2);
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(VECSXP, vectorize_length));
-
-    for (R_len_t i = 0; i < vectorize_length; ++i)
     {
-        if (n_cont.isNA(i)) {
-            SET_VECTOR_ELT(ret, i, ci__vector_NA_strings(1));
-            continue;
+    // Deviation from stringi: keep the option's ICU storage inside the
+    // unwind-safe staging scope so it is released before warning replay.
+    StriBrkIterOptions opts_brkiter2(
+        opts_brkiter, "line_break", STRI__DEFERRED_WARNINGS
+    );
+    charport::unwind_protect([&]() -> SEXP {
+        simplify1 = LOGICAL_RO(simplify)[0];
+        return R_NilValue;
+    });
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t n_n = 0;
+    R_len_t vectorize_length = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        n_n = LENGTH(n);
+        vectorize_length = ci__recycling_rule(
+            false, 2, str_n, n_n
+        );
+        return R_NilValue;
+    });
+    // Deviation from stringi: queue the controllable recycling warning until
+    // Reader, break-iterator, and lazy-output owners have been released.
+    if (vectorize_length > 0 &&
+            (vectorize_length % str_n != 0 ||
+             vectorize_length % n_n != 0))
+        context.warn(MSG__WARN_RECYCLING_RULE);
+
+    // Deviation from stringi: preinitialize lazy empty vectors, then replace
+    // each slot with a scalar or exact-size Store once its boundary count is
+    // known.
+    vector<charport::charvec::Store> stores;
+    stores.reserve(static_cast<size_t>(vectorize_length));
+    for (R_len_t i=0; i<vectorize_length; ++i)
+        stores.emplace_back(0, 0);
+    {
+        StriContainerInteger n_cont(n, vectorize_length);
+        StriContainerUTF8_indexable str_cont(
+            context, str, vectorize_length
+        );
+        StriRuleBasedBreakIterator brkiter(opts_brkiter2);
+        charport::charvec::Builder output(0);
+
+        for (R_len_t i = 0; i < vectorize_length; ++i)
+        {
+            if (n_cont.isNA(i)) {
+                stores[i] = charport::charvec::Store::scalar(
+                    nullptr, 0, cetype_ext_t::CE_NA
+                );
+                continue;
+            }
+            int  n_cur = n_cont.get(i);
+
+            if (str_cont.isNA(i)) {
+                stores[i] = charport::charvec::Store::scalar(
+                    nullptr, 0, cetype_ext_t::CE_NA
+                );
+                continue;
+            }
+
+            if (n_cur >= INT_MAX-1)
+                throw StriException(MSG__INCORRECT_NAMED_ARG "; " MSG__EXPECTED_SMALLER, "n");
+            else if (n_cur < 0)
+                n_cur = INT_MAX;
+            else if (n_cur == 0) {
+                continue;
+            }
+
+            R_len_t str_cur_n = str_cont.get(i).length();
+            const char* str_cur_s = str_cont.get(i).data();
+            deque< pair<R_len_t,R_len_t> > occurrences;
+            brkiter.setupMatcher(
+                str_cur_s, str_cur_n, STRI__DEFERRED_WARNINGS
+            );
+            brkiter.first();
+
+            pair<R_len_t,R_len_t> curpair;
+            R_len_t k = 0;
+            while (k < n_cur && brkiter.next(curpair)) {
+                occurrences.push_back(curpair);
+                ++k; // another field
+            }
+
+            R_len_t noccurrences = (R_len_t)occurrences.size();
+            if (noccurrences <= 0) {
+                continue; // @TODO: Should it be a NA? Hard to say...
+            }
+            if (k == n_cur && !tokens_only1)
+                occurrences.back().second = str_cur_n;
+
+            if (noccurrences == 1) {
+                const pair<R_len_t, R_len_t>& curoccur =
+                    occurrences.front();
+                const char* value = str_cur_s+curoccur.first;
+                size_t value_length = static_cast<size_t>(
+                    curoccur.second-curoccur.first
+                );
+                stores[i] = ci::scalar_store(
+                    value, value_length,
+                    cetype_ext_t::CE_ASCII_OR_UTF8
+                );
+            }
+            else {
+                output.reset(noccurrences);
+                deque< pair<R_len_t,R_len_t> >::iterator iter =
+                    occurrences.begin();
+                for (R_len_t j=0; iter != occurrences.end(); ++iter, ++j) {
+                    ci::builder_set(
+                        output, j, str_cur_s+(*iter).first,
+                        (*iter).second-(*iter).first,
+                        cetype_ext_t::CE_ASCII_OR_UTF8
+                    );
+                }
+                stores[i] = output.release_store();
+            }
         }
-        int  n_cur = n_cont.get(i);
-
-        if (str_cont.isNA(i)) {
-            SET_VECTOR_ELT(ret, i, ci__vector_NA_strings(1));
-            continue;
-        }
-
-        if (n_cur >= INT_MAX-1)
-            throw StriException(MSG__INCORRECT_NAMED_ARG "; " MSG__EXPECTED_SMALLER, "n");
-        else if (n_cur < 0)
-            n_cur = INT_MAX;
-        else if (n_cur == 0) {
-            SET_VECTOR_ELT(ret, i, Rf_allocVector(STRSXP, 0));
-            continue;
-        }
-
-        R_len_t str_cur_n = str_cont.get(i).length();
-        const char* str_cur_s = str_cont.get(i).c_str();
-        deque< pair<R_len_t,R_len_t> > occurrences;
-        brkiter.setupMatcher(str_cur_s, str_cur_n);
-        brkiter.first();
-
-        pair<R_len_t,R_len_t> curpair;
-        R_len_t k = 0;
-        while (k < n_cur && brkiter.next(curpair)) {
-            occurrences.push_back(curpair);
-            ++k; // another field
-        }
-
-
-        R_len_t noccurrences = (R_len_t)occurrences.size();
-        if (noccurrences <= 0) {
-            SET_VECTOR_ELT(ret, i, ci__vector_empty_strings(0)); // @TODO: Should it be a NA? Hard to say...
-            continue;
-        }
-        if (k == n_cur && !tokens_only1)
-            occurrences.back().second = str_cur_n;
-
-        SEXP ans;
-        STRI__PROTECT(ans = Rf_allocVector(STRSXP, noccurrences));
-        deque< pair<R_len_t,R_len_t> >::iterator iter = occurrences.begin();
-        for (R_len_t j = 0; iter != occurrences.end(); ++iter, ++j) {
-            SET_STRING_ELT(ans, j, Rf_mkCharLenCE(str_cur_s+(*iter).first,
-                                                  (*iter).second-(*iter).first, CE_UTF8));
-        }
-        SET_VECTOR_ELT(ret, i, ans);
-        STRI__UNPROTECT(1);
     }
 
-    if (LOGICAL(simplify)[0] == NA_LOGICAL || LOGICAL(simplify)[0]) {
+    if (simplify1 != NA_LOGICAL && !simplify1) {
+        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+            return Rf_allocVector(VECSXP, vectorize_length);
+        }));
+        for (R_len_t i=0; i<vectorize_length; ++i) {
+            SEXP ans;
+            STRI__PROTECT(ans = charport::charvec::wrap(
+                std::move(stores[i])
+            ));
+            SET_VECTOR_ELT(ret, i, ans);
+            STRI__UNPROTECT(1);
+        }
+    }
+    else {
         R_len_t n_min = 0;
-        R_len_t n_length = LENGTH(n);
-        int* n_tab = INTEGER(n);
-        for (R_len_t i=0; i<n_length; ++i) {
-            if (n_tab[i] != NA_INTEGER && n_min < n_tab[i])
-                n_min = n_tab[i];
+        charport::unwind_protect([&]() -> SEXP {
+            R_len_t n_length = LENGTH(n);
+            const int* n_tab = INTEGER_RO(n);
+            for (R_len_t i=0; i<n_length; ++i) {
+                if (n_tab[i] != NA_INTEGER && n_min < n_tab[i])
+                    n_min = n_tab[i];
+            }
+            return R_NilValue;
+        });
+
+        R_len_t matrix_ncol = n_min;
+        for (R_len_t i=0; i<vectorize_length; ++i) {
+            R_len_t current_size = ci::checked_r_len(
+                static_cast<R_xlen_t>(stores[i].size()),
+                "split results"
+            );
+            if (matrix_ncol < current_size)
+                matrix_ncol = current_size;
         }
-        SEXP robj_TRUE, robj_n_min, robj_na_strings, robj_empty_strings;
-        STRI__PROTECT(robj_TRUE = Rf_ScalarLogical(TRUE));
-        STRI__PROTECT(robj_n_min = Rf_ScalarInteger(n_min));
-        STRI__PROTECT(robj_na_strings = ci__vector_NA_strings(1));
-        STRI__PROTECT(robj_empty_strings = ci__vector_empty_strings(1));
-        STRI__PROTECT(ret = ci_list2matrix(ret, robj_TRUE,
-                                             (LOGICAL(simplify)[0] == NA_LOGICAL)?robj_na_strings
-                                             :robj_empty_strings,
-                                             robj_n_min))
+
+        // Deviation from stringi: reject a matrix that cannot be represented
+        // before passing an overflowed product to the flat Builder.
+        if (vectorize_length > 0 &&
+                matrix_ncol > R_XLEN_T_MAX/vectorize_length)
+            throw length_error("matrix length exceeds R's vector limit");
+        R_xlen_t matrix_size =
+            static_cast<R_xlen_t>(vectorize_length) * matrix_ncol;
+        charport::charvec::Builder matrix(matrix_size);
+        for (R_len_t i=0; i<vectorize_length; ++i) {
+            R_len_t current_size = static_cast<R_len_t>(stores[i].size());
+            R_len_t j = 0;
+            for (; j<current_size; ++j) {
+                matrix.set(
+                    i+static_cast<R_xlen_t>(j)*vectorize_length,
+                    stores[i].view(static_cast<size_t>(j))
+                );
+            }
+            for (; j<matrix_ncol; ++j) {
+                R_xlen_t output_i =
+                    i+static_cast<R_xlen_t>(j)*vectorize_length;
+                if (simplify1 == NA_LOGICAL)
+                    matrix.set_na(output_i);
+                else
+                    ci::builder_set(
+                        matrix, output_i, "", 0,
+                        cetype_ext_t::CE_ASCII
+                    );
+            }
+        }
+
+        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+            return matrix.to_sexp();
+        }));
+        ret = charport::unwind_protect([&]() -> SEXP {
+            SEXP dim;
+            PROTECT(dim = Rf_allocVector(INTSXP, 2));
+            INTEGER(dim)[0] = vectorize_length;
+            INTEGER(dim)[1] = matrix_ncol;
+            SEXP result = Rf_setAttrib(ret, R_DimSymbol, dim);
+            UNPROTECT(1);
+            return result;
+        });
     }
+    }
+    STRI__DEFERRED_WARNINGS.emit();
 
     STRI__UNPROTECT_ALL
     return ret;

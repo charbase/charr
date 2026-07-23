@@ -43,7 +43,8 @@ StriContainerUStringSearch::StriContainerUStringSearch()
     : StriContainerUTF16()
 {
     this->lastMatcherIndex = -1;
-    this->str = NULL;
+    // Deviation from stringi: the default constructor must leave destruction safe.
+    this->lastMatcher = NULL;
     this->col = NULL;
 }
 
@@ -54,8 +55,10 @@ StriContainerUStringSearch::StriContainerUStringSearch()
  * @param nrecycle extend length [vectorization]
  * @param col Collator; owned by external caller
  */
-StriContainerUStringSearch::StriContainerUStringSearch(SEXP rstr, R_len_t _nrecycle, UCollator* _col)
-    : StriContainerUTF16(rstr, _nrecycle, true)
+StriContainerUStringSearch::StriContainerUStringSearch(
+    ci::ReaderContext& context, SEXP rstr,
+    R_len_t _nrecycle, UCollator* _col
+) : StriContainerUTF16(context, rstr, _nrecycle, true)
 {
     this->lastMatcherIndex = -1;
     this->lastMatcher = NULL;
@@ -64,7 +67,9 @@ StriContainerUStringSearch::StriContainerUStringSearch(SEXP rstr, R_len_t _nrecy
     R_len_t n = get_n();
     for (R_len_t i=0; i<n; ++i) {
         if (!isNA(i) && get(i).length() <= 0) {
-            Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+            // Deviation from stringi: R warning handlers cannot run while any
+            // Reader in the operation is active.
+            context.warn(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
         }
     }
 }
@@ -84,10 +89,16 @@ StriContainerUStringSearch::StriContainerUStringSearch(StriContainerUStringSearc
 
 StriContainerUStringSearch& StriContainerUStringSearch::operator=(StriContainerUStringSearch& container)
 {
-    this->~StriContainerUStringSearch();
+    if (this == &container)
+        return *this;
+
+    // Deviation from stringi: close owned state without explicitly ending and
+    // then reusing this object's lifetime.
+    if (lastMatcher)
+        usearch_close(lastMatcher);
+    lastMatcher = NULL;
     (StriContainerUTF16&) (*this) = (StriContainerUTF16&)container;
     this->lastMatcherIndex = -1;
-    this->lastMatcher = NULL;
     this->col = container.col;
     return *this;
 }

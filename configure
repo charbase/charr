@@ -97,8 +97,23 @@ ICU_LIBS=$("$PKG_CONFIG" --libs icu-i18n icu-uc)
 # Compile, link, and RUN a probe against the advertised flags. Mirrors
 # stringi's configure test: linking is not enough, the ICU *data* must be
 # present (converters, locales), and the services charr needs must open.
-CXX=$("${R_HOME}/bin/R" CMD config CXX)
-CXXFLAGS=$("${R_HOME}/bin/R" CMD config CXXFLAGS)
+# Probe system ICU at the same C++ language level requested by Makevars.
+# R < 4.6 exposes a dedicated C++11 compiler toolchain. R 4.6 removed those
+# variables and treats CXX_STD=CXX11 as "use the default standard", so append
+# the GCC/Clang C++11 switch explicitly for this compatibility probe. If a
+# platform's default compiler does not accept it, the probe safely falls back
+# to the bundle.
+if CXX11=$("${R_HOME}/bin/R" CMD config CXX11 2>/dev/null) &&
+   CXX11FLAGS=$("${R_HOME}/bin/R" CMD config CXX11FLAGS 2>/dev/null) &&
+   CXX11STD=$("${R_HOME}/bin/R" CMD config CXX11STD 2>/dev/null); then
+  CXX=$CXX11
+  CXXFLAGS=$CXX11FLAGS
+  CXX_STD_FLAG=$CXX11STD
+else
+  CXX=$("${R_HOME}/bin/R" CMD config CXX)
+  CXXFLAGS=$("${R_HOME}/bin/R" CMD config CXXFLAGS)
+  CXX_STD_FLAG=-std=gnu++11
+fi
 
 tmpd=$(mktemp -d "${TMPDIR:-/tmp}/charr-conf-XXXXXX") || exit 1
 trap 'rm -rf "$tmpd"' EXIT
@@ -129,7 +144,7 @@ int main() {
 EOF
 
 # $CXX may legitimately contain flags (e.g. "g++ -std=gnu++20"): do not quote.
-if ! $CXX $CXXFLAGS $ICU_CFLAGS "$tmpd/probe.cpp" -o "$tmpd/probe" \
+if ! $CXX $CXXFLAGS $CXX_STD_FLAG $ICU_CFLAGS "$tmpd/probe.cpp" -o "$tmpd/probe" \
      $ICU_LIBS >/dev/null 2>&1; then
   fail_or_bundle "system ICU probe failed to compile/link"
 fi

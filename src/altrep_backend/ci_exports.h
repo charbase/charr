@@ -445,10 +445,21 @@ SEXP ci_prepare_arg_raw(SEXP x, SEXP argname);     // TODO: factors_as_strings
 
 
 // test.cpp /* internal, but in namespace: for testing */
+void ci_test_init_erroring_altrep(DllInfo* dll);
+SEXP ci_test_erroring_altrep(SEXP n);
 SEXP ci_test_Rmark(SEXP str);
 SEXP ci_test_UnicodeContainer16(SEXP str);
 SEXP ci_test_UnicodeContainer16b(SEXP str);
 SEXP ci_test_UnicodeContainer8(SEXP str);
+SEXP ci_test_UnicodeContainer8b(SEXP str);
+SEXP ci_test_UnicodeContainer8_alias(SEXP str);
+SEXP ci_test_UnicodeContainer8_independent(SEXP str);
+SEXP ci_test_ByteSearchContainer(SEXP pattern);
+SEXP ci_test_ByteSearchContainer_error(SEXP pattern);
+SEXP ci_test_ByteSearchMatcher(SEXP str, SEXP pattern, SEXP case_insensitive);
+SEXP ci_test_String8_assignment();
+SEXP ci_test_UTF8EncodingMarks();
+SEXP ci_test_ListUTF8(SEXP str, SEXP nrecycle);
 SEXP ci_test_returnasis(SEXP x);
 
 #endif

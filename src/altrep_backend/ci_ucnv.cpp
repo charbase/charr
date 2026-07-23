@@ -33,13 +33,54 @@
 #include "ci_stringi.h"
 #include "ci_ucnv.h"
 
+#include <cstdarg>
+#include <cstdio>
+
+
+namespace {
+
+static void ci__queue_converter_warning(
+    ci::DeferredWarnings* warnings, UErrorCode* status,
+    const char* format, ...
+) noexcept
+{
+    char message[StriException_BUFSIZE];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(message, StriException_BUFSIZE, format, args);
+    va_end(args);
+
+    try {
+        warnings->push(message);
+    }
+    catch (...) {
+        // Exceptions must not cross an ICU C callback boundary.
+        *status = U_MEMORY_ALLOCATION_ERROR;
+    }
+}
+
+
+#ifndef NDEBUG
+static void ci__queue_ucnv_diagnostic(
+    ci::DeferredWarnings& warnings, const char* format, ...
+)
+{
+    char message[StriException_BUFSIZE];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(message, StriException_BUFSIZE, format, args);
+    va_end(args);
+    warnings.push(message);
+}
+#endif
+
+} // namespace
+
 
 /**
  * Opens (on demand) a desired converter
  *
  * The converter is opened if necessary.
- * @param register_callbacks
- *
  * @version 0.1-?? (Marek Gagolewski)
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-08-10)
@@ -52,7 +93,7 @@
  * @version 0.4-1 (Marek Gagolewski, 2014-12-01)
  *    don't register callbacks by default
  */
-void StriUcnv::openConverter(bool register_callbacks) {
+void StriUcnv::openConverter() {
     if (m_ucnv)
         return;
 
@@ -61,11 +102,13 @@ void StriUcnv::openConverter(bool register_callbacks) {
     m_ucnv = ucnv_open(m_name, &status);
     STRI__CHECKICUSTATUS_THROW(status, { m_ucnv = NULL; })
 
-    if (register_callbacks) {
+    if (m_warnings) {
+        // Deviation from stringi: converter callbacks queue owned warning
+        // messages. The entry point emits them after this converter closes.
         status = U_ZERO_ERROR;
         ucnv_setFromUCallBack((UConverter*)m_ucnv,
                               (UConverterFromUCallback)STRI__UCNV_FROM_U_CALLBACK_SUBSTITUTE_WARN,
-                              (const void *)NULL, (UConverterFromUCallback *)NULL,
+                              (const void *)m_warnings, (UConverterFromUCallback *)NULL,
                               (const void **)NULL,
                               &status);
         STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
@@ -73,7 +116,7 @@ void StriUcnv::openConverter(bool register_callbacks) {
         status = U_ZERO_ERROR;
         ucnv_setToUCallBack  ((UConverter*)m_ucnv,
                               (UConverterToUCallback)STRI__UCNV_TO_U_CALLBACK_SUBSTITUTE_WARN,
-                              (const void *)NULL,
+                              (const void *)m_warnings,
                               (UConverterToUCallback *)NULL,
                               (const void **)NULL,
                               &status);
@@ -85,16 +128,14 @@ void StriUcnv::openConverter(bool register_callbacks) {
 /** Returns a desired converted
  *
  * @return UConverter
- * @param register_callbacks
- *
  * @version 0.2-1 (Marek Gagolewski)
  *
  * @version 0.4-1 (Marek Gagolewski, 2014-12-01)
  *    don't register callbacks by default
  */
-UConverter* StriUcnv::getConverter(bool register_callbacks)
+UConverter* StriUcnv::getConverter()
 {
-    openConverter(register_callbacks);
+    openConverter();
 #ifndef NDEBUG
     if (!m_ucnv) throw StriException("!NDEBUG: StriUcnv::getConverter()");
 #endif
@@ -105,10 +146,7 @@ UConverter* StriUcnv::getConverter(bool register_callbacks)
 /** Own fallback function for ucnv conversion: substitute & warn
  *
  *
- * @param context  The function currently recognizes the callback options:
- *                 UCNV_SUB_STOP_ON_ILLEGAL: STOPS at the ILLEGAL_SEQUENCE,
- *                      returning the error code back to the caller immediately.
- *                 NULL: Substitutes any ILLEGAL_SEQUENCE
+ * @param context DeferredWarnings queue owned by the entry point
  * @param toUArgs Information about the conversion in progress
  * @param codeUnits Points to 'length' bytes of the concerned codepage sequence
  * @param length Size (in bytes) of the concerned codepage sequence
@@ -129,29 +167,45 @@ void StriUcnv::STRI__UCNV_TO_U_CALLBACK_SUBSTITUTE_WARN (
     UConverterCallbackReason reason,
     UErrorCode * err)
 {
-    bool wasSubstitute = (reason <= UCNV_IRREGULAR &&
-                          (context == NULL || (*((char*)context) == *UCNV_SUB_STOP_ON_ILLEGAL && reason == UCNV_UNASSIGNED)));
+    bool wasSubstitute = (reason <= UCNV_IRREGULAR);
 
     // "DO NOT CALL THIS FUNCTION DIRECTLY!" :>
-    UCNV_TO_U_CALLBACK_SUBSTITUTE(context, toArgs, codeUnits, length, reason, err);
+    UCNV_TO_U_CALLBACK_SUBSTITUTE(NULL, toArgs, codeUnits, length, reason, err);
 
     if (*err == U_ZERO_ERROR && wasSubstitute) {
         // substitute char was induced
         switch (length) {
         case 1:
-            Rf_warning(MSG__UNCONVERTIBLE_BINARY_1, codeUnits[0]);
+            ci__queue_converter_warning(
+                (ci::DeferredWarnings*)context, err,
+                MSG__UNCONVERTIBLE_BINARY_1, codeUnits[0]
+            );
             break;
         case 2:
-            Rf_warning(MSG__UNCONVERTIBLE_BINARY_2, codeUnits[0], codeUnits[1]);
+            ci__queue_converter_warning(
+                (ci::DeferredWarnings*)context, err,
+                MSG__UNCONVERTIBLE_BINARY_2, codeUnits[0], codeUnits[1]
+            );
             break;
         case 3:
-            Rf_warning(MSG__UNCONVERTIBLE_BINARY_3, codeUnits[0], codeUnits[1], codeUnits[2]);
+            ci__queue_converter_warning(
+                (ci::DeferredWarnings*)context, err,
+                MSG__UNCONVERTIBLE_BINARY_3,
+                codeUnits[0], codeUnits[1], codeUnits[2]
+            );
             break;
         case 4:
-            Rf_warning(MSG__UNCONVERTIBLE_BINARY_4, codeUnits[0], codeUnits[1], codeUnits[2], codeUnits[3]);
+            ci__queue_converter_warning(
+                (ci::DeferredWarnings*)context, err,
+                MSG__UNCONVERTIBLE_BINARY_4,
+                codeUnits[0], codeUnits[1], codeUnits[2], codeUnits[3]
+            );
             break;
         default:
-            Rf_warning(MSG__UNCONVERTIBLE_BINARY_n);
+            ci__queue_converter_warning(
+                (ci::DeferredWarnings*)context, err,
+                MSG__UNCONVERTIBLE_BINARY_n
+            );
             break;
         }
     }
@@ -161,10 +215,7 @@ void StriUcnv::STRI__UCNV_TO_U_CALLBACK_SUBSTITUTE_WARN (
 /** Own fallback function for ucnv conversion: substitute & warn
  *
  *
- * @param context The function currently recognizes the callback options:
- *                 UCNV_SUB_STOP_ON_ILLEGAL: STOPS at the ILLEGAL_SEQUENCE,
- *                      returning the error code back to the caller immediately.
- *                 NULL: Substitutes any ILLEGAL_SEQUENCE
+ * @param context DeferredWarnings queue owned by the entry point
  * @param fromUArgs Information about the conversion in progress
  * @param codeUnits Points to 'length' UChars of the concerned Unicode sequence
  * @param length Size (in bytes) of the concerned codepage sequence
@@ -188,15 +239,17 @@ void StriUcnv::STRI__UCNV_FROM_U_CALLBACK_SUBSTITUTE_WARN (
     UConverterCallbackReason reason,
     UErrorCode * err)
 {
-    bool wasSubstitute = (reason <= UCNV_IRREGULAR &&
-                          (context == NULL || (*((char*)context) == *UCNV_SUB_STOP_ON_ILLEGAL && reason == UCNV_UNASSIGNED)));
+    bool wasSubstitute = (reason <= UCNV_IRREGULAR);
 
     // "DO NOT CALL THIS FUNCTION DIRECTLY!" :>
-    UCNV_FROM_U_CALLBACK_SUBSTITUTE(context, fromArgs, codeUnits, length, codePoint, reason, err);
+    UCNV_FROM_U_CALLBACK_SUBSTITUTE(NULL, fromArgs, codeUnits, length, codePoint, reason, err);
 
     if (*err == U_ZERO_ERROR && wasSubstitute) {
         // substitute char was induced
-        Rf_warning(MSG__UNCONVERTIBLE_CODE_POINT, codePoint);
+        ci__queue_converter_warning(
+            (ci::DeferredWarnings*)context, err,
+            MSG__UNCONVERTIBLE_CODE_POINT, codePoint
+        );
     }
 }
 
@@ -213,8 +266,13 @@ void StriUcnv::STRI__UCNV_FROM_U_CALLBACK_SUBSTITUTE_WARN (
  *          don't use R_alloc;
  *          return vector<const char*>
  */
-vector<const char*> StriUcnv::getStandards()
+vector<const char*> StriUcnv::getStandards(
+    ci::DeferredWarnings& warnings
+)
 {
+#ifdef NDEBUG
+    (void)warnings;
+#endif
     UErrorCode status = U_ZERO_ERROR;
     R_len_t std_n = (R_len_t)ucnv_countStandards()-1; // -1 - this is not documented in ICU4C
     if (std_n <= 0)
@@ -226,7 +284,11 @@ vector<const char*> StriUcnv::getStandards()
         standards[i] = ucnv_getStandard(i, &status);
         if (U_FAILURE(status)) {
 #ifndef NDEBUG
-            Rf_warning("could not get standard name (StriUcnv::getStandards())");
+            // Deviation from stringi: retain the debug diagnostic, but let the
+            // caller emit it after its ICU objects have been released.
+            warnings.push(
+                "could not get standard name (StriUcnv::getStandards())"
+            );
 #endif
             standards[i] = NULL;
         }
@@ -281,9 +343,19 @@ const char* StriUcnv::getFriendlyName(const char* canname)
  * @version 0.2-1 (Marek Gagolewski, 2014-03-28)
  *          moved to StriUcnv
  */
-bool StriUcnv::hasASCIIsubset()
+bool StriUcnv::hasASCIIsubset(ci::DeferredWarnings& warnings)
 {
-    openConverter(false);
+#ifdef NDEBUG
+    (void)warnings;
+#endif
+    openConverter();
+
+#ifndef NDEBUG
+    UErrorCode name_status = U_ZERO_ERROR;
+    const char* converter_name = ucnv_getName(m_ucnv, &name_status);
+    if (U_FAILURE(name_status) || !converter_name)
+        converter_name = m_name ? m_name : "<unknown>";
+#endif
 
     // minCharSize, not maxCharSize, as we want to include UTF-8
     if (ucnv_getMinCharSize(m_ucnv) != 1) return false;
@@ -308,9 +380,13 @@ bool StriUcnv::hasASCIIsubset()
         c = ucnv_getNextUChar(m_ucnv, &ascii1, ascii2, &status);
         if (U_FAILURE(status)) {
 #ifndef NDEBUG
-            Rf_warning("Cannot convert ASCII character 0x%02x (encoding=%s)",
-                       (int)ascii_last[0],
-                       ucnv_getName(m_ucnv, &status));
+            // Deviation from stringi: queue the debug diagnostic while the
+            // converter is live, then emit it after the caller closes it.
+            ci__queue_ucnv_diagnostic(
+                warnings,
+                "Cannot convert ASCII character 0x%02x (encoding=%s)",
+                (int)ascii_last[0], converter_name
+            );
 #endif
             return false;
         }
@@ -345,10 +421,20 @@ bool StriUcnv::hasASCIIsubset()
  * @version 0.2-1 (Marek Gagolewski, 2014-03-28)
  *          moved to StriUcnv
  */
-bool StriUcnv::is1to1Unicode()
+bool StriUcnv::is1to1Unicode(ci::DeferredWarnings& warnings)
 {
-    openConverter(false);
+#ifdef NDEBUG
+    (void)warnings;
+#endif
+    openConverter();
     if (ucnv_getMinCharSize(m_ucnv) != 1) return false;
+
+#ifndef NDEBUG
+    UErrorCode name_status = U_ZERO_ERROR;
+    const char* converter_name = ucnv_getName(m_ucnv, &name_status);
+    if (U_FAILURE(name_status) || !converter_name)
+        converter_name = m_name ? m_name : "<unknown>";
+#endif
 
     const int ascii_from = 32;
     const int ascii_to = 255;
@@ -373,9 +459,13 @@ bool StriUcnv::is1to1Unicode()
         c = ucnv_getNextUChar(m_ucnv, &ascii1, ascii2, &status);
         if (U_FAILURE(status)) {
 #ifndef NDEBUG
-            Rf_warning("Cannot convert character 0x%02x (encoding=%s)",
-                       (int)(unsigned char)ascii_last[0],
-                       ucnv_getName(m_ucnv, &status));
+            // Deviation from stringi: queue debug diagnostics while the
+            // converter is live, then emit them after the caller closes it.
+            ci__queue_ucnv_diagnostic(
+                warnings,
+                "Cannot convert character 0x%02x (encoding=%s)",
+                (int)(unsigned char)ascii_last[0], converter_name
+            );
 #endif
             return false;
         }
@@ -388,10 +478,11 @@ bool StriUcnv::is1to1Unicode()
         UChar lead = U16_LEAD(c); //, trail = U16_TRAIL(c);
         if (!U16_IS_SINGLE(lead)) {
 #ifndef NDEBUG
-            Rf_warning("Problematic character 0x%02x -> \\u%08x (encoding=%s)",
-                       (int)ascii_last[0],
-                       c,
-                       ucnv_getName(m_ucnv, &status));
+            ci__queue_ucnv_diagnostic(
+                warnings,
+                "Problematic character 0x%02x -> \\u%08x (encoding=%s)",
+                (int)ascii_last[0], c, converter_name
+            );
 #endif
             return false;
         }
@@ -402,20 +493,23 @@ bool StriUcnv::is1to1Unicode()
             ucnv_fromUChars(m_ucnv, buf, buflen, (UChar*)&c, 1, &status);
             if (U_FAILURE(status)) {
 #ifndef NDEBUG
-                Rf_warning("Cannot convert character 0x%02x (encoding=%s)",
-                           (int)(unsigned char)ascii_last[0],
-                           ucnv_getName(m_ucnv, &status));
+                ci__queue_ucnv_diagnostic(
+                    warnings,
+                    "Cannot convert character 0x%02x (encoding=%s)",
+                    (int)(unsigned char)ascii_last[0], converter_name
+                );
 #endif
                 return false;
             }
 
             if (buf[1] != '\0' || buf[0] != ascii_last[0]) {
 #ifndef NDEBUG
-                Rf_warning("Problematic character 0x%02x -> \\u%08x -> 0x%02x (encoding=%s)",
-                           (int)(unsigned char)ascii_last[0],
-                           c,
-                           (int)buf[0],
-                           ucnv_getName(m_ucnv, &status));
+                ci__queue_ucnv_diagnostic(
+                    warnings,
+                    "Problematic character 0x%02x -> \\u%08x -> 0x%02x (encoding=%s)",
+                    (int)(unsigned char)ascii_last[0], c,
+                    (int)buf[0], converter_name
+                );
 #endif
                 return false;
             }

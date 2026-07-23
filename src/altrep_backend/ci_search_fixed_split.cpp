@@ -32,11 +32,13 @@
 
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
 #include "ci_container_utf8.h"
 #include "ci_container_bytesearch.h"
 #include "ci_container_integer.h"
 #include "ci_container_logical.h"
 #include <deque>
+#include <stdexcept>
 #include <utility>
 using namespace std;
 
@@ -98,114 +100,236 @@ SEXP ci_split_fixed(SEXP str, SEXP pattern, SEXP n,
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
     PROTECT(n = ci__prepare_arg_integer(n, "n"));
     PROTECT(omit_empty = ci__prepare_arg_logical(omit_empty, "omit_empty"));
+    const int simplify_1 = LOGICAL_RO(simplify)[0];
 
     STRI__ERROR_HANDLER_BEGIN(5)
-    R_len_t vectorize_length = ci__recycling_rule(true, 4,
-                               LENGTH(str), LENGTH(pattern), LENGTH(n), LENGTH(omit_empty));
-    StriContainerUTF8 str_cont(str, vectorize_length);
-    StriContainerByteSearch pattern_cont(pattern, vectorize_length, pattern_flags);
-    StriContainerInteger n_cont(n, vectorize_length);
-    StriContainerLogical omit_empty_cont(omit_empty, vectorize_length);
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(VECSXP, vectorize_length));
-
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        if (n_cont.isNA(i)) {
-            SET_VECTOR_ELT(ret, i, ci__vector_NA_strings(1));
-            continue;
-        }
-        int  n_cur        = n_cont.get(i);
-        int  omit_empty_cur   = !omit_empty_cont.isNA(i) && omit_empty_cont.get(i);
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t n_n = 0;
+    R_len_t omit_empty_n = 0;
+    R_len_t vectorize_length = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        n_n = LENGTH(n);
+        omit_empty_n = LENGTH(omit_empty);
+        vectorize_length = ci__recycling_rule(
+            STRI__DEFERRED_WARNINGS, 4,
+            str_n, pattern_n, n_n, omit_empty_n
+        );
+        return R_NilValue;
+    });
 
-        STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-                SET_VECTOR_ELT(ret, i, ci__vector_NA_strings(1));,
-                SET_VECTOR_ELT(ret, i,
-                               (omit_empty_cont.isNA(i))?ci__vector_NA_strings(1):
-                               ci__vector_empty_strings((omit_empty_cur || n_cur == 0)?0:1));)
+    // Deviation from stringi: preinitialize lazy empty vectors because the
+    // vectorization order is not sequential, then replace each visited slot
+    // with a scalar or exact-size Store once its field count is known.
+    std::vector<charport::charvec::Store> stores;
+    stores.reserve(static_cast<size_t>(vectorize_length));
+    for (R_len_t i=0; i<vectorize_length; ++i)
+        stores.emplace_back(0, 0);
+    {
+        StriContainerInteger n_cont(n, vectorize_length);
+        StriContainerLogical omit_empty_cont(omit_empty, vectorize_length);
+        StriContainerUTF8 str_cont(context, str, vectorize_length);
+        StriContainerByteSearch pattern_cont(
+            context, pattern, vectorize_length, pattern_flags
+        );
+        charport::charvec::Builder output(0);
 
-        R_len_t     str_cur_n = str_cont.get(i).length();
-        const char* str_cur_s = str_cont.get(i).c_str();
+        for (R_len_t i = pattern_cont.vectorize_init();
+                i != pattern_cont.vectorize_end();
+                i = pattern_cont.vectorize_next(i))
+        {
+            if (n_cont.isNA(i)) {
+                stores[i] = charport::charvec::Store::scalar(
+                    nullptr, 0, cetype_ext_t::CE_NA
+                );
+                continue;
+            }
+            int  n_cur        = n_cont.get(i);
+            int  omit_empty_cur   = !omit_empty_cont.isNA(i) && omit_empty_cont.get(i);
 
-        if (n_cur >= INT_MAX-1)
-            throw StriException(MSG__INCORRECT_NAMED_ARG "; " MSG__EXPECTED_SMALLER, "n");
-        else if (n_cur < 0)
-            n_cur = INT_MAX;
-        else if (n_cur == 0) {
-            SET_VECTOR_ELT(ret, i, Rf_allocVector(STRSXP, 0));
-            continue;
-        }
-        else if (tokens_only1)
-            n_cur++; // we need to do one split ahead here
+            STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
+                    stores[i] = charport::charvec::Store::scalar(
+                        nullptr, 0, cetype_ext_t::CE_NA
+                    );,
+            {   if (omit_empty_cont.isNA(i))
+                    stores[i] = charport::charvec::Store::scalar(
+                        nullptr, 0, cetype_ext_t::CE_NA
+                    );
+                else if (!(omit_empty_cur || n_cur == 0))
+                    stores[i] = charport::charvec::Store::scalar(
+                        "", 0, cetype_ext_t::CE_ASCII
+                    );
+            })
 
-        StriByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
-        matcher->reset(str_cont.get(i).c_str(), str_cont.get(i).length());
-        R_len_t k;
-        deque< pair<R_len_t, R_len_t> > fields; // byte based-indices
-        fields.push_back(pair<R_len_t, R_len_t>(0,0));
+            R_len_t     str_cur_n = str_cont.get(i).length();
+            const char* str_cur_s = str_cont.get(i).data();
 
-        for (k=1; k < n_cur && USEARCH_DONE != matcher->findNext(); ) {
-            R_len_t s1 = (R_len_t)matcher->getMatchedStart();
-            R_len_t s2 = (R_len_t)matcher->getMatchedLength() + s1;
+            if (n_cur >= INT_MAX-1)
+                throw StriException(MSG__INCORRECT_NAMED_ARG "; " MSG__EXPECTED_SMALLER, "n");
+            else if (n_cur < 0)
+                n_cur = INT_MAX;
+            else if (n_cur == 0) {
+                continue;
+            }
+            else if (tokens_only1)
+                n_cur++; // we need to do one split ahead here
 
-            if (omit_empty_cur && fields.back().first == s1)
-                fields.back().first = s2; // don't start any new field
-            else {
-                fields.back().second = s1;
-                fields.push_back(pair<R_len_t, R_len_t>(s2, s2)); // start a new field here
-                ++k; // another field
+            StriByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
+            matcher->reset(str_cont.get(i).data(), str_cont.get(i).length());
+            R_len_t k;
+            deque< pair<R_len_t, R_len_t> > fields; // byte based-indices
+            fields.push_back(pair<R_len_t, R_len_t>(0,0));
+
+            for (k=1; k < n_cur && USEARCH_DONE != matcher->findNext(); ) {
+                R_len_t s1 = (R_len_t)matcher->getMatchedStart();
+                R_len_t s2 = (R_len_t)matcher->getMatchedLength() + s1;
+
+                if (omit_empty_cur && fields.back().first == s1)
+                    fields.back().first = s2; // don't start any new field
+                else {
+                    fields.back().second = s1;
+                    fields.push_back(pair<R_len_t, R_len_t>(s2, s2)); // start a new field here
+                    ++k; // another field
+                }
+            }
+            fields.back().second = str_cur_n;
+            if (omit_empty_cur && fields.back().first == fields.back().second)
+                fields.pop_back();
+
+            if (tokens_only1 && n_cur < INT_MAX) {
+                n_cur--; // one split ahead could have been made, see above
+                while (fields.size() > (size_t)n_cur)
+                    fields.pop_back(); // get rid of the remainder
+            }
+
+            if (fields.size() == 1) {
+                const pair<R_len_t, R_len_t>& curoccur = fields.front();
+                if (curoccur.second == curoccur.first &&
+                        omit_empty_cont.isNA(i)) {
+                    stores[i] = charport::charvec::Store::scalar(
+                        nullptr, 0, cetype_ext_t::CE_NA
+                    );
+                }
+                else {
+                    const char* value = str_cur_s+curoccur.first;
+                    size_t value_length = static_cast<size_t>(
+                        curoccur.second-curoccur.first
+                    );
+                    stores[i] = ci::scalar_store(
+                        value, value_length,
+                        cetype_ext_t::CE_ASCII_OR_UTF8
+                    );
+                }
+            }
+            else if (!fields.empty()) {
+                output.reset(static_cast<R_xlen_t>(fields.size()));
+                deque< pair<R_len_t, R_len_t> >::iterator iter =
+                    fields.begin();
+                for (k = 0; iter != fields.end(); ++iter, ++k) {
+                    pair<R_len_t, R_len_t> curoccur = *iter;
+                    if (curoccur.second == curoccur.first &&
+                            omit_empty_cont.isNA(i)) {
+                        output.set_na(k);
+                    }
+                    else {
+                        ci::builder_set(
+                            output, k, str_cur_s+curoccur.first,
+                            curoccur.second-curoccur.first,
+                            cetype_ext_t::CE_ASCII_OR_UTF8
+                        );
+                    }
+                }
+                stores[i] = output.release_store();
             }
         }
-        fields.back().second = str_cur_n;
-        if (omit_empty_cur && fields.back().first == fields.back().second)
-            fields.pop_back();
-
-        if (tokens_only1 && n_cur < INT_MAX) {
-            n_cur--; // one split ahead could have been made, see above
-            while (fields.size() > (size_t)n_cur)
-                fields.pop_back(); // get rid of the remainder
-        }
-
-        SEXP ans;
-        STRI__PROTECT(ans = Rf_allocVector(STRSXP, fields.size()));
-
-        deque< pair<R_len_t, R_len_t> >::iterator iter = fields.begin();
-        for (k = 0; iter != fields.end(); ++iter, ++k) {
-            pair<R_len_t, R_len_t> curoccur = *iter;
-            if (curoccur.second == curoccur.first && omit_empty_cont.isNA(i))
-                SET_STRING_ELT(ans, k, NA_STRING);
-            else
-                SET_STRING_ELT(ans, k,
-                               Rf_mkCharLenCE(str_cur_s+curoccur.first,
-                                              curoccur.second-curoccur.first, CE_UTF8));
-        }
-
-        SET_VECTOR_ELT(ret, i, ans);
-        STRI__UNPROTECT(1);
     }
 
-    if (LOGICAL(simplify)[0] == NA_LOGICAL || LOGICAL(simplify)[0]) {
+    if (simplify_1 != NA_LOGICAL && !simplify_1) {
+        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+            return Rf_allocVector(VECSXP, vectorize_length);
+        }));
+        for (R_len_t i=0; i<vectorize_length; ++i) {
+            SEXP ans;
+            STRI__PROTECT(ans = charport::charvec::wrap(
+                std::move(stores[i])
+            ));
+            SET_VECTOR_ELT(ret, i, ans);
+            STRI__UNPROTECT(1);
+        }
+    }
+    else {
         R_len_t n_min = 0;
-        R_len_t n_length = LENGTH(n);
-        int* n_tab = INTEGER(n);
-        for (R_len_t i=0; i<n_length; ++i) {
-            if (n_tab[i] != NA_INTEGER && n_min < n_tab[i])
-                n_min = n_tab[i];
+        charport::unwind_protect([&]() -> SEXP {
+            R_len_t n_length = LENGTH(n);
+            const int* n_tab = INTEGER_RO(n);
+            for (R_len_t i=0; i<n_length; ++i) {
+                if (n_tab[i] != NA_INTEGER && n_min < n_tab[i])
+                    n_min = n_tab[i];
+            }
+            return R_NilValue;
+        });
+
+        R_len_t matrix_ncol = n_min;
+        for (R_len_t i=0; i<vectorize_length; ++i) {
+            R_len_t current_size = ci::checked_r_len(
+                static_cast<R_xlen_t>(stores[i].size()),
+                "split results"
+            );
+            if (matrix_ncol < current_size)
+                matrix_ncol = current_size;
         }
-        SEXP robj_TRUE, robj_n_min, robj_na_strings, robj_empty_strings;
-        STRI__PROTECT(robj_TRUE = Rf_ScalarLogical(TRUE));
-        STRI__PROTECT(robj_n_min = Rf_ScalarInteger(n_min));
-        STRI__PROTECT(robj_na_strings = ci__vector_NA_strings(1));
-        STRI__PROTECT(robj_empty_strings = ci__vector_empty_strings(1));
-        STRI__PROTECT(ret = ci_list2matrix(ret, robj_TRUE,
-                                             (LOGICAL(simplify)[0] == NA_LOGICAL)?robj_na_strings
-                                             :robj_empty_strings,
-                                             robj_n_min))
+
+        // Deviation from stringi: reject a matrix that cannot be represented
+        // before passing an overflowed product to the flat Builder.
+        if (vectorize_length > 0 &&
+                matrix_ncol > R_XLEN_T_MAX/vectorize_length)
+            throw length_error("matrix length exceeds R's vector limit");
+        R_xlen_t matrix_size =
+            static_cast<R_xlen_t>(vectorize_length) * matrix_ncol;
+        charport::charvec::Builder matrix(matrix_size);
+        for (R_len_t i=0; i<vectorize_length; ++i) {
+            R_len_t current_size = static_cast<R_len_t>(stores[i].size());
+            R_len_t j = 0;
+            for (; j<current_size; ++j) {
+                matrix.set(
+                    i+static_cast<R_xlen_t>(j)*vectorize_length,
+                    stores[i].view(static_cast<size_t>(j))
+                );
+            }
+            for (; j<matrix_ncol; ++j) {
+                R_xlen_t output_i =
+                    i+static_cast<R_xlen_t>(j)*vectorize_length;
+                if (simplify_1 == NA_LOGICAL)
+                    matrix.set_na(output_i);
+                else
+                    ci::builder_set(
+                        matrix, output_i, "", 0,
+                        cetype_ext_t::CE_ASCII
+                    );
+            }
+        }
+
+        STRI__PROTECT(ret = matrix.to_sexp());
+        ret = charport::unwind_protect([&]() -> SEXP {
+            SEXP dim;
+            PROTECT(dim = Rf_allocVector(INTSXP, 2));
+            INTEGER(dim)[0] = vectorize_length;
+            INTEGER(dim)[1] = matrix_ncol;
+            SEXP result = Rf_setAttrib(ret, R_DimSymbol, dim);
+            UNPROTECT(1);
+            return result;
+        });
     }
 
+    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(; /* nothing interesting on error */)

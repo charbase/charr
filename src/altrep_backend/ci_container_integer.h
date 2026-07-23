@@ -46,7 +46,7 @@ class StriContainerInteger : public StriContainerBase {
 
 private:
 
-    int* data;
+    const int* data;
 
 public:
 
@@ -62,9 +62,13 @@ public:
         if (!Rf_isInteger(rvec))
             throw StriException("DEBUG: !isInteger in StriContainerInteger");
 #endif
-        R_len_t ndata = LENGTH(rvec);
+        R_len_t ndata = 0;
+        charport::unwind_protect([&]() -> SEXP {
+            ndata = LENGTH(rvec);
+            this->data = INTEGER_RO(rvec);
+            return R_NilValue;
+        });
         this->init_Base(ndata, _nrecycle, true);
-        this->data = INTEGER(rvec);  // TODO: ALTREP will be problematic?
     }
 
     //  StriContainerInteger(StriContainerInteger& container); // default-shallow

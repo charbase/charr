@@ -34,15 +34,31 @@
 #include "ci_stringi.h"
 #include "ci_container_listutf8.h"
 
+#include <memory>
+#include <vector>
+
+
+namespace {
+
+void delete_containers(StriContainerUTF8** data, R_len_t n) noexcept
+{
+    if (!data)
+        return;
+    for (R_len_t i=0; i<n; ++i)
+        delete data[i];
+    delete [] data;
+}
+
+} // namespace
+
 
 /**
  * Default constructor
  *
  */
 StriContainerListUTF8::StriContainerListUTF8()
-    : StriContainerBase()
+    : StriContainerBase(), data(NULL)
 {
-    data = NULL;
 }
 
 
@@ -52,92 +68,119 @@ StriContainerListUTF8::StriContainerListUTF8()
  * @param nrecycle extend length of each character vector stored [vectorization]
  * @param shallowrecycle will stored character vectors be ever modified?
  */
-StriContainerListUTF8::StriContainerListUTF8(SEXP rvec, R_len_t _nrecycle, bool _shallowrecycle)
+StriContainerListUTF8::StriContainerListUTF8(
+    ci::ReaderContext& context, SEXP rvec,
+    R_len_t _nrecycle, bool _shallowrecycle
+) : StriContainerBase(), data(NULL)
 {
-    this->data = NULL;
 #ifndef NDEBUG
     if (!Rf_isVectorList(rvec))
         throw StriException("DEBUG: !isVectorList in StriContainerListUTF8::StriContainerListUTF8(SEXP rvec)");
 #endif
-    R_len_t rvec_length = LENGTH(rvec);
+    R_len_t rvec_length = 0;
+    std::vector<SEXP> elements;
+    charport::unwind_protect([&]() -> SEXP {
+        rvec_length = ci::checked_r_len(XLENGTH(rvec), "lists");
+        elements.resize(static_cast<size_t>(rvec_length));
+        for (R_len_t i=0; i<rvec_length; ++i)
+            elements[static_cast<size_t>(i)] = VECTOR_ELT(rvec, i);
+        return R_NilValue;
+    });
     this->init_Base(rvec_length, rvec_length, true);
 
     if (this->n > 0) {
-        this->data = new StriContainerUTF8*[this->n];
-        if (!this->data) throw StriException(MSG__MEM_ALLOC_ERROR);
-        for (R_len_t i=0; i<this->n; ++i)
-            this->data[i] = NULL; // in case it fails during conversion (this is "NA")
-
+        std::vector<std::unique_ptr<StriContainerUTF8> > containers;
+        containers.reserve(static_cast<size_t>(this->n));
+        bool recycling_warning = false;
         for (R_len_t i=0; i<this->n; ++i) {
-            R_len_t strlist_cur_length = LENGTH(VECTOR_ELT(rvec, i));
-            if (_nrecycle % strlist_cur_length != 0) {
-                Rf_warning(MSG__WARN_RECYCLING_RULE);
-                break;
+            SEXP element = elements[static_cast<size_t>(i)];
+            R_len_t element_length = ci::checked_r_len(
+                context.size(element), "character vectors"
+            );
+            // Deviation from stringi: an empty element must not trigger
+            // integer division by zero in the recycling check.
+            if (!recycling_warning && element_length > 0 &&
+                    _nrecycle % element_length != 0) {
+                context.warn(MSG__WARN_RECYCLING_RULE);
+                recycling_warning = true;
             }
         }
 
         for (R_len_t i=0; i<this->n; ++i) {
-            this->data[i] = new StriContainerUTF8(VECTOR_ELT(rvec, i), _nrecycle, _shallowrecycle);
-            if (!this->data[i]) throw StriException(MSG__MEM_ALLOC_ERROR);
+            SEXP element = elements[static_cast<size_t>(i)];
+            containers.emplace_back(new StriContainerUTF8(
+                context, element,
+                _nrecycle, _shallowrecycle
+            ));
         }
+
+        std::unique_ptr<StriContainerUTF8*[]> new_data(
+            new StriContainerUTF8*[this->n]
+        );
+        for (R_len_t i=0; i<this->n; ++i)
+            new_data[i] = containers[static_cast<size_t>(i)].release();
+        this->data = new_data.release();
     }
 }
 
 
 StriContainerListUTF8::StriContainerListUTF8(StriContainerListUTF8& container)
-    :    StriContainerBase((StriContainerBase&)container)
+    : StriContainerBase((StriContainerBase&)container), data(NULL)
 {
     if (container.data) {
-        this->data = new StriContainerUTF8*[this->n];
-        if (!this->data) throw StriException(MSG__MEM_ALLOC_ERROR);
+        std::vector<std::unique_ptr<StriContainerUTF8> > containers;
+        containers.reserve(static_cast<size_t>(this->n));
         for (int i=0; i<container.n; ++i) {
-            if (container.data[i]) {
-                this->data[i] = new StriContainerUTF8(*container.data[i]);
-                if (!this->data[i]) throw StriException(MSG__MEM_ALLOC_ERROR);
-            }
+            if (container.data[i])
+                containers.emplace_back(new StriContainerUTF8(*container.data[i]));
             else
-                this->data[i] = NULL;
+                containers.emplace_back();
         }
-    }
-    else {
-        this->data = NULL;
+
+        std::unique_ptr<StriContainerUTF8*[]> new_data(
+            new StriContainerUTF8*[this->n]
+        );
+        for (R_len_t i=0; i<this->n; ++i)
+            new_data[i] = containers[static_cast<size_t>(i)].release();
+        this->data = new_data.release();
     }
 }
 
 
 StriContainerListUTF8& StriContainerListUTF8::operator=(StriContainerListUTF8& container)
 {
-    this->~StriContainerListUTF8();
-    (StriContainerBase&) (*this) = (StriContainerBase&)container;
+    if (this == &container)
+        return *this;
 
+    std::vector<std::unique_ptr<StriContainerUTF8> > containers;
     if (container.data) {
-        this->data = new StriContainerUTF8*[this->n];
-        if (!this->data) throw StriException(MSG__MEM_ALLOC_ERROR);
+        containers.reserve(static_cast<size_t>(container.n));
         for (int i=0; i<container.n; ++i) {
-            if (container.data[i]) {
-                this->data[i] = new StriContainerUTF8(*container.data[i]);
-                if (!this->data[i]) throw StriException(MSG__MEM_ALLOC_ERROR);
-            }
+            if (container.data[i])
+                containers.emplace_back(new StriContainerUTF8(*container.data[i]));
             else
-                this->data[i] = NULL;
+                containers.emplace_back();
         }
     }
-    else {
-        this->data = NULL;
+
+    std::unique_ptr<StriContainerUTF8*[]> new_data;
+    if (container.data) {
+        new_data.reset(new StriContainerUTF8*[container.n]);
+        for (R_len_t i=0; i<container.n; ++i)
+            new_data[i] = containers[static_cast<size_t>(i)].release();
     }
 
+    // Deviation from stringi: replace the old array without explicitly ending
+    // and then reusing this object's lifetime.
+    delete_containers(this->data, this->n);
+    (StriContainerBase&) (*this) = (StriContainerBase&)container;
+    this->data = new_data.release();
     return *this;
 }
 
 
 StriContainerListUTF8::~StriContainerListUTF8()
 {
-    if (data) {
-        for (int i=0; i<n; ++i) {
-            if (data[i])
-                delete data[i];
-        }
-        delete [] data;
-        data = NULL;
-    }
+    delete_containers(data, n);
+    data = NULL;
 }

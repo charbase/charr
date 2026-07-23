@@ -32,6 +32,7 @@
 
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
 #include "ci_container_utf8.h"
 #include "ci_container_listutf8.h"
 
@@ -59,45 +60,80 @@ SEXP ci_list2matrix(SEXP x, SEXP byrow, SEXP fill, SEXP n_min)
     PROTECT(fill = ci__prepare_arg_string_1(fill, "fill")); // enc2utf8 called in R
 
     STRI__ERROR_HANDLER_BEGIN(2)
-    R_len_t n = LENGTH(x);
-    SEXP fill2 = STRING_ELT(fill, 0);
-
-    R_len_t m = n_min2; // maximal vector length
-    for (int i=0; i<n; ++i) {
-        R_len_t k = LENGTH(VECTOR_ELT(x, i));
-        if (k > m) m = k;
-    }
-
-    // TODO: the following does not re-encode strings to UTF-8,
-    // it merely emplaces them in a matrix as-is
-
     SEXP ret;
-    if (!byrow2) {
-        STRI__PROTECT(ret = Rf_allocMatrix(STRSXP, m, n));
-        int ret_idx = 0;
-        for (int i=0; i<n; ++i) {
-            SEXP cur_str = VECTOR_ELT(x, i);
-            R_len_t cur_len = LENGTH(cur_str);
-            int j;
-            for (j=0; j<cur_len; ++j)
-                SET_STRING_ELT(ret, ret_idx++, STRING_ELT(cur_str, j));
-            for (; j<m; ++j)
-                SET_STRING_ELT(ret, ret_idx++, fill2);
+    const R_len_t n = LENGTH(x);
+    R_len_t m = n_min2;
+    // Deviation from stringi: stage the protected list's child SEXPs before
+    // opening any Reader, so later list access cannot run inside a borrow.
+    std::vector<SEXP> elements(static_cast<size_t>(n));
+    charport::unwind_protect([&]() -> SEXP {
+        for (R_len_t i=0; i<n; ++i)
+            elements[static_cast<size_t>(i)] = VECTOR_ELT(x, i);
+        return R_NilValue;
+    });
+    {
+        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+
+        for (R_len_t i=0; i<n; ++i) {
+            const R_len_t k = ci::checked_r_len(
+                context.size(elements[static_cast<size_t>(i)]),
+                "character vectors"
+            );
+            if (k > m)
+                m = k;
         }
-    }
-    else {
-        STRI__PROTECT(ret = Rf_allocMatrix(STRSXP, n, m));
-        for (int i=0; i<n; ++i) {
-            SEXP cur_str = VECTOR_ELT(x, i);
-            R_len_t cur_len = LENGTH(cur_str);
-            int j;
-            for (j=0; j<cur_len; ++j)
-                SET_STRING_ELT(ret, i+j*n, STRING_ELT(cur_str, j));
-            for (; j<m; ++j)
-                SET_STRING_ELT(ret, i+j*n, fill2);
+
+        std::shared_ptr<ci::ReaderBorrow> fill_borrow =
+            context.acquire(fill);
+        const charport::StrView fill_view = fill_borrow->views()[0];
+
+        const R_xlen_t rows = byrow2 ? n : m;
+        const R_xlen_t columns = byrow2 ? m : n;
+        // Deviation from stringi: the flat Builder needs the matrix product
+        // checked before allocation; Rf_allocMatrix performed this internally.
+        if (rows > 0 && columns > R_XLEN_T_MAX/rows)
+            throw std::length_error("matrix length exceeds R's vector limit");
+
+        charport::charvec::Builder builder(rows*columns);
+        for (R_len_t i=0; i<n; ++i) {
+            std::shared_ptr<ci::ReaderBorrow> current_borrow =
+                context.acquire(elements[static_cast<size_t>(i)]);
+            const charport::StrViews& current = current_borrow->views();
+            const R_len_t current_size = static_cast<R_len_t>(
+                current.size()
+            );
+            for (R_len_t j=0; j<m; ++j) {
+                const R_xlen_t output_index = byrow2 ?
+                    i+static_cast<R_xlen_t>(j)*n :
+                    j+static_cast<R_xlen_t>(i)*m;
+                const charport::StrView value =
+                    j < current_size ? current[j] : fill_view;
+                if (value.is_na()) {
+                    builder.set_na(output_index);
+                }
+                else {
+                    ci::builder_set(
+                        builder, output_index, value.ptr,
+                        static_cast<size_t>(value.len), value.enc
+                    );
+                }
+            }
         }
+
+        fill_borrow.reset();
+        STRI__PROTECT(ret = builder.to_sexp());
     }
 
+    ret = charport::unwind_protect([&]() -> SEXP {
+        SEXP dim;
+        PROTECT(dim = Rf_allocVector(INTSXP, 2));
+        INTEGER(dim)[0] = byrow2 ? n : m;
+        INTEGER(dim)[1] = byrow2 ? m : n;
+        SEXP result = Rf_setAttrib(ret, R_DimSymbol, dim);
+        UNPROTECT(1);
+        return result;
+    });
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
 
@@ -126,25 +162,33 @@ SEXP ci_list2matrix(SEXP x, SEXP byrow, SEXP fill, SEXP n_min)
 SEXP ci_replace_na(SEXP str, SEXP replacement) {
     PROTECT(str = ci__prepare_arg_string(str, "str"));
     PROTECT(replacement = ci__prepare_arg_string_1(replacement, "replacement"));
-    R_len_t str_len = LENGTH(str);
 
     // @TODO: ci_replace_na(str, character(0)) returns a char vect with no NAs
 
     STRI__ERROR_HANDLER_BEGIN(2)
-    StriContainerUTF8 str_cont(str, str_len);
-    StriContainerUTF8 replacement_cont(replacement, 1);
-
     SEXP ret;
-    STRI__PROTECT(ret = str_cont.toR()); // to UTF-8
+    {
+        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+        R_len_t str_len = ci::checked_r_len(
+            context.size(str), "character vectors"
+        );
+        charport::charvec::Builder builder(str_len);
+        {
+            StriContainerUTF8 str_cont(context, str, str_len);
+            StriContainerUTF8 replacement_cont(context, replacement, 1);
 
-    SEXP na;
-    STRI__PROTECT(na = replacement_cont.toR(0));
+            for (R_len_t i=0; i<str_len; ++i) {
+                if (str_cont.isNA(i))
+                    ci::builder_set(builder, i, replacement_cont.getNAble(0));
+                else
+                    ci::builder_set(builder, i, str_cont.get(i));
+            }
+        }
 
-    for (R_len_t i=0; i<str_len; ++i) {
-        if (STRING_ELT(ret, i) == NA_STRING)
-            SET_STRING_ELT(ret, i, na);
+        STRI__PROTECT(ret = builder.to_sexp());
     }
 
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)

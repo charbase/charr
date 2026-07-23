@@ -40,9 +40,8 @@
  *
  */
 StriContainerListRaw::StriContainerListRaw()
-    : StriContainerBase()
+    : StriContainerBase(), borrow(), data(NULL)
 {
-    data = NULL;
 }
 
 
@@ -55,87 +54,118 @@ StriContainerListRaw::StriContainerListRaw()
  * @version 1.6.2 (Marek Gagolewski, 2021-05-14)
  *    #354 Force the copying of ALTREP data
  */
-StriContainerListRaw::StriContainerListRaw(SEXP rstr)
+StriContainerListRaw::StriContainerListRaw(
+    ci::ReaderContext& context, SEXP rstr
+)
+    : StriContainerBase(), borrow(), data(NULL)
 {
-    this->data = NULL;
-
     if (Rf_isNull(rstr)) {
         this->init_Base(1, 1, true);
-        this->data = new String8[this->n]; // 1 string, NA
-        if (!this->data) throw StriException(MSG__MEM_ALLOC_ERROR);
+        std::unique_ptr<String8[]> new_data(new String8[this->n]);
+        this->data = new_data.release(); // 1 string, NA
     }
     else if (isRaw(rstr)) {
         this->init_Base(1, 1, true);
-        this->data = new String8[this->n];
-        if (!this->data) throw StriException(MSG__MEM_ALLOC_ERROR);
+        std::unique_ptr<String8[]> new_data(new String8[this->n]);
         bool memalloc = ALTREP(rstr);  // #354: force copying of ALTREP data
-        this->data[0].initialize((const char*)RAW(rstr), LENGTH(rstr),
-                                 memalloc, false/*killbom*/, false/*isASCII*/); // shallow copy
+        const char* raw_data = NULL;
+        R_len_t raw_length = 0;
+        charport::unwind_protect([&]() -> SEXP {
+            raw_length = LENGTH(rstr);
+            raw_data = reinterpret_cast<const char*>(RAW(rstr));
+            return R_NilValue;
+        });
+        new_data[0].initialize(raw_data, raw_length,
+                               memalloc, false/*killbom*/, false/*isASCII*/); // shallow copy
+        this->data = new_data.release();
     }
     else if (Rf_isVectorList(rstr)) {
         R_len_t nv = LENGTH(rstr);
         this->init_Base(nv, nv, true);
-        this->data = new String8[this->n];
-        if (!this->data) throw StriException(MSG__MEM_ALLOC_ERROR);
+        std::unique_ptr<String8[]> new_data(new String8[this->n]);
         for (R_len_t i=0; i<this->n; ++i) {
-            SEXP cur = VECTOR_ELT(rstr, i);
+            SEXP cur = charport::unwind_protect([&]() -> SEXP {
+                return VECTOR_ELT(rstr, i);
+            });
             if (!Rf_isNull(cur)) {
                 bool memalloc = ALTREP(cur);  // #354: force copying of ALTREP data
-                this->data[i].initialize((const char*)RAW(cur), LENGTH(cur),
-                                         memalloc, false/*killbom*/, false/*isASCII*/); // shallow copy
+                const char* raw_data = NULL;
+                R_len_t raw_length = 0;
+                charport::unwind_protect([&]() -> SEXP {
+                    raw_length = LENGTH(cur);
+                    raw_data = reinterpret_cast<const char*>(RAW(cur));
+                    return R_NilValue;
+                });
+                new_data[i].initialize(raw_data, raw_length,
+                                       memalloc, false/*killbom*/, false/*isASCII*/); // shallow copy
             }
             // else leave as-is, i.e., NA
         }
+        this->data = new_data.release();
     }
     else { // it's surely a character vector (args have been checked)
-        R_len_t nv = LENGTH(rstr);
+        R_len_t nv = ci::checked_r_len(
+            context.size(rstr), "character vectors"
+        );
         this->init_Base(nv, nv, true);
-        this->data = new String8[this->n];
-        if (!this->data) throw StriException(MSG__MEM_ALLOC_ERROR);
+        if (this->n == 0)
+            return;
+
+        std::shared_ptr<ci::ReaderBorrow> new_borrow = context.acquire(rstr);
+        const charport::StrViews& views = new_borrow->views();
+        // Deviation from stringi: borrow character bytes through charport
+        // without interpreting their encoding or materializing CHARSXPs.
+        std::unique_ptr<String8[]> new_data(new String8[this->n]);
+        bool uses_borrowed_data = false;
         for (R_len_t i=0; i<this->n; ++i) {
-            SEXP cur = STRING_ELT(rstr, i);
-            if (cur != NA_STRING) {
-                bool memalloc = ALTREP(rstr);  // #354: force copying of ALTREP data
-                this->data[i].initialize(CHAR(cur), LENGTH(cur),
-                                         memalloc, false/*killbom*/, false/*isASCII*/); // shallow copy
+            const charport::StrView cur = views[i];
+            if (!cur.is_na()) {
+                new_data[i].initialize(
+                    cur.ptr, cur.len, false,
+                    false/*killbom*/, false/*isASCII*/
+                );
+                uses_borrowed_data = true;
             }
             // else leave as-is, i.e., NA
         }
+        if (uses_borrowed_data)
+            this->borrow = new_borrow;
+        this->data = new_data.release();
     }
 }
 
 
 StriContainerListRaw::StriContainerListRaw(StriContainerListRaw& container)
-    :    StriContainerBase((StriContainerBase&)container)
+    : StriContainerBase((StriContainerBase&)container),
+      borrow(container.borrow), data(NULL)
 {
     if (container.data) {
-        this->data = new String8[this->n];
-        if (!this->data) throw StriException(MSG__MEM_ALLOC_ERROR);
+        std::unique_ptr<String8[]> new_data(new String8[this->n]);
         for (int i=0; i<this->n; ++i) {
-            this->data[i] = container.data[i];
+            new_data[i] = container.data[i];
         }
-    }
-    else {
-        this->data = NULL;
+        this->data = new_data.release();
     }
 }
 
 
 StriContainerListRaw& StriContainerListRaw::operator=(StriContainerListRaw& container)
 {
-    this->~StriContainerListRaw();
-    (StriContainerBase&) (*this) = (StriContainerBase&)container;
+    if (this == &container)
+        return *this;
 
+    std::unique_ptr<String8[]> new_data;
     if (container.data) {
-        this->data = new String8[this->n];
-        if (!this->data) throw StriException(MSG__MEM_ALLOC_ERROR);
-        for (int i=0; i<this->n; ++i) {
-            this->data[i] = container.data[i];
+        new_data.reset(new String8[container.n]);
+        for (int i=0; i<container.n; ++i) {
+            new_data[i] = container.data[i];
         }
     }
-    else {
-        this->data = NULL;
-    }
+
+    delete [] this->data;
+    (StriContainerBase&) (*this) = (StriContainerBase&)container;
+    this->borrow = container.borrow;
+    this->data = new_data.release();
     return *this;
 }
 
@@ -146,4 +176,5 @@ StriContainerListRaw::~StriContainerListRaw()
         delete [] data;
         data = NULL;
     }
+    borrow.reset();
 }

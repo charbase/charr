@@ -55,12 +55,13 @@ private:
 public:
 
     StriContainerListUTF8();
-    StriContainerListUTF8(SEXP rlist, R_len_t nrecycle, bool shallowrecycle=true);
+    StriContainerListUTF8(
+        ci::ReaderContext& context, SEXP rlist,
+        R_len_t nrecycle, bool shallowrecycle=true
+    );
     StriContainerListUTF8(StriContainerListUTF8& container);
     ~StriContainerListUTF8();
     StriContainerListUTF8& operator=(StriContainerListUTF8& container);
-    SEXP toR(R_len_t i) const;
-    SEXP toR() const;
 
 
     /** check if the vectorized ith element is NA

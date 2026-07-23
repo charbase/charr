@@ -32,6 +32,7 @@
 
 #include "ci_stringi.h"
 #include "ci_brkiter.h"
+#include "ci_container_utf8.h"
 
 
 /** Select Break Iterator
@@ -54,9 +55,15 @@
  * @version 1.1.6 (Marek Gagolewski, 2017-04-22)
  *     Add support for RBBI
  */
-void StriBrkIterOptions::setType(SEXP opts_brkiter, const char* _default) {
+void StriBrkIterOptions::setType(
+    SEXP opts_brkiter, const char* _default,
+    R_len_t default_length,
+    ci::DeferredWarnings& warnings
+) {
     const char* type_opts[] = {"character", "line_break", "sentence", "word", NULL};
-    int brkiter_cur = ci__match_arg(_default, type_opts);
+    int brkiter_cur = ci__match_arg(
+        _default, default_length, type_opts
+    );
 
     if (Rf_isNull(opts_brkiter)) {
         // use default settings
@@ -65,32 +72,73 @@ void StriBrkIterOptions::setType(SEXP opts_brkiter, const char* _default) {
         R_len_t narg = LENGTH(opts_brkiter);
         SEXP names = Rf_getAttrib(opts_brkiter, R_NamesSymbol);
         if (names == R_NilValue || LENGTH(names) != narg)
-            Rf_error(MSG__INCORRECT_BRKITER_OPTION_SPEC); // error() allowed here
+            throw StriException(MSG__INCORRECT_BRKITER_OPTION_SPEC);
         // search for "type" option
         for (R_len_t i=0; i<narg; ++i) {
             if (STRING_ELT(names, i) == NA_STRING)
-                Rf_error(MSG__INCORRECT_BRKITER_OPTION_SPEC); // error() allowed here
+                throw StriException(MSG__INCORRECT_BRKITER_OPTION_SPEC);
             const char* curname = CHAR(STRING_ELT(names, i));
             if (!strcmp(curname, "type")) {
-                SEXP curval, curval2;
-                PROTECT(curval2 = ci_enc_toutf8(VECTOR_ELT(opts_brkiter, i),
-                                                  Rf_ScalarLogical(FALSE),
-                                                  Rf_ScalarLogical(FALSE)));
-                PROTECT(curval = ci__prepare_arg_string_1(curval2, "type"));
-                if (STRING_ELT(curval, i) == NA_STRING) {
-                    UNPROTECT(1);
-                    Rf_error(MSG__INCORRECT_MATCH_OPTION, "type");
+                SEXP curval = R_NilValue;
+                int nprotect = 0;
+                try {
+                    PROTECT(curval = ci__prepare_arg_string(
+                        VECTOR_ELT(opts_brkiter, i), "type", true,
+                        &warnings
+                    ));
+                    ++nprotect;
+                    {
+                        ci::ReaderContext reader_context(warnings);
+                        const R_len_t curval_length = ci::checked_r_len(
+                            reader_context.size(curval), "character vectors"
+                        );
+                        if (curval_length <= 0)
+                            throw StriException(
+                                MSG__ARG_EXPECTED_NOT_EMPTY, "type"
+                            );
+
+                        // Normalize the full vector before selecting record 0.
+                        // This preserves stringi's error order when a later
+                        // element has an unsupported encoding.
+                        StriContainerUTF8 curval_cont(
+                            reader_context, curval, curval_length
+                        );
+                        if (curval_length > 1) {
+                            char message[StriException_BUFSIZE];
+                            std::snprintf(
+                                message, StriException_BUFSIZE,
+                                MSG__ARG_EXPECTED_1_STRING, "type"
+                            );
+                            warnings.push(message);
+                        }
+
+                        // Deviation from stringi: scalar selection always uses
+                        // record 0. The copied STRING_ELT(curval, i) read past
+                        // that scalar when type was not the first list option.
+                        if (curval_cont.isNA(0))
+                            throw StriException(
+                                MSG__INCORRECT_MATCH_OPTION, "type"
+                            );
+                        const String8& value = curval_cont.get(0);
+                        this->rules = UnicodeString::fromUTF8(
+                            StringPiece(value.data(), value.length())
+                        );
+                        brkiter_cur = ci__match_arg(
+                            value.data(), value.length(), type_opts
+                        );
+                    }
                 }
-                const char* curval3 = CHAR(STRING_ELT(curval, i));
-                this->rules = UnicodeString::fromUTF8(curval3);
-                brkiter_cur = ci__match_arg(curval3, type_opts);
-                UNPROTECT(2);
+                catch (...) {
+                    UNPROTECT(nprotect);
+                    throw;
+                }
+                UNPROTECT(nprotect);
                 break;
             }
         }
     }
     else {
-        Rf_error(MSG__INCORRECT_BRKITER_OPTION_SPEC);
+        throw StriException(MSG__INCORRECT_BRKITER_OPTION_SPEC);
     }
 
     switch (brkiter_cur) {
@@ -127,7 +175,9 @@ void StriBrkIterOptions::setType(SEXP opts_brkiter, const char* _default) {
  * @version 0.4-1 (Marek Gagolewski, 2014-12-02)
  *     moved to the StriBrkIterOptions class
  */
-void StriBrkIterOptions::setLocale(SEXP opts_brkiter) {
+void StriBrkIterOptions::setLocale(
+    SEXP opts_brkiter, ci::DeferredWarnings& warnings
+) {
     if (Rf_isNull(opts_brkiter)) {
         // use default locale
     }
@@ -135,25 +185,30 @@ void StriBrkIterOptions::setLocale(SEXP opts_brkiter) {
         R_len_t narg = LENGTH(opts_brkiter);
         SEXP names = Rf_getAttrib(opts_brkiter, R_NamesSymbol);
         if (names == R_NilValue || LENGTH(names) != narg)
-            Rf_error(MSG__INCORRECT_BRKITER_OPTION_SPEC); // error() allowed here
+            throw StriException(MSG__INCORRECT_BRKITER_OPTION_SPEC);
 
         // search for "locale" option
         for (R_len_t i=0; i<narg; ++i) {
             if (STRING_ELT(names, i) == NA_STRING)
-                Rf_error(MSG__INCORRECT_BRKITER_OPTION_SPEC); // error() allowed here
+                throw StriException(MSG__INCORRECT_BRKITER_OPTION_SPEC);
             const char* curname = CHAR(STRING_ELT(names, i));
             if (!strcmp(curname, "locale")) {
-                this->locale = ci__prepare_arg_locale(VECTOR_ELT(opts_brkiter, i), "locale");  // this is R_alloc'ed
+                this->locale = ci__prepare_arg_locale(
+                    VECTOR_ELT(opts_brkiter, i), "locale",
+                    true, true, &warnings
+                );  // this is R_alloc'ed
                 return;
             }
         }
     }
     else {
-        Rf_error(MSG__INCORRECT_BRKITER_OPTION_SPEC); // error() allowed here
+        throw StriException(MSG__INCORRECT_BRKITER_OPTION_SPEC);
     }
 
     // otherwise return default locale
-    this->locale = ci__prepare_arg_locale(R_NilValue, "locale"); /* this is R_alloc'ed */
+    this->locale = ci__prepare_arg_locale(
+        R_NilValue, "locale", true, true, &warnings
+    ); /* this is R_alloc'ed */
 }
 
 
@@ -167,7 +222,9 @@ void StriBrkIterOptions::setLocale(SEXP opts_brkiter) {
  * @version 0.4-1 (Marek Gagolewski, 2014-12-02)
  *     moved to the StriBrkIterOptions class
  */
-void StriBrkIterOptions::setSkipRuleStatus(SEXP opts_brkiter) {
+void StriBrkIterOptions::setSkipRuleStatus(
+    SEXP opts_brkiter, ci::DeferredWarnings& warnings
+) {
     if (Rf_isNull(opts_brkiter)) {
         return; // leave as-is (empty)
     }
@@ -176,68 +233,86 @@ void StriBrkIterOptions::setSkipRuleStatus(SEXP opts_brkiter) {
     int32_t tmp_rules[32];
 
     if (!Rf_isVectorList(opts_brkiter))
-        Rf_error(MSG__INCORRECT_BRKITER_OPTION_SPEC); // error() allowed here
+        throw StriException(MSG__INCORRECT_BRKITER_OPTION_SPEC);
 
     R_len_t narg = LENGTH(opts_brkiter);
     SEXP names = Rf_getAttrib(opts_brkiter, R_NamesSymbol);
     if (names == R_NilValue || LENGTH(names) != narg)
-        Rf_error(MSG__INCORRECT_BRKITER_OPTION_SPEC); // error() allowed here
+        throw StriException(MSG__INCORRECT_BRKITER_OPTION_SPEC);
 
     for (R_len_t i=0; i<narg; ++i) {
         if (STRING_ELT(names, i) == NA_STRING)
-            Rf_error(MSG__INCORRECT_BRKITER_OPTION_SPEC); // error() allowed here
+            throw StriException(MSG__INCORRECT_BRKITER_OPTION_SPEC);
 
         const char* curname = CHAR(STRING_ELT(names, i));
         if  (!strcmp(curname, "skip_word_none")) {
-            bool val = ci__prepare_arg_logical_1_notNA(VECTOR_ELT(opts_brkiter, i), "skip_word_none");
+            bool val = ci__prepare_arg_logical_1_notNA(
+                VECTOR_ELT(opts_brkiter, i), "skip_word_none", &warnings
+            );
             if (val) {
                 tmp_rules[tmp_size++] = UBRK_WORD_NONE;
                 tmp_rules[tmp_size++] = UBRK_WORD_NONE_LIMIT;
             }
         } else if  (!strcmp(curname, "skip_word_number")) {
-            bool val = ci__prepare_arg_logical_1_notNA(VECTOR_ELT(opts_brkiter, i), "skip_word_number");
+            bool val = ci__prepare_arg_logical_1_notNA(
+                VECTOR_ELT(opts_brkiter, i), "skip_word_number", &warnings
+            );
             if (val) {
                 tmp_rules[tmp_size++] = UBRK_WORD_NUMBER;
                 tmp_rules[tmp_size++] = UBRK_WORD_NUMBER_LIMIT;
             }
         } else if  (!strcmp(curname, "skip_word_letter")) {
-            bool val = ci__prepare_arg_logical_1_notNA(VECTOR_ELT(opts_brkiter, i), "skip_word_letter");
+            bool val = ci__prepare_arg_logical_1_notNA(
+                VECTOR_ELT(opts_brkiter, i), "skip_word_letter", &warnings
+            );
             if (val) {
                 tmp_rules[tmp_size++] = UBRK_WORD_LETTER;
                 tmp_rules[tmp_size++] = UBRK_WORD_LETTER_LIMIT;
             }
         } else if  (!strcmp(curname, "skip_word_kana")) {
-            bool val = ci__prepare_arg_logical_1_notNA(VECTOR_ELT(opts_brkiter, i), "skip_word_kana");
+            bool val = ci__prepare_arg_logical_1_notNA(
+                VECTOR_ELT(opts_brkiter, i), "skip_word_kana", &warnings
+            );
             if (val) {
                 tmp_rules[tmp_size++] = UBRK_WORD_KANA;
                 tmp_rules[tmp_size++] = UBRK_WORD_KANA_LIMIT;
             }
         } else if  (!strcmp(curname, "skip_word_ideo")) {
-            bool val = ci__prepare_arg_logical_1_notNA(VECTOR_ELT(opts_brkiter, i), "skip_word_ideo");
+            bool val = ci__prepare_arg_logical_1_notNA(
+                VECTOR_ELT(opts_brkiter, i), "skip_word_ideo", &warnings
+            );
             if (val) {
                 tmp_rules[tmp_size++] = UBRK_WORD_IDEO;
                 tmp_rules[tmp_size++] = UBRK_WORD_IDEO_LIMIT;
             }
         } else if  (!strcmp(curname, "skip_line_soft")) {
-            bool val = ci__prepare_arg_logical_1_notNA(VECTOR_ELT(opts_brkiter, i), "skip_line_soft");
+            bool val = ci__prepare_arg_logical_1_notNA(
+                VECTOR_ELT(opts_brkiter, i), "skip_line_soft", &warnings
+            );
             if (val) {
                 tmp_rules[tmp_size++] = UBRK_LINE_SOFT;
                 tmp_rules[tmp_size++] = UBRK_LINE_SOFT_LIMIT;
             }
         } else if  (!strcmp(curname, "skip_line_hard")) {
-            bool val = ci__prepare_arg_logical_1_notNA(VECTOR_ELT(opts_brkiter, i), "skip_line_hard");
+            bool val = ci__prepare_arg_logical_1_notNA(
+                VECTOR_ELT(opts_brkiter, i), "skip_line_hard", &warnings
+            );
             if (val) {
                 tmp_rules[tmp_size++] = UBRK_LINE_HARD;
                 tmp_rules[tmp_size++] = UBRK_LINE_HARD_LIMIT;
             }
         } else if  (!strcmp(curname, "skip_sentence_term")) {
-            bool val = ci__prepare_arg_logical_1_notNA(VECTOR_ELT(opts_brkiter, i), "skip_sentence_term");
+            bool val = ci__prepare_arg_logical_1_notNA(
+                VECTOR_ELT(opts_brkiter, i), "skip_sentence_term", &warnings
+            );
             if (val) {
                 tmp_rules[tmp_size++] = UBRK_SENTENCE_TERM;
                 tmp_rules[tmp_size++] = UBRK_SENTENCE_TERM_LIMIT;
             }
         } else if  (!strcmp(curname, "skip_sentence_sep")) {
-            bool val = ci__prepare_arg_logical_1_notNA(VECTOR_ELT(opts_brkiter, i), "skip_sentence_sep");
+            bool val = ci__prepare_arg_logical_1_notNA(
+                VECTOR_ELT(opts_brkiter, i), "skip_sentence_sep", &warnings
+            );
             if (val) {
                 tmp_rules[tmp_size++] = UBRK_SENTENCE_SEP;
                 tmp_rules[tmp_size++] = UBRK_SENTENCE_SEP_LIMIT;
@@ -261,9 +336,13 @@ void StriBrkIterOptions::setSkipRuleStatus(SEXP opts_brkiter) {
  *
  * @ version 0.4-1 (Marek Gagolewski, 2014-12-03)
  */
-void StriRuleBasedBreakIterator::setupMatcher(const char* _searchStr, R_len_t _searchLen)
+void StriRuleBasedBreakIterator::setupMatcher(
+    const char* _searchStr,
+    R_len_t _searchLen,
+    ci::DeferredWarnings& warnings
+)
 {
-    if (!rbiterator) open();
+    if (!rbiterator) open(warnings);
 
     this->searchStr = _searchStr;
     this->searchLen = _searchLen;

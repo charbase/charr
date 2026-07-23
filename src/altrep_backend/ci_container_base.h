@@ -50,8 +50,6 @@
  * @version 0.1-?? (Marek Gagolewski)
  *          removed enc array
  *
- * @version 0.2-1 (Marek Gagolewski, 2014-03-22)
- *          added sexp field
  */
 class StriContainerBase {
 
@@ -59,7 +57,6 @@ protected:
 
     R_len_t n;                 ///< number of strings (size of \code{str})
     R_len_t nrecycle;          ///< number of strings for the recycle rule (can be > \code{n})
-    SEXP sexp;                 ///<
 
 #ifndef NDEBUG
     bool isShallow;            ///< have we made only shallow copy of the strings? (=> read only)
@@ -69,7 +66,7 @@ protected:
     // StriContainerBase(StriContainerBase& container); // use default (shallow copy)
     //~StriContainerBase(); // use default
 
-    void init_Base(R_len_t n, R_len_t nrecycle, bool shallowrecycle, SEXP sexp=NULL);
+    void init_Base(R_len_t n, R_len_t nrecycle, bool shallowrecycle);
 
 
 public:

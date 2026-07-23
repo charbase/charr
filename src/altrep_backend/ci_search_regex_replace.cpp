@@ -32,6 +32,7 @@
 
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
 #include "ci_container_utf8.h"
 #include "ci_container_utf16.h"
 #include "ci_container_regex.h"
@@ -74,75 +75,121 @@ SEXP ci__replace_allfirstlast_regex(SEXP str, SEXP pattern, SEXP replacement, SE
     PROTECT(str = ci__prepare_arg_string(str, "str"));
     PROTECT(replacement = ci__prepare_arg_string(replacement, "replacement"));
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
-    StriRegexMatcherOptions pattern_opts =
-        StriContainerRegexPattern::getRegexOptions(opts_regex);
 
     STRI__ERROR_HANDLER_BEGIN(3)
-    R_len_t vectorize_length = ci__recycling_rule(true, 3, LENGTH(str), LENGTH(pattern), LENGTH(replacement));
-    StriContainerUTF16 str_cont(str, vectorize_length, false); // writable
-    StriContainerRegexPattern pattern_cont(pattern, vectorize_length, pattern_opts);
-    StriContainerUTF16 replacement_cont(replacement, vectorize_length);
-
+    StriRegexMatcherOptions pattern_opts;
+    // Deviation from stringi: keep option parsing in its copied position but
+    // queue controlled option warnings through the operation boundary.
+    charport::unwind_protect([&]() -> SEXP {
+        pattern_opts = StriContainerRegexPattern::getRegexOptions(
+            STRI__DEFERRED_WARNINGS, opts_regex
+        );
+        return R_NilValue;
+    });
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, vectorize_length));
-
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        STRI__CONTINUE_ON_EMPTY_OR_NA_PATTERN(str_cont, pattern_cont,
-                                              SET_STRING_ELT(ret, i, NA_STRING);)
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t replacement_n = ci::checked_r_len(
+        context.size(replacement), "character vectors"
+    );
+    R_len_t vectorize_length = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_length = ci__recycling_rule(
+            false, 3, str_n, pattern_n, replacement_n
+        );
+        return R_NilValue;
+    });
+    // Deviation from stringi: queue the recycling warning until regex/Reader
+    // owners, writable UTF-16 staging, and the output Builder are released.
+    if (vectorize_length > 0 &&
+            (vectorize_length % str_n != 0 ||
+             vectorize_length % pattern_n != 0 ||
+             vectorize_length % replacement_n != 0))
+        context.warn(MSG__WARN_RECYCLING_RULE);
 
-        RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
-        matcher->reset(str_cont.get(i));
+    charport::charvec::Builder builder(vectorize_length);
+    {
+        StriContainerUTF16 str_cont(
+            context, str, vectorize_length, false
+        ); // writable
+        StriContainerRegexPattern pattern_cont(
+            context, pattern, vectorize_length, pattern_opts
+        );
+        StriContainerUTF16 replacement_cont(
+            context, replacement, vectorize_length
+        );
+        std::vector<char> utf8_buffer;
 
-        UErrorCode status = U_ZERO_ERROR;
-        if (replacement_cont.isNA(i)) {
-            int m_res = matcher->find(status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-            if (m_res)
-                str_cont.setNA(i);
-            SET_STRING_ELT(ret, i, str_cont.toR(i));
-            continue;
-        }
+        for (R_len_t i = pattern_cont.vectorize_init();
+                i != pattern_cont.vectorize_end();
+                i = pattern_cont.vectorize_next(i))
+        {
+            STRI__CONTINUE_ON_EMPTY_OR_NA_PATTERN(str_cont, pattern_cont,
+                                                  builder.set_na(i);)
 
-        if (type == 0) { // all
-            str_cont.set(i, matcher->replaceAll(replacement_cont.get(i), status));
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-        }
-        else if (type == 1) { // first
-            str_cont.set(i, matcher->replaceFirst(replacement_cont.get(i), status));
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-        }
-        else if (type == -1) { // end
-            int start = -1;
-            int end = -1;
-            while (1) { // find last match
+            RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
+            matcher->reset(str_cont.get(i));
+
+            UErrorCode status = U_ZERO_ERROR;
+            if (replacement_cont.isNA(i)) {
                 int m_res = matcher->find(status);
                 STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                if (!m_res) break;
-                start = matcher->start(status);
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                end = matcher->end(status);
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                if (m_res)
+                    str_cont.setNA(i);
+                if (str_cont.isNA(i))
+                    builder.set_na(i);
+                else
+                    ci::builder_set(builder, i, str_cont.get(i), utf8_buffer);
+                continue;
             }
-            if (start >= 0) {
-                matcher->find(start, status); // go back
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                UnicodeString out;
-                matcher->appendReplacement(out, replacement_cont.get(i), status);
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                out.append(str_cont.get(i), end, str_cont.get(i).length()-end);
-                str_cont.set(i, out);
-            }
-        }
-        else {
-            throw StriException(MSG__INTERNAL_ERROR);
-        }
 
-        SET_STRING_ELT(ret, i, str_cont.toR(i));
+            if (type == 0) { // all
+                str_cont.set(i, matcher->replaceAll(replacement_cont.get(i), status));
+                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            }
+            else if (type == 1) { // first
+                str_cont.set(i, matcher->replaceFirst(replacement_cont.get(i), status));
+                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            }
+            else if (type == -1) { // end
+                int start = -1;
+                int end = -1;
+                while (1) { // find last match
+                    int m_res = matcher->find(status);
+                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                    if (!m_res) break;
+                    start = matcher->start(status);
+                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                    end = matcher->end(status);
+                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                }
+                if (start >= 0) {
+                    matcher->find(start, status); // go back
+                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                    UnicodeString out;
+                    matcher->appendReplacement(out, replacement_cont.get(i), status);
+                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                    out.append(str_cont.get(i), end, str_cont.get(i).length()-end);
+                    str_cont.set(i, out);
+                }
+            }
+            else {
+                throw StriException(MSG__INTERNAL_ERROR);
+            }
+
+            ci::builder_set(builder, i, str_cont.get(i), utf8_buffer);
+        }
     }
 
+    STRI__PROTECT(ret = builder.to_sexp());
+    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -173,76 +220,139 @@ SEXP ci__replace_all_regex_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
 {   // version beta
     PROTECT(str          = ci__prepare_arg_string(str, "str"));
 
+    STRI__ERROR_HANDLER_BEGIN(1)
+    SEXP ret;
+    {
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+
     // if str_n is 0, then return an empty vector
-    R_len_t str_n = LENGTH(str);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
     if (str_n <= 0) {
-        UNPROTECT(1);
-        return ci__vector_empty_strings(0);
-    }
-
-    PROTECT(pattern      = ci__prepare_arg_string(pattern, "pattern"));
-    PROTECT(replacement  = ci__prepare_arg_string(replacement, "replacement"));
-    StriRegexMatcherOptions pattern_opts =
-        StriContainerRegexPattern::getRegexOptions(opts_regex);
-
-    R_len_t pattern_n = LENGTH(pattern);
-    R_len_t replacement_n = LENGTH(replacement);
-    if (pattern_n < replacement_n || pattern_n <= 0 || replacement_n <= 0) {
-        UNPROTECT(3);
-        Rf_error(MSG__WARN_RECYCLING_RULE2);
-    }
-    else if (pattern_n % replacement_n != 0)
-        Rf_warning(MSG__WARN_RECYCLING_RULE);
-
-    if (pattern_n == 1) {// this will be much faster:
-        SEXP ret;
-        PROTECT(ret = ci__replace_allfirstlast_regex(str, pattern, replacement, opts_regex, 0));
-        UNPROTECT(4);
+        charport::charvec::Builder builder(0);
+        STRI__PROTECT(ret = builder.to_sexp());
+        STRI__UNPROTECT_ALL
         return ret;
     }
 
-    STRI__ERROR_HANDLER_BEGIN(3)
-    StriContainerUTF16 str_cont(str, str_n, false); // writable
-    StriContainerRegexPattern pattern_cont(pattern, pattern_n, pattern_opts);
-    StriContainerUTF16 replacement_cont(replacement, pattern_n);
+    // Deviation from stringi: lazy preparation now runs inside the C++
+    // boundary, so queue its controlled warnings with the operation.
+    STRI__PROTECT(pattern = charport::unwind_protect([&]() -> SEXP {
+        return ci__prepare_arg_string(
+            pattern, "pattern", true, &STRI__DEFERRED_WARNINGS
+        );
+    }));
+    STRI__PROTECT(replacement = charport::unwind_protect([&]() -> SEXP {
+        return ci__prepare_arg_string(
+            replacement, "replacement", true,
+            &STRI__DEFERRED_WARNINGS
+        );
+    }));
+    StriRegexMatcherOptions pattern_opts;
+    charport::unwind_protect([&]() -> SEXP {
+        pattern_opts = StriContainerRegexPattern::getRegexOptions(
+            STRI__DEFERRED_WARNINGS, opts_regex
+        );
+        return R_NilValue;
+    });
 
-    for (R_len_t i = 0; i<pattern_n; ++i)
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t replacement_n = ci::checked_r_len(
+        context.size(replacement), "character vectors"
+    );
+    // Deviation from stringi: a controlled length error crosses the outer
+    // C++ boundary before it is signalled to R.
+    charport::unwind_protect([&]() -> SEXP {
+        if (pattern_n < replacement_n || pattern_n <= 0 || replacement_n <= 0)
+            throw StriException(MSG__WARN_RECYCLING_RULE2);
+        return R_NilValue;
+    });
+    // Deviation from stringi: queue this sequential-substitution recycling
+    // warning until regex/Reader owners and the output Builder are released.
+    if (pattern_n % replacement_n != 0)
+        context.warn(MSG__WARN_RECYCLING_RULE);
+
+    if (pattern_n == 1) {// this will be much faster:
+        // Deviation from stringi: the delegated scalar-pattern path parses
+        // options again. Replay this call's queued diagnostics before entering
+        // it, while no Reader, regex, or output owner is active, to preserve
+        // stringi's two-parser warning order (and warn=2 short-circuit).
+        context.emitWarnings();
+        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+            return ci__replace_allfirstlast_regex(
+                str, pattern, replacement, opts_regex, 0
+            );
+        }));
+        STRI__UNPROTECT_ALL
+        return ret;
+    }
+
+    charport::charvec::Builder builder(str_n);
     {
-        if (pattern_cont.isNA(i)) {
-            STRI__UNPROTECT_ALL
-            return ci__vector_NA_strings(str_n);
-        }
-        else if (pattern_cont.get(i).length() <= 0) {
-            Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
-            STRI__UNPROTECT_ALL
-            return ci__vector_NA_strings(str_n);
-        }
+        StriContainerUTF16 str_cont(context, str, str_n, false); // writable
+        StriContainerRegexPattern pattern_cont(
+            context, pattern, pattern_n, pattern_opts
+        );
+        StriContainerUTF16 replacement_cont(
+            context, replacement, pattern_n
+        );
+        bool return_all_na = false;
 
-        RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
-
-        for (R_len_t j = 0; j<str_n; ++j) {
-            if (str_cont.isNA(j)) continue;
-
-            matcher->reset(str_cont.get(j));
-
-            UErrorCode status = U_ZERO_ERROR;
-
-            if (replacement_cont.isNA(i)) {
-                int m_res = matcher->find(status);
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                if (m_res)
-                    str_cont.setNA(j);
-                continue;
+        for (R_len_t i = 0; i<pattern_n; ++i)
+        {
+            if (pattern_cont.isNA(i)) {
+                // Deviation from stringi: stage the all-NA return until the
+                // Reader-backed containers have been destroyed.
+                return_all_na = true;
+                break;
+            }
+            else if (pattern_cont.get(i).length() <= 0) {
+                // StriContainerRegexPattern already queued stringi's first
+                // warning; preserve this sequential path's second warning.
+                context.warn(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+                return_all_na = true;
+                break;
             }
 
+            RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
 
-            str_cont.set(j, matcher->replaceAll(replacement_cont.get(i), status));
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            for (R_len_t j = 0; j<str_n; ++j) {
+                if (str_cont.isNA(j)) continue;
+
+                matcher->reset(str_cont.get(j));
+
+                UErrorCode status = U_ZERO_ERROR;
+
+                if (replacement_cont.isNA(i)) {
+                    int m_res = matcher->find(status);
+                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                    if (m_res)
+                        str_cont.setNA(j);
+                    continue;
+                }
+
+                str_cont.set(j, matcher->replaceAll(replacement_cont.get(i), status));
+                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            }
+        }
+
+        std::vector<char> utf8_buffer;
+        for (R_len_t j=0; j<str_n; ++j) {
+            if (return_all_na || str_cont.isNA(j))
+                builder.set_na(j);
+            else
+                ci::builder_set(builder, j, str_cont.get(j), utf8_buffer);
         }
     }
 
+    STRI__PROTECT(ret = builder.to_sexp());
+    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
-    return str_cont.toR();
+    return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
 }
 
@@ -343,16 +453,18 @@ SEXP ci_replace_last_regex(SEXP str, SEXP pattern, SEXP replacement, SEXP opts_r
  * Converts a single gsub to ci_replace replacement string
  *
  * @param x
- * @return a single R string
+ * @return UTF-8 bytes
  */
-SEXP ci__replace_rstr_1(const String8& _x)
+std::string ci__replace_rstr_1(const String8& _x)
 {
     STRI_ASSERT(!_x.isNA());
     R_len_t n = _x.length();
-    const char* x = _x.c_str();
+    const char* x = _x.data();
 
     std::string buf;
-    buf.reserve(n+1);  // whatever
+    // Deviation from stringi: widen before adding so a maximum-length input
+    // cannot overflow R_len_t while calculating the reserve size.
+    buf.reserve(static_cast<size_t>(n)+1);  // whatever
 
     R_len_t i=0;
     while (i < n) {
@@ -386,7 +498,7 @@ SEXP ci__replace_rstr_1(const String8& _x)
         i++;
     }
 
-    return Rf_mkCharLenCE(buf.data(), buf.size(), CE_UTF8);
+    return buf;
 }
 
 
@@ -404,34 +516,46 @@ SEXP ci__replace_rstr_1(const String8& _x)
 SEXP ci_replace_rstr(SEXP x)
 {
     PROTECT(x = ci__prepare_arg_string(x, "x"));
-    R_len_t vectorize_length = LENGTH(x);
-    if (vectorize_length <= 0) {
-        UNPROTECT(1);
-        return Rf_allocVector(STRSXP, 0);
-    }
 
     STRI__ERROR_HANDLER_BEGIN(1)
-    StriContainerUTF8 x_cont(x, vectorize_length);
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, vectorize_length));
+    {
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t vectorize_length = ci::checked_r_len(
+        context.size(x), "character vectors"
+    );
+    charport::charvec::Builder builder(vectorize_length);
+    {
+        StriContainerUTF8 x_cont(context, x, vectorize_length);
 
-    for (
-        R_len_t i = x_cont.vectorize_init();
-        i != x_cont.vectorize_end();
-        i = x_cont.vectorize_next(i)
-    ) {
-        if (x_cont.isNA(i)) {
-            SET_STRING_ELT(ret, i, NA_STRING);
-            continue;
+        for (
+            R_len_t i = x_cont.vectorize_init();
+            i != x_cont.vectorize_end();
+            i = x_cont.vectorize_next(i)
+        ) {
+            if (x_cont.isNA(i)) {
+                builder.set_na(i);
+                continue;
+            }
+
+            std::string out = ci__replace_rstr_1(x_cont.get(i));
+            // Deviation from stringi: reject expanded output before narrowing
+            // its length to the R string-length type.
+            if (out.size() > static_cast<size_t>(R_LEN_T_MAX))
+                throw std::length_error(
+                    "replacement string exceeds R's string length limit"
+                );
+            const char* out_data = out.empty() ? "" : out.data();
+            ci::builder_set(
+                builder, i, out_data, static_cast<int>(out.size()),
+                cetype_ext_t::CE_ASCII_OR_UTF8
+            );
         }
-
-        SEXP out;
-        STRI__PROTECT(out = ci__replace_rstr_1(x_cont.get(i)));
-        SET_STRING_ELT(ret, i, out);
-        STRI__UNPROTECT(1);
     }
 
+    STRI__PROTECT(ret = builder.to_sexp());
+    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)

@@ -33,8 +33,10 @@
 
 #include "ci_stringi.h"
 #include "ci_container_utf16.h"
-#include "ci_string8buf.h"
 #include "ci_ucnv.h"
+
+#include <memory>
+#include <utility>
 
 
 /**
@@ -42,9 +44,8 @@
  *
  */
 StriContainerUTF16::StriContainerUTF16()
-    : StriContainerBase()
+    : StriContainerBase(), str()
 {
-    this->str = NULL;
 }
 
 
@@ -55,11 +56,11 @@ StriContainerUTF16::StriContainerUTF16()
  * @param nrecycle number of strings
  */
 StriContainerUTF16::StriContainerUTF16(R_len_t _nrecycle)
+    : StriContainerBase(), str()
 {
-    this->str = NULL;
     this->init_Base(_nrecycle, _nrecycle, false);
     if (this->n > 0) {
-        this->str = new UnicodeString[this->n];
+        this->str.reset(new UnicodeString[this->n]);
         STRI_ASSERT(this->str);
         if (!this->str) throw StriException(MSG__MEM_ALLOC_ERROR_WITH_SIZE,
                                                 this->n*sizeof(UnicodeString));
@@ -77,24 +78,26 @@ StriContainerUTF16::StriContainerUTF16(R_len_t _nrecycle)
  * @version 1.0.6 (Marek Gagolewski, 2017-05-25)
  *    #270 latin-1 is windows-1252 on Windows
  */
-StriContainerUTF16::StriContainerUTF16(SEXP rstr, R_len_t _nrecycle, bool _shallowrecycle)
+StriContainerUTF16::StriContainerUTF16(
+    ci::ReaderContext& context, SEXP rstr,
+    R_len_t _nrecycle, bool _shallowrecycle
+) : StriContainerBase(), str()
 {
-    this->str = NULL;
-#ifndef NDEBUG
-    if (!Rf_isString(rstr))
-        throw StriException("DEBUG: !Rf_isString in StriContainerUTF16::StriContainerUTF16(SEXP rstr)");
-#endif
-    R_len_t nrstr = LENGTH(rstr);
-    this->init_Base(nrstr, _nrecycle, _shallowrecycle); // calling LENGTH(rstr) fails on constructor call
+    R_len_t nrstr = ci::checked_r_len(
+        context.size(rstr), "character vectors"
+    );
+    this->init_Base(nrstr, _nrecycle, _shallowrecycle);
 
     if (this->n == 0)
         return; /* nothing more to do */
 
     STRI_ASSERT(this->n > 0);
-    this->str = new UnicodeString[this->n];
-    STRI_ASSERT(this->str);
-    if (!this->str) throw StriException(MSG__MEM_ALLOC_ERROR_WITH_SIZE,
-                                            this->n*sizeof(UnicodeString));
+    std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(rstr);
+    const charport::StrViews& views = borrow->views();
+
+    // Deviation from stringi: Reader access and conversion can throw, so keep
+    // the partially initialized array under RAII until construction succeeds.
+    this->str.reset(new UnicodeString[this->n]);
     for (R_len_t i=0; i<this->n; ++i)
         this->str[i].setToBogus(); // in case it fails during conversion (this is NA)
 
@@ -112,8 +115,8 @@ StriContainerUTF16::StriContainerUTF16(SEXP rstr, R_len_t _nrecycle, bool _shall
     StriUcnv ucnvNative(NULL);
 
     for (R_len_t i=0; i<nrstr; ++i) {
-        SEXP curs = STRING_ELT(rstr, i);
-        if (curs == NA_STRING) {
+        const charport::StrView curs = views[i];
+        if (curs.is_na()) {
             continue; // keep NA
         }
 
@@ -146,45 +149,54 @@ StriContainerUTF16::StriContainerUTF16(SEXP rstr, R_len_t _nrecycle, bool _shall
         //     // this->str[i].releaseBuffer(curs_n);
         // }
         // else
-        if (IS_ASCII(curs) || IS_UTF8(curs)) {
+        if (curs.enc == cetype_ext_t::CE_UTF8 ||
+                curs.enc == cetype_ext_t::CE_ASCII_OR_UTF8 ||
+                curs.enc == cetype_ext_t::CE_ASCII) {
             // using ucnvUTF8 is slower for UTF-8
             // the same is done for native encoding && ucnvNative_isUTF8
 
             // this is slower if IS_ASCII than ucnvASCII, but doesn't limit
             // the input string length to 858993458 characters (#487)
-            this->str[i].setTo(UnicodeString::fromUTF8(CHAR(curs)));
+            this->str[i].setTo(
+                UnicodeString::fromUTF8(StringPiece(curs.ptr, curs.len))
+            );
         }
-        else if (IS_LATIN1(curs)) {
+        else if (curs.enc == cetype_ext_t::CE_LATIN1) {
             UConverter* ucnv = ucnvLatin1.getConverter();
             UErrorCode status = U_ZERO_ERROR;
             this->str[i].setTo(
-                UnicodeString((const char*)CHAR(curs), (int32_t)LENGTH(curs), ucnv, status)
+                UnicodeString(curs.ptr, curs.len, ucnv, status)
             );
             STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
         }
-        else if (IS_BYTES(curs)) {
+        else if (curs.enc == cetype_ext_t::CE_BYTES) {
             throw StriException(MSG__BYTESENC);
         }
-        else {
+        else if (curs.enc == cetype_ext_t::CE_NATIVE) {
             // an "unknown" (native) encoding may be set to UTF-8 (speedup)
             if (ucnvNative.isUTF8()) {
                 // UTF-8
-                this->str[i].setTo(UnicodeString::fromUTF8(CHAR(curs)));
+                this->str[i].setTo(
+                    UnicodeString::fromUTF8(StringPiece(curs.ptr, curs.len))
+                );
             }
             else {
                 UConverter* ucnv = ucnvNative.getConverter();
                 UErrorCode status = U_ZERO_ERROR;
                 this->str[i].setTo(
-                    UnicodeString((const char*)CHAR(curs), (int32_t)LENGTH(curs), ucnv, status)
+                    UnicodeString(curs.ptr, curs.len, ucnv, status)
                 );
                 STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
             }
+        }
+        else {
+            throw StriException("unknown charport string encoding");
         }
     }
 
     if (!_shallowrecycle) {
         for (R_len_t i=nrstr; i<this->n; ++i) {
-            this->str[i].setTo(str[i%nrstr]);
+            this->str[i].setTo(this->str[i%nrstr]);
         }
     }
 }
@@ -195,19 +207,13 @@ StriContainerUTF16::StriContainerUTF16(SEXP rstr, R_len_t _nrecycle, bool _shall
  *  @param container source
  */
 StriContainerUTF16::StriContainerUTF16(StriContainerUTF16& container)
-    :    StriContainerBase((StriContainerBase&)container)
+    : StriContainerBase((StriContainerBase&)container), str()
 {
     if (container.str) {
-        this->str = new UnicodeString[this->n];
-        STRI_ASSERT(this->str);
-        if (!this->str) throw StriException(MSG__MEM_ALLOC_ERROR_WITH_SIZE,
-                                                this->n*sizeof(UnicodeString));
+        this->str.reset(new UnicodeString[this->n]);
         for (int i=0; i<this->n; ++i) {
             this->str[i].setTo(container.str[i]);
         }
-    }
-    else {
-        this->str = NULL;
     }
 }
 
@@ -218,21 +224,22 @@ StriContainerUTF16::StriContainerUTF16(StriContainerUTF16& container)
  */
 StriContainerUTF16& StriContainerUTF16::operator=(StriContainerUTF16& container)
 {
-    this->~StriContainerUTF16();
-    (StriContainerBase&) (*this) = (StriContainerBase&)container;
+    if (this == &container)
+        return *this;
 
+    std::unique_ptr<UnicodeString[]> new_str;
     if (container.str) {
-        this->str = new UnicodeString[this->n];
-        STRI_ASSERT(this->str);
-        if (!this->str) throw StriException(MSG__MEM_ALLOC_ERROR_WITH_SIZE,
-                                                this->n*sizeof(UnicodeString));
-        for (int i=0; i<this->n; ++i) {
-            this->str[i].setTo(container.str[i]);
+        new_str.reset(new UnicodeString[container.n]);
+        for (int i=0; i<container.n; ++i) {
+            new_str[i].setTo(container.str[i]);
         }
     }
-    else {
-        this->str = NULL;
-    }
+
+    // Deviation from stringi: replace the old array without ending this
+    // object's lifetime through an explicit destructor call.
+    this->str.reset();
+    (StriContainerBase&) (*this) = (StriContainerBase&)container;
+    this->str = std::move(new_str);
     return *this;
 }
 
@@ -240,87 +247,7 @@ StriContainerUTF16& StriContainerUTF16::operator=(StriContainerUTF16& container)
 /** Destructor
  *
  */
-StriContainerUTF16::~StriContainerUTF16()
-{
-    if (str) {
-        delete [] str;
-        str = NULL;
-    }
-}
-
-
-/** Export character vector to R
- *
- *  THE OUTPUT IS ALWAYS IN UTF-8
- *
- *  Recycle rule is applied, so length == nrecycle
- *
- * @version 0.1-?? (Marek Gagolewski)
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-03-23)
- *          using 1 tmpbuf + u_strToUTF8 for slightly better performance
- *
- * @return STRSXP
- */
-SEXP StriContainerUTF16::toR() const
-{
-    R_len_t outbufsize = 0;
-    for (R_len_t i=0; i<nrecycle; ++i) {
-        if (!str[i%n].isBogus()) {
-            R_len_t thissize = str[i%n].length();
-            if (thissize > outbufsize)
-                outbufsize = thissize;
-        }
-    }
-    // One UChar -- <= U+FFFF  -> 1-3 bytes UTF8
-    // Two UChars -- >=U+10000 ->   4 bytes UTF8
-    outbufsize = UCNV_GET_MAX_BYTES_FOR_STRING(outbufsize, 3);
-    String8buf outbuf(outbufsize);
-
-    SEXP ret;
-    PROTECT(ret = Rf_allocVector(STRSXP, nrecycle));
-
-    UErrorCode status = U_ZERO_ERROR;
-    for (R_len_t i=0; i<nrecycle; ++i) {
-        if (str[i%n].isBogus())
-            SET_STRING_ELT(ret, i, NA_STRING);
-        else {
-            int outrealsize = 0;
-            u_strToUTF8(outbuf.data(), outbufsize, &outrealsize,
-                        str[i%n].getBuffer(), str[i%n].length(), &status);
-            STRI__CHECKICUSTATUS_THROW(status, {UNPROTECT(1);})
-            SET_STRING_ELT(ret, i,
-                           Rf_mkCharLenCE(outbuf.data(), outrealsize, (cetype_t)CE_UTF8));
-        }
-    }
-
-    UNPROTECT(1);
-    return ret;
-}
-
-
-/** Export string to R
- *
- *  THE OUTPUT IS ALWAYS IN UTF-8
- *
- *  @param i index [with recycle]
- *  @return CHARSXP
- */
-SEXP StriContainerUTF16::toR(R_len_t i) const
-{
-#ifndef NDEBUG
-    if (i < 0 || i >= nrecycle)
-        throw StriException("StriContainerUTF16::toR(): INDEX OUT OF BOUNDS");
-#endif
-
-    if (str[i%n].isBogus())
-        return NA_STRING;
-    else {
-        std::string s;
-        str[i%n].toUTF8String(s);
-        return Rf_mkCharLenCE(s.c_str(), (int)s.length(), (cetype_t)CE_UTF8);
-    }
-}
+StriContainerUTF16::~StriContainerUTF16() = default;
 
 
 /** Convert Unicode16-Char indexes to Unicode32 (code points)

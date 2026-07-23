@@ -1,7 +1,0 @@
-url: https://charport.github.io/charr/
-
-template:
-  bootstrap: 5
-  light-switch: true
-  bslib:
-    font-size-base: "0.9rem"

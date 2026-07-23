@@ -32,10 +32,13 @@
 
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
 #include "ci_container_utf8.h"
 #include "ci_container_regex.h"
 #include <deque>
+#include <stdexcept>
 #include <utility>
+#include <vector>
 using namespace std;
 
 
@@ -63,66 +66,108 @@ SEXP ci__extract_firstlast_regex(SEXP str, SEXP pattern, SEXP opts_regex, bool f
 {
     PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern")); // prepare string argument
-    R_len_t vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
-
-    StriRegexMatcherOptions pattern_opts =
-        StriContainerRegexPattern::getRegexOptions(opts_regex);
 
     UText* str_text = NULL; // may potentially be slower, but definitely is more convenient!
     STRI__ERROR_HANDLER_BEGIN(2)
-    StriContainerUTF8 str_cont(str, vectorize_length);
-    StriContainerRegexPattern pattern_cont(pattern, vectorize_length, pattern_opts);
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, vectorize_length));
-
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        STRI__CONTINUE_ON_EMPTY_OR_NA_PATTERN(str_cont, pattern_cont,
-                                              SET_STRING_ELT(ret, i, NA_STRING);)
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t vectorize_length = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_length = ci__recycling_rule(
+            false, 2, str_n, pattern_n
+        );
+        return R_NilValue;
+    });
+    // Deviation from stringi: queue the recycling warning until the regex,
+    // Reader, UText, and output Builder owners have all been released.
+    if (vectorize_length > 0 &&
+            (vectorize_length % str_n != 0 ||
+             vectorize_length % pattern_n != 0))
+        context.warn(MSG__WARN_RECYCLING_RULE);
 
-        UErrorCode status = U_ZERO_ERROR;
-        RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
-        str_text = utext_openUTF8(str_text, str_cont.get(i).c_str(), str_cont.get(i).length(), &status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+    StriRegexMatcherOptions pattern_opts;
+    // Deviation from stringi: preserve recycling-before-options order while
+    // routing option-parser R unwinds through the common error boundary.
+    charport::unwind_protect([&]() -> SEXP {
+        pattern_opts = StriContainerRegexPattern::getRegexOptions(
+            STRI__DEFERRED_WARNINGS, opts_regex
+        );
+        return R_NilValue;
+    });
 
-        int m_start = -1;
-        int m_end = -1;
-        int m_res;
-        matcher->reset(str_text);
-        m_res = (int)matcher->find(status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-        if (m_res) { // find first match
-            m_start = (int)matcher->start(status); // The **native** position in the input string :-)
+    charport::charvec::Builder output(vectorize_length);
+    {
+        StriContainerUTF8 str_cont(context, str, vectorize_length);
+        StriContainerRegexPattern pattern_cont(
+            context, pattern, vectorize_length, pattern_opts
+        );
+
+        for (R_len_t i = pattern_cont.vectorize_init();
+                i != pattern_cont.vectorize_end();
+                i = pattern_cont.vectorize_next(i))
+        {
+            STRI__CONTINUE_ON_EMPTY_OR_NA_PATTERN(
+                str_cont, pattern_cont, output.set_na(i);
+            )
+
+            UErrorCode status = U_ZERO_ERROR;
+            RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
+            str_text = utext_openUTF8(
+                str_text, str_cont.get(i).data(),
+                str_cont.get(i).length(), &status
+            );
             STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-            m_end   = (int)matcher->end(status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-        }
-        else {
-            SET_STRING_ELT(ret, i, NA_STRING);
-            continue;
-        }
 
-        if (!first) { // continue searching
-            while (1) {
-                m_res = (int)matcher->find(status);
+            int m_start = -1;
+            int m_end = -1;
+            int m_res;
+            matcher->reset(str_text);
+            m_res = (int)matcher->find(status);
+            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            if (m_res) { // find first match
+                m_start = (int)matcher->start(status); // The **native** position in the input string :-)
                 STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                if (!m_res) break;
-                m_start = (int)matcher->start(status);
                 m_end   = (int)matcher->end(status);
                 STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
             }
+            else {
+                output.set_na(i);
+                continue;
+            }
+
+            if (!first) { // continue searching
+                while (1) {
+                    m_res = (int)matcher->find(status);
+                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                    if (!m_res) break;
+                    m_start = (int)matcher->start(status);
+                    m_end   = (int)matcher->end(status);
+                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                }
+            }
+
+            ci::builder_set(
+                output, i, str_cont.get(i).data()+m_start,
+                m_end-m_start, cetype_ext_t::CE_ASCII_OR_UTF8
+            );
         }
 
-        SET_STRING_ELT(ret, i, Rf_mkCharLenCE(str_cont.get(i).c_str()+m_start, m_end-m_start, CE_UTF8));
+        if (str_text) {
+            utext_close(str_text);
+            str_text = NULL;
+        }
     }
 
-    if (str_text) {
-        utext_close(str_text);
-        str_text = NULL;
+    STRI__PROTECT(ret = output.to_sexp());
     }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(if (str_text) utext_close(str_text);)
@@ -190,85 +235,218 @@ SEXP ci_extract_last_regex(SEXP str, SEXP pattern, SEXP opts_regex)
  */
 SEXP ci_extract_all_regex(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_match, SEXP opts_regex)
 {
-    StriRegexMatcherOptions pattern_opts =
-        StriContainerRegexPattern::getRegexOptions(opts_regex);
-    bool omit_no_match1 = ci__prepare_arg_logical_1_notNA(omit_no_match, "omit_no_match");
-    PROTECT(simplify = ci__prepare_arg_logical_1(simplify, "simplify"));
-    PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
-    PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern")); // prepare string argument
-    R_len_t vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
-
     UText* str_text = NULL; // may potentially be slower, but definitely is more convenient!
-    STRI__ERROR_HANDLER_BEGIN(3)
-    StriContainerUTF8 str_cont(str, vectorize_length);
-    StriContainerRegexPattern pattern_cont(pattern, vectorize_length, pattern_opts);
-
+    STRI__ERROR_HANDLER_BEGIN(0)
+    // Deviation from stringi: begin the C++ boundary at the copied option-
+    // parsing position so its controlled warnings can join the operation queue.
+    StriRegexMatcherOptions pattern_opts;
+    charport::unwind_protect([&]() -> SEXP {
+        pattern_opts = StriContainerRegexPattern::getRegexOptions(
+            STRI__DEFERRED_WARNINGS, opts_regex
+        );
+        return R_NilValue;
+    });
+    bool omit_no_match1 = false;
+    charport::unwind_protect([&]() -> SEXP {
+        omit_no_match1 = ci__prepare_arg_logical_1_notNA(
+            omit_no_match, "omit_no_match", &STRI__DEFERRED_WARNINGS
+        );
+        return R_NilValue;
+    });
+    STRI__PROTECT(simplify = charport::unwind_protect([&]() -> SEXP {
+        return ci__prepare_arg_logical_1(
+            simplify, "simplify", &STRI__DEFERRED_WARNINGS
+        );
+    }));
+    STRI__PROTECT(str = charport::unwind_protect([&]() -> SEXP {
+        return ci__prepare_arg_string(
+            str, "str", true, &STRI__DEFERRED_WARNINGS
+        );
+    }));
+    STRI__PROTECT(pattern = charport::unwind_protect([&]() -> SEXP {
+        return ci__prepare_arg_string(
+            pattern, "pattern", true, &STRI__DEFERRED_WARNINGS
+        );
+    }));
+    const int simplify1 = LOGICAL_RO(simplify)[0];
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(VECSXP, vectorize_length));
-
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        STRI__CONTINUE_ON_EMPTY_OR_NA_PATTERN(str_cont, pattern_cont,
-                                              SET_VECTOR_ELT(ret, i, ci__vector_NA_strings(1));)
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t vectorize_length = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_length = ci__recycling_rule(
+            false, 2, str_n, pattern_n
+        );
+        return R_NilValue;
+    });
+    // Deviation from stringi: queue the recycling warning until the regex,
+    // Reader, UText, Builder, Store, and result-staging owners are gone.
+    if (vectorize_length > 0 &&
+            (vectorize_length % str_n != 0 ||
+             vectorize_length % pattern_n != 0))
+        context.warn(MSG__WARN_RECYCLING_RULE);
 
-        UErrorCode status = U_ZERO_ERROR;
-        RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
-        str_text = utext_openUTF8(str_text, str_cont.get(i).c_str(), str_cont.get(i).length(), &status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+    vector<charport::charvec::Store> stores;
+    stores.reserve(static_cast<size_t>(vectorize_length));
+    for (R_len_t i=0; i<vectorize_length; ++i)
+        stores.push_back(charport::charvec::Store(0, 0));
+    {
+        StriContainerUTF8 str_cont(context, str, vectorize_length);
+        StriContainerRegexPattern pattern_cont(
+            context, pattern, vectorize_length, pattern_opts
+        );
+        charport::charvec::Builder builder(0);
 
-        matcher->reset(str_text);
+        for (R_len_t i = pattern_cont.vectorize_init();
+                i != pattern_cont.vectorize_end();
+                i = pattern_cont.vectorize_next(i))
+        {
+            charport::charvec::Store& current = stores[
+                static_cast<size_t>(i)
+            ];
+            STRI__CONTINUE_ON_EMPTY_OR_NA_PATTERN(
+                str_cont, pattern_cont,
+                current = charport::charvec::Store::scalar(
+                    nullptr, 0, cetype_ext_t::CE_NA
+                );
+            )
 
-        deque< pair<R_len_t, R_len_t> > occurrences;
-        int m_res;
-        while (1) {
-            m_res = (int)matcher->find(status);
+            UErrorCode status = U_ZERO_ERROR;
+            RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
+            str_text = utext_openUTF8(
+                str_text, str_cont.get(i).data(),
+                str_cont.get(i).length(), &status
+            );
             STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-            if (!m_res) break;
 
-            occurrences.push_back(pair<R_len_t, R_len_t>(
-                                      (R_len_t)matcher->start(status), (R_len_t)matcher->end(status)
-                                  ));
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            matcher->reset(str_text);
+
+            deque< pair<R_len_t, R_len_t> > occurrences;
+            int m_res;
+            while (1) {
+                m_res = (int)matcher->find(status);
+                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                if (!m_res) break;
+
+                occurrences.push_back(pair<R_len_t, R_len_t>(
+                                          (R_len_t)matcher->start(status), (R_len_t)matcher->end(status)
+                                      ));
+                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            }
+
+            R_len_t noccurrences = (R_len_t)occurrences.size();
+            if (noccurrences <= 0) {
+                if (!omit_no_match1)
+                    current = charport::charvec::Store::scalar(
+                        nullptr, 0, cetype_ext_t::CE_NA
+                    );
+                continue;
+            }
+
+            const char* str_cur_s = str_cont.get(i).data();
+            if (noccurrences == 1) {
+                const pair<R_len_t, R_len_t>& curo = occurrences.front();
+                const char* value = str_cur_s+curo.first;
+                const size_t length = static_cast<size_t>(
+                    curo.second-curo.first
+                );
+                current = ci::scalar_store(
+                    value, length, cetype_ext_t::CE_ASCII_OR_UTF8
+                );
+                continue;
+            }
+
+            builder.reset(noccurrences);
+            R_xlen_t output_i = 0;
+            deque< pair<R_len_t, R_len_t> >::iterator iter = occurrences.begin();
+            for (; iter != occurrences.end(); ++iter) {
+                pair<R_len_t, R_len_t> curo = *iter;
+                ci::builder_set(
+                    builder, output_i++, str_cur_s+curo.first,
+                    curo.second-curo.first,
+                    cetype_ext_t::CE_ASCII_OR_UTF8
+                );
+            }
+            current = builder.release_store();
         }
 
-        R_len_t noccurrences = (R_len_t)occurrences.size();
-        if (noccurrences <= 0) {
-            SET_VECTOR_ELT(ret, i, ci__vector_NA_strings(omit_no_match1?0:1));
-            continue;
+        if (str_text) {
+            utext_close(str_text);
+            str_text = NULL;
+        }
+    }
+
+    if (simplify1 != NA_LOGICAL && !simplify1) {
+        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+            return Rf_allocVector(VECSXP, vectorize_length);
+        }));
+        for (R_len_t i=0; i<vectorize_length; ++i) {
+            SEXP current;
+            STRI__PROTECT(current = charport::charvec::wrap(
+                std::move(stores[i])
+            ));
+            SET_VECTOR_ELT(ret, i, current);
+            STRI__UNPROTECT(1);
+        }
+    }
+    else {
+        size_t max_columns = 0;
+        for (R_len_t i=0; i<vectorize_length; ++i) {
+            if (stores[i].size() > max_columns)
+                max_columns = stores[i].size();
         }
 
-        const char* str_cur_s = str_cont.get(i).c_str();
-        SEXP cur_res;
-        STRI__PROTECT(cur_res = Rf_allocVector(STRSXP, noccurrences));
-        deque< pair<R_len_t, R_len_t> >::iterator iter = occurrences.begin();
-        for (R_len_t j = 0; iter != occurrences.end(); ++iter, ++j) {
-            pair<R_len_t, R_len_t> curo = *iter;
-            SET_STRING_ELT(cur_res, j,
-                           Rf_mkCharLenCE(str_cur_s+curo.first, curo.second-curo.first, CE_UTF8));
+        // Deviation from stringi: the direct Store-to-Builder matrix path
+        // checks its dimensions before narrowing or multiplying them.
+        if (max_columns > static_cast<size_t>(R_LEN_T_MAX))
+            throw length_error("matrix columns exceed R's integer limit");
+        const R_xlen_t rows = vectorize_length;
+        const R_xlen_t columns = static_cast<R_xlen_t>(max_columns);
+        if (rows > 0 && columns > R_XLEN_T_MAX/rows)
+            throw length_error("matrix length exceeds R's vector limit");
+
+        charport::charvec::Builder matrix_builder(rows*columns);
+        for (R_xlen_t i=0; i<rows; ++i) {
+            const charport::charvec::Store& current = stores[i];
+            const R_xlen_t current_size = static_cast<R_xlen_t>(
+                current.size()
+            );
+            R_xlen_t j = 0;
+            for (; j<current_size; ++j)
+                matrix_builder.set(i+j*rows, current.view(j));
+            for (; j<columns; ++j) {
+                if (simplify1 == NA_LOGICAL) {
+                    matrix_builder.set_na(i+j*rows);
+                }
+                else {
+                    ci::builder_set(
+                        matrix_builder, i+j*rows, "", 0,
+                        cetype_ext_t::CE_ASCII
+                    );
+                }
+            }
         }
-        SET_VECTOR_ELT(ret, i, cur_res);
-        STRI__UNPROTECT(1);
+
+        STRI__PROTECT(ret = matrix_builder.to_sexp());
+        charport::unwind_protect([&]() -> SEXP {
+            SEXP dim;
+            PROTECT(dim = Rf_allocVector(INTSXP, 2));
+            INTEGER(dim)[0] = vectorize_length;
+            INTEGER(dim)[1] = static_cast<R_len_t>(max_columns);
+            Rf_setAttrib(ret, R_DimSymbol, dim);
+            UNPROTECT(1);
+            return R_NilValue;
+        });
     }
 
-    if (str_text) {
-        utext_close(str_text);
-        str_text = NULL;
     }
-
-    if (LOGICAL(simplify)[0] == NA_LOGICAL || LOGICAL(simplify)[0]) {
-        SEXP robj_TRUE, robj_zero, robj_na_strings, robj_empty_strings;
-        STRI__PROTECT(robj_TRUE = Rf_ScalarLogical(TRUE));
-        STRI__PROTECT(robj_zero = Rf_ScalarInteger(0));
-        STRI__PROTECT(robj_na_strings = ci__vector_NA_strings(1));
-        STRI__PROTECT(robj_empty_strings = ci__vector_empty_strings(1));
-        STRI__PROTECT(ret = ci_list2matrix(ret, robj_TRUE,
-                                             (LOGICAL(simplify)[0] == NA_LOGICAL)?robj_na_strings
-                                             :robj_empty_strings,
-                                             robj_zero));
-    }
-
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(if (str_text) utext_close(str_text);)

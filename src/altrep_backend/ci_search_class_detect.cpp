@@ -78,45 +78,66 @@ SEXP ci_detect_charclass(SEXP str, SEXP pattern,
     int max_count_1 = ci__prepare_arg_integer_1_notNA(max_count, "max_count");
     PROTECT(str = ci__prepare_arg_string(str, "str"));
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
-    R_len_t vectorize_length =
-        ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
-
     STRI__ERROR_HANDLER_BEGIN(2)
-    StriContainerUTF8 str_cont(str, vectorize_length);
-    StriContainerCharClass pattern_cont(pattern, vectorize_length);
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(LGLSXP, vectorize_length));
+    {
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t vectorize_length = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_length = ci__recycling_rule(
+            STRI__DEFERRED_WARNINGS, 2, str_n, pattern_n
+        );
+        return R_NilValue;
+    });
+
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(LGLSXP, vectorize_length);
+    }));
     int* ret_tab = LOGICAL(ret);
 
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        if (max_count_1 == 0 || str_cont.isNA(i) || pattern_cont.isNA(i)) {
-            ret_tab[i] = NA_LOGICAL;
-            continue;
-        }
+        StriContainerUTF8 str_cont(context, str, vectorize_length);
+        StriContainerCharClass pattern_cont(
+            context, pattern, vectorize_length
+        );
 
-        const UnicodeSet* pattern_cur = &pattern_cont.get(i);
-        R_len_t     str_cur_n = str_cont.get(i).length();
-        const char* str_cur_s = str_cont.get(i).c_str();
-
-        UChar32 chr = 0;
-        ret_tab[i] = FALSE;
-        for (R_len_t j=0; j<str_cur_n; ) {
-            U8_NEXT(str_cur_s, j, str_cur_n, chr);
-            if (chr < 0) // invalid UTF-8 sequence
-                throw StriException(MSG__INVALID_UTF8);
-            if (pattern_cur->contains(chr)) {
-                ret_tab[i] = TRUE;
-                break;
+        for (R_len_t i = pattern_cont.vectorize_init();
+                i != pattern_cont.vectorize_end();
+                i = pattern_cont.vectorize_next(i))
+        {
+            if (max_count_1 == 0 || str_cont.isNA(i) || pattern_cont.isNA(i)) {
+                ret_tab[i] = NA_LOGICAL;
+                continue;
             }
+
+            const UnicodeSet* pattern_cur = &pattern_cont.get(i);
+            R_len_t     str_cur_n = str_cont.get(i).length();
+            const char* str_cur_s = str_cont.get(i).data();
+
+            UChar32 chr = 0;
+            ret_tab[i] = FALSE;
+            for (R_len_t j=0; j<str_cur_n; ) {
+                U8_NEXT(str_cur_s, j, str_cur_n, chr);
+                if (chr < 0) // invalid UTF-8 sequence
+                    throw StriException(MSG__INVALID_UTF8);
+                if (pattern_cur->contains(chr)) {
+                    ret_tab[i] = TRUE;
+                    break;
+                }
+            }
+            if (negate_1) ret_tab[i] = !ret_tab[i];
+            if (max_count_1 > 0 && ret_tab[i]) --max_count_1;
         }
-        if (negate_1) ret_tab[i] = !ret_tab[i];
-        if (max_count_1 > 0 && ret_tab[i]) --max_count_1;
     }
 
+    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)

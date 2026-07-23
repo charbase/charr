@@ -33,6 +33,7 @@
 
 #include "ci_stringi.h"
 #include "ci_container_regex.h"
+#include <cstdio>
 
 
 /**
@@ -56,8 +57,10 @@ StriContainerRegexPattern::StriContainerRegexPattern()
  * @param nrecycle extend length [vectorization]
  * @param flags regexp flags
  */
-StriContainerRegexPattern::StriContainerRegexPattern(SEXP rstr, R_len_t _nrecycle, StriRegexMatcherOptions _opts)
-    : StriContainerUTF16(rstr, _nrecycle, true)
+StriContainerRegexPattern::StriContainerRegexPattern(
+    ci::ReaderContext& context, SEXP rstr,
+    R_len_t _nrecycle, StriRegexMatcherOptions _opts
+) : StriContainerUTF16(context, rstr, _nrecycle, true)
 {
     this->lastMatcherIndex = -1;
     this->lastMatcher = NULL;
@@ -68,7 +71,9 @@ StriContainerRegexPattern::StriContainerRegexPattern(SEXP rstr, R_len_t _nrecycl
     R_len_t n = get_n();
     for (R_len_t i=0; i<n; ++i) {
         if (!isNA(i) && get(i).length() <= 0) {
-            Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+            // Deviation from stringi: R warning handlers cannot run while any
+            // Reader in the operation is active.
+            context.warn(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
         }
     }
 }
@@ -90,12 +95,17 @@ StriContainerRegexPattern::StriContainerRegexPattern(StriContainerRegexPattern& 
 
 StriContainerRegexPattern& StriContainerRegexPattern::operator=(StriContainerRegexPattern& container)
 {
-    this->~StriContainerRegexPattern();
+    if (this == &container)
+        return *this;
+
+    // Deviation from stringi: replace owned state without explicitly ending
+    // and then reusing this object's lifetime.
+    delete lastMatcher;
+    lastMatcher = NULL;
     (StriContainerUTF16&) (*this) = (StriContainerUTF16&)container;
     this->lastMatcherIndex = -1;
-    this->lastMatcher = NULL;
+    this->lastCaptureGroupNames.clear();
     this->lastCaptureGroupNamesIndex = -1;
-    //this->lastCaptureGroupNames = ...
     this->opts = container.opts;
     return *this;
 }
@@ -110,110 +120,6 @@ StriContainerRegexPattern::~StriContainerRegexPattern()
         delete lastMatcher;
         lastMatcher = NULL;
     }
-}
-
-
-/** Get names of all capture groups in the i-th regex as an R STRSXP
- * allows reusing previous
- *
- * @param i index
- * @param include_whole_match whether the first elem should be an additional ""
- * @param last_i set to -1 to recompute
- * @param ret might copy dimnames from ret[last_i]
- *
- * @version 1.7.1 (Marek Gagolewski, 2021-06-20)  #153
- */
-SEXP StriContainerRegexPattern::getCaptureGroupRNames(
-    R_len_t i  // TODO allow reuse
-) {
-    // TODO - refactor - too similar to getCaptureGroupRDimnames
-
-    if (this->isNA(i) || this->get(i).length() <= 0)
-        return R_NilValue;
-
-    const std::vector<std::string>& cgnames = this->getCaptureGroupNames(i);
-    R_len_t pattern_cur_groups = cgnames.size();
-    bool has_cgnames = false;
-    for (R_len_t j=0; j<pattern_cur_groups; ++j) {
-        if (!cgnames[j].empty()) { has_cgnames = true; break; }
-    }
-
-    if (has_cgnames) {
-        SEXP tmp;
-        PROTECT(tmp = Rf_allocVector(STRSXP, pattern_cur_groups));
-        //SET_STRING_ELT(colnames, 0, Rf_mkChar("<whole match>"));
-        for (R_len_t j=0; j<pattern_cur_groups; ++j) {
-            SET_STRING_ELT(
-                tmp,
-                j,
-                Rf_mkCharLenCE(cgnames[j].c_str(), cgnames[j].size(), CE_UTF8)
-            );
-        }
-        UNPROTECT(1);
-        return tmp;
-    }
-
-    return R_NilValue;
-}
-
-/** Get dimnames of all capture groups in the i-th regex as an R STRSXP
- * allows reusing previous
- *
- * @param i index
- * @param include_whole_match whether the first elem should be an additional ""
- * @param last_i set to -1 to recompute
- * @param ret might copy dimnames from ret[last_i]
- *
- * @version 1.7.1 (Marek Gagolewski, 2021-06-20)  #153
- */
-SEXP StriContainerRegexPattern::getCaptureGroupRDimnames(
-    R_len_t i, R_len_t last_i, SEXP ret
-) {
-    // TODO - refactor - too similar to getCaptureGroupRNames
-
-    if (this->isNA(i) || this->get(i).length() <= 0)
-        return R_NilValue;
-
-    // last dimnames could be cached here but then
-    // we'd have to use R_PreserveObject and R_ReleaseObject;
-    // R-ext states "It is less efficient than the normal protection mechanism,
-    // and should be used sparingly."
-    // If a user calls PROTECT and then UNPROTECT on retval, how does this
-    // interfere with R_PreserveObject?
-    if (last_i >= 0 && !Rf_isNull(ret) && (last_i % this->get_n()) == (i % this->get_n())) {
-        // reuse last dimnames
-        SEXP tmp, dimnames;
-        PROTECT(tmp = VECTOR_ELT(ret, last_i));
-        PROTECT(dimnames = Rf_getAttrib(tmp, R_DimNamesSymbol));
-        UNPROTECT(2);
-        return dimnames;
-    }
-    else {
-        const std::vector<std::string>& cgnames = this->getCaptureGroupNames(i);
-        R_len_t pattern_cur_groups = cgnames.size();
-        bool has_cgnames = false;
-        for (R_len_t j=0; j<pattern_cur_groups; ++j) {
-            if (!cgnames[j].empty()) { has_cgnames = true; break; }
-        }
-
-        if (has_cgnames) {
-            SEXP tmp, dimnames;
-            PROTECT(dimnames = Rf_allocVector(VECSXP, 2));
-            PROTECT(tmp = Rf_allocVector(STRSXP, pattern_cur_groups+1));
-            //SET_STRING_ELT(colnames, 0, Rf_mkChar("<whole match>"));
-            for (R_len_t j=0; j<pattern_cur_groups; ++j) {
-                SET_STRING_ELT(
-                    tmp,
-                    j+1,
-                    Rf_mkCharLenCE(cgnames[j].c_str(), cgnames[j].size(), CE_UTF8)
-                );
-            }
-            SET_VECTOR_ELT(dimnames, 1, tmp);
-            UNPROTECT(2);
-            return dimnames;
-        }
-    }
-    return R_NilValue;
 }
 
 
@@ -311,10 +217,11 @@ const std::vector<std::string>& StriContainerRegexPattern::getCaptureGroupNames(
             }
             if (c == '>') {
                 status = U_ZERO_ERROR;
-                int group = lastMatcher->pattern().groupNumberFromName(groupName.c_str(), -1, status);
+                int group = lastMatcher->pattern().groupNumberFromName(
+                    groupName.data(), static_cast<int32_t>(groupName.size()), status
+                );
                 if (U_SUCCESS(status)) {  // if not, just ignore
                     group--;  // 1-based indexing
-                    //Rprintf("%d %s\n", group, groupName.c_str());
                     STRI_ASSERT(group >= 0 && group < ngroups);
                     lastCaptureGroupNames[group] = groupName;
                 }
@@ -362,6 +269,8 @@ RegexMatcher* StriContainerRegexPattern::getMatcher(R_len_t i)
             context = NULL;
         else {
             str[i%n].toUTF8String(s);
+            // StriException's diagnostic formatter is an isolated, genuine
+            // C-string boundary. It copies this context into its own buffer.
             context = s.c_str();
         }
 
@@ -408,66 +317,110 @@ RegexMatcher* StriContainerRegexPattern::getMatcher(R_len_t i)
  * @version 1.4.7 (Marek Gagolewski, 2020-08-24)
  *    add time_limit and stack_limit
  */
-StriRegexMatcherOptions StriContainerRegexPattern::getRegexOptions(SEXP opts_regex)
+StriRegexMatcherOptions StriContainerRegexPattern::getRegexOptions(
+    ci::DeferredWarnings& warnings, SEXP opts_regex
+)
 {
     int32_t stack_limit = 0;
     int32_t time_limit = 0;
     uint32_t flags = 0;
     if (!Rf_isNull(opts_regex) && !Rf_isVectorList(opts_regex))
-        Rf_error(MSG__ARG_EXPECTED_LIST, "opts_regex"); // error() call allowed here
+        throw StriException(MSG__ARG_EXPECTED_LIST, "opts_regex");
 
     R_len_t narg = Rf_isNull(opts_regex)?0:LENGTH(opts_regex);
 
     if (narg > 0) {
 
         SEXP names = PROTECT(Rf_getAttrib(opts_regex, R_NamesSymbol));
-        if (names == R_NilValue || LENGTH(names) != narg)
-            Rf_error(MSG__REGEX_CONFIG_FAILED); // error() call allowed here
+        int nprotect = 1;
 
-        for (R_len_t i=0; i<narg; ++i) {
+        // Deviation from stringi: controlled validation and warning-aware
+        // scalar preparation throw C++, so balance local PROTECTs before this
+        // parser leaves the R unwind bridge.
+        try {
+          if (names == R_NilValue || LENGTH(names) != narg)
+              throw StriException(MSG__REGEX_CONFIG_FAILED);
+
+          for (R_len_t i=0; i<narg; ++i) {
             if (STRING_ELT(names, i) == NA_STRING)
-                Rf_error(MSG__REGEX_CONFIG_FAILED); // error() call allowed here
+                throw StriException(MSG__REGEX_CONFIG_FAILED);
 
             SEXP tmp_arg;
             PROTECT(tmp_arg = STRING_ELT(names, i));
+            ++nprotect;
             const char* curname = ci__copy_string_Ralloc(tmp_arg, "curname");  /* this is R_alloc'ed */
             UNPROTECT(1);
+            --nprotect;
 
             PROTECT(tmp_arg = VECTOR_ELT(opts_regex, i));
+            ++nprotect;
             if  (!strcmp(curname, "case_insensitive")) {
-                bool val = ci__prepare_arg_logical_1_notNA(tmp_arg, "case_insensitive");
+                bool val = ci__prepare_arg_logical_1_notNA(
+                    tmp_arg, "case_insensitive", &warnings
+                );
                 if (val) flags |= UREGEX_CASE_INSENSITIVE;
             } else if  (!strcmp(curname, "comments")) {
-                bool val = ci__prepare_arg_logical_1_notNA(tmp_arg, "comments");
+                bool val = ci__prepare_arg_logical_1_notNA(
+                    tmp_arg, "comments", &warnings
+                );
                 if (val) flags |= UREGEX_COMMENTS;
             } else if  (!strcmp(curname, "dotall")) {
-                bool val = ci__prepare_arg_logical_1_notNA(tmp_arg, "dotall");
+                bool val = ci__prepare_arg_logical_1_notNA(
+                    tmp_arg, "dotall", &warnings
+                );
                 if (val) flags |= UREGEX_DOTALL;
             } else if  (!strcmp(curname, "literal")) {
-                bool val = ci__prepare_arg_logical_1_notNA(tmp_arg, "literal");
+                bool val = ci__prepare_arg_logical_1_notNA(
+                    tmp_arg, "literal", &warnings
+                );
                 if (val) flags |= UREGEX_LITERAL;
             } else if  (!strcmp(curname, "multiline")) {
-                bool val = ci__prepare_arg_logical_1_notNA(tmp_arg, "multiline");
+                bool val = ci__prepare_arg_logical_1_notNA(
+                    tmp_arg, "multiline", &warnings
+                );
                 if (val) flags |= UREGEX_MULTILINE;
             } else if  (!strcmp(curname, "unix_lines")) {
-                bool val = ci__prepare_arg_logical_1_notNA(tmp_arg, "unix_lines");
+                bool val = ci__prepare_arg_logical_1_notNA(
+                    tmp_arg, "unix_lines", &warnings
+                );
                 if (val) flags |= UREGEX_UNIX_LINES;
             } else if  (!strcmp(curname, "uword")) {
-                bool val = ci__prepare_arg_logical_1_notNA(tmp_arg, "uword");
+                bool val = ci__prepare_arg_logical_1_notNA(
+                    tmp_arg, "uword", &warnings
+                );
                 if (val) flags |= UREGEX_UWORD;
             } else if  (!strcmp(curname, "error_on_unknown_escapes")) {
-                bool val = ci__prepare_arg_logical_1_notNA(tmp_arg, "error_on_unknown_escapes");
+                bool val = ci__prepare_arg_logical_1_notNA(
+                    tmp_arg, "error_on_unknown_escapes", &warnings
+                );
                 if (val) flags |= UREGEX_ERROR_ON_UNKNOWN_ESCAPES;
             } else if  (!strcmp(curname, "stack_limit")) {
-                stack_limit = ci__prepare_arg_integer_1_notNA(tmp_arg, "stack_limit");
+                stack_limit = ci__prepare_arg_integer_1_notNA(
+                    tmp_arg, "stack_limit", &warnings
+                );
             } else if  (!strcmp(curname, "time_limit")) {
-                time_limit = ci__prepare_arg_integer_1_notNA(tmp_arg, "time_limit");
+                time_limit = ci__prepare_arg_integer_1_notNA(
+                    tmp_arg, "time_limit", &warnings
+                );
             } else {
-                Rf_warning(MSG__INCORRECT_REGEX_OPTION, curname);
+                // Deviation from stringi: preserve option-warning order in the
+                // operation queue and emit only after all regex owners unwind.
+                char message[StriException_BUFSIZE];
+                std::snprintf(
+                    message, StriException_BUFSIZE,
+                    MSG__INCORRECT_REGEX_OPTION, curname
+                );
+                warnings.push(message);
             }
             UNPROTECT(1);
+            --nprotect;
+          }
         }
-        UNPROTECT(1); /* names */
+        catch (...) {
+            UNPROTECT(nprotect);
+            throw;
+        }
+        UNPROTECT(nprotect); /* names */
     }
 
     StriRegexMatcherOptions opts;

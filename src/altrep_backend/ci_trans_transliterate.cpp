@@ -32,10 +32,15 @@
 
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
 #include "ci_container_utf16.h"
 #include <unicode/translit.h>
 #include <unicode/strenum.h>
 #include <string>
+
+
+static const char CI__EMBEDDED_NUL_MESSAGE[] =
+    "embedded nul in string";
 
 
 /** List available transliterators
@@ -56,32 +61,39 @@ SEXP ci_trans_list()
     StringEnumeration* trans_enum = NULL;
 
     STRI__ERROR_HANDLER_BEGIN(0)
-
-    UErrorCode status = U_ZERO_ERROR;
-    trans_enum = Transliterator::getAvailableIDs(status); /*The caller should delete this object when done using it. */
-    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-    trans_enum->reset(status);
-    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-    R_len_t n = (R_len_t)trans_enum->count(status);
-    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, n));
-
-    // MG: I reckon than IDs are more readable than DisplayNames
-    for (R_len_t i=0; i<n; ++i) {
-        int len;
-        const char* cur = trans_enum->next(&len, status);
+    {
+        UErrorCode status = U_ZERO_ERROR;
+        trans_enum = Transliterator::getAvailableIDs(status); /*The caller should delete this object when done using it. */
         STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-        SET_STRING_ELT(ret, i, Rf_mkCharLenCE(cur, len, CE_UTF8));
-    }
 
-    if (trans_enum) {
-        delete trans_enum;
-        trans_enum = NULL;
+        trans_enum->reset(status);
+        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+
+        R_len_t n = (R_len_t)trans_enum->count(status);
+        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+
+        charport::charvec::Builder builder(n);
+
+        // MG: I reckon than IDs are more readable than DisplayNames
+        for (R_len_t i=0; i<n; ++i) {
+            int len;
+            const char* cur = trans_enum->next(&len, status);
+            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            ci::builder_set(
+                builder, i, cur, len,
+                cetype_ext_t::CE_ASCII_OR_UTF8
+            );
+        }
+
+        if (trans_enum) {
+            delete trans_enum;
+            trans_enum = NULL;
+        }
+
+        STRI__PROTECT(ret = builder.to_sexp());
     }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(
@@ -111,47 +123,79 @@ SEXP ci_trans_general(SEXP str, SEXP id, SEXP rules, SEXP forward)
     bool rules_val = ci__prepare_arg_logical_1_notNA(rules, "rules");
     bool forward_val = ci__prepare_arg_logical_1_notNA(forward, "forward");
 
-    R_len_t str_length = LENGTH(str);
-
     Transliterator* trans = NULL;
     STRI__ERROR_HANDLER_BEGIN(2)
-    StriContainerUTF16 id_cont(id, 1);
-    if (id_cont.isNA(0)) {
-        STRI__UNPROTECT_ALL
-        return ci__vector_NA_strings(str_length);
-    }
-
-    UErrorCode status = U_ZERO_ERROR;
-    UParseError parserr;
-    if (!rules_val)
-        trans = Transliterator::createInstance(
-            id_cont.get(0),
-            (forward_val?UTRANS_FORWARD:UTRANS_REVERSE),
-            status
+    SEXP ret;
+    {
+        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+        R_len_t str_length = ci::checked_r_len(
+            context.size(str), "character vectors"
         );
-    else
-        trans = Transliterator::createFromRules(
-            UnicodeString("Rule-based Transliterator"),  // can be anything
-            id_cont.get(0),
-            (forward_val?UTRANS_FORWARD:UTRANS_REVERSE),
-            parserr,
-            status
-        );
-    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+        charport::charvec::Builder builder(str_length);
+        std::vector<char> utf8_buffer;
+        {
+            StriContainerUTF16 id_cont(context, id, 1);
+            if (id_cont.isNA(0)) {
+                for (R_len_t i=0; i<str_length; ++i)
+                    builder.set_na(i);
+            }
+            else {
+                UErrorCode status = U_ZERO_ERROR;
+                UParseError parserr;
+                if (!rules_val)
+                    trans = Transliterator::createInstance(
+                        id_cont.get(0),
+                        (forward_val?UTRANS_FORWARD:UTRANS_REVERSE),
+                        status
+                    );
+                else
+                    trans = Transliterator::createFromRules(
+                        UnicodeString("Rule-based Transliterator"),  // can be anything
+                        id_cont.get(0),
+                        (forward_val?UTRANS_FORWARD:UTRANS_REVERSE),
+                        parserr,
+                        status
+                    );
+                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
 
-    StriContainerUTF16 str_cont(str, str_length, false); // writable, no recycle
+                StriContainerUTF16 str_cont(
+                    context, str, str_length, false
+                ); // writable, no recycle
 
-    for (R_len_t i=0; i<str_length; ++i) {
-        if (str_cont.isNA(i)) continue;
-        trans->transliterate(str_cont.getWritable(i));
+                for (R_len_t i=0; i<str_length; ++i) {
+                    if (str_cont.isNA(i)) continue;
+                    trans->transliterate(str_cont.getWritable(i));
+                }
+
+                for (R_len_t i=0; i<str_length; ++i) {
+                    if (str_cont.isNA(i)) {
+                        builder.set_na(i);
+                        continue;
+                    }
+
+                    const UnicodeString& value = str_cont.get(i);
+                    // Deviation from stringi: Builder can store U+0000, while
+                    // the copied toR() boundary rejected transliterator output.
+                    for (int32_t j=0; j<value.length(); ++j) {
+                        if (value.charAt(j) == 0)
+                            throw StriException(CI__EMBEDDED_NUL_MESSAGE);
+                    }
+
+                    ci::builder_set(builder, i, value, utf8_buffer);
+                }
+            }
+        }
+
+        if (trans) {
+            delete trans;
+            trans = NULL;
+        }
+
+        STRI__PROTECT(ret = builder.to_sexp());
     }
-
-    if (trans) {
-        delete trans;
-        trans = NULL;
-    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
-    return str_cont.toR();
+    return ret;
     STRI__ERROR_HANDLER_END(
         if (trans) {
             delete trans;

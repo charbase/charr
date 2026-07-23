@@ -47,7 +47,7 @@ class StriContainerLogical : public StriContainerBase {
 
 private:
 
-    int* data;
+    const int* data;
 
 public:
 
@@ -63,9 +63,13 @@ public:
         if (!Rf_isLogical(rvec))
             throw StriException("DEBUG: !Rf_isLogical in StriContainerLogical");
 #endif
-        R_len_t ndata = LENGTH(rvec);
+        R_len_t ndata = 0;
+        charport::unwind_protect([&]() -> SEXP {
+            ndata = LENGTH(rvec);
+            this->data = LOGICAL_RO(rvec);
+            return R_NilValue;
+        });
         this->init_Base(ndata, _nrecycle, true);
-        this->data = LOGICAL(rvec);  // TODO: ALTREP will be problematic?
     }
 
     //  StriContainerLogical(StriContainerLogical& container); // default-shallow

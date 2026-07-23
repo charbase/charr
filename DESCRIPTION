@@ -1,6 +1,5 @@
 Package: charr
-Title: Simple, Consistent Wrappers for Common String Operations, with
-    ALTREP Interoperability
+Title: Record of an ALTREP Translation of Common String Operations
 Version: 0.0.0.9000
 Authors@R: c(
     person("Travers", "Ching", , "traversc@gmail.com", role = c("aut", "cre", "cph")),
@@ -13,14 +12,14 @@ Authors@R: c(
     person("Marek", "Gagolewski", role = c("ctb", "cph"),
            comment = "Author of stringi; stringi implementation and ICU4C vendoring used by charr")
   )
-Description: An experimental hard fork of the 'stringr' package with
-    a private string backend copied from 'stringi' and being adapted to read
-    and return 'ALTREP' character vectors through 'charport'. A simple R
-    switch selects either installed 'stringi' or the private copy. The copied
-    backend initially preserves stringi's ordinary materializing behavior so
-    that semantic equivalence is established before 'ALTREP' adaptation.
+Description: A benchmark and record-keeping snapshot derived from the
+    'stringr' package. It contains a separate 'stringi'-derived backend that
+    reads and returns 'ALTREP' character vectors through 'charport'. An R
+    switch routes operations either to installed 'stringi' or to the separate
+    translated backend. This package records the mechanical translation and
+    is not intended as a complete replacement for 'stringr' or 'stringi'.
 License: MIT + file LICENSE
-URL: https://charport.github.io/charr/, https://github.com/charport/charr
+URL: https://github.com/charport/charr
 BugReports: https://github.com/charport/charr/issues
 Depends:
     R (>= 4.2.0)
@@ -38,15 +37,12 @@ LinkingTo:
 Suggests:
     covr,
     dplyr,
-    gt,
     htmltools,
     htmlwidgets,
-    knitr,
-    rmarkdown,
     testthat (>= 3.0.0),
     tibble
 Remotes: traversc/charport
-SystemRequirements: C++17, GNU make, ICU4C (>= 61, optional)
+SystemRequirements: GNU make, ICU4C (>= 61, optional)
 Biarch: true
 Config/testthat/edition: 3
 Encoding: UTF-8

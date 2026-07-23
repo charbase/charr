@@ -207,11 +207,21 @@ const R_CallMethodDef cCallMethods[] = {
     STRI__MK_CALL("C_ci_subset_coll_replacement",      ci_subset_coll_replacement,    5),
     STRI__MK_CALL("C_ci_subset_fixed_replacement",     ci_subset_fixed_replacement,   5),
     STRI__MK_CALL("C_ci_subset_regex_replacement",     ci_subset_regex_replacement,   5),
+    STRI__MK_CALL("C_ci_test_erroring_altrep",         ci_test_erroring_altrep,        1),
     STRI__MK_CALL("C_ci_test_Rmark",                   ci_test_Rmark,                 1),
     STRI__MK_CALL("C_ci_test_returnasis",              ci_test_returnasis,            1),
     STRI__MK_CALL("C_ci_test_UnicodeContainer16",      ci_test_UnicodeContainer16,    1),
     STRI__MK_CALL("C_ci_test_UnicodeContainer16b",     ci_test_UnicodeContainer16b,   1),
     STRI__MK_CALL("C_ci_test_UnicodeContainer8",       ci_test_UnicodeContainer8,     1),
+    STRI__MK_CALL("C_ci_test_UnicodeContainer8b",      ci_test_UnicodeContainer8b,    1),
+    STRI__MK_CALL("C_ci_test_UnicodeContainer8_alias", ci_test_UnicodeContainer8_alias, 1),
+    STRI__MK_CALL("C_ci_test_UnicodeContainer8_independent", ci_test_UnicodeContainer8_independent, 1),
+    STRI__MK_CALL("C_ci_test_ByteSearchContainer",     ci_test_ByteSearchContainer,   1),
+    STRI__MK_CALL("C_ci_test_ByteSearchContainer_error", ci_test_ByteSearchContainer_error, 1),
+    STRI__MK_CALL("C_ci_test_ByteSearchMatcher",       ci_test_ByteSearchMatcher,     3),
+    STRI__MK_CALL("C_ci_test_String8_assignment",     ci_test_String8_assignment,   0),
+    STRI__MK_CALL("C_ci_test_UTF8EncodingMarks",      ci_test_UTF8EncodingMarks,    0),
+    STRI__MK_CALL("C_ci_test_ListUTF8",                ci_test_ListUTF8,              2),
     STRI__MK_CALL("C_ci_timezone_list",                ci_timezone_list,              2),
     STRI__MK_CALL("C_ci_timezone_set",                 ci_timezone_set,               1),
     STRI__MK_CALL("C_ci_timezone_info",                ci_timezone_info,              3),
@@ -300,6 +310,8 @@ extern "C" void R_init_charr(DllInfo* dll)
 #if defined(R_VERSION) && R_VERSION >= R_Version(3, 0, 0)
     R_forceSymbols(dll, (Rboolean)TRUE);
 #endif
+
+    ci_test_init_erroring_altrep(dll);
 
     const R_CallMethodDef* methods = cCallMethods;
     while (methods->name) {

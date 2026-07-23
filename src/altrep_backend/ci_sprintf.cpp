@@ -34,12 +34,12 @@
 #include "ci_stringi.h"
 #include "ci_container_utf8.h"
 #include "ci_container_integer.h"
-#include "ci_container_logical.h"
 #include "ci_container_double.h"
-#include "ci_string8buf.h"
+#include "ci_builder.h"
+#include <cstdio>
 #include <cstring>
+#include <memory>
 #include <vector>
-#include <deque>
 
 
 #define STRI_SPRINTF_NOT_PROVIDED (NA_INTEGER+1)  /* -2**31+2 */
@@ -190,8 +190,11 @@ int ci__find_type_spec(const char* f, R_len_t j0, R_len_t n)
     STRI_ASSERT(f[j0-1] == '%');
     while (true) {
         if (j1 >= n) {
-            // TODO: note that this will display UTF-8 also on non-UTF-8 outputs
-            throw StriException(MSG__INVALID_FORMAT_SPECIFIER, f+j0); // dangling %...
+            // Deviation from stringi: String8 has no terminator, so bound the
+            // diagnostic by the remaining bytes in this format record.
+            throw StriException(
+                MSG__INVALID_FORMAT_SPECIFIER_SUB, n-j0, f+j0
+            ); // dangling %...
         } else if (strchr(STRI_SPRINTF_SPEC_TYPE, f[j1]) != nullptr)
             break;
         else if (strchr(STRI_SPRINTF_FLAGS, f[j1]) != nullptr)
@@ -201,10 +204,10 @@ int ci__find_type_spec(const char* f, R_len_t j0, R_len_t n)
         else if (f[j1] >= '0' && f[j1] <= '9')
             ;
         else {
-            // TODO: note that this will display UTF-8 also on non-UTF-8 outputs
             throw StriException(
-                MSG__INVALID_FORMAT_SPECIFIER "; " MSG__EXPECTED_CHAR_IN_SET,
-                (f+j0), STRI_SPRINTF_ACCEPTED_CHARS);
+                MSG__INVALID_FORMAT_SPECIFIER_SUB "; " MSG__EXPECTED_CHAR_IN_SET,
+                n-j0, f+j0, STRI_SPRINTF_ACCEPTED_CHARS
+            );
         }
 
         j1++;
@@ -213,81 +216,111 @@ int ci__find_type_spec(const char* f, R_len_t j0, R_len_t n)
 }
 
 
+/** An owned, recyclable vector of normalized UTF-8 records. */
+class StriSprintfOwnedStrings
+{
+private:
+    std::vector<String8> values;
+    R_len_t nrecycle;
+
+public:
+    StriSprintfOwnedStrings() : values(), nrecycle(0) {}
+
+    void assign(
+        const StriContainerUTF8& source, R_len_t n, R_len_t recycle_length
+    )
+    {
+        std::vector<String8> replacement(static_cast<size_t>(n));
+        for (R_len_t i=0; i<n; ++i)
+            replacement[static_cast<size_t>(i)].assignOwned(source.getNAble(i));
+        values.swap(replacement);
+        nrecycle = n > 0 ? recycle_length : 0;
+    }
+
+    const String8& getNAble(R_len_t i) const
+    {
+        if (values.empty())
+            throw std::runtime_error("cannot recycle an empty string vector");
+        return values[static_cast<size_t>(i)%values.size()];
+    }
+
+    R_len_t vectorize_init() const
+    {
+        return values.empty() ? nrecycle : 0;
+    }
+
+    R_len_t vectorize_end() const
+    {
+        return nrecycle;
+    }
+
+    R_len_t vectorize_next(R_len_t i) const
+    {
+        const R_len_t n = static_cast<R_len_t>(values.size());
+        if (i == nrecycle-1-(nrecycle%n))
+            return nrecycle;
+        i += n;
+        if (i >= nrecycle)
+            return (i%n)+1;
+        return i;
+    }
+};
+
+
 /** Enables the fetching of the i-th/next integer/real/string datum from `...`.
  *
  * @version 1.6.2 (Marek Gagolewski, 2021-05-24)
  * @version 1.7.4 (Marek Gagolewski, 2021-08-05)
- *     #449: segfaults; use R_PreserveObject
+ *     #449: segfaults; protect lazily coerced objects
  */
 class StriSprintfDataProvider
 {
 private:
-    SEXP x;  // protected outside
+    SEXP x;      // protected outside
+    SEXP cache;  // protected outside; integer/double/string slots per argument
     R_len_t narg;
     R_len_t vectorize_length;
-    std::vector< StriContainerInteger* > x_integer;
-    std::vector< StriContainerDouble* > x_double;
-    std::vector< StriContainerUTF8* > x_string;
-    std::deque< SEXP > protected_objects;
+    ci::DeferredWarnings& warnings;
+    std::vector< std::unique_ptr<StriContainerInteger> > x_integer;
+    std::vector< std::unique_ptr<StriContainerDouble> > x_double;
+    std::vector< std::unique_ptr<StriSprintfOwnedStrings> > x_string;
+    std::vector<unsigned char> used;
     R_len_t cur_elem;  // 0..vectorize_length-1
     R_len_t cur_item;  // 0..narg-1
 
 public:
-    bool warn_if_arg_unused;
-
-
-public:
-    StriSprintfDataProvider(SEXP x, R_len_t vectorize_length) :
+    StriSprintfDataProvider(
+        SEXP x, SEXP cache, R_len_t narg, R_len_t vectorize_length,
+        ci::DeferredWarnings& warnings
+    ) :
         x(x),
-        narg(LENGTH(x)),
+        cache(cache),
+        narg(narg),
         vectorize_length(vectorize_length),
-        x_integer(narg, nullptr),
-        x_double(narg, nullptr),
-        x_string(narg, nullptr)
+        warnings(warnings),
+        x_integer(static_cast<size_t>(narg)),
+        x_double(static_cast<size_t>(narg)),
+        x_string(static_cast<size_t>(narg)),
+        used(static_cast<size_t>(narg), 0),
+        cur_elem(-1),
+        cur_item(0)
     {
-        STRI_ASSERT(Rf_isVectorList(x));
-        cur_elem = -1;
-        warn_if_arg_unused = false;
     }
 
-    ~StriSprintfDataProvider()
+    R_len_t countUnused() const
     {
         R_len_t num_unused = 0;
-        for (R_len_t j=0; j<narg; ++j) {
-            bool this_unused = true;
-            if (x_integer[j] != nullptr) {
-                delete x_integer[j];
-                this_unused = false;
-            }
-            if (x_double[j] != nullptr) {
-                delete x_double[j];
-                this_unused = false;
-            }
-            if (x_string[j] != nullptr) {
-                delete x_string[j];
-                this_unused = false;
-            }
-            if (this_unused) num_unused++;
-        }
-
-        for (R_len_t j=0; j<(R_len_t)protected_objects.size(); ++j) {
-            R_ReleaseObject(protected_objects[j]);
-        }
-
-        if (warn_if_arg_unused) {
-            if (num_unused == 1)
-                Rf_warning(MSG__ARG_UNUSED_1);
-            else if (num_unused > 1)
-                Rf_warning(MSG__ARG_UNUSED_N, num_unused);
-        }
+        for (R_len_t j=0; j<narg; ++j)
+            if (!used[static_cast<size_t>(j)])
+                ++num_unused;
+        return num_unused;
     }
 
-
-    void reset(R_len_t elem) {
+    void reset(R_len_t elem)
+    {
         cur_elem = elem;
         cur_item = 0;
     }
-
 
     /** Gets the next (i negative) or the i-th integer datum
      *  Can be NA, so check with ... == NA_INTEGER.
@@ -302,22 +335,32 @@ public:
         if (i < 0) throw StriException(MSG__EXPECTED_LARGER);
         else if (i >= narg) throw StriException(MSG__ARG_NEED_MORE);
 
-        if (x_integer[i] == nullptr) {
-            SEXP y;
-            // the following may call Rf_error:
-            PROTECT(y = ci__prepare_arg_integer(VECTOR_ELT(x, i), "...",
-                false/*factors_as_strings*/, false/*allow_error*/));
-            R_PreserveObject(y);
-            protected_objects.push_back(y);
-            UNPROTECT(1);
-            if (Rf_isNull(y)) throw StriException(MSG__ARG_EXPECTED_INTEGER, "...");
-            x_integer[i] = new StriContainerInteger(y, vectorize_length);
+        const size_t index = static_cast<size_t>(i);
+        if (!x_integer[index]) {
+            SEXP y = charport::unwind_protect([&]() -> SEXP {
+                SEXP prepared = PROTECT(ci__prepare_arg_integer(
+                    VECTOR_ELT(x, i), "...",
+                    false/*factors_as_strings*/, false/*allow_error*/,
+                    &warnings
+                ));
+                if (prepared != R_NilValue)
+                    SET_VECTOR_ELT(cache, i, prepared);
+                UNPROTECT(1);
+                return prepared;
+            });
+            if (y == R_NilValue)
+                throw StriException(MSG__ARG_EXPECTED_INTEGER, "...");
+            charport::unwind_protect([&]() -> SEXP {
+                x_integer[index].reset(
+                    new StriContainerInteger(y, vectorize_length)
+                );
+                return R_NilValue;
+            });
+            used[index] = 1;
         }
 
-        return x_integer[i]->getNAble(cur_elem);
+        return x_integer[index]->getNAble(cur_elem);
     }
-
-
 
     /** Gets the next (i negative) or the i-th real datum;
      *  Can be NA, so check with ISNA(...).
@@ -332,21 +375,32 @@ public:
         if (i < 0) throw StriException(MSG__EXPECTED_LARGER);
         else if (i >= narg) throw StriException(MSG__ARG_NEED_MORE);
 
-        if (x_double[i] == nullptr) {
-            SEXP y;
-            // the following may call Rf_error:
-            PROTECT(y = ci__prepare_arg_double(VECTOR_ELT(x, i), "...",
-                false/*factors_as_strings*/, false/*allow_error*/));
-            R_PreserveObject(y);
-            protected_objects.push_back(y);
-            UNPROTECT(1);
-            if (Rf_isNull(y)) throw StriException(MSG__ARG_EXPECTED_NUMERIC, "...");
-            x_double[i] = new StriContainerDouble(y, vectorize_length);
+        const size_t index = static_cast<size_t>(i);
+        if (!x_double[index]) {
+            SEXP y = charport::unwind_protect([&]() -> SEXP {
+                SEXP prepared = PROTECT(ci__prepare_arg_double(
+                    VECTOR_ELT(x, i), "...",
+                    false/*factors_as_strings*/, false/*allow_error*/,
+                    &warnings
+                ));
+                if (prepared != R_NilValue)
+                    SET_VECTOR_ELT(
+                        cache, static_cast<R_xlen_t>(narg)+i, prepared
+                    );
+                UNPROTECT(1);
+                return prepared;
+            });
+            if (y == R_NilValue)
+                throw StriException(MSG__ARG_EXPECTED_NUMERIC, "...");
+            std::unique_ptr<StriContainerDouble> prepared(
+                new StriContainerDouble(y, vectorize_length)
+            );
+            x_double[index] = std::move(prepared);
+            used[index] = 1;
         }
 
-        return x_double[i]->getNAble(cur_elem);
+        return x_double[index]->getNAble(cur_elem);
     }
-
 
     /** Gets the next (i negative) or the i-th real datum
      *  Can be NA, so check with ....isNA().
@@ -361,19 +415,42 @@ public:
         if (i < 0) throw StriException(MSG__EXPECTED_LARGER);
         else if (i >= narg) throw StriException(MSG__ARG_NEED_MORE);
 
-        if (x_string[i] == nullptr) {
-            SEXP y;
-            // the following may call Rf_error:
-            PROTECT(y = ci__prepare_arg_string(VECTOR_ELT(x, i), "...",
-                false/*allow_error*/));
-            R_PreserveObject(y);
-            protected_objects.push_back(y);
-            UNPROTECT(1);
-            if (Rf_isNull(y)) throw StriException(MSG__ARG_EXPECTED_STRING, "...");
-            x_string[i] = new StriContainerUTF8(y, vectorize_length);
+        const size_t index = static_cast<size_t>(i);
+        if (!x_string[index]) {
+            SEXP y = charport::unwind_protect([&]() -> SEXP {
+                SEXP prepared = PROTECT(ci__prepare_arg_string(
+                    VECTOR_ELT(x, i), "...", false/*allow_error*/,
+                    &warnings
+                ));
+                if (prepared != R_NilValue)
+                    SET_VECTOR_ELT(
+                        cache, 2*static_cast<R_xlen_t>(narg)+i, prepared
+                    );
+                UNPROTECT(1);
+                return prepared;
+            });
+            if (y == R_NilValue)
+                throw StriException(MSG__ARG_EXPECTED_STRING, "...");
+
+            std::unique_ptr<StriSprintfOwnedStrings> owned(
+                new StriSprintfOwnedStrings
+            );
+            {
+                // Deviation from stringi: a lazily coerced string argument is
+                // normalized through a short Reader, then copied so later
+                // coercions cannot overlap a live character borrow.
+                ci::ReaderContext context(warnings);
+                const R_len_t length = ci::checked_r_len(
+                    context.size(y), "character vectors"
+                );
+                StriContainerUTF8 source(context, y, length);
+                owned->assign(source, length, vectorize_length);
+            }
+            x_string[index] = std::move(owned);
+            used[index] = 1;
         }
 
-        return x_string[i]->getNAble(cur_elem);
+        return x_string[index]->getNAble(cur_elem);
     }
 };
 
@@ -626,12 +703,16 @@ public:
         STRI_ASSERT(min_width > 0);
 
         R_len_t datum_size;
+        const char* datum_data = preformatted_datum.empty() ?
+            "" : preformatted_datum.data();
         if (use_length)  // number of code points
-            datum_size = ci__length_string(preformatted_datum.c_str(),
-                                             preformatted_datum.length());
+            datum_size = ci__length_string(
+                datum_data, static_cast<R_len_t>(preformatted_datum.length())
+            );
         else
-            datum_size = ci__width_string(preformatted_datum.c_str(),
-                                            preformatted_datum.length());
+            datum_size = ci__width_string(
+                datum_data, static_cast<R_len_t>(preformatted_datum.length())
+            );
 
         if (datum_size < min_width) {
             // now we need to pad with spaces from left or right up to min_width
@@ -659,17 +740,23 @@ private:
         STRI_ASSERT(type_spec != 'i');  // normalised i->d
         bool isna = (datum == NA_INTEGER || min_width == NA_INTEGER || precision == NA_INTEGER);
         if (!isna) {
-            R_len_t bufsize = std::max(0, min_width);
+            size_t bufsize = static_cast<size_t>(std::max(0, min_width));
             bufsize += std::max(0, precision);
             bufsize += 128; // "just in case"  (0x, sign, dot, and stuff)
-            std::vector<char> buf;
-            buf.resize(bufsize);
+            std::vector<char> buf(bufsize);
 
             // oh, oh, oh, so lazy, using std::snprintf (good enough)
             // TODO: use ICU NumberFormat for '%d' (locale dependent) when "'" flag is set
             std::string format_string = getFormatString();
-            snprintf(buf.data(), bufsize, format_string.c_str(), datum);
-            preformatted_datum.append(buf.data());
+            // Deviation from stringi: std::snprintf is the one genuine
+            // C-string consumer here because its generated format parameter
+            // must be terminated. Copy its fixed-size result by byte count.
+            int written = std::snprintf(
+                buf.data(), buf.size(), format_string.c_str(), datum
+            );
+            size_t result_size = (written < 0)?0:static_cast<size_t>(written);
+            if (result_size >= buf.size()) result_size = buf.size()-1;
+            preformatted_datum.append(buf.data(), result_size);
 
             return STRI_SPRINTF_FORMAT_STATUS_OK;  /* all in ASCII, padding done by std::snprintf */
         }
@@ -688,7 +775,9 @@ private:
             // else no sign
 
             STRI_ASSERT(!na_string.isNA());
-            preformatted_datum.append(na_string.c_str());
+            preformatted_datum.append(
+                na_string.data(), static_cast<size_t>(na_string.length())
+            );
             return STRI_SPRINTF_FORMAT_STATUS_NEEDS_PADDING;  /* might need padding (na_string can be fancy Unicode) */
         }
     }
@@ -698,17 +787,22 @@ private:
     {
         bool isna = (ISNA(datum) || min_width == NA_INTEGER || precision == NA_INTEGER);
         if (R_FINITE(datum) && !isna) {
-            R_len_t bufsize = std::max(0, min_width);
+            size_t bufsize = static_cast<size_t>(std::max(0, min_width));
             bufsize += std::max(0, precision);
             bufsize += 128; // "just in case"  (0x, sign, dot, and stuff)
-            std::vector<char> buf;
-            buf.resize(bufsize);
+            std::vector<char> buf(bufsize);
 
             // lazybones, using std::sprintf (the good-enough approach)
             // TODO: use ICU NumberFormat for '%feEgG' (locale dependent) when "'" flag is set
             std::string format_string = getFormatString();
-            snprintf(buf.data(), bufsize, format_string.c_str(), datum);
-            preformatted_datum.append(buf.data());
+            // Same deliberate generated-format C-string boundary and
+            // explicit-length fixed-result copy as the integer path above.
+            int written = std::snprintf(
+                buf.data(), buf.size(), format_string.c_str(), datum
+            );
+            size_t result_size = (written < 0)?0:static_cast<size_t>(written);
+            if (result_size >= buf.size()) result_size = buf.size()-1;
+            preformatted_datum.append(buf.data(), result_size);
 
             return STRI_SPRINTF_FORMAT_STATUS_OK;  /* all in ASCII, padding done by std::snprintf */
         }
@@ -742,15 +836,21 @@ private:
             // alternate_output has no effect (use inf_string etc. instead)
             if (isna) {
                 STRI_ASSERT(!na_string.isNA());
-                preformatted_datum.append(na_string.c_str());
+                preformatted_datum.append(
+                    na_string.data(), static_cast<size_t>(na_string.length())
+                );
             }
             else if (ISNAN(datum)) {
                 STRI_ASSERT(!nan_string.isNA());
-                preformatted_datum.append(nan_string.c_str());
+                preformatted_datum.append(
+                    nan_string.data(), static_cast<size_t>(nan_string.length())
+                );
             }
             else {
                 STRI_ASSERT(!inf_string.isNA());
-                preformatted_datum.append(inf_string.c_str());
+                preformatted_datum.append(
+                    inf_string.data(), static_cast<size_t>(inf_string.length())
+                );
             }
 
             return STRI_SPRINTF_FORMAT_STATUS_NEEDS_PADDING;  /* might need padding (na_string can be fancy Unicode) */
@@ -771,14 +871,20 @@ private:
             if (precision >= 0) {
                 if (use_length) {
                     // ha! output no more than <precision> code points
-                    datum_size = ci__length_string(datum.c_str(), datum_size, precision);
+                    datum_size = ci__length_string(
+                        datum.data(), datum_size, precision
+                    );
                 }
                 else {
                     // ho! output code points of total width no more than precision characters
-                    datum_size = ci__width_string(datum.c_str(), datum_size, precision);
+                    datum_size = ci__width_string(
+                        datum.data(), datum_size, precision
+                    );
                 }
             }
-            preformatted_datum.append(datum.c_str(), datum_size);
+            preformatted_datum.append(
+                datum.data(), static_cast<size_t>(datum_size)
+            );
         }
         else if (na_string.isNA())
             return STRI_SPRINTF_FORMAT_STATUS_IS_NA;
@@ -791,14 +897,20 @@ private:
             if (precision >= 0) {
                 if (use_length) {
                     // ha! output no more than <precision> code points
-                    na_string_size = ci__length_string(na_string.c_str(), na_string_size, precision);
+                    na_string_size = ci__length_string(
+                        na_string.data(), na_string_size, precision
+                    );
                 }
                 else {
                     // ho! output code points of total width no more than precision characters
-                    na_string_size = ci__width_string(na_string.c_str(), na_string_size, precision);
+                    na_string_size = ci__width_string(
+                        na_string.data(), na_string_size, precision
+                    );
                 }
             }
-            preformatted_datum.append(na_string.c_str(), na_string_size);
+            preformatted_datum.append(
+                na_string.data(), static_cast<size_t>(na_string_size)
+            );
         }
 
         return STRI_SPRINTF_FORMAT_STATUS_NEEDS_PADDING;  /* might need padding */
@@ -810,7 +922,15 @@ private:
  *
  * @version 1.6.2 (Marek Gagolewski, 2021-05-24)
  */
-SEXP ci__sprintf_1(
+struct CiSprintfResult {
+    bool is_na;
+    std::string bytes;
+
+    CiSprintfResult() : is_na(false), bytes() {}
+};
+
+
+CiSprintfResult ci__sprintf_1(
     const String8& _f,
     StriSprintfDataProvider* data,
     const String8& na_string,
@@ -820,10 +940,11 @@ SEXP ci__sprintf_1(
 ) {
     STRI_ASSERT(!_f.isNA());
     R_len_t n = _f.length();
-    const char* f = _f.c_str();
+    const char* f = _f.data();
 
-    std::string buf;
-    buf.reserve(n+1); // whatever; maybe there are no format specifiers at all
+    CiSprintfResult result;
+    result.bytes.reserve(static_cast<size_t>(n)+1);
+    std::string& buf = result.bytes;
 
     R_len_t i=0;
     while (i < n) {
@@ -833,7 +954,7 @@ SEXP ci__sprintf_1(
         // '%' found.
         i++;
         if (i >= n)  // dangling %
-            throw StriException(MSG__INVALID_FORMAT_SPECIFIER, "");
+            throw StriException(MSG__INVALID_FORMAT_SPECIFIER_SUB, 0, "");
 
         // if "%%", then output '%' and continue looking for the next '%'
         if (f[i] == '%') { buf.push_back('%'); i++; continue; }
@@ -850,17 +971,17 @@ SEXP ci__sprintf_1(
             na_string, inf_string, nan_string, use_length
         );
 
-        // debug: Rprintf("*** spec=%s\n", spec.toString().c_str());
-        // debug: buf.append(spec.toString());
-
         std::string formatted_datum;
-        if (spec.formatDatum(formatted_datum) == STRI_SPRINTF_FORMAT_STATUS_IS_NA)
-            return NA_STRING;
+        if (spec.formatDatum(formatted_datum) == STRI_SPRINTF_FORMAT_STATUS_IS_NA) {
+            result.is_na = true;
+            result.bytes.clear();
+            return result;
+        }
 
         buf.append(formatted_datum);
     }
 
-    return Rf_mkCharLenCE(buf.data(), buf.size(), CE_UTF8);
+    return result;
 }
 
 
@@ -896,84 +1017,154 @@ SEXP ci_sprintf(SEXP format, SEXP x, SEXP na_string,
     // TODO: allow for the Unicode plus and minus
     // TODO: ICU number format  1,234.567 / 1 234,567 / etc.
 
-    for (R_len_t j=0; j<narg; j++) {
-        if (Rf_isNull(VECTOR_ELT(x, j))) {
-            vectorize_length = 0;
-            continue;
-        }
-
-        if (!Rf_isVector(VECTOR_ELT(x, j)))
-            Rf_error(MSG__ARG_EXPECTED_VECTOR, "..."); // error() allowed here
-
-        if (vectorize_length > 0) {
-            R_len_t cur_length = LENGTH(VECTOR_ELT(x, j));
-            if (cur_length <= 0)
+    STRI__ERROR_HANDLER_BEGIN(5)
+    std::vector<R_len_t> argument_lengths(static_cast<size_t>(narg), 0);
+    charport::unwind_protect([&]() -> SEXP {
+        for (R_len_t j=0; j<narg; j++) {
+            SEXP argument = VECTOR_ELT(x, j);
+            if (Rf_isNull(argument)) {
                 vectorize_length = 0;
-            else if (vectorize_length < cur_length)
-                vectorize_length = cur_length;
+                continue;
+            }
+
+            if (!Rf_isVector(argument))
+                throw StriException(MSG__ARG_EXPECTED_VECTOR, "...");
+
+            const R_len_t cur_length = LENGTH(argument);
+            argument_lengths[static_cast<size_t>(j)] = cur_length;
+            if (vectorize_length > 0) {
+                if (cur_length <= 0)
+                    vectorize_length = 0;
+                else if (vectorize_length < cur_length)
+                    vectorize_length = cur_length;
+            }
         }
-    }
+        return R_NilValue;
+    });
+
+    SEXP ret;
 
     if (vectorize_length <= 0) {
-        UNPROTECT(5);
-        return Rf_allocVector(STRSXP, 0);
+        {
+            charport::charvec::Builder builder(0);
+            STRI__PROTECT(ret = builder.to_sexp());
+        }
+        STRI__UNPROTECT_ALL
+        return ret;
     }
 
     // ASSERT: vectorize_length > 0
     // ASSERT: all elements in x meet Rf_isVector(VECTOR_ELT(x, j))
 
     if (vectorize_length % format_length != 0)
-        Rf_warning(MSG__WARN_RECYCLING_RULE);
+        STRI__DEFERRED_WARNINGS.push(MSG__WARN_RECYCLING_RULE);
 
     for (R_len_t j=0; j<narg; j++)
-        if (vectorize_length % LENGTH(VECTOR_ELT(x, j)) != 0)
-            Rf_warning(MSG__WARN_RECYCLING_RULE);
+        if (vectorize_length % argument_lengths[static_cast<size_t>(j)] != 0)
+            STRI__DEFERRED_WARNINGS.push(MSG__WARN_RECYCLING_RULE);
 
-    STRI__ERROR_HANDLER_BEGIN(5)
-    StriContainerUTF8 format_cont(format, vectorize_length);
-    StriContainerUTF8 na_string_cont(na_string, 1);
-    StriContainerUTF8 inf_string_cont(inf_string, 1);
-    StriContainerUTF8 nan_string_cont(nan_string, 1);
+    // Deviation from stringi: keep controlled recycling diagnostics queued
+    // until lazy coercion state and output staging have both been released.
 
-    StriSprintfDataProvider* data = new StriSprintfDataProvider(x, vectorize_length);
-
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, vectorize_length));
-
-    for (
-        R_len_t i = format_cont.vectorize_init();
-        i != format_cont.vectorize_end();
-        i = format_cont.vectorize_next(i)
-    ) {
-        if (format_cont.isNA(i)) {
-            SET_STRING_ELT(ret, i, NA_STRING);
-            continue;
+    R_len_t num_unused = 0;
+    {
+        StriSprintfOwnedStrings format_owned;
+        StriSprintfOwnedStrings na_string_owned;
+        StriSprintfOwnedStrings inf_string_owned;
+        StriSprintfOwnedStrings nan_string_owned;
+        {
+            // Deviation from stringi: the persistent format and sentinel
+            // records are copied once from short Reader-backed containers.
+            // No Reader remains active during lazy `...` coercions.
+            ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+            StriContainerUTF8 format_cont(
+                context, format, vectorize_length
+            );
+            StriContainerUTF8 na_string_cont(context, na_string, 1);
+            StriContainerUTF8 inf_string_cont(context, inf_string, 1);
+            StriContainerUTF8 nan_string_cont(context, nan_string, 1);
+            format_owned.assign(
+                format_cont, format_length, vectorize_length
+            );
+            na_string_owned.assign(na_string_cont, 1, 1);
+            inf_string_owned.assign(inf_string_cont, 1, 1);
+            nan_string_owned.assign(nan_string_cont, 1, 1);
         }
 
-        // The "parsing" of the format string is done from scratch
-        // each time and the output strings are generated on the fly.
-        // Let's keep the code simple; the possibility of having
-        // *-fields of different max widths/numbers of different precisions
-        // makes the process quite complicated anyway.
-        data->reset(i);
+        SEXP cache;
+        // Deviation from stringi: one protected cache replaces per-object
+        // R_PreserveObject calls while retaining three independent lazy views.
+        STRI__PROTECT(cache = charport::unwind_protect([&]() -> SEXP {
+            return Rf_allocVector(
+                VECSXP, static_cast<R_xlen_t>(3)*narg
+            );
+        }));
 
-        SEXP out;
-        STRI__PROTECT(out = ci__sprintf_1(
-            format_cont.get(i),
-            data,
-            na_string_cont.getNAble(0),
-            inf_string_cont.getNAble(0),
-            nan_string_cont.getNAble(0),
-            use_length_val
-        ));
-        SET_STRING_ELT(ret, i, out);
-        STRI__UNPROTECT(1);
+        StriSprintfDataProvider data(
+            x, cache, narg, vectorize_length,
+            STRI__DEFERRED_WARNINGS
+        );
+        charport::charvec::Builder builder(vectorize_length);
+
+        for (
+            R_len_t i = format_owned.vectorize_init();
+            i != format_owned.vectorize_end();
+            i = format_owned.vectorize_next(i)
+        ) {
+            const String8& format_cur = format_owned.getNAble(i);
+            if (format_cur.isNA()) {
+                builder.set_na(i);
+                continue;
+            }
+
+            // The "parsing" of the format string is done from scratch
+            // each time and the output strings are generated on the fly.
+            // Let's keep the code simple; the possibility of having
+            // *-fields of different max widths/numbers of different precisions
+            // makes the process quite complicated anyway.
+            data.reset(i);
+
+            CiSprintfResult out = ci__sprintf_1(
+                format_cur,
+                &data,
+                na_string_owned.getNAble(0),
+                inf_string_owned.getNAble(0),
+                nan_string_owned.getNAble(0),
+                use_length_val
+            );
+            if (out.is_na)
+                builder.set_na(i);
+            else
+                ci::builder_set(
+                    builder, i, out.bytes,
+                    cetype_ext_t::CE_ASCII_OR_UTF8
+                );
+        }
+
+        // Deviation from stringi: count after a completely successful pass,
+        // but do not warn from the data provider's destructor.
+        num_unused = data.countUnused();
+        STRI__PROTECT(ret = builder.to_sexp());
     }
 
-    // there was no error, we may want to warn about unused args
-    data->warn_if_arg_unused = true;
-    delete data;  // need to be deleted before UNPROTECTing the x list
-    data = NULL;
+    // Drop the cache, prepared inputs, and output staging before warning.
+    // Re-protecting the already-created result does not allocate.
+    std::vector<R_len_t>().swap(argument_lengths);
+    STRI__UNPROTECT_ALL
+    STRI__PROTECT(ret);
+
+    if (num_unused == 1) {
+        STRI__DEFERRED_WARNINGS.push(MSG__ARG_UNUSED_1);
+    }
+    else if (num_unused > 1) {
+        char warning[StriException_BUFSIZE];
+        std::snprintf(
+            warning, StriException_BUFSIZE,
+            MSG__ARG_UNUSED_N, num_unused
+        );
+        STRI__DEFERRED_WARNINGS.push(warning);
+    }
+    STRI__DEFERRED_WARNINGS.emit();
 
     STRI__UNPROTECT_ALL
     return ret;

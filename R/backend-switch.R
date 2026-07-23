@@ -1,8 +1,8 @@
 # charr-owned file: tools/import-upstream.R must not rename here.
 
-# The copied stringi wrappers are loaded first because their filenames begin
-# with altrep_backend-. Capture the stringr-facing entry points, then replace
-# them in charr's namespace with the small R dispatch layer below.
+# Charr's native wrappers are loaded first because their filenames begin with
+# altrep_backend-. Capture those entry points, then replace them in charr's
+# namespace with the R dispatch layer below.
 .charr_backend_map <- c(
   ci_detect_fixed = "stri_detect_fixed",
   ci_startswith_fixed = "stri_startswith_fixed",
@@ -21,6 +21,7 @@
   ci_c = "stri_c",
   ci_flatten = "stri_flatten",
   ci_dup = "stri_dup",
+  ci_reverse = "stri_reverse",
   ci_trim_left = "stri_trim_left",
   ci_trim_right = "stri_trim_right",
   ci_trim_both = "stri_trim_both",
@@ -67,6 +68,7 @@
   ci_width = "stri_width",
   ci_escape_unicode = "stri_escape_unicode",
   ci_conv = "stri_conv",
+  ci_read_lines = "stri_read_lines",
   ci_opts_fixed = "stri_opts_fixed",
   ci_opts_regex = "stri_opts_regex",
   ci_opts_collator = "stri_opts_collator",
@@ -80,13 +82,12 @@
 
 .charr_state <- new.env(parent = emptyenv())
 .charr_state$altrep <- FALSE
-.charr_state$nthreads <- 1L
 .charr_state$altrep_calls <- 0
 
 .altrep_backend <- new.env(parent = emptyenv())
 for (.ci_name in c(names(.charr_backend_map), names(.charr_replacement_map))) {
   if (!exists(.ci_name, inherits = FALSE)) {
-    stop("copied stringi backend is missing ", .ci_name, call. = FALSE)
+    stop("charr ALTREP backend is missing ", .ci_name, call. = FALSE)
   }
   assign(.ci_name, get(.ci_name, inherits = FALSE), .altrep_backend)
 }
@@ -154,20 +155,18 @@ for (.ci_name in names(.charr_replacement_map)) {
 }
 rm(.ci_name, .backend_namespace)
 
-#' Select charr's copied backend
+#' Select charr's string backend
 #'
 #' With the switch off, charr routes its string operations to installed
-#' stringi. With it on, the same operations run through charr's private copy
-#' of stringi's R and C++ implementation. The copied implementation currently
-#' materializes ordinary R character vectors; charport integration comes next.
+#' stringi. With it on, the same operations run through charr's ALTREP-aware
+#' implementation. Dispatch happens in R before a native entry point is
+#' called; the two C++ paths are separate, and the ALTREP containers do not
+#' inspect this setting.
 #'
-#' Setting `CHARR_ALTREP=true` before loading charr enables the copied backend.
-#'
-#' `charr_threads()` records the worker count intended for the later charport
-#' implementation. The copied stringi implementation does not use it yet.
+#' Setting `CHARR_ALTREP=true` before loading charr enables charr's ALTREP
+#' implementation.
 #'
 #' @param on `NULL` to query, or `TRUE`/`FALSE` to set.
-#' @param n `NULL` to query, or a single integer >= 1 to set.
 #' @return The current value when querying; the previous value (invisibly)
 #'   when setting.
 #' @export
@@ -180,21 +179,6 @@ charr_altrep <- function(on = NULL) {
   }
   old <- .charr_state$altrep
   .charr_state$altrep <- on
-  invisible(old)
-}
-
-#' @rdname charr_altrep
-#' @export
-charr_threads <- function(n = NULL) {
-  if (is.null(n)) {
-    return(.charr_state$nthreads)
-  }
-  n <- suppressWarnings(as.integer(n))
-  if (length(n) != 1L || is.na(n) || n < 1L) {
-    cli::cli_abort("{.arg n} must be a single integer >= 1.")
-  }
-  old <- .charr_state$nthreads
-  .charr_state$nthreads <- n
   invisible(old)
 }
 

@@ -117,37 +117,54 @@ SEXP ci_cmp_codepoints(SEXP e1, SEXP e2, int _negate)
     PROTECT(e2 = ci__prepare_arg_string(e2, "e2")); // prepare string argument
 
     STRI__ERROR_HANDLER_BEGIN(2)
-
-    R_len_t vectorize_length = ci__recycling_rule(true, 2, LENGTH(e1), LENGTH(e2));
-
-    StriContainerUTF8 e1_cont(e1, vectorize_length);
-    StriContainerUTF8 e2_cont(e2, vectorize_length);
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t e1_n = ci::checked_r_len(
+        context.size(e1), "character vectors"
+    );
+    R_len_t e2_n = ci::checked_r_len(
+        context.size(e2), "character vectors"
+    );
+    R_len_t vectorize_length = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_length = ci__recycling_rule(
+            STRI__DEFERRED_WARNINGS, 2, e1_n, e2_n
+        );
+        return R_NilValue;
+    });
 
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(LGLSXP, vectorize_length));
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(LGLSXP, vectorize_length);
+    }));
     int* ret_tab = LOGICAL(ret);
 
-    for (R_len_t i = 0; i < vectorize_length; ++i)
     {
-        if (e1_cont.isNA(i) || e2_cont.isNA(i)) {
-            ret_tab[i] = NA_LOGICAL;
-            continue;
+        StriContainerUTF8 e1_cont(context, e1, vectorize_length);
+        StriContainerUTF8 e2_cont(context, e2, vectorize_length);
+
+        for (R_len_t i = 0; i < vectorize_length; ++i)
+        {
+            if (e1_cont.isNA(i) || e2_cont.isNA(i)) {
+                ret_tab[i] = NA_LOGICAL;
+                continue;
+            }
+
+            R_len_t     cur1_n = e1_cont.get(i).length();
+            const char* cur1_s = e1_cont.get(i).data();
+            R_len_t     cur2_n = e2_cont.get(i).length();
+            const char* cur2_s = e2_cont.get(i).data();
+
+            if (cur1_n != cur2_n) // different number of bytes => not equal
+                ret_tab[i] = FALSE;
+            else
+                ret_tab[i] = (memcmp(cur1_s, cur2_s, cur1_n) == 0);
+
+            if (_negate)
+                ret_tab[i] = !ret_tab[i];
         }
-
-        R_len_t     cur1_n = e1_cont.get(i).length();
-        const char* cur1_s = e1_cont.get(i).c_str();
-        R_len_t     cur2_n = e2_cont.get(i).length();
-        const char* cur2_s = e2_cont.get(i).c_str();
-
-        if (cur1_n != cur2_n) // different number of bytes => not equal
-            ret_tab[i] = FALSE;
-        else
-            ret_tab[i] = (memcmp(cur1_s, cur2_s, cur1_n) == 0);
-
-        if (_negate)
-            ret_tab[i] = !ret_tab[i];
     }
 
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
 
@@ -222,49 +239,71 @@ SEXP ci__cmp_logical(SEXP e1, SEXP e2, SEXP opts_collator, int _type, int _negat
     PROTECT(e1 = ci__prepare_arg_string(e1, "e1")); // prepare string argument
     PROTECT(e2 = ci__prepare_arg_string(e2, "e2")); // prepare string argument
 
-    // call ci__ucol_open after prepare_arg:
-    // if prepare_arg had failed, we would have a mem leak
     UCollator* col = NULL;
-    col = ci__ucol_open(opts_collator);
 
     STRI__ERROR_HANDLER_BEGIN(2)
-
-    R_len_t vectorize_length = ci__recycling_rule(true, 2, LENGTH(e1), LENGTH(e2));
-
-    StriContainerUTF8 e1_cont(e1, vectorize_length);
-    StriContainerUTF8 e2_cont(e2, vectorize_length);
+    // Deviation from stringi: catch R errors from collator option parsing so
+    // queued warnings and any opened collator are released before R resumes.
+    charport::unwind_protect([&]() -> SEXP {
+        col = ci__ucol_open(STRI__DEFERRED_WARNINGS, opts_collator);
+        return R_NilValue;
+    });
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t e1_n = ci::checked_r_len(
+        context.size(e1), "character vectors"
+    );
+    R_len_t e2_n = ci::checked_r_len(
+        context.size(e2), "character vectors"
+    );
+    R_len_t vectorize_length = 0;
+    // Deviation from stringi: queue recycling warnings while the collator is
+    // live and emit them after the collator closes.
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_length = ci__recycling_rule(
+            STRI__DEFERRED_WARNINGS, 2, e1_n, e2_n
+        );
+        return R_NilValue;
+    });
 
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(LGLSXP, vectorize_length));
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(LGLSXP, vectorize_length);
+    }));
     int* ret_tab = LOGICAL(ret);
 
-    for (R_len_t i = 0; i < vectorize_length; ++i)
     {
-        if (e1_cont.isNA(i) || e2_cont.isNA(i)) {
-            ret_tab[i] = NA_LOGICAL;
-            continue;
+        StriContainerUTF8 e1_cont(context, e1, vectorize_length);
+        StriContainerUTF8 e2_cont(context, e2, vectorize_length);
+
+        for (R_len_t i = 0; i < vectorize_length; ++i)
+        {
+            if (e1_cont.isNA(i) || e2_cont.isNA(i)) {
+                ret_tab[i] = NA_LOGICAL;
+                continue;
+            }
+
+            R_len_t     cur1_n = e1_cont.get(i).length();
+            const char* cur1_s = e1_cont.get(i).data();
+            R_len_t     cur2_n = e2_cont.get(i).length();
+            const char* cur2_s = e2_cont.get(i).data();
+
+            // with collation
+            UErrorCode status = U_ZERO_ERROR;
+            ret_tab[i] = (_type == (int)ucol_strcollUTF8(col,
+                          cur1_s, cur1_n, cur2_s, cur2_n, &status
+                                                        ));
+            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+
+            if (_negate)
+                ret_tab[i] = !ret_tab[i];
         }
-
-        R_len_t     cur1_n = e1_cont.get(i).length();
-        const char* cur1_s = e1_cont.get(i).c_str();
-        R_len_t     cur2_n = e2_cont.get(i).length();
-        const char* cur2_s = e2_cont.get(i).c_str();
-
-        // with collation
-        UErrorCode status = U_ZERO_ERROR;
-        ret_tab[i] = (_type == (int)ucol_strcollUTF8(col,
-                      cur1_s, cur1_n, cur2_s, cur2_n, &status
-                                                    ));
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-        if (_negate)
-            ret_tab[i] = !ret_tab[i];
     }
 
     if (col) {
         ucol_close(col);
         col = NULL;
     }
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
 
@@ -418,47 +457,69 @@ SEXP ci_cmp(SEXP e1, SEXP e2, SEXP opts_collator)
     PROTECT(e1 = ci__prepare_arg_string(e1, "e1"));
     PROTECT(e2 = ci__prepare_arg_string(e2, "e2"));
 
-    // call ci__ucol_open after prepare_arg:
-    // if prepare_arg had failed, we would have a mem leak
     UCollator* col = NULL;
-    col = ci__ucol_open(opts_collator);
 
     STRI__ERROR_HANDLER_BEGIN(2)
-
-    R_len_t vectorize_length = ci__recycling_rule(true, 2, LENGTH(e1), LENGTH(e2));
-
-    StriContainerUTF8 e1_cont(e1, vectorize_length);
-    StriContainerUTF8 e2_cont(e2, vectorize_length);
+    // Deviation from stringi: catch R errors from collator option parsing so
+    // queued warnings and any opened collator are released before R resumes.
+    charport::unwind_protect([&]() -> SEXP {
+        col = ci__ucol_open(STRI__DEFERRED_WARNINGS, opts_collator);
+        return R_NilValue;
+    });
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t e1_n = ci::checked_r_len(
+        context.size(e1), "character vectors"
+    );
+    R_len_t e2_n = ci::checked_r_len(
+        context.size(e2), "character vectors"
+    );
+    R_len_t vectorize_length = 0;
+    // Deviation from stringi: queue recycling warnings while the collator is
+    // live and emit them after the collator closes.
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_length = ci__recycling_rule(
+            STRI__DEFERRED_WARNINGS, 2, e1_n, e2_n
+        );
+        return R_NilValue;
+    });
 
 
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(INTSXP, vectorize_length));
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(INTSXP, vectorize_length);
+    }));
     int* ret_int = INTEGER(ret);
 
-    for (R_len_t i = 0; i < vectorize_length; ++i)
     {
-        if (e1_cont.isNA(i) || e2_cont.isNA(i)) {
-            ret_int[i] = NA_INTEGER;
-            continue;
+        StriContainerUTF8 e1_cont(context, e1, vectorize_length);
+        StriContainerUTF8 e2_cont(context, e2, vectorize_length);
+
+        for (R_len_t i = 0; i < vectorize_length; ++i)
+        {
+            if (e1_cont.isNA(i) || e2_cont.isNA(i)) {
+                ret_int[i] = NA_INTEGER;
+                continue;
+            }
+
+            R_len_t     cur1_n = e1_cont.get(i).length();
+            const char* cur1_s = e1_cont.get(i).data();
+            R_len_t     cur2_n = e2_cont.get(i).length();
+            const char* cur2_s = e2_cont.get(i).data();
+
+            // cmp with collation
+            UErrorCode status = U_ZERO_ERROR;
+            ret_int[i] = (int)ucol_strcollUTF8(col,
+                                               cur1_s, cur1_n, cur2_s, cur2_n, &status
+                                              );
+            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
         }
-
-        R_len_t     cur1_n = e1_cont.get(i).length();
-        const char* cur1_s = e1_cont.get(i).c_str();
-        R_len_t     cur2_n = e2_cont.get(i).length();
-        const char* cur2_s = e2_cont.get(i).c_str();
-
-        // cmp with collation
-        UErrorCode status = U_ZERO_ERROR;
-        ret_int[i] = (int)ucol_strcollUTF8(col,
-                                           cur1_s, cur1_n, cur2_s, cur2_n, &status
-                                          );
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
     }
 
     if (col) {
         ucol_close(col);
         col = NULL;
     }
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
 

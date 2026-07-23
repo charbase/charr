@@ -1,4 +1,4 @@
-CXX_STD = CXX17
+CXX_STD = CXX11
 
 # Template: ../configure generates src/Makevars from this file, substituting
 # the three @...@ tokens for either the system ICU4C (pkg-config) or the
@@ -11,8 +11,7 @@ CXX_STD = CXX17
 # vendored headers stay OFF the include path.
 
 PKG_CPPFLAGS = -I. -Ialtrep_backend @ICU_CPPFLAGS@
-PKG_CXXFLAGS = -pthread
-PKG_LIBS = -pthread @ICU_LIBS@
+PKG_LIBS = @ICU_LIBS@
 
 OBJECTS = $(patsubst %.cpp,%.o,$(wildcard *.cpp)) \
   $(patsubst %.cpp,%.o,$(wildcard altrep_backend/*.cpp))

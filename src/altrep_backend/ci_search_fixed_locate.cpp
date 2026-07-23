@@ -77,56 +77,84 @@ SEXP ci__locate_firstlast_fixed(SEXP str, SEXP pattern, SEXP opts_fixed, bool fi
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
 
     STRI__ERROR_HANDLER_BEGIN(2)
-    int vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
-    StriContainerUTF8_indexable str_cont(str, vectorize_length);
-    StriContainerByteSearch pattern_cont(pattern, vectorize_length, pattern_flags);
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocMatrix(INTSXP, vectorize_length, 2));
-    ci__locate_set_dimnames_matrix(ret, get_length1);
+    {
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t vectorize_length = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_length = ci__recycling_rule(
+            STRI__DEFERRED_WARNINGS, 2, str_n, pattern_n
+        );
+        return R_NilValue;
+    });
+
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocMatrix(INTSXP, vectorize_length, 2);
+    }));
     int* ret_tab = INTEGER(ret);
 
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        ret_tab[i]                  = NA_INTEGER;
-        ret_tab[i+vectorize_length] = NA_INTEGER;
-        STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(
-            str_cont, pattern_cont,
-            ;/*nothing on NA - keep NA_INTEGER*/,
-            { if (get_length1) ret_tab[i] = ret_tab[i+vectorize_length] = -1; }
-        )
+        StriContainerUTF8_indexable str_cont(
+            context, str, vectorize_length
+        );
+        StriContainerByteSearch pattern_cont(
+            context, pattern, vectorize_length, pattern_flags
+        );
 
-        StriByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
-        matcher->reset(str_cont.get(i).c_str(), str_cont.get(i).length());
-        int start;
-        if (first) {
-            start = matcher->findFirst();
-        } else {
-            start = matcher->findLast();
+        for (R_len_t i = pattern_cont.vectorize_init();
+                i != pattern_cont.vectorize_end();
+                i = pattern_cont.vectorize_next(i))
+        {
+            ret_tab[i]                  = NA_INTEGER;
+            ret_tab[i+vectorize_length] = NA_INTEGER;
+            STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(
+                str_cont, pattern_cont,
+                ;/*nothing on NA - keep NA_INTEGER*/,
+                { if (get_length1) ret_tab[i] = ret_tab[i+vectorize_length] = -1; }
+            )
+
+            StriByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
+            matcher->reset(str_cont.get(i).data(), str_cont.get(i).length());
+            int start;
+            if (first) {
+                start = matcher->findFirst();
+            } else {
+                start = matcher->findLast();
+            }
+
+            if (start != USEARCH_DONE) {  // there is a match
+                ret_tab[i]                  = start;
+                ret_tab[i+vectorize_length] = start+matcher->getMatchedLength();
+
+                // Adjust UTF8 byte index -> UChar32 index
+                str_cont.UTF8_to_UChar32_index(i,
+                                               ret_tab+i, ret_tab+i+vectorize_length, 1,
+                                               1, // 0-based index -> 1-based
+                                               0  // end returns position of next character after match
+                                              );
+
+                if (get_length1) ret_tab[i+vectorize_length] -= ret_tab[i] - 1;  // to->length
+            }
+            else if (get_length1) {
+                // not found
+                ret_tab[i+vectorize_length] = ret_tab[i] = -1;
+            }
+            // else NA_INTEGER already
         }
-
-        if (start != USEARCH_DONE) {  // there is a match
-            ret_tab[i]                  = start;
-            ret_tab[i+vectorize_length] = start+matcher->getMatchedLength();
-
-            // Adjust UTF8 byte index -> UChar32 index
-            str_cont.UTF8_to_UChar32_index(i,
-                                           ret_tab+i, ret_tab+i+vectorize_length, 1,
-                                           1, // 0-based index -> 1-based
-                                           0  // end returns position of next character after match
-                                          );
-
-            if (get_length1) ret_tab[i+vectorize_length] -= ret_tab[i] - 1;  // to->length
-        }
-        else if (get_length1) {
-            // not found
-            ret_tab[i+vectorize_length] = ret_tab[i] = -1;
-        }
-        // else NA_INTEGER already
     }
 
+    }
+    charport::unwind_protect([&]() -> SEXP {
+        ci__locate_set_dimnames_matrix(ret, get_length1);
+        return R_NilValue;
+    });
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END( ;/* do nothing special on error */ )
@@ -236,64 +264,118 @@ SEXP ci_locate_all_fixed(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_f
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
 
     STRI__ERROR_HANDLER_BEGIN(2)
-    int vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
-    StriContainerUTF8_indexable str_cont(str, vectorize_length);
-    StriContainerByteSearch pattern_cont(pattern, vectorize_length, pattern_flags);
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(VECSXP, vectorize_length));
-
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-                SET_VECTOR_ELT(ret, i, ci__matrix_NA_INTEGER(1, 2));,
-                SET_VECTOR_ELT(ret, i, ci__matrix_NA_INTEGER(omit_no_match1?0:1, 2, get_length1?-1:NA_INTEGER));)
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t vectorize_length = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_length = ci__recycling_rule(
+            STRI__DEFERRED_WARNINGS, 2, str_n, pattern_n
+        );
+        return R_NilValue;
+    });
 
-        StriByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
-        matcher->reset(str_cont.get(i).c_str(), str_cont.get(i).length());
-
-        int start = matcher->findFirst();
-        if (start == USEARCH_DONE) { // no matches at all
-            SET_VECTOR_ELT(ret, i, ci__matrix_NA_INTEGER(omit_no_match1?0:1, 2, get_length1?-1:NA_INTEGER));
-            continue;
-        }
-
+    {
+        StriContainerUTF8_indexable str_cont(
+            context, str, vectorize_length
+        );
+        StriContainerByteSearch pattern_cont(
+            context, pattern, vectorize_length, pattern_flags
+        );
+        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+            return Rf_allocVector(VECSXP, vectorize_length);
+        }));
         deque< pair<R_len_t, R_len_t> > occurrences;
-        while (start != USEARCH_DONE) {
-            occurrences.push_back(pair<R_len_t, R_len_t>(start, start+matcher->getMatchedLength()));
-            start = matcher->findNext();
-        }
 
-        R_len_t noccurrences = (R_len_t)occurrences.size();
-        SEXP ans;
-        STRI__PROTECT(ans = Rf_allocMatrix(INTSXP, noccurrences, 2));
-        int* ans_tab = INTEGER(ans);
-        deque< pair<R_len_t, R_len_t> >::iterator iter = occurrences.begin();
-        for (R_len_t j = 0; iter != occurrences.end(); ++iter, ++j) {
-            pair<R_len_t, R_len_t> match = *iter;
-            ans_tab[j]              = match.first;
-            ans_tab[j+noccurrences] = match.second;
-        }
+        // Deviation from stringi: one loop-level unwind bridge protects every
+        // child allocation and list write while the Reader and search owners
+        // are live. The reusable scratch deque lives outside the callback, so
+        // it is destroyed on an R error without paying one bridge per child.
+        charport::unwind_protect([&]() -> SEXP {
+          for (R_len_t i = pattern_cont.vectorize_init();
+                  i != pattern_cont.vectorize_end();
+                  i = pattern_cont.vectorize_next(i))
+          {
+            ci::UnwindCallbackProtector protector;
+            occurrences.clear();
+            STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(
+                str_cont, pattern_cont,
+                {
+                    SEXP ans;
+                    ans = protector.protect(ci__matrix_NA_INTEGER(1, 2));
+                    SET_VECTOR_ELT(ret, i, ans);
+                },
+                {
+                    SEXP ans;
+                    ans = protector.protect(ci__matrix_NA_INTEGER(
+                        omit_no_match1?0:1, 2,
+                        get_length1?-1:NA_INTEGER
+                    ));
+                    SET_VECTOR_ELT(ret, i, ans);
+                }
+            )
 
-        // Adjust UChar index -> UChar32 index (1-2 byte UTF16 to 1 byte UTF32-code points)
-        str_cont.UTF8_to_UChar32_index(i, ans_tab,
-                                       ans_tab+noccurrences, noccurrences,
-                                       1, // 0-based index -> 1-based
-                                       0  // end returns position of next character after match
-                                      );
+            StriByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
+            matcher->reset(str_cont.get(i).data(), str_cont.get(i).length());
 
-        if (get_length1) {
-            for (R_len_t j=0; j < noccurrences; ++j)
-                ans_tab[j+noccurrences] -= ans_tab[j] - 1;  // to->length
-        }
+            int start = matcher->findFirst();
+            if (start == USEARCH_DONE) { // no matches at all
+                SEXP ans;
+                ans = protector.protect(ci__matrix_NA_INTEGER(
+                    omit_no_match1?0:1, 2,
+                    get_length1?-1:NA_INTEGER
+                ));
+                SET_VECTOR_ELT(ret, i, ans);
+                continue;
+            }
 
-        SET_VECTOR_ELT(ret, i, ans);
-        STRI__UNPROTECT(1);
+            while (start != USEARCH_DONE) {
+                occurrences.push_back(pair<R_len_t, R_len_t>(
+                    start, start+matcher->getMatchedLength()
+                ));
+                start = matcher->findNext();
+            }
+
+            R_len_t noccurrences = static_cast<R_len_t>(
+                occurrences.size()
+            );
+            SEXP ans;
+            ans = protector.protect(Rf_allocMatrix(
+                INTSXP, noccurrences, 2
+            ));
+            int* ans_tab = INTEGER(ans);
+            for (R_len_t j=0; j < noccurrences; ++j) {
+                ans_tab[j] = occurrences[j].first;
+                ans_tab[j+noccurrences] = occurrences[j].second;
+            }
+
+            // Adjust UChar index -> UChar32 index (1-2 byte UTF16 to 1 byte UTF32-code points)
+            str_cont.UTF8_to_UChar32_index(i, ans_tab,
+                                           ans_tab+noccurrences, noccurrences,
+                                           1, // 0-based index -> 1-based
+                                           0  // end returns position of next character after match
+                                          );
+
+            if (get_length1) {
+                for (R_len_t j=0; j < noccurrences; ++j)
+                    ans_tab[j+noccurrences] -= ans_tab[j] - 1;  // to->length
+            }
+
+            SET_VECTOR_ELT(ret, i, ans);
+          }
+
+          ci__locate_set_dimnames_list(ret, get_length1);
+          return R_NilValue;
+        });
     }
-
-    ci__locate_set_dimnames_list(ret, get_length1);
+    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END( ;/* do nothing special on error */ )

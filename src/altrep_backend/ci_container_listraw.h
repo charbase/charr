@@ -34,8 +34,11 @@
 #ifndef __ci_container_listraw_h
 #define __ci_container_listraw_h
 
+#include "ci_reader.h"
 #include "ci_string8.h"
 #include "ci_container_base.h"
+
+#include <memory>
 
 
 /**
@@ -54,13 +57,16 @@ class StriContainerListRaw : public StriContainerBase {
 
 private:
 
+    std::shared_ptr<ci::ReaderBorrow> borrow;
     String8* data;
 
 
 public:
 
     StriContainerListRaw();
-    StriContainerListRaw(SEXP rlist);
+    // Character input is borrowed through context. Raw vectors retain the
+    // copied stringi shallow-or-owned behavior.
+    StriContainerListRaw(ci::ReaderContext& context, SEXP rlist);
     StriContainerListRaw(StriContainerListRaw& container);
     ~StriContainerListRaw();
     StriContainerListRaw& operator=(StriContainerListRaw& container);

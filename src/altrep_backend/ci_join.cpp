@@ -32,13 +32,49 @@
 
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
 #include "ci_container_base.h"
 #include "ci_container_utf8.h"
 #include "ci_container_integer.h"
 #include "ci_container_listutf8.h"
 #include "ci_string8buf.h"
+#include <utility>
 #include <vector>
 using namespace std;
+
+
+namespace {
+
+
+struct ScalarStringInfo {
+    bool is_na;
+    bool is_empty;
+};
+
+
+// Deviation from stringi: inspect only scalar NA and byte length through a
+// short Reader borrow. Normalization, including bytes errors, stays deferred
+// to the copied container boundary instead of materializing a CHARSXP here.
+SEXP ci__inspect_scalar_string(SEXP source, ScalarStringInfo& info)
+{
+    STRI__ERROR_HANDLER_BEGIN(0)
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    {
+        std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(source);
+        if (borrow->size() != 1)
+            throw StriException(MSG__INTERNAL_ERROR);
+
+        const charport::StrView value = borrow->views()[0];
+        info.is_na = value.is_na();
+        info.is_empty = !info.is_na && value.len == 0;
+    }
+    context.emitWarnings();
+    return R_NilValue;
+    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
+}
+
+
+} // namespace
 
 
 /**
@@ -141,83 +177,96 @@ SEXP ci_dup(SEXP str, SEXP times)
     PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
     PROTECT(times = ci__prepare_arg_integer(times, "times")); // prepare string argument
     R_len_t vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), LENGTH(times));
-    if (vectorize_length <= 0) {
-        UNPROTECT(2);
-        return Rf_allocVector(STRSXP, 0);
-    }
 
     STRI__ERROR_HANDLER_BEGIN(2)
-    StriContainerUTF8 str_cont(str, vectorize_length);
-    StriContainerInteger times_cont(times, vectorize_length);
-
-    // STEP 1.
-    // Calculate the required buffer length
-    size_t bufsize = 0;
-    for (R_len_t i=0; i<vectorize_length; ++i) {
-        if (str_cont.isNA(i) || times_cont.isNA(i) || times_cont.get(i) < 0)
-            continue;
-
-        size_t cursize = times_cont.get(i) * str_cont.get(i).length();
-        if (cursize > bufsize)
-            bufsize = cursize;
+    if (vectorize_length <= 0) {
+        charport::charvec::Builder builder(0);
+        SEXP ret;
+        STRI__PROTECT(ret = builder.to_sexp());
+        STRI__UNPROTECT_ALL
+        return ret;
     }
 
-    if (bufsize > POW_2_31_M_1)
-        throw StriException(MSG__CHARSXP_2147483647);
-
-    // STEP 2.
-    // Alloc buffer & result vector
-    String8buf buf(bufsize);
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, vectorize_length));
-
-    // STEP 3.
-    // Duplicate
-    const String8* str_last = NULL; // this will allow for reusing buffer...
-    size_t str_last_index  = 0;    // ...useful for ci_dup('a', 1:1000) or ci_dup('a', 1000:1)
-
-    for (R_len_t i = str_cont.vectorize_init(); // this iterator allows for...
-            i != str_cont.vectorize_end();        // ...smart buffer reusage
-            i = str_cont.vectorize_next(i))
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    charport::charvec::Builder builder(vectorize_length);
+    StriContainerInteger times_cont(times, vectorize_length);
     {
-        R_len_t times_cur;
-        if (str_cont.isNA(i) || times_cont.isNA(i) || (times_cur = times_cont.get(i)) < 0) {
-            SET_STRING_ELT(ret, i, NA_STRING);
-            continue;
+        StriContainerUTF8 str_cont(context, str, vectorize_length);
+
+        // STEP 1.
+        // Calculate the required buffer length
+        size_t bufsize = 0;
+        for (R_len_t i=0; i<vectorize_length; ++i) {
+            if (str_cont.isNA(i) || times_cont.isNA(i) || times_cont.get(i) < 0)
+                continue;
+
+            size_t cursize = times_cont.get(i) * str_cont.get(i).length();
+            if (cursize > bufsize)
+                bufsize = cursize;
         }
 
-        const String8* str_cur = &(str_cont.get(i));
-        R_len_t str_cur_n = str_cur->length();
-        if (times_cur <= 0 || str_cur_n <= 0) {
-            SET_STRING_ELT(ret, i, Rf_mkCharLen("", 0));
-            continue;
-        }
+        if (bufsize > POW_2_31_M_1)
+            throw StriException(MSG__CHARSXP_2147483647);
 
-        // all right, here the result will neither be NA nor an empty string
+        // STEP 2.
+        // Alloc buffer & result vector
+        String8buf buf(bufsize);
+        // STEP 3.
+        // Duplicate
+        const String8* str_last = NULL; // this will allow for reusing buffer...
+        size_t str_last_index  = 0;    // ...useful for ci_dup('a', 1:1000) or ci_dup('a', 1000:1)
 
-        if (str_cur != str_last) {
-            // well, no reuse possible - resetting
-            str_last = str_cur;
-            str_last_index = 0;
-        }
-
-        // we paste only "additional" duplicates
-        size_t max_index = str_cur_n*times_cur;
-        for (; str_last_index < max_index; str_last_index += str_cur_n) {
-            if (buf.size() < str_last_index+str_cur_n) {
-                throw StriException(MSG__INTERNAL_ERROR);
+        for (R_len_t i = str_cont.vectorize_init(); // this iterator allows for...
+                i != str_cont.vectorize_end();        // ...smart buffer reusage
+                i = str_cont.vectorize_next(i))
+        {
+            R_len_t times_cur;
+            if (str_cont.isNA(i) || times_cont.isNA(i) || (times_cur = times_cont.get(i)) < 0) {
+                builder.set_na(i);
+                continue;
             }
-            memcpy(buf.data()+str_last_index, str_cur->c_str(), (size_t)str_cur_n);
-        }
 
-        // the result is always in UTF-8
-        SET_STRING_ELT(ret, i, Rf_mkCharLenCE(buf.data(), max_index, CE_UTF8));
+            const String8* str_cur = &(str_cont.get(i));
+            R_len_t str_cur_n = str_cur->length();
+            if (times_cur <= 0 || str_cur_n <= 0) {
+                ci::builder_set(
+                    builder, i, "", 0, cetype_ext_t::CE_ASCII
+                );
+                continue;
+            }
+
+            // all right, here the result will neither be NA nor an empty string
+
+            if (str_cur != str_last) {
+                // well, no reuse possible - resetting
+                str_last = str_cur;
+                str_last_index = 0;
+            }
+
+            // we paste only "additional" duplicates
+            size_t max_index = str_cur_n*times_cur;
+            for (; str_last_index < max_index; str_last_index += str_cur_n) {
+                if (buf.size() < str_last_index+str_cur_n) {
+                    throw StriException(MSG__INTERNAL_ERROR);
+                }
+                memcpy(buf.data()+str_last_index, str_cur->data(), (size_t)str_cur_n);
+            }
+
+            // the result is always in UTF-8
+            ci::builder_set(
+                builder, i, buf.data(), max_index,
+                cetype_ext_t::CE_ASCII_OR_UTF8
+            );
+        }
     }
 
 
     // STEP 4.
     // Clean up & finish
 
+    SEXP ret;
+    STRI__PROTECT(ret = builder.to_sexp());
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -269,58 +318,65 @@ SEXP ci_join2(SEXP e1, SEXP e2) // a.k.a. ci_join2_nocollapse
     }
 
     STRI__ERROR_HANDLER_BEGIN(2)
-    StriContainerUTF8 e1_cont(e1, vectorize_length);
-    StriContainerUTF8 e2_cont(e2, vectorize_length);
-
-    // 1. find maximal length of the buffer needed
-    size_t nchar = 0;
-    for (int i=0; i<vectorize_length; ++i) {
-        if (e1_cont.isNA(i) || e2_cont.isNA(i))
-            continue;
-
-        size_t c1 = e1_cont.get(i).length();
-        size_t c2 = e2_cont.get(i).length();
-
-        if (c1+c2 > nchar) nchar = c1+c2;
-    }
-
-    // 2. Create buf & retval
-    if (nchar > POW_2_31_M_1)
-        throw StriException(MSG__CHARSXP_2147483647);
-
-    String8buf buf(nchar);
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, vectorize_length)); // output vector
-
-    // 3. Set retval
-    const String8* last_string_1 = NULL;
-    R_len_t last_buf_idx = 0;
-    for (R_len_t i = e1_cont.vectorize_init(); // this iterator allows for...
-            i != e1_cont.vectorize_end();        // ...smart buffer reusage
-            i = e1_cont.vectorize_next(i))
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    charport::charvec::Builder builder(vectorize_length);
     {
-        if (e1_cont.isNA(i) || e2_cont.isNA(i)) {
-            SET_STRING_ELT(ret, i, NA_STRING);
-            continue;
+        StriContainerUTF8 e1_cont(context, e1, vectorize_length);
+        StriContainerUTF8 e2_cont(context, e2, vectorize_length);
+
+        // 1. find maximal length of the buffer needed
+        size_t nchar = 0;
+        for (int i=0; i<vectorize_length; ++i) {
+            if (e1_cont.isNA(i) || e2_cont.isNA(i))
+                continue;
+
+            size_t c1 = e1_cont.get(i).length();
+            size_t c2 = e2_cont.get(i).length();
+
+            if (c1+c2 > nchar) nchar = c1+c2;
         }
 
-        // If e1 has length < length of e2, this will be faster:
-        const String8* cur_string_1 = &(e1_cont.get(i));
-        if (cur_string_1 != last_string_1) {
-            last_string_1 = cur_string_1;
-            last_buf_idx = cur_string_1->length();
-            memcpy(buf.data(), cur_string_1->c_str(), (size_t)last_buf_idx);
-        }
-        // else reuse string #1
+        // 2. Create buf & retval
+        if (nchar > POW_2_31_M_1)
+            throw StriException(MSG__CHARSXP_2147483647);
 
-        const String8* cur_string_2 = &(e2_cont.get(i));
-        R_len_t  cur_len_2 = cur_string_2->length();
-        memcpy(buf.data()+last_buf_idx, cur_string_2->c_str(), (size_t)cur_len_2);
-        // the result is always in UTF-8
-        SET_STRING_ELT(ret, i, Rf_mkCharLenCE(buf.data(), last_buf_idx+cur_len_2, CE_UTF8));
+        String8buf buf(nchar);
+        // 3. Set retval
+        const String8* last_string_1 = NULL;
+        R_len_t last_buf_idx = 0;
+        for (R_len_t i = e1_cont.vectorize_init(); // this iterator allows for...
+                i != e1_cont.vectorize_end();        // ...smart buffer reusage
+                i = e1_cont.vectorize_next(i))
+        {
+            if (e1_cont.isNA(i) || e2_cont.isNA(i)) {
+                builder.set_na(i);
+                continue;
+            }
+
+            // If e1 has length < length of e2, this will be faster:
+            const String8* cur_string_1 = &(e1_cont.get(i));
+            if (cur_string_1 != last_string_1) {
+                last_string_1 = cur_string_1;
+                last_buf_idx = cur_string_1->length();
+                memcpy(buf.data(), cur_string_1->data(), (size_t)last_buf_idx);
+            }
+            // else reuse string #1
+
+            const String8* cur_string_2 = &(e2_cont.get(i));
+            R_len_t  cur_len_2 = cur_string_2->length();
+            memcpy(buf.data()+last_buf_idx, cur_string_2->data(), (size_t)cur_len_2);
+            // the result is always in UTF-8
+            ci::builder_set(
+                builder, i, buf.data(), last_buf_idx+cur_len_2,
+                cetype_ext_t::CE_ASCII_OR_UTF8
+            );
+        }
     }
 
     // 4. Cleanup & finish
+    SEXP ret;
+    STRI__PROTECT(ret = builder.to_sexp());
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -357,67 +413,105 @@ SEXP ci_join2_withcollapse(SEXP e1, SEXP e2, SEXP collapse)
     PROTECT(e1 = ci__prepare_arg_string(e1, "e1")); // prepare string argument
     PROTECT(e2 = ci__prepare_arg_string(e2, "e2")); // prepare string argument
     PROTECT(collapse = ci__prepare_arg_string_1(collapse, "collapse"));
-    if (STRING_ELT(collapse, 0) == NA_STRING) {
-        UNPROTECT(3);
-        return ci__vector_NA_strings(1);
-    }
 
-    R_len_t e1_length = LENGTH(e1);
-    R_len_t e2_length = LENGTH(e2);
-    R_len_t vectorize_length = ci__recycling_rule(true, 2, e1_length, e2_length);
-
-    if (e1_length <= 0 || e2_length <= 0) {
-        UNPROTECT(3);
-        return ci__vector_empty_strings(1);
+    ScalarStringInfo collapse_info = {false, false};
+    ci__inspect_scalar_string(collapse, collapse_info);
+    R_len_t e1_length = 0;
+    R_len_t e2_length = 0;
+    R_len_t vectorize_length = 0;
+    if (!collapse_info.is_na) {
+        e1_length = LENGTH(e1);
+        e2_length = LENGTH(e2);
+        vectorize_length = ci__recycling_rule(
+            true, 2, e1_length, e2_length
+        );
     }
 
     STRI__ERROR_HANDLER_BEGIN(3)
-    StriContainerUTF8 e1_cont(e1, vectorize_length);
-    StriContainerUTF8 e2_cont(e2, vectorize_length);
-    StriContainerUTF8 collapse_cont(collapse, 1);
-    R_len_t collapse_nbytes = collapse_cont.get(0).length();
-    const char* collapse_s = collapse_cont.get(0).c_str();
-
-
-    // find maximal length of the buffer needed:
-    size_t nchar = 0;
-    for (int i=0; i<vectorize_length; ++i) {
-        if (e1_cont.isNA(i) || e2_cont.isNA(i)) {
-            STRI__UNPROTECT_ALL
-            return ci__vector_NA_strings(1); // at least 1 NA => return NA
-        }
-
-        nchar += e1_cont.get(i).length() + e2_cont.get(i).length()
-                 + ((i>0)?collapse_nbytes:0);
+    if (collapse_info.is_na) {
+        charport::charvec::Store output =
+            charport::charvec::Store::scalar(
+                NULL, 0, cetype_ext_t::CE_NA
+            );
+        SEXP ret;
+        STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+        STRI__UNPROTECT_ALL
+        return ret;
     }
 
+    if (e1_length <= 0 || e2_length <= 0) {
+        charport::charvec::Store output = ci::scalar_store(
+            "", 0, cetype_ext_t::CE_ASCII
+        );
+        SEXP ret;
+        STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+        STRI__UNPROTECT_ALL
+        return ret;
+    }
 
-    if (nchar > POW_2_31_M_1)
-        throw StriException(MSG__CHARSXP_2147483647);
-    String8buf buf(nchar);
-    R_len_t last_buf_idx = 0;
-    for (R_len_t i = 0; i < vectorize_length; ++i) // don't change this order, see #114
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    charport::charvec::Store output(0, 0);
     {
-        // no need to detect NAs - they already have been excluded
-        if (collapse_nbytes > 0 && i > 0) { // copy collapse (separator)
-            memcpy(buf.data()+last_buf_idx, collapse_s, (size_t)collapse_nbytes);
-            last_buf_idx += collapse_nbytes;
+        StriContainerUTF8 e1_cont(context, e1, vectorize_length);
+        StriContainerUTF8 e2_cont(context, e2, vectorize_length);
+        StriContainerUTF8 collapse_cont(context, collapse, 1);
+        R_len_t collapse_nbytes = collapse_cont.get(0).length();
+        const char* collapse_s = collapse_cont.get(0).data();
+
+
+        // find maximal length of the buffer needed:
+        size_t nchar = 0;
+        bool has_na = false;
+        for (int i=0; i<vectorize_length; ++i) {
+            if (e1_cont.isNA(i) || e2_cont.isNA(i)) {
+                has_na = true;
+                break;
+            }
+
+            nchar += e1_cont.get(i).length() + e2_cont.get(i).length()
+                     + ((i>0)?collapse_nbytes:0);
         }
 
-        const String8* cur_string_1 = &(e1_cont.get(i));
-        R_len_t  cur_len_1 = cur_string_1->length();
-        memcpy(buf.data()+last_buf_idx, cur_string_1->c_str(), (size_t)cur_len_1);
-        last_buf_idx += cur_len_1;
 
-        const String8* cur_string_2 = &(e2_cont.get(i));
-        R_len_t  cur_len_2 = cur_string_2->length();
-        memcpy(buf.data()+last_buf_idx, cur_string_2->c_str(), (size_t)cur_len_2);
-        last_buf_idx += cur_len_2;
+        if (has_na) {
+            output = charport::charvec::Store::scalar(
+                NULL, 0, cetype_ext_t::CE_NA
+            );
+        }
+        else {
+            if (nchar > POW_2_31_M_1)
+                throw StriException(MSG__CHARSXP_2147483647);
+            String8buf buf(nchar);
+            R_len_t last_buf_idx = 0;
+            for (R_len_t i = 0; i < vectorize_length; ++i) // don't change this order, see #114
+            {
+                // no need to detect NAs - they already have been excluded
+                if (collapse_nbytes > 0 && i > 0) { // copy collapse (separator)
+                    memcpy(buf.data()+last_buf_idx, collapse_s, (size_t)collapse_nbytes);
+                    last_buf_idx += collapse_nbytes;
+                }
+
+                const String8* cur_string_1 = &(e1_cont.get(i));
+                R_len_t  cur_len_1 = cur_string_1->length();
+                memcpy(buf.data()+last_buf_idx, cur_string_1->data(), (size_t)cur_len_1);
+                last_buf_idx += cur_len_1;
+
+                const String8* cur_string_2 = &(e2_cont.get(i));
+                R_len_t  cur_len_2 = cur_string_2->length();
+                memcpy(buf.data()+last_buf_idx, cur_string_2->data(), (size_t)cur_len_2);
+                last_buf_idx += cur_len_2;
+            }
+
+            output = ci::scalar_store(
+                buf.data(), last_buf_idx,
+                cetype_ext_t::CE_ASCII_OR_UTF8
+            );
+        }
     }
 
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, 1)); // output vector
-    SET_STRING_ELT(ret, 0, Rf_mkCharLenCE(buf.data(), last_buf_idx, CE_UTF8));
+    STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -462,8 +556,13 @@ SEXP ci_join_nocollapse(SEXP strlist, SEXP sep, SEXP ignore_null)
                       ));
     R_len_t strlist_length = LENGTH(strlist);
     if (strlist_length <= 0) {
-        UNPROTECT(1);
-        return ci__vector_empty_strings(0);
+        STRI__ERROR_HANDLER_BEGIN(1)
+        charport::charvec::Builder builder(0);
+        SEXP ret;
+        STRI__PROTECT(ret = builder.to_sexp());
+        STRI__UNPROTECT_ALL
+        return ret;
+        STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
     }
 
     // get length of the longest character vector on the list, i.e., vectorize_length
@@ -471,22 +570,36 @@ SEXP ci_join_nocollapse(SEXP strlist, SEXP sep, SEXP ignore_null)
     for (R_len_t i=0; i<strlist_length; ++i) {
         R_len_t strlist_cur_length = LENGTH(VECTOR_ELT(strlist, i));
         if (strlist_cur_length <= 0) {
-            UNPROTECT(1);
-            return ci__vector_empty_strings(0);
+            STRI__ERROR_HANDLER_BEGIN(1)
+            charport::charvec::Builder builder(0);
+            SEXP ret;
+            STRI__PROTECT(ret = builder.to_sexp());
+            STRI__UNPROTECT_ALL
+            return ret;
+            STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
         }
         if (strlist_cur_length > vectorize_length)
             vectorize_length = strlist_cur_length;
     }
 
     PROTECT(sep = ci__prepare_arg_string_1(sep, "sep"));
-    if (STRING_ELT(sep, 0) == NA_STRING) {
-        UNPROTECT(2);
-        return ci__vector_NA_strings(vectorize_length);
+    ScalarStringInfo sep_info = {false, false};
+    ci__inspect_scalar_string(sep, sep_info);
+    if (sep_info.is_na) {
+        STRI__ERROR_HANDLER_BEGIN(2)
+        charport::charvec::Builder builder(vectorize_length);
+        for (R_len_t i=0; i<vectorize_length; ++i)
+            builder.set_na(i);
+        SEXP ret;
+        STRI__PROTECT(ret = builder.to_sexp());
+        STRI__UNPROTECT_ALL
+        return ret;
+        STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
     }
 
 
     // * special case *
-    if (LENGTH(STRING_ELT(sep, 0)) == 0 && strlist_length == 2) {
+    if (sep_info.is_empty && strlist_length == 2) {
         // sep==empty string and 2 vectors --
         // an often occurring case - we have some specialized functions for this :-)
         SEXP ret;
@@ -500,66 +613,75 @@ SEXP ci_join_nocollapse(SEXP strlist, SEXP sep, SEXP ignore_null)
     // -- it needs to be converted to UTF8
     // so we proceed
 
-    SEXP ret;
     STRI__ERROR_HANDLER_BEGIN(2)
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    charport::charvec::Builder builder(vectorize_length);
+    {
+        StriContainerUTF8 sep_cont(context, sep, 1);
+        const char* sep_char = sep_cont.get(0).data();
+        R_len_t     sep_len  = sep_cont.get(0).length();
 
-    StriContainerUTF8 sep_cont(sep, 1);
-    const char* sep_char = sep_cont.get(0).c_str();
-    R_len_t     sep_len  = sep_cont.get(0).length();
-
-    StriContainerListUTF8 strlist_cont(strlist, vectorize_length);
+        StriContainerListUTF8 strlist_cont(
+            context, strlist, vectorize_length
+        );
 
 
-    // 4. Get buf size and determine where NAs will occur
-    size_t buf_maxbytes = 0;
-    vector<bool> whichNA(vectorize_length, false); // where are NAs in out?
-    for (R_len_t i=0; i<vectorize_length; ++i) {
+        // 4. Get buf size and determine where NAs will occur
+        size_t buf_maxbytes = 0;
+        vector<bool> whichNA(vectorize_length, false); // where are NAs in out?
+        for (R_len_t i=0; i<vectorize_length; ++i) {
 
-        size_t curchar = 0;
-        for (R_len_t j=0; j<strlist_length; ++j) {
-            if (strlist_cont.get(j).isNA(i)) {
-                whichNA[i] = true;
-                break;
+            size_t curchar = 0;
+            for (R_len_t j=0; j<strlist_length; ++j) {
+                if (strlist_cont.get(j).isNA(i)) {
+                    whichNA[i] = true;
+                    break;
+                }
+                else {
+                    curchar += strlist_cont.get(j).get(i).length()
+                               + ((j>0)?sep_len:0);
+                }
             }
-            else {
-                curchar += strlist_cont.get(j).get(i).length()
-                           + ((j>0)?sep_len:0);
-            }
-        }
-        if (!whichNA[i] && curchar > buf_maxbytes)
-            buf_maxbytes = curchar;
-    }
-
-    // 5. Create ret val
-    if (buf_maxbytes > POW_2_31_M_1)
-        throw StriException(MSG__CHARSXP_2147483647);
-    String8buf buf(buf_maxbytes);
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, vectorize_length));
-
-    for (R_len_t i=0; i<vectorize_length; ++i) {
-        if (whichNA[i]) {
-            SET_STRING_ELT(ret, i, NA_STRING);
-            continue;
+            if (!whichNA[i] && curchar > buf_maxbytes)
+                buf_maxbytes = curchar;
         }
 
-        size_t cursize = 0;
-        for (R_len_t j=0; j<strlist_length; ++j) {
+        // 5. Create ret val
+        if (buf_maxbytes > POW_2_31_M_1)
+            throw StriException(MSG__CHARSXP_2147483647);
+        String8buf buf(buf_maxbytes);
 
-            if (sep_len >= 0 && j > 0) {
-                memcpy(buf.data()+cursize, sep_char, (size_t)sep_len);
-                cursize += sep_len;
+        for (R_len_t i=0; i<vectorize_length; ++i) {
+            if (whichNA[i]) {
+                builder.set_na(i);
+                continue;
             }
 
-            const String8* curstring = &(strlist_cont.get(j).get(i));
-            size_t curstring_n = curstring->length();
-            memcpy(buf.data()+cursize, curstring->c_str(), (size_t)curstring_n);
-            cursize += curstring_n;
-        }
+            size_t cursize = 0;
+            for (R_len_t j=0; j<strlist_length; ++j) {
 
-        SET_STRING_ELT(ret, i, Rf_mkCharLenCE(buf.data(), cursize, CE_UTF8));
+                if (sep_len >= 0 && j > 0) {
+                    memcpy(buf.data()+cursize, sep_char, (size_t)sep_len);
+                    cursize += sep_len;
+                }
+
+                const String8* curstring = &(strlist_cont.get(j).get(i));
+                size_t curstring_n = curstring->length();
+                memcpy(buf.data()+cursize, curstring->data(), (size_t)curstring_n);
+                cursize += curstring_n;
+            }
+
+            ci::builder_set(
+                builder, i, buf.data(), cursize,
+                cetype_ext_t::CE_ASCII_OR_UTF8
+            );
+        }
     }
 
     // nothing more to do:
+    SEXP ret;
+    STRI__PROTECT(ret = builder.to_sexp());
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
 
@@ -606,8 +728,15 @@ SEXP ci_join(SEXP strlist, SEXP sep, SEXP collapse, SEXP ignore_null)
                       ));
     R_len_t strlist_length = LENGTH(strlist);
     if (strlist_length <= 0) {
-        UNPROTECT(1);
-        return ci__vector_empty_strings(1);
+        STRI__ERROR_HANDLER_BEGIN(1)
+        charport::charvec::Store output = ci::scalar_store(
+            "", 0, cetype_ext_t::CE_ASCII
+        );
+        SEXP ret;
+        STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+        STRI__UNPROTECT_ALL
+        return ret;
+        STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
     }
     else if (strlist_length == 1) {
         // one vector + collapse string -- another frequently occurring case
@@ -620,11 +749,24 @@ SEXP ci_join(SEXP strlist, SEXP sep, SEXP collapse, SEXP ignore_null)
 
     PROTECT(sep = ci__prepare_arg_string_1(sep, "sep"));
     PROTECT(collapse = ci__prepare_arg_string_1(collapse, "collapse"));
-    if (STRING_ELT(sep, 0) == NA_STRING || STRING_ELT(collapse, 0) == NA_STRING) {
-        UNPROTECT(3);
-        return ci__vector_NA_strings(1);
+    ScalarStringInfo sep_info = {false, false};
+    ScalarStringInfo collapse_info = {false, false};
+    ci__inspect_scalar_string(sep, sep_info);
+    if (!sep_info.is_na)
+        ci__inspect_scalar_string(collapse, collapse_info);
+    if (sep_info.is_na || collapse_info.is_na) {
+        STRI__ERROR_HANDLER_BEGIN(3)
+        charport::charvec::Store output =
+            charport::charvec::Store::scalar(
+                NULL, 0, cetype_ext_t::CE_NA
+            );
+        SEXP ret;
+        STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+        STRI__UNPROTECT_ALL
+        return ret;
+        STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
     }
-    else if (LENGTH(STRING_ELT(sep, 0)) == 0 && strlist_length == 2) {
+    else if (sep_info.is_empty && strlist_length == 2) {
         // sep==empty string and 2 vectors --
         // an often occurring case - we have some specialized functions for this :-)
         SEXP ret;
@@ -638,8 +780,15 @@ SEXP ci_join(SEXP strlist, SEXP sep, SEXP collapse, SEXP ignore_null)
     for (R_len_t i=0; i<strlist_length; ++i) {
         R_len_t strlist_cur_length = LENGTH(VECTOR_ELT(strlist, i));
         if (strlist_cur_length <= 0) {
-            UNPROTECT(3);
-            return ci__vector_empty_strings(1);
+            STRI__ERROR_HANDLER_BEGIN(3)
+            charport::charvec::Store output = ci::scalar_store(
+                "", 0, cetype_ext_t::CE_ASCII
+            );
+            SEXP ret;
+            STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+            STRI__UNPROTECT_ALL
+            return ret;
+            STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
         }
         if (strlist_cur_length > vectorize_length)
             vectorize_length = strlist_cur_length;
@@ -647,69 +796,91 @@ SEXP ci_join(SEXP strlist, SEXP sep, SEXP collapse, SEXP ignore_null)
 
 
     STRI__ERROR_HANDLER_BEGIN(3)
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    charport::charvec::Store output(0, 0);
+    {
+        StriContainerListUTF8 strlist_cont(
+            context, strlist, vectorize_length
+        );
 
-    StriContainerListUTF8 strlist_cont(strlist, vectorize_length);
+        StriContainerUTF8 sep_cont(context, sep, 1); // definitely not NA
+        const char* sep_s = sep_cont.get(0).data();
+        R_len_t     sep_n = sep_cont.get(0).length();
 
-    StriContainerUTF8 sep_cont(sep, 1); // definitely not NA
-    const char* sep_s = sep_cont.get(0).c_str();
-    R_len_t     sep_n = sep_cont.get(0).length();
+        StriContainerUTF8 collapse_cont(
+            context, collapse, 1
+        ); // definitely not NA
+        const char* collapse_s = collapse_cont.get(0).data();
+        R_len_t     collapse_n = collapse_cont.get(0).length();
 
-    StriContainerUTF8 collapse_cont(collapse, 1); // definitely not NA
-    const char* collapse_s = collapse_cont.get(0).c_str();
-    R_len_t     collapse_n = collapse_cont.get(0).length();
+        // Get required buffer size
+        size_t buf_maxbytes = 0;
+        bool has_na = false;
+        for (R_len_t i=0; i<vectorize_length; ++i) {   // for each vectorized string (vertically)
+            for (R_len_t j=0; j<strlist_length; ++j) {  // for each character vector  (horizontally)
+                if (strlist_cont.get(j).isNA(i)) {
+                    has_na = true;
+                    break;
+                }
 
-    // Get required buffer size
-    size_t buf_maxbytes = 0;
-    for (R_len_t i=0; i<vectorize_length; ++i) {   // for each vectorized string (vertically)
-        for (R_len_t j=0; j<strlist_length; ++j) {  // for each character vector  (horizontally)
-            if (strlist_cont.get(j).isNA(i)) {
-                STRI__UNPROTECT_ALL
-                return ci__vector_NA_strings(1);
+                buf_maxbytes += strlist_cont.get(j).get(i).length()+ ((j>0)?sep_n:0);
             }
 
-            buf_maxbytes += strlist_cont.get(j).get(i).length()+ ((j>0)?sep_n:0);
+            if (has_na)
+                break;
+            if (i>0) buf_maxbytes += collapse_n;
         }
 
-        if (i>0) buf_maxbytes += collapse_n;
-    }
-
-    // 5. Create ret val
-    if (buf_maxbytes > POW_2_31_M_1)
-        throw StriException(MSG__CHARSXP_2147483647);
-    String8buf buf(buf_maxbytes);
-    size_t last_buf_idx = 0;
-
-    for (R_len_t i=0; i<vectorize_length; ++i) {
-        // there is no NA anywhere
-
-        if (collapse_n > 0 && i > 0) {
-            memcpy(buf.data()+last_buf_idx, collapse_s, (size_t)collapse_n);
-            last_buf_idx += collapse_n;
+        if (has_na) {
+            output = charport::charvec::Store::scalar(
+                NULL, 0, cetype_ext_t::CE_NA
+            );
         }
+        else {
+            // 5. Create ret val
+            if (buf_maxbytes > POW_2_31_M_1)
+                throw StriException(MSG__CHARSXP_2147483647);
+            String8buf buf(buf_maxbytes);
+            size_t last_buf_idx = 0;
 
-        for (R_len_t j=0; j<strlist_length; ++j) {
+            for (R_len_t i=0; i<vectorize_length; ++i) {
+                // there is no NA anywhere
 
-            if (sep_n > 0 && j > 0) {
-                memcpy(buf.data()+last_buf_idx, sep_s, (size_t)sep_n);
-                last_buf_idx += sep_n;
+                if (collapse_n > 0 && i > 0) {
+                    memcpy(buf.data()+last_buf_idx, collapse_s, (size_t)collapse_n);
+                    last_buf_idx += collapse_n;
+                }
+
+                for (R_len_t j=0; j<strlist_length; ++j) {
+
+                    if (sep_n > 0 && j > 0) {
+                        memcpy(buf.data()+last_buf_idx, sep_s, (size_t)sep_n);
+                        last_buf_idx += sep_n;
+                    }
+
+                    const String8* curstring = &(strlist_cont.get(j).get(i));
+                    size_t curstring_n = curstring->length();
+                    memcpy(buf.data()+last_buf_idx, curstring->data(), (size_t)curstring_n);
+                    last_buf_idx += curstring_n;
+                }
             }
-
-            const String8* curstring = &(strlist_cont.get(j).get(i));
-            size_t curstring_n = curstring->length();
-            memcpy(buf.data()+last_buf_idx, curstring->c_str(), (size_t)curstring_n);
-            last_buf_idx += curstring_n;
-        }
-    }
 
 #ifndef NDEBUG
-    if (buf_maxbytes != last_buf_idx)
-        throw StriException("ci_join_withcollapse: buffer overrun");
+            if (buf_maxbytes != last_buf_idx)
+                throw StriException("ci_join_withcollapse: buffer overrun");
 #endif
+
+            output = ci::scalar_store(
+                buf.data(), last_buf_idx,
+                cetype_ext_t::CE_ASCII_OR_UTF8
+            );
+        }
+    }
 
     // we are done
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, 1));
-    SET_STRING_ELT(ret, 0, Rf_mkCharLenCE(buf.data(), last_buf_idx, CE_UTF8));
+    STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
 
@@ -751,48 +922,71 @@ SEXP ci_flatten_noressep(SEXP str, int na_empty)
     PROTECT(str = ci__prepare_arg_string(str, "str"));
     R_len_t str_length = LENGTH(str);
     if (str_length <= 0) {
-        UNPROTECT(1);
-        return ci__vector_empty_strings(1);
+        STRI__ERROR_HANDLER_BEGIN(1)
+        charport::charvec::Store output = ci::scalar_store(
+            "", 0, cetype_ext_t::CE_ASCII
+        );
+        SEXP ret;
+        STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+        STRI__UNPROTECT_ALL
+        return ret;
+        STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
     }
 
     STRI__ERROR_HANDLER_BEGIN(1)
-    StriContainerUTF8 str_cont(str, str_length);
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    charport::charvec::Store output(0, 0);
+    {
+        StriContainerUTF8 str_cont(context, str, str_length);
 
-    // 1. Get required buffer size
-    size_t nchar = 0;
-    for (int i=0; i<str_length; ++i) {
-        if (str_cont.isNA(i)) {
-            if (na_empty == NA_LOGICAL || na_empty) {
-                nchar += 0; // ignore
+        // 1. Get required buffer size
+        size_t nchar = 0;
+        bool has_na = false;
+        for (int i=0; i<str_length; ++i) {
+            if (str_cont.isNA(i)) {
+                if (na_empty == NA_LOGICAL || na_empty) {
+                    nchar += 0; // ignore
+                }
+                else {
+                    has_na = true;
+                    break;
+                }
             }
             else {
-                STRI__UNPROTECT_ALL
-                return ci__vector_NA_strings(1); // at least 1 NA => return NA
+                nchar += str_cont.get(i).length();
             }
         }
+
+        if (has_na) {
+            output = charport::charvec::Store::scalar(
+                NULL, 0, cetype_ext_t::CE_NA
+            );
+        }
         else {
-            nchar += str_cont.get(i).length();
+            // 2. Fill the buf!
+            if (nchar > POW_2_31_M_1)
+                throw StriException(MSG__CHARSXP_2147483647);
+            String8buf buf(nchar);
+            size_t cur = 0;
+            for (int i=0; i<str_length; ++i) {
+                if (!str_cont.isNA(i)) {
+                    size_t ncur = str_cont.get(i).length();
+                    memcpy(buf.data()+cur, str_cont.get(i).data(), (size_t)ncur);
+                    cur += ncur;
+                }
+            }
+
+            output = ci::scalar_store(
+                buf.data(), cur,
+                cetype_ext_t::CE_ASCII_OR_UTF8
+            );
         }
     }
-
-    // 2. Fill the buf!
-    if (nchar > POW_2_31_M_1)
-        throw StriException(MSG__CHARSXP_2147483647);
-    String8buf buf(nchar);
-    size_t cur = 0;
-    for (int i=0; i<str_length; ++i) {
-        if (!str_cont.isNA(i)) {
-            size_t ncur = str_cont.get(i).length();
-            memcpy(buf.data()+cur, str_cont.get(i).c_str(), (size_t)ncur);
-            cur += ncur;
-        }
-    }
-
 
     // 3. Get ret val & good bye
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, 1));
-    SET_STRING_ELT(ret, 0, Rf_mkCharLenCE(buf.data(), cur, CE_UTF8));
+    STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -837,14 +1031,24 @@ SEXP ci_flatten(SEXP str, SEXP collapse, SEXP na_empty, SEXP omit_empty) // a.k.
     int na_empty_1 = ci__prepare_arg_logical_1_NA(na_empty, "na_empty");
     bool omit_empty_1 = ci__prepare_arg_logical_1_notNA(omit_empty, "omit_empty");
 
-    if (STRING_ELT(collapse, 0) == NA_STRING) {
-        UNPROTECT(1);
-        return ci__vector_NA_strings(1);
+    ScalarStringInfo collapse_info = {false, false};
+    ci__inspect_scalar_string(collapse, collapse_info);
+    if (collapse_info.is_na) {
+        STRI__ERROR_HANDLER_BEGIN(1)
+        charport::charvec::Store output =
+            charport::charvec::Store::scalar(
+                NULL, 0, cetype_ext_t::CE_NA
+            );
+        SEXP ret;
+        STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+        STRI__UNPROTECT_ALL
+        return ret;
+        STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
     }
 
     // if collapse is an empty string, we may use the following
     // specialized function:
-    if (LENGTH(STRING_ELT(collapse, 0)) == 0) {
+    if (collapse_info.is_empty) {
         UNPROTECT(1);
         return ci_flatten_noressep(str, na_empty_1);
     }
@@ -852,71 +1056,94 @@ SEXP ci_flatten(SEXP str, SEXP collapse, SEXP na_empty, SEXP omit_empty) // a.k.
     PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
     R_len_t str_length = LENGTH(str);
     if (str_length <= 0) {
-        UNPROTECT(2);
-        return ci__vector_empty_strings(1);
+        STRI__ERROR_HANDLER_BEGIN(2)
+        charport::charvec::Store output = ci::scalar_store(
+            "", 0, cetype_ext_t::CE_ASCII
+        );
+        SEXP ret;
+        STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+        STRI__UNPROTECT_ALL
+        return ret;
+        STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
     }
 
     STRI__ERROR_HANDLER_BEGIN(2)
-    StriContainerUTF8 str_cont(str, str_length);
-    StriContainerUTF8 collapse_cont(collapse, 1);
-    R_len_t collapse_nbytes = collapse_cont.get(0).length();
-    const char* collapse_s = collapse_cont.get(0).c_str();
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    charport::charvec::Store output(0, 0);
+    {
+        StriContainerUTF8 str_cont(context, str, str_length);
+        StriContainerUTF8 collapse_cont(context, collapse, 1);
+        R_len_t collapse_nbytes = collapse_cont.get(0).length();
+        const char* collapse_s = collapse_cont.get(0).data();
 
 
-    // 1. Get required minimal buffer size
-    size_t nbytes = 0;
-    for (int i=0; i<str_length; ++i) {
-        if (str_cont.isNA(i)) {
-            if (na_empty_1 == NA_LOGICAL) {
-                nbytes += 0;  // do nothing
-            } else if (na_empty_1) {
-                nbytes += ((i>0 && !omit_empty_1)?collapse_nbytes:0);
+        // 1. Get required minimal buffer size
+        size_t nbytes = 0;
+        bool has_na = false;
+        for (int i=0; i<str_length; ++i) {
+            if (str_cont.isNA(i)) {
+                if (na_empty_1 == NA_LOGICAL) {
+                    nbytes += 0;  // do nothing
+                } else if (na_empty_1) {
+                    nbytes += ((i>0 && !omit_empty_1)?collapse_nbytes:0);
+                }
+                else {
+                    has_na = true;
+                    break;
+                }
             }
             else {
-                STRI__UNPROTECT_ALL
-                return ci__vector_NA_strings(1); // at least 1 NA => return NA
+                nbytes += str_cont.get(i).length() + ((i>0)?collapse_nbytes:0);
             }
+        }
+
+
+        if (has_na) {
+            output = charport::charvec::Store::scalar(
+                NULL, 0, cetype_ext_t::CE_NA
+            );
         }
         else {
-            nbytes += str_cont.get(i).length() + ((i>0)?collapse_nbytes:0);
-        }
-    }
+            // 2. Fill the buf!
+            if (nbytes > POW_2_31_M_1)
+                throw StriException(MSG__CHARSXP_2147483647);
+            String8buf buf(nbytes);
+            size_t cur = 0;
+            bool already_started = false;
+            for (int i=0; i<str_length; ++i) {
+                if (na_empty_1 == NA_LOGICAL && str_cont.isNA(i))
+                    continue;
 
+                if (omit_empty_1 && (str_cont.isNA(i) || str_cont.get(i).length() == 0))
+                    continue;
 
-    // 2. Fill the buf!
-    if (nbytes > POW_2_31_M_1)
-        throw StriException(MSG__CHARSXP_2147483647);
-    String8buf buf(nbytes);
-    size_t cur = 0;
-    bool already_started = false;
-    for (int i=0; i<str_length; ++i) {
-        if (na_empty_1 == NA_LOGICAL && str_cont.isNA(i))
-            continue;
+                if (already_started) {
+                    if (collapse_nbytes > 0) {
+                        memcpy(buf.data()+cur, collapse_s, (size_t)collapse_nbytes);
+                        cur += collapse_nbytes;
+                    }
+                }
+                else
+                    already_started = true;
 
-        if (omit_empty_1 && (str_cont.isNA(i) || str_cont.get(i).length() == 0))
-            continue;
-
-        if (already_started) {
-            if (collapse_nbytes > 0) {
-                memcpy(buf.data()+cur, collapse_s, (size_t)collapse_nbytes);
-                cur += collapse_nbytes;
+                if (!str_cont.isNA(i)) {
+                    size_t ncur = str_cont.get(i).length();
+                    memcpy(buf.data()+cur, str_cont.get(i).data(), (size_t)ncur);
+                    cur += ncur;
+                }
             }
-        }
-        else
-            already_started = true;
 
-        if (!str_cont.isNA(i)) {
-            size_t ncur = str_cont.get(i).length();
-            memcpy(buf.data()+cur, str_cont.get(i).c_str(), (size_t)ncur);
-            cur += ncur;
+            output = ci::scalar_store(
+                buf.data(), cur,
+                cetype_ext_t::CE_ASCII_OR_UTF8
+            );
         }
     }
-
 
     // 3. Get ret val & return
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, 1));
-    SET_STRING_ELT(ret, 0, Rf_mkCharLenCE(buf.data(), cur, CE_UTF8));
+    STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -942,8 +1169,13 @@ SEXP ci_join_list(SEXP x, SEXP sep, SEXP collapse)
 
     R_len_t strlist_length = LENGTH(x);
     if (strlist_length <= 0) {
-        UNPROTECT(1);
-        return ci__vector_empty_strings(0);
+        STRI__ERROR_HANDLER_BEGIN(1)
+        charport::charvec::Builder builder(0);
+        SEXP ret;
+        STRI__PROTECT(ret = builder.to_sexp());
+        STRI__UNPROTECT_ALL
+        return ret;
+        STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
     }
 
     PROTECT(sep = ci__prepare_arg_string_1(sep, "sep"));
@@ -954,16 +1186,41 @@ SEXP ci_join_list(SEXP x, SEXP sep, SEXP collapse)
 
     STRI__ERROR_HANDLER_BEGIN(3)
 
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, strlist_length));
+    // Deviation from stringi: run the nested flatten entry points before
+    // opening output Readers or a Builder. A protected list keeps their lazy
+    // scalar results alive without materializing them as CHARSXPs.
+    SEXP flattened;
+    STRI__PROTECT(flattened = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(VECSXP, strlist_length);
+    }));
     for (R_len_t j=0; j<strlist_length; ++j) {
         SEXP ret2;
-        STRI__PROTECT(ret2 = ci_flatten(VECTOR_ELT(x, j), sep));
-        SET_STRING_ELT(ret, j, STRING_ELT(ret2, 0));
+        STRI__PROTECT(ret2 = charport::unwind_protect([&]() -> SEXP {
+            return ci_flatten(VECTOR_ELT(x, j), sep);
+        }));
+        SET_VECTOR_ELT(flattened, j, ret2);
         STRI__UNPROTECT(1);
     }
-    if (!Rf_isNull(collapse))
-        STRI__PROTECT(ret = ci_flatten(ret, collapse));
+
+    charport::charvec::Builder builder(strlist_length);
+    for (R_len_t j=0; j<strlist_length; ++j) {
+        SEXP ret2 = VECTOR_ELT(flattened, j);
+        {
+            ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+            {
+                StriContainerUTF8 ret2_cont(context, ret2, 1);
+                ci::builder_set(builder, j, ret2_cont.getNAble(0));
+            }
+        }
+    }
+    SEXP ret;
+    STRI__PROTECT(ret = builder.to_sexp());
+    if (!Rf_isNull(collapse)) {
+        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+            return ci_flatten(ret, collapse);
+        }));
+    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
 

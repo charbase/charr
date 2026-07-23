@@ -32,13 +32,50 @@
 
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
 #include "ci_container_utf16.h"
 #include "ci_container_utf8.h"
 #include "ci_container_double.h"
 #include "ci_container_integer.h"
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
 #include <unicode/calendar.h>
 #include <unicode/gregocal.h>
 #include <unicode/smpdtfmt.h>
+
+
+static int ci__match_date_format(const String8& option, const char** set)
+{
+    // Deviation from stringi: String8 has no trailing terminator, so mirror
+    // ci__match_arg's exact-or-unique-prefix algorithm with an explicit option
+    // length instead of manufacturing a C string.
+    int set_length = 0;
+    while (set[set_length] != NULL) ++set_length;
+    if (set_length <= 0) return -1;
+
+    std::vector<bool> excluded(static_cast<size_t>(set_length), false);
+    const char* option_data = option.data();
+    const R_len_t option_length = option.length();
+    for (R_len_t k=0; k<option_length; ++k) {
+        for (int i=0; i<set_length; ++i) {
+            if (excluded[static_cast<size_t>(i)]) continue;
+            if (set[i][k] == '\0' || set[i][k] != option_data[k])
+                excluded[static_cast<size_t>(i)] = true;
+            else if (set[i][k+1] == '\0' && k+1 == option_length)
+                return i;
+        }
+    }
+
+    int which = -1;
+    for (int i=0; i<set_length; ++i) {
+        if (excluded[static_cast<size_t>(i)]) continue;
+        if (which < 0) which = i;
+        else return -1;
+    }
+    return which;
+}
 
 
 /**
@@ -48,7 +85,7 @@
  *    refactor from ci_datetime_parse
  */
 DateFormat* ci__get_date_format(
-    const char* format_val, const char* locale_val, UErrorCode status
+    const String8& format_val, const char* locale_val, UErrorCode status
 ) {
     DateFormat* fmt = NULL;
 
@@ -62,7 +99,7 @@ DateFormat* ci__get_date_format(
         "datetime_relative_full", "datetime_relative_long", "datetime_relative_medium", "datetime_relative_short",
         NULL
     };
-    int format_cur = ci__match_arg(format_val, format_opts);
+    int format_cur = ci__match_date_format(format_val, format_opts);
 
     if (format_cur >= 0) {
         DateFormat::EStyle style = DateFormat::kNone;
@@ -126,7 +163,9 @@ DateFormat* ci__get_date_format(
         }
     }
     else {
-        UnicodeString format_str(format_val);
+        UnicodeString format_str = UnicodeString::fromUTF8(
+            StringPiece(format_val.data(), format_val.length())
+        );
         fmt = new SimpleDateFormat(
             format_str, Locale::createFromName(locale_val), status
         );
@@ -157,78 +196,104 @@ SEXP ci_datetime_format(SEXP time, SEXP format, SEXP tz, SEXP locale)
     PROTECT(format = ci__prepare_arg_string(format, "format"));
 
     R_len_t vectorize_length = ci__recycling_rule(true, 2, LENGTH(time), LENGTH(format));
-    if (vectorize_length <= 0) {
-        UNPROTECT(2);
-        return Rf_allocVector(STRSXP, 0);
-    }
-
-    TimeZone* tz_val = ci__prepare_arg_timezone(tz, "tz", true/*allowdefault*/);
+    if (vectorize_length > 0 && !Rf_isNull(tz))
+        PROTECT(tz = ci__prepare_arg_string_1(tz, "tz"));
+    else
+        PROTECT(tz);
+    TimeZone* tz_val = NULL;
     Calendar* cal = NULL;
     DateFormat* fmt = NULL;
 
-    STRI__ERROR_HANDLER_BEGIN(2)
-    StriContainerDouble time_cont(time, vectorize_length);
-    StriContainerUTF8 format_cont(format, vectorize_length);
-
-    cal = ci__get_calendar(locale_val);
-
-    cal->adoptTimeZone(tz_val);
-    tz_val = NULL; /* The Calendar takes ownership of the TimeZone. */
-
-    UErrorCode status = U_ZERO_ERROR;
+    STRI__ERROR_HANDLER_BEGIN(3)
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, vectorize_length));
-
-    const String8* format_last = NULL; // this will allow for formatter reuse
-    for (R_len_t i = format_cont.vectorize_init();
-            i != format_cont.vectorize_end();
-            i = format_cont.vectorize_next(i))
     {
-        if (time_cont.isNA(i) || format_cont.isNA(i)) {
-            SET_STRING_ELT(ret, i, NA_STRING);
-            continue;
+        if (vectorize_length <= 0) {
+            charport::charvec::Builder output(0);
+            STRI__PROTECT(ret = output.to_sexp());
         }
+        else {
+            tz_val = ci__prepare_arg_timezone(
+                STRI__DEFERRED_WARNINGS, tz, "tz",
+                true/*allowdefault*/
+            );
 
-        const String8* format_cur = &(format_cont.get(i));
-        if (format_cur != format_last) {
-            // well, no reuse possible - resetting
-            format_last = format_cur;
+            ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+            charport::charvec::Builder output(vectorize_length);
+            {
+                StriContainerDouble time_cont(time, vectorize_length);
+                StriContainerUTF8 format_cont(
+                    context, format, vectorize_length
+                );
 
+                cal = ci__get_calendar(
+                    locale_val, STRI__DEFERRED_WARNINGS
+                );
+
+                cal->adoptTimeZone(tz_val);
+                tz_val = NULL; /* The Calendar takes ownership of the TimeZone. */
+
+                UErrorCode status = U_ZERO_ERROR;
+                const String8* format_last = NULL; // this will allow for formatter reuse
+                for (R_len_t i = format_cont.vectorize_init();
+                        i != format_cont.vectorize_end();
+                        i = format_cont.vectorize_next(i))
+                {
+                    if (time_cont.isNA(i) || format_cont.isNA(i)) {
+                        output.set_na(i);
+                        continue;
+                    }
+
+                    const String8* format_cur = &(format_cont.get(i));
+                    if (format_cur != format_last) {
+                        // well, no reuse possible - resetting
+                        format_last = format_cur;
+
+                        if (fmt) {
+                            delete fmt;
+                            fmt = NULL;
+                        }
+
+                        status = U_ZERO_ERROR;
+                        fmt = ci__get_date_format(
+                            *format_cur, locale_val, status
+                        );
+                        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                    }
+
+                    status = U_ZERO_ERROR;
+                    cal->setTime((UDate)(time_cont.get(i)*1000.0), status);
+                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+
+                    FieldPosition pos;
+                    UnicodeString out;
+                    fmt->format(*cal, out, pos);
+
+                    std::string s;
+                    out.toUTF8String(s);
+                    ci::builder_set(
+                        output, i, s, cetype_ext_t::CE_ASCII_OR_UTF8
+                    );
+                }
+            }
+
+            if (tz_val) {
+                delete tz_val;
+                tz_val = NULL;
+            }
             if (fmt) {
                 delete fmt;
                 fmt = NULL;
             }
+            if (cal) {
+                delete cal;
+                cal = NULL;
+            }
 
-            status = U_ZERO_ERROR;
-            fmt = ci__get_date_format(format_cur->c_str(), locale_val, status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            STRI__PROTECT(ret = output.to_sexp());
         }
-
-        status = U_ZERO_ERROR;
-        cal->setTime((UDate)(time_cont.get(i)*1000.0), status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-        FieldPosition pos;
-        UnicodeString out;
-        fmt->format(*cal, out, pos);
-
-        std::string s;
-        out.toUTF8String(s);
-        SET_STRING_ELT(ret, i, Rf_mkCharLenCE(s.c_str(), (int)s.length(), (cetype_t)CE_UTF8));
     }
 
-    if (tz_val) {
-        delete tz_val;
-        tz_val = NULL;
-    }
-    if (fmt) {
-        delete fmt;
-        fmt = NULL;
-    }
-    if (cal) {
-        delete cal;
-        cal = NULL;
-    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END({
@@ -287,92 +352,119 @@ SEXP ci_datetime_parse(SEXP str, SEXP format, SEXP lenient, SEXP tz, SEXP locale
         return ret;
     }
 
-    TimeZone* tz_val = ci__prepare_arg_timezone(tz, "tz", true/*allowdefault*/);
+    TimeZone* tz_val = NULL;
     Calendar* cal = NULL;
     DateFormat* fmt = NULL;
     STRI__ERROR_HANDLER_BEGIN(3)
-    StriContainerUTF16 str_cont(str, vectorize_length);
-    StriContainerUTF8 format_cont(format, vectorize_length);
-
-    cal = ci__get_calendar(locale_val);
-
-    cal->adoptTimeZone(tz_val);
-    tz_val = NULL; /* The Calendar takes ownership of the TimeZone. */
-
-    cal->setLenient(lenient_val);
-
-    UDate now = cal->getNow();
-
-    UErrorCode status = U_ZERO_ERROR;
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(REALSXP, vectorize_length));
-
-    const String8* format_last = NULL; // this will allow for formatter reuse
-    for (R_len_t i = format_cont.vectorize_init();
-            i != format_cont.vectorize_end();
-            i = format_cont.vectorize_next(i))
     {
-        if (str_cont.isNA(i) || format_cont.isNA(i)) {
-            REAL(ret)[i] = NA_REAL;
-            continue;
-        }
+        tz_val = ci__prepare_arg_timezone(
+            STRI__DEFERRED_WARNINGS, tz, "tz",
+            true/*allowdefault*/
+        );
+        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+        {
+            StriContainerUTF16 str_cont(
+                context, str, vectorize_length
+            );
+            StriContainerUTF8 format_cont(
+                context, format, vectorize_length
+            );
 
-        const String8* format_cur = &(format_cont.get(i));
-        if (format_cur != format_last) {
-            // well, no reuse possible - resetting
-            format_last = format_cur;
+            cal = ci__get_calendar(
+                locale_val, STRI__DEFERRED_WARNINGS
+            );
 
-            if (fmt) {
-                delete fmt;
-                fmt = NULL;
+            cal->adoptTimeZone(tz_val);
+            tz_val = NULL; /* The Calendar takes ownership of the TimeZone. */
+
+            cal->setLenient(lenient_val);
+
+            STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+                return Rf_allocVector(REALSXP, vectorize_length);
+            }));
+            double* ret_data = REAL(ret);
+
+            UDate now = cal->getNow();
+
+            UErrorCode status = U_ZERO_ERROR;
+            const String8* format_last = NULL; // this will allow for formatter reuse
+            for (R_len_t i = format_cont.vectorize_init();
+                    i != format_cont.vectorize_end();
+                    i = format_cont.vectorize_next(i))
+            {
+                if (str_cont.isNA(i) || format_cont.isNA(i)) {
+                    ret_data[i] = NA_REAL;
+                    continue;
+                }
+
+                const String8* format_cur = &(format_cont.get(i));
+                if (format_cur != format_last) {
+                    // well, no reuse possible - resetting
+                    format_last = format_cur;
+
+                    if (fmt) {
+                        delete fmt;
+                        fmt = NULL;
+                    }
+
+                    status = U_ZERO_ERROR;
+                    fmt = ci__get_date_format(
+                        *format_cur, locale_val, status
+                    );
+                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                }
+
+                status = U_ZERO_ERROR;
+                cal->setTime(now, status);
+                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+
+                // weirdly, all the time fields must be reset
+                cal->clear(UCAL_MILLISECOND);
+                cal->clear(UCAL_SECOND);
+                cal->clear(UCAL_MINUTE);
+                cal->clear(UCAL_AM_PM);
+                cal->clear(UCAL_HOUR);
+                cal->clear(UCAL_HOUR_OF_DAY);
+                cal->clear(UCAL_MILLISECONDS_IN_DAY);
+
+                ParsePosition pos;
+                fmt->parse(str_cont.get(i), *cal, pos);
+
+                if (pos.getErrorIndex() >= 0)
+                    ret_data[i] = NA_REAL;
+                else {
+                    status = U_ZERO_ERROR;
+                    ret_data[i] = ((double)cal->getTime(status))/1000.0;
+                    if (U_FAILURE(status)) ret_data[i] = NA_REAL;
+                }
             }
-
-            status = U_ZERO_ERROR;
-            fmt = ci__get_date_format(format_cur->c_str(), locale_val, status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
         }
 
-        status = U_ZERO_ERROR;
-        cal->setTime(now, status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-        // weirdly, all the time fields must be reset
-        cal->clear(UCAL_MILLISECOND);
-        cal->clear(UCAL_SECOND);
-        cal->clear(UCAL_MINUTE);
-        cal->clear(UCAL_AM_PM);
-        cal->clear(UCAL_HOUR);
-        cal->clear(UCAL_HOUR_OF_DAY);
-        cal->clear(UCAL_MILLISECONDS_IN_DAY);
-
-        ParsePosition pos;
-        fmt->parse(str_cont.get(i), *cal, pos);
-
-        if (pos.getErrorIndex() >= 0)
-            REAL(ret)[i] = NA_REAL;
-        else {
-            status = U_ZERO_ERROR;
-            REAL(ret)[i] = ((double)cal->getTime(status))/1000.0;
-            if (U_FAILURE(status)) REAL(ret)[i] = NA_REAL;
+        if (tz_val) {
+            delete tz_val;
+            tz_val = NULL;
         }
+        if (fmt) {
+            delete fmt;
+            fmt = NULL;
+        }
+        if (cal) {
+            delete cal;
+            cal = NULL;
+        }
+
+        charport::unwind_protect([&]() -> SEXP {
+            if (!Rf_isNull(tz))
+                Rf_setAttrib(
+                    ret, Rf_ScalarString(Rf_mkChar("tzone")), tz
+                );
+            ci__set_class_POSIXct(ret);
+            return R_NilValue;
+        });
     }
 
-
-    if (!Rf_isNull(tz))
-        Rf_setAttrib(ret, Rf_ScalarString(Rf_mkChar("tzone")), tz);
-    ci__set_class_POSIXct(ret);
-    if (tz_val) {
-        delete tz_val;
-        tz_val = NULL;
-    }
-    if (fmt) {
-        delete fmt;
-        fmt = NULL;
-    }
-    if (cal) {
-        delete cal;
-        cal = NULL;
-    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END({
@@ -398,13 +490,15 @@ SEXP ci_datetime_parse(SEXP str, SEXP format, SEXP lenient, SEXP tz, SEXP locale
  * Converts a single strptime/strftime format to the one used by ICU
  *
  * @param x
- * @return a single R string
+ * @return an owned UTF-8 string
  */
-SEXP ci__datetime_fstr_1(const String8& _x)
+std::string ci__datetime_fstr_1(
+    const String8& _x, ci::DeferredWarnings& warnings
+)
 {
     STRI_ASSERT(!_x.isNA());
     R_len_t n = _x.length();
-    const char* x = _x.c_str();
+    const char* x = _x.data();
 
     std::string buf;
     buf.reserve(n+1);  // whatever
@@ -468,7 +562,14 @@ SEXP ci__datetime_fstr_1(const String8& _x)
             case 'g':
             case 'G':
             case 'c':
-            Rf_warning(MSG__PROBLEMATIC_FORMAT_SPECIFIER_CHAR, spec);
+            {
+                char message[StriException_BUFSIZE];
+                snprintf(
+                    message, StriException_BUFSIZE,
+                    MSG__PROBLEMATIC_FORMAT_SPECIFIER_CHAR, spec
+                );
+                warnings.push(message);
+            }
             break;
 
             default:
@@ -522,7 +623,7 @@ SEXP ci__datetime_fstr_1(const String8& _x)
         buf.push_back('\'');
     }
 
-    return Rf_mkCharLenCE(buf.data(), buf.size(), CE_UTF8);
+    return buf;
 }
 
 
@@ -539,34 +640,41 @@ SEXP ci__datetime_fstr_1(const String8& _x)
 SEXP ci_datetime_fstr(SEXP x)
 {
     PROTECT(x = ci__prepare_arg_string(x, "x"));
-    R_len_t vectorize_length = LENGTH(x);
-    if (vectorize_length <= 0) {
-        UNPROTECT(1);
-        return Rf_allocVector(STRSXP, 0);
-    }
 
     STRI__ERROR_HANDLER_BEGIN(1)
-    StriContainerUTF8 x_cont(x, vectorize_length);
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, vectorize_length));
+    {
+        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+        R_len_t vectorize_length = ci::checked_r_len(
+            context.size(x), "character vectors"
+        );
+        charport::charvec::Builder output(vectorize_length);
+        {
+            StriContainerUTF8 x_cont(context, x, vectorize_length);
 
-    for (
-        R_len_t i = x_cont.vectorize_init();
-        i != x_cont.vectorize_end();
-        i = x_cont.vectorize_next(i)
-    ) {
-        if (x_cont.isNA(i)) {
-            SET_STRING_ELT(ret, i, NA_STRING);
-            continue;
+            for (
+                R_len_t i = x_cont.vectorize_init();
+                i != x_cont.vectorize_end();
+                i = x_cont.vectorize_next(i)
+            ) {
+                if (x_cont.isNA(i)) {
+                    output.set_na(i);
+                    continue;
+                }
+
+                std::string out = ci__datetime_fstr_1(
+                    x_cont.get(i), STRI__DEFERRED_WARNINGS
+                );
+                ci::builder_set(
+                    output, i, out, cetype_ext_t::CE_ASCII_OR_UTF8
+                );
+            }
         }
 
-        SEXP out;
-        STRI__PROTECT(out = ci__datetime_fstr_1(x_cont.get(i)));
-        SET_STRING_ELT(ret, i, out);
-        STRI__UNPROTECT(1);
+        STRI__PROTECT(ret = output.to_sexp());
     }
 
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)

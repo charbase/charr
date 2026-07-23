@@ -32,9 +32,12 @@
 
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
 #include "ci_container_utf8.h"
 #include <unicode/strenum.h>
 #include <string>
+#include <utility>
+#include <vector>
 
 
 /** List available time zone IDs
@@ -52,47 +55,75 @@ SEXP ci_timezone_list(SEXP region, SEXP offset)
     PROTECT(offset = ci__prepare_arg_double_1(offset, "offset"));
 
     STRI__ERROR_HANDLER_BEGIN(2)
-    StriContainerUTF8 region_cont(region, 1);
-
-    UErrorCode status = U_ZERO_ERROR;
-
-    int32_t offset_hours = 0;
-    const int32_t* o = NULL;
-    const char* r = NULL;
-
-    if (!ISNA(REAL(offset)[0])) {
-        // 0.5 and 0.75 are represented exactly within the double type
-        offset_hours = (int32_t)(REAL(offset)[0]*1000.0*3600.0);
-        o = &offset_hours;
-    }
-
-    if (!region_cont.isNA(0))
-        r = region_cont.get(0).c_str();
-
-    tz_enum = TimeZone::createTimeZoneIDEnumeration(UCAL_ZONE_TYPE_ANY, r, o, status);
-    STRI__CHECKICUSTATUS_RFERROR(status, {/* do nothing special on err */})
-
-    status = U_ZERO_ERROR;
-    tz_enum->reset(status);
-    STRI__CHECKICUSTATUS_RFERROR(status, {/* do nothing special on err */})
-
-    status = U_ZERO_ERROR;
-    R_len_t n = (R_len_t)tz_enum->count(status);
-    STRI__CHECKICUSTATUS_RFERROR(status, {/* do nothing special on err */})
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, n));
+    {
+        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+        charport::charvec::Store output_store(0, 0);
+        std::vector<char> region_c_string;
+        const char* r = NULL;
+        {
+            StriContainerUTF8 region_cont(context, region, 1);
+            if (!region_cont.isNA(0)) {
+                const String8& region_value = region_cont.get(0);
+                const R_len_t region_length = region_value.length();
+                region_c_string.reserve(
+                    static_cast<size_t>(region_length)+1
+                );
+                if (region_length > 0) {
+                    region_c_string.insert(
+                        region_c_string.end(), region_value.data(),
+                        region_value.data()+region_length
+                    );
+                }
+                region_c_string.push_back('\0');
+                // Deviation from stringi: ICU's
+                // createTimeZoneIDEnumeration requires a terminated region
+                // code, so own one scalar adapter at this boundary.
+                r = region_c_string.data();
+            }
+        }
+
+        double offset_value = NA_REAL;
+        charport::unwind_protect([&]() -> SEXP {
+            offset_value = REAL_RO(offset)[0];
+            return R_NilValue;
+        });
+        int32_t offset_hours = 0;
+        const int32_t* o = NULL;
+        if (!ISNA(offset_value)) {
+            // 0.5 and 0.75 are represented exactly within the double type
+            offset_hours = (int32_t)(offset_value*1000.0*3600.0);
+            o = &offset_hours;
+        }
+
+        UErrorCode status = U_ZERO_ERROR;
+        tz_enum = TimeZone::createTimeZoneIDEnumeration(
+            UCAL_ZONE_TYPE_ANY, r, o, status
+        );
+        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+
+        status = U_ZERO_ERROR;
+        tz_enum->reset(status);
+        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+
+        status = U_ZERO_ERROR;
+        R_len_t n = static_cast<R_len_t>(tz_enum->count(status));
+        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+
+        charport::charvec::Builder output(n);
 
 //   SEXP nam;
 //   STRI__PROTECT(nam = Rf_allocVector(STRSXP, n));
 
-    // MG: I reckon that IDs are more readable than DisplayNames (which are moreover localized)
-    for (R_len_t i=0; i<n; ++i) {
-        int len;
-        status = U_ZERO_ERROR;
-        const char* cur = tz_enum->next(&len, status);
-        STRI__CHECKICUSTATUS_RFERROR(status, {/* do nothing special on err */})
-        SET_STRING_ELT(ret, i, Rf_mkCharLenCE(cur, len, CE_UTF8));
+        // MG: I reckon that IDs are more readable than DisplayNames (which are moreover localized)
+        for (R_len_t i=0; i<n; ++i) {
+            int32_t len;
+            status = U_ZERO_ERROR;
+            const char* cur = tz_enum->next(&len, status);
+            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            ci::builder_set(
+                output, i, cur, len, cetype_ext_t::CE_ASCII
+            );
 
 //      TimeZone* curtz = TimeZone::createTimeZone(UnicodeString::fromUTF8(cur));
 //      UnicodeString curdn;
@@ -101,22 +132,30 @@ SEXP ci_timezone_list(SEXP region, SEXP offset)
 //      string out;
 //      curdn.toUTF8String(out);
 //      SET_STRING_ELT(nam, i, Rf_mkCharCE(out.c_str(), CE_UTF8));
-    }
+        }
 
 //   Rf_setAttrib(ret, R_NamesSymbol, nam);
 
-    if (tz_enum) {
-        delete tz_enum;
-        tz_enum = NULL;
+        output_store = output.release_store();
+
+        if (tz_enum) {
+            delete tz_enum;
+            tz_enum = NULL;
+        }
+        STRI__PROTECT(ret = charport::charvec::wrap(
+            std::move(output_store)
+        ));
     }
+
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
-    STRI__ERROR_HANDLER_END(
-    if (tz_enum) {
-    delete tz_enum;
-    tz_enum = NULL;
-}
-)
+    STRI__ERROR_HANDLER_END({
+        if (tz_enum) {
+            delete tz_enum;
+            tz_enum = NULL;
+        }
+    })
 }
 
 
@@ -148,13 +187,34 @@ SEXP ci_timezone_list(SEXP region, SEXP offset)
  * @version 0.5-1 (Marek Gagolewski, 2014-12-24)
  */
 SEXP ci_timezone_set(SEXP tz) {
-    TimeZone* curtz = ci__prepare_arg_timezone(tz, "tz", false/*allowdefault*/);
+    if (!Rf_isNull(tz))
+        PROTECT(tz = ci__prepare_arg_string_1(tz, "tz"));
+    else
+        PROTECT(tz);
+    TimeZone* curtz = NULL;
 
-    /* This call adopts the TimeZone object passed in;
-       the client is no longer responsible for deleting it. */
-    TimeZone::adoptDefault(curtz);
+    STRI__ERROR_HANDLER_BEGIN(1)
+    {
+        curtz = ci__prepare_arg_timezone(
+            STRI__DEFERRED_WARNINGS, tz, "tz",
+            false/*allowdefault*/
+        );
 
+        /* This call adopts the TimeZone object passed in;
+           the client is no longer responsible for deleting it. */
+        TimeZone::adoptDefault(curtz);
+        curtz = NULL;
+    }
+
+    STRI__DEFERRED_WARNINGS.emit();
+    STRI__UNPROTECT_ALL
     return R_NilValue;
+    STRI__ERROR_HANDLER_END({
+        if (curtz) {
+            delete curtz;
+            curtz = NULL;
+        }
+    })
 }
 
 
@@ -172,100 +232,200 @@ SEXP ci_timezone_set(SEXP tz) {
  */
 SEXP ci_timezone_info(SEXP tz, SEXP locale, SEXP display_type)
 {
-    TimeZone* curtz = ci__prepare_arg_timezone(tz, "tz", R_NilValue);
-    const char* qloc = ci__prepare_arg_locale(locale, "locale"); /* this is R_alloc'ed */
-    const char* dtype_str = ci__prepare_arg_string_1_notNA(display_type, "display_type"); /* this is R_alloc'ed */
-    const char* dtype_opts[] = {
-        "short", "long", "generic_short", "generic_long", "gmt_short", "gmt_long",
-        "common", "generic_location",
-        NULL
-    };
-    int dtype_cur = ci__match_arg(dtype_str, dtype_opts);
-
-    TimeZone::EDisplayType dtype;
-    switch (dtype_cur) {
-    case 0:
-        dtype = TimeZone::SHORT;
-        break;
-    case 1:
-        dtype = TimeZone::LONG;
-        break;
-    case 2:
-        dtype = TimeZone::SHORT_GENERIC;
-        break;
-    case 3:
-        dtype = TimeZone::LONG_GENERIC;
-        break;
-    case 4:
-        dtype = TimeZone::SHORT_GMT;
-        break;
-    case 5:
-        dtype = TimeZone::LONG_GMT;
-        break;
-    case 6:
-        dtype = TimeZone::SHORT_COMMONLY_USED;
-        break;
-    case 7:
-        dtype = TimeZone::GENERIC_LOCATION;
-        break;
-    default:
-        Rf_error(MSG__INCORRECT_MATCH_OPTION, "display_type");
-        break;
-    }
-
+    if (!Rf_isNull(tz))
+        PROTECT(tz = ci__prepare_arg_string_1(tz, "tz"));
+    else
+        PROTECT(tz);
+    TimeZone* curtz = NULL;
     const R_len_t infosize = 6;
+    STRI__ERROR_HANDLER_BEGIN(1)
     SEXP vals;
+    {
+        curtz = ci__prepare_arg_timezone(
+            STRI__DEFERRED_WARNINGS, tz, "tz",
+            true/*allowdefault*/
+        );
 
-    PROTECT(vals = Rf_allocVector(VECSXP, infosize));
-    for (int i=0; i<infosize; ++i)
-        SET_VECTOR_ELT(vals, i, R_NilValue);
+        const char* qloc = NULL;
+        charport::unwind_protect([&]() -> SEXP {
+            qloc = ci__prepare_arg_locale(
+                locale, "locale", true, true,
+                &STRI__DEFERRED_WARNINGS
+            ); /* this is R_alloc'ed */
+            return R_NilValue;
+        });
 
-    R_len_t curidx = -1;
+        SEXP dtype_arg = R_NilValue;
+        STRI__PROTECT(dtype_arg = charport::unwind_protect([&]() -> SEXP {
+            return ci__prepare_arg_string_1(
+                display_type, "display_type",
+                &STRI__DEFERRED_WARNINGS
+            );
+        }));
+        const char* dtype_opts[] = {
+            "short", "long", "generic_short", "generic_long",
+            "gmt_short", "gmt_long", "common", "generic_location",
+            NULL
+        };
+        int dtype_cur = -1;
+        {
+            ci::ReaderContext reader_context(STRI__DEFERRED_WARNINGS);
+            std::shared_ptr<ci::ReaderBorrow> borrow =
+                reader_context.acquire(dtype_arg);
+            const charport::StrView value = borrow->view(0);
+            if (value.is_na())
+                throw StriException(
+                    MSG__ARG_EXPECTED_NOT_NA, "display_type"
+                );
+            dtype_cur = ci__match_arg(
+                value.ptr, value.len, dtype_opts
+            );
+        }
 
-    ++curidx;
-    UnicodeString val_ID;
-    curtz->getID(val_ID);
-    SET_VECTOR_ELT(vals, curidx, ci__make_character_vector_UnicodeString_ptr(1, &val_ID));
+        TimeZone::EDisplayType dtype;
+        switch (dtype_cur) {
+        case 0:
+            dtype = TimeZone::SHORT;
+            break;
+        case 1:
+            dtype = TimeZone::LONG;
+            break;
+        case 2:
+            dtype = TimeZone::SHORT_GENERIC;
+            break;
+        case 3:
+            dtype = TimeZone::LONG_GENERIC;
+            break;
+        case 4:
+            dtype = TimeZone::SHORT_GMT;
+            break;
+        case 5:
+            dtype = TimeZone::LONG_GMT;
+            break;
+        case 6:
+            dtype = TimeZone::SHORT_COMMONLY_USED;
+            break;
+        case 7:
+            dtype = TimeZone::GENERIC_LOCATION;
+            break;
+        default:
+            throw StriException(
+                MSG__INCORRECT_MATCH_OPTION, "display_type"
+            );
+        }
 
-    ++curidx;
-    UnicodeString val_name;
-    curtz->getDisplayName(false, dtype, Locale::createFromName(qloc), val_name);
-    SET_VECTOR_ELT(vals, curidx, ci__make_character_vector_UnicodeString_ptr(1, &val_name));
+        std::vector<charport::charvec::Store> stores;
+        stores.reserve(4);
+        double raw_offset = NA_REAL;
+        int uses_daylight = NA_LOGICAL;
+        {
+            std::vector<char> utf8_buffer;
 
-    // TODO: U_USING_DEFAULT_WARNING when qloc!=0
-    // TODO: If the display name is not available for the locale,
-    // then getDisplayName returns a string in the localised GMT offset format
-    // such as GMT[+-]HH:mm. -- we can't check+warn if it is a valid locale
-    // otherwise other than by comparing the output to this pattern
+            UnicodeString val_ID;
+            curtz->getID(val_ID);
+            {
+                int32_t utf8_length = 0;
+                const char* utf8 = ci::unicode_to_utf8(
+                    val_ID, utf8_buffer, utf8_length
+                );
+                stores.push_back(ci::scalar_store(
+                    utf8, utf8_length,
+                    cetype_ext_t::CE_ASCII
+                ));
+            }
 
-    ++curidx;
-    if ((bool)curtz->useDaylightTime()) {
-        UnicodeString val_name2;
-        curtz->getDisplayName(true, dtype, Locale::createFromName(qloc), val_name2);
-        SET_VECTOR_ELT(vals, curidx, ci__make_character_vector_UnicodeString_ptr(1, &val_name2));
-    }
-    else
-        SET_VECTOR_ELT(vals, curidx, Rf_ScalarString(NA_STRING));
+            UnicodeString val_name;
+            curtz->getDisplayName(
+                false, dtype, Locale::createFromName(qloc), val_name
+            );
+            stores.push_back(ci::scalar_store(val_name, utf8_buffer));
 
-    ++curidx;
-    UnicodeString val_windows;
-    UErrorCode status = U_ZERO_ERROR;
+            // TODO: U_USING_DEFAULT_WARNING when qloc!=0
+            // TODO: If the display name is not available for the locale,
+            // then getDisplayName returns a string in the localised GMT offset format
+            // such as GMT[+-]HH:mm. -- we can't check+warn if it is a valid locale
+            // otherwise other than by comparing the output to this pattern
+
+            {
+                if ((bool)curtz->useDaylightTime()) {
+                    UnicodeString val_name2;
+                    curtz->getDisplayName(
+                        true, dtype, Locale::createFromName(qloc), val_name2
+                    );
+                    stores.push_back(ci::scalar_store(
+                        val_name2, utf8_buffer
+                    ));
+                }
+                else {
+                    stores.push_back(charport::charvec::Store::scalar(
+                        NULL, 0, cetype_ext_t::CE_NA
+                    ));
+                }
+            }
+
+            UnicodeString val_windows;
+            UErrorCode status = U_ZERO_ERROR;
 #if U_ICU_VERSION_MAJOR_NUM>=52
-    TimeZone::getWindowsID(val_ID, val_windows, status); // Stable since ICU 52
+            TimeZone::getWindowsID(
+                val_ID, val_windows, status
+            ); // Stable since ICU 52
 #endif
-    if (U_SUCCESS(status) && val_windows.length() > 0)
-        SET_VECTOR_ELT(vals, curidx, ci__make_character_vector_UnicodeString_ptr(1, &val_windows));
-    else
-        SET_VECTOR_ELT(vals, curidx, Rf_ScalarString(NA_STRING));
+            {
+                if (U_SUCCESS(status) && val_windows.length() > 0) {
+                    int32_t utf8_length = 0;
+                    const char* utf8 = ci::unicode_to_utf8(
+                        val_windows, utf8_buffer, utf8_length
+                    );
+                    stores.push_back(ci::scalar_store(
+                        utf8, utf8_length,
+                        cetype_ext_t::CE_ASCII
+                    ));
+                }
+                else
+                    stores.push_back(charport::charvec::Store::scalar(
+                        NULL, 0, cetype_ext_t::CE_NA
+                    ));
+            }
 
-    ++curidx;
-    SET_VECTOR_ELT(vals, curidx, Rf_ScalarReal(curtz->getRawOffset()/1000.0/3600.0));
+            raw_offset = curtz->getRawOffset()/1000.0/3600.0;
+            uses_daylight = (bool)curtz->useDaylightTime();
+        }
 
-    ++curidx;
-    SET_VECTOR_ELT(vals, curidx, Rf_ScalarLogical((bool)curtz->useDaylightTime()));
+        delete curtz;
+        curtz = NULL;
 
-    delete curtz;
-    ci__set_names(vals, infosize, "ID", "Name", "Name.Daylight", "Name.Windows", "RawOffset", "UsesDaylightTime");
-    UNPROTECT(1);
+        STRI__PROTECT(vals = charport::unwind_protect([&]() -> SEXP {
+            return Rf_allocVector(VECSXP, infosize);
+        }));
+        for (R_len_t i=0; i<4; ++i) {
+            SEXP value;
+            STRI__PROTECT(value = charport::charvec::wrap(
+                std::move(stores[static_cast<size_t>(i)])
+            ));
+            SET_VECTOR_ELT(vals, i, value);
+            STRI__UNPROTECT(1);
+        }
+        charport::unwind_protect([&]() -> SEXP {
+            SET_VECTOR_ELT(vals, 4, Rf_ScalarReal(raw_offset));
+            SET_VECTOR_ELT(
+                vals, 5, Rf_ScalarLogical(uses_daylight)
+            );
+            ci__set_names(
+                vals, infosize,
+                "ID", "Name", "Name.Daylight", "Name.Windows",
+                "RawOffset", "UsesDaylightTime"
+            );
+            return R_NilValue;
+        });
+    }
+
+    STRI__DEFERRED_WARNINGS.emit();
+    STRI__UNPROTECT_ALL
     return vals;
+    STRI__ERROR_HANDLER_END({
+        if (curtz) {
+            delete curtz;
+            curtz = NULL;
+        }
+    })
 }

@@ -34,8 +34,10 @@
 #ifndef __ci_container_utf8_h
 #define __ci_container_utf8_h
 
+#include "ci_reader.h"
 #include "ci_string8.h"
 #include "ci_container_base.h"
+#include <memory>
 #include <vector>
 
 /**
@@ -79,18 +81,27 @@ class StriContainerUTF8 : public StriContainerBase {
 
 private:
 
-    String8* str;  ///< data - \code{string}
+    std::shared_ptr<ci::ReaderBorrow> borrow;  ///< lifetime of borrowed string data
+    std::unique_ptr<String8[]> str;  ///< data - \code{string}
 
 
 public:
 
     StriContainerUTF8();
-    StriContainerUTF8(SEXP rstr, R_len_t nrecycle, bool shallowrecycle=true);
+    // rstr must be a prepared STRSXP protected by the caller until this
+    // container and every copy of it has been destroyed.
+    StriContainerUTF8(
+        ci::ReaderContext& context, SEXP rstr,
+        R_len_t nrecycle, bool shallowrecycle=true
+    );
+    StriContainerUTF8(
+        const std::shared_ptr<ci::ReaderBorrow>& source_borrow,
+        const charport::StrView& value,
+        R_len_t nrecycle, bool shallowrecycle
+    );
     StriContainerUTF8(StriContainerUTF8& container);
     ~StriContainerUTF8();
     StriContainerUTF8& operator=(StriContainerUTF8& container);
-    SEXP toR(R_len_t i) const;
-    SEXP toR() const;
 
 
     /** check if the vectorized ith element is NA
@@ -149,8 +160,6 @@ public:
             throw StriException("StriContainerUTF8::getWritable(): n!=nrecycle");
         if (i < 0 || i >= n)
             throw StriException("StriContainerUTF8::getWritable(): INDEX OUT OF BOUNDS");
-//         if (str[i%n].isReadOnly()) // not needed: readOnly here => changes are possible (but not on m_str directly)
-//            throw StriException("StriContainerUTF8::getWritable(): isReadOnly");
         if (str[i%n].isNA())
             throw StriException("StriContainerUTF8::getWritable(): isNA");
 #endif
@@ -213,14 +222,18 @@ public:
         if (i < 0 || i >= n)
             throw StriException("StriContainerUTF8::set(): INDEX OUT OF BOUNDS");
 #endif
-        str[i%n] = s; // in fact, "%n" is not necessary
+        // Deviation from stringi: scalar assignment cannot inherit the source
+        // container's Reader lease, so keep an owned copy in this container.
+        str[i%n].assignOwned(s); // in fact, "%n" is not necessary
     }
 
 };
 
 
-SEXP ci__subset_by_logical(const StriContainerUTF8& str_cont,
-                             const std::vector<int>& which, int result_counter);
+charport::charvec::Store ci__subset_by_logical(
+    const StriContainerUTF8& str_cont,
+    const std::vector<int>& which, int result_counter
+);
 
 
 #endif

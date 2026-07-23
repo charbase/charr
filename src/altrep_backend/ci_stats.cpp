@@ -57,11 +57,8 @@
 SEXP ci_stats_general(SEXP str)
 {
     PROTECT(str = ci__prepare_arg_string(str, "str"));
-    R_len_t str_length = LENGTH(str);
 
     STRI__ERROR_HANDLER_BEGIN(1)
-    StriContainerUTF8 str_cont(str, str_length);
-
     enum {
         gsNumLines = 0,
         gsNumLinesNonEmpty = 1,
@@ -71,41 +68,59 @@ SEXP ci_stats_general(SEXP str)
     };
 
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(INTSXP, gsAll));
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(INTSXP, gsAll);
+    }));
     int* stats = INTEGER(ret);
     for (int i=0; i<gsAll; ++i)
         stats[i] = 0;
 
-    for (R_len_t i=0; i<str_length; ++i) {
-        if (str_cont.isNA(i)) continue; // ignore
+    {
+        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+        R_len_t str_length = ci::checked_r_len(
+            context.size(str), "character vectors"
+        );
+        {
+            StriContainerUTF8 str_cont(context, str, str_length);
 
-        ++stats[gsNumLines]; // another line
-        R_len_t     cn = str_cont.get(i).length();
-        const char* cs = str_cont.get(i).c_str();
-        UChar32 c;
-        bool AnyNonWhite = false;
+            for (R_len_t i=0; i<str_length; ++i) {
+                if (str_cont.isNA(i)) continue; // ignore
 
-        for (int j=0; j<cn; ) {
-            U8_NEXT(cs, j, cn, c);
-            if (c < 0)
-                throw StriException(MSG__INVALID_UTF8);
-            // @TODO: follow Unicode Newline Guidelines - Unicode Technical Report #13
-            else if (c == (UChar32)'\n' || c == (UChar32)'\r') {
-                throw StriException(MSG__NEWLINE_FOUND);
-            }
-            ++stats[gsNumChars]; // another character [code point]
-            // we test for UCHAR_WHITE_SPACE binary property
-            if (!u_hasBinaryProperty(c, UCHAR_WHITE_SPACE)) {
-                AnyNonWhite = true;
-                ++stats[gsNumCharsNonWhite];
+                ++stats[gsNumLines]; // another line
+                R_len_t     cn = str_cont.get(i).length();
+                const char* cs = str_cont.get(i).data();
+                UChar32 c;
+                bool AnyNonWhite = false;
+
+                for (int j=0; j<cn; ) {
+                    U8_NEXT(cs, j, cn, c);
+                    if (c < 0)
+                        throw StriException(MSG__INVALID_UTF8);
+                    // @TODO: follow Unicode Newline Guidelines - Unicode Technical Report #13
+                    else if (c == (UChar32)'\n' || c == (UChar32)'\r') {
+                        throw StriException(MSG__NEWLINE_FOUND);
+                    }
+                    ++stats[gsNumChars]; // another character [code point]
+                    // we test for UCHAR_WHITE_SPACE binary property
+                    if (!u_hasBinaryProperty(c, UCHAR_WHITE_SPACE)) {
+                        AnyNonWhite = true;
+                        ++stats[gsNumCharsNonWhite];
+                    }
+                }
+
+                if (AnyNonWhite)
+                    ++stats[gsNumLinesNonEmpty]; // we have a non-empty line here
             }
         }
-
-        if (AnyNonWhite)
-            ++stats[gsNumLinesNonEmpty]; // we have a non-empty line here
     }
 
-    ci__set_names(ret, gsAll, "Lines", "LinesNEmpty", "Chars", "CharsNWhite");
+    charport::unwind_protect([&]() -> SEXP {
+        ci__set_names(
+            ret, gsAll, "Lines", "LinesNEmpty", "Chars", "CharsNWhite"
+        );
+        return R_NilValue;
+    });
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -142,11 +157,8 @@ SEXP ci_stats_general(SEXP str)
 SEXP ci_stats_latex(SEXP str)
 {
     PROTECT(str = ci__prepare_arg_string(str, "str"));
-    R_len_t str_length = LENGTH(str);
 
     STRI__ERROR_HANDLER_BEGIN(1)
-    StriContainerUTF8 str_cont(str, str_length);
-
     // We use a modified Kile 2.1.3 LaTeX Word Count algorithm
     // (source file: `Kile/src/documentinfo.cpp`,
     // method: `void Info::count(const QString& line, long *stat)`).
@@ -169,142 +181,163 @@ SEXP ci_stats_latex(SEXP str)
     };
 
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(INTSXP, lsAll));
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(INTSXP, lsAll);
+    }));
     int* stats = INTEGER(ret);
     for (int i=0; i<lsAll; ++i) stats[i] = 0;
 
-    for (R_len_t i=0; i<str_length; ++i) {
-        if (str_cont.isNA(i)) continue; // ignore
+    {
+        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+        R_len_t str_length = ci::checked_r_len(
+            context.size(str), "character vectors"
+        );
+        {
+            StriContainerUTF8 str_cont(context, str, str_length);
 
-        R_len_t     cn = str_cont.get(i).length();
-        const char* cs = str_cont.get(i).c_str();
-        UChar32 c;
+            for (R_len_t i=0; i<str_length; ++i) {
+                if (str_cont.isNA(i)) continue; // ignore
 
-        int state = stStandard;
-        bool word = false; // we are not in a word currently
-        for (int j=0; j<cn; ) {
-            U8_NEXT(cs, j, cn, c);
+                R_len_t     cn = str_cont.get(i).length();
+                const char* cs = str_cont.get(i).data();
+                UChar32 c;
 
-            if (c < 0)
-                throw StriException(MSG__INVALID_UTF8);
-            // @TODO: follow Unicode Newline Guidelines - Unicode Technical Report #13
-            else if (c == (UChar32)'\n' || c == (UChar32)'\r') {
-                throw StriException(MSG__NEWLINE_FOUND);
-            }
+                int state = stStandard;
+                bool word = false; // we are not in a word currently
+                for (int j=0; j<cn; ) {
+                    U8_NEXT(cs, j, cn, c);
 
-            UBool isLetter = u_isUAlphabetic(c); // u_hasBinaryProperty(c, UCHAR_ALPHABETIC)
-            UBool isNumber = u_isdigit(c); // U_DECIMAL_DIGIT_NUMBER    Nd
+                    if (c < 0)
+                        throw StriException(MSG__INVALID_UTF8);
+                    // @TODO: follow Unicode Newline Guidelines - Unicode Technical Report #13
+                    else if (c == (UChar32)'\n' || c == (UChar32)'\r') {
+                        throw StriException(MSG__NEWLINE_FOUND);
+                    }
 
-            switch(state) {
-            case stStandard:
-                if (c == (UChar32)'\\') {
-                    state = stControlSequence;
-                    ++stats[lsCharsCmdEnvir];
+                    UBool isLetter = u_isUAlphabetic(c); // u_hasBinaryProperty(c, UCHAR_ALPHABETIC)
+                    UBool isNumber = u_isdigit(c); // U_DECIMAL_DIGIT_NUMBER    Nd
 
-                    if (j < cn) {
-                        // Look Ahead:
-                        UChar32 cnext;
-                        int jnext = j;
-                        U8_NEXT(cs, jnext, cn, cnext);
-                        UBool isPunctNext = u_ispunct(cnext);
+                    switch(state) {
+                    case stStandard:
+                        if (c == (UChar32)'\\') {
+                            state = stControlSequence;
+                            ++stats[lsCharsCmdEnvir];
 
-                        if (!isPunctNext || cnext == (UChar32)'~' || cnext == (UChar32)'^') {
-                            // this is to avoid counting words like K\"ahler as two words
-                            word = false;
+                            if (j < cn) {
+                                // Look Ahead:
+                                UChar32 cnext;
+                                int jnext = j;
+                                U8_NEXT(cs, jnext, cn, cnext);
+                                UBool isPunctNext = u_ispunct(cnext);
+
+                                if (!isPunctNext || cnext == (UChar32)'~' || cnext == (UChar32)'^') {
+                                    // this is to avoid counting words like K\"ahler as two words
+                                    word = false;
+                                }
+                            }
                         }
-                    }
-                }
-                else if (c == (UChar32)'%') {
-                    state = stComment;
-                }
-                else {
-                    if (isLetter || isNumber) {
-                        // only start a new word if first character is a letter
-                        // (42test is still counted as a word, but 42.2 not)
-                        if (isLetter && !word) {
-                            word = true;
-                            ++stats[lsWords];
+                        else if (c == (UChar32)'%') {
+                            state = stComment;
                         }
-                        ++stats[lsCharsWord];
+                        else {
+                            if (isLetter || isNumber) {
+                                // only start a new word if first character is a letter
+                                // (42test is still counted as a word, but 42.2 not)
+                                if (isLetter && !word) {
+                                    word = true;
+                                    ++stats[lsWords];
+                                }
+                                ++stats[lsCharsWord];
+                            }
+                            else {
+                                ++stats[lsCharsWhite];
+                                word = false;
+                            }
+                        }
+                        break; // stStandard
+
+                    case stControlSequence:
+                        if (isLetter) {
+                            // "\begin{[a-zA-Z]+}" is an environment, and you can't define a command like \begin
+                            // Deviation from stringi: String8 has no trailing
+                            // sentinel, so bound each ASCII lookahead by the
+                            // bytes remaining before calling memcmp.
+                            if (c == (UChar32)'b' && cn-j >= 4 &&
+                                    !memcmp(cs+j, "egin", 4) /* plain ASCII compare - it's OK */) {
+                                ++stats[lsEnvir];
+                                state = stEnvironment;
+                                stats[lsCharsCmdEnvir] +=5;
+                                j += 4;
+                            }
+                            else if (c == (UChar32)'e' && cn-j >= 2 &&
+                                    !memcmp(cs+j, "nd", 2) /* plain ASCII compare - it's OK */) {
+                                stats[lsCharsCmdEnvir] +=3;
+                                state = stEnvironment;
+                                j += 2;
+                            } // we don't count \end as a new environment, this can give wrong results in selections
+                            else {
+                                ++stats[lsCmd];
+                                ++stats[lsCharsCmdEnvir];
+                                state = stCommand;
+                            }
+                        }
+                        else {
+                            // MG: This will also prevent counting \% as a comment (it's a percent sign)
+                            ++stats[lsCmd];
+                            ++stats[lsCharsCmdEnvir];
+                            state = stStandard;
+                        }
+                        break;
+
+                    case stCommand :
+                        if(isLetter) {
+                            ++stats[lsCharsCmdEnvir];
+                        }
+                        else if(c == (UChar32)'\\') {
+                            ++stats[lsCharsCmdEnvir];
+                            state = stControlSequence;
+                        }
+                        else if(c == (UChar32)'%') {
+                            state = stComment;
+                        }
+                        else {
+                            ++stats[lsCharsWhite];
+                            state = stStandard;
+                        }
+                        break;
+
+                    case stEnvironment :
+                        if(c == (UChar32)'}') { // until we find a closing } we have an environment
+                            ++stats[lsCharsCmdEnvir];
+                            state = stStandard;
+                        }
+                        else if(c == (UChar32)'%') {
+                            state = stComment;
+                        }
+                        else {
+                            ++stats[lsCharsCmdEnvir];
+                        }
+                        break;
+
+                    case stComment:
+                        // ignore until the end - any newline will be detected
+                        // and the error will be thrown
+                        break;
+
+                    default:
+                        throw StriException("DEBUG: ci_stats_latex() - this shouldn't happen :-(");
                     }
-                    else {
-                        ++stats[lsCharsWhite];
-                        word = false;
-                    }
                 }
-                break; // stStandard
-
-            case stControlSequence:
-                if (isLetter) {
-                    // "\begin{[a-zA-Z]+}" is an environment, and you can't define a command like \begin
-                    if (c == (UChar32)'b' && !strncmp(cs+j, "egin", 4) /* plain ASCII compare - it's OK */) {
-                        ++stats[lsEnvir];
-                        state = stEnvironment;
-                        stats[lsCharsCmdEnvir] +=5;
-                        j += 4;
-                    }
-                    else if (c == (UChar32)'e' && !strncmp(cs+j, "nd", 2) /* plain ASCII compare - it's OK */) {
-                        stats[lsCharsCmdEnvir] +=3;
-                        state = stEnvironment;
-                        j += 2;
-                    } // we don't count \end as a new environment, this can give wrong results in selections
-                    else {
-                        ++stats[lsCmd];
-                        ++stats[lsCharsCmdEnvir];
-                        state = stCommand;
-                    }
-                }
-                else {
-                    // MG: This will also prevent counting \% as a comment (it's a percent sign)
-                    ++stats[lsCmd];
-                    ++stats[lsCharsCmdEnvir];
-                    state = stStandard;
-                }
-                break;
-
-            case stCommand :
-                if(isLetter) {
-                    ++stats[lsCharsCmdEnvir];
-                }
-                else if(c == (UChar32)'\\') {
-                    ++stats[lsCharsCmdEnvir];
-                    state = stControlSequence;
-                }
-                else if(c == (UChar32)'%') {
-                    state = stComment;
-                }
-                else {
-                    ++stats[lsCharsWhite];
-                    state = stStandard;
-                }
-                break;
-
-            case stEnvironment :
-                if(c == (UChar32)'}') { // until we find a closing } we have an environment
-                    ++stats[lsCharsCmdEnvir];
-                    state = stStandard;
-                }
-                else if(c == (UChar32)'%') {
-                    state = stComment;
-                }
-                else {
-                    ++stats[lsCharsCmdEnvir];
-                }
-                break;
-
-            case stComment:
-                // ignore until the end - any newline will be detected
-                // and the error will be thrown
-                break;
-
-            default:
-                throw StriException("DEBUG: ci_stats_latex() - this shouldn't happen :-(");
             }
         }
     }
 
-    ci__set_names(ret, lsAll, "CharsWord", "CharsCmdEnvir", "CharsWhite",
-                    "Words", "Cmds", "Envirs");
+    charport::unwind_protect([&]() -> SEXP {
+        ci__set_names(ret, lsAll, "CharsWord", "CharsCmdEnvir", "CharsWhite",
+                        "Words", "Cmds", "Envirs");
+        return R_NilValue;
+    });
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)

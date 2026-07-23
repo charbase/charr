@@ -32,6 +32,7 @@
 
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
 #include "ci_container_utf8.h"
 #include "ci_string8buf.h"
 #include "ci_brkiter.h"
@@ -56,77 +57,104 @@
  *    use StriUBreakIterator
  */
 SEXP ci_trans_totitle(SEXP str, SEXP opts_brkiter) {
-    StriBrkIterOptions opts_brkiter2(opts_brkiter, "word");
-    PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
-
 // version 0.2-1 - Does not work with ICU 4.8 (but we require ICU >= 50)
     UCaseMap* ucasemap = NULL;
 
-    STRI__ERROR_HANDLER_BEGIN(1)
-    StriUBreakIterator brkiter(opts_brkiter2);
-
-    UErrorCode status = U_ZERO_ERROR;
-    ucasemap = ucasemap_open(brkiter.getLocale(), U_FOLD_CASE_DEFAULT, &status);
-    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-    status = U_ZERO_ERROR;
-    ucasemap_setBreakIterator(ucasemap, brkiter.getIterator(), &status);
-    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-    brkiter.free(false);
-    // ucasemap_setOptions(ucasemap, U_TITLECASE_NO_LOWERCASE, &status); // to do?
-    // now briter is owned by ucasemap.
-    // it will be released on ucasemap_close
-    // (checked with ICU man & src code)
-
-    R_len_t str_n = LENGTH(str);
-    StriContainerUTF8 str_cont(str, str_n);
+    STRI__ERROR_HANDLER_BEGIN(0)
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, str_n));
-
-
-    // STEP 1.
-    // Estimate the required buffer length
-    // Notice: The resulting number of codepoints may be larger or smaller than
-    // the number before casefolding
-    R_len_t bufsize = str_cont.getMaxNumBytes();
-    bufsize += 10; // a small margin
-    String8buf buf(bufsize);
-
-    // STEP 2.
-    // Do case folding
-    for (R_len_t i = str_cont.vectorize_init();
-            i != str_cont.vectorize_end();
-            i = str_cont.vectorize_next(i))
     {
-        if (str_cont.isNA(i)) {
-            SET_STRING_ELT(ret, i, NA_STRING);
-            continue;
-        }
+        // Deviation from stringi: construct break-iterator options inside the
+        // C++ error boundary before preparing str, preserving condition order
+        // without letting a later R unwind skip their ICU-owned storage.
+        StriBrkIterOptions opts_brkiter2(
+            opts_brkiter, "word", STRI__DEFERRED_WARNINGS
+        );
+        STRI__PROTECT(str = charport::unwind_protect([&]() -> SEXP {
+            return ci__prepare_arg_string(
+                str, "str", true, &STRI__DEFERRED_WARNINGS
+            );
+        }));
 
-        R_len_t str_cur_n     = str_cont.get(i).length();
-        const char* str_cur_s = str_cont.get(i).c_str();
+        StriUBreakIterator brkiter(opts_brkiter2);
+
+        UErrorCode status = U_ZERO_ERROR;
+        ucasemap = ucasemap_open(brkiter.getLocale(), U_FOLD_CASE_DEFAULT, &status);
+        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
 
         status = U_ZERO_ERROR;
-        int buf_need = ucasemap_utf8ToTitle(ucasemap, buf.data(), buf.size(),
-                                            (const char*)str_cur_s, str_cur_n, &status);
+        ucasemap_setBreakIterator(
+            ucasemap, brkiter.getIterator(STRI__DEFERRED_WARNINGS), &status
+        );
+        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+        brkiter.free(false);
+        // ucasemap_setOptions(ucasemap, U_TITLECASE_NO_LOWERCASE, &status); // to do?
+        // now briter is owned by ucasemap.
+        // it will be released on ucasemap_close
+        // (checked with ICU man & src code)
 
-        if (U_FAILURE(status)) {
-            buf.resize(buf_need, false/*destroy contents*/);
-            status = U_ZERO_ERROR;
-            buf_need = ucasemap_utf8ToTitle(ucasemap, buf.data(), buf.size(),
-                                            (const char*)str_cur_s, str_cur_n, &status);
+        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+        R_len_t str_n = ci::checked_r_len(
+            context.size(str), "character vectors"
+        );
+        charport::charvec::Builder builder(str_n);
+        {
+            StriContainerUTF8 str_cont(context, str, str_n);
 
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */}) // this shouldn't happen
-            // we do have the buffer size required to complete this op
+            // STEP 1.
+            // Estimate the required buffer length
+            // Notice: The resulting number of codepoints may be larger or smaller than
+            // the number before casefolding
+            R_len_t bufsize = str_cont.getMaxNumBytes();
+            bufsize += 10; // a small margin
+            String8buf buf(bufsize);
+
+            // STEP 2.
+            // Do case folding
+            for (R_len_t i = str_cont.vectorize_init();
+                    i != str_cont.vectorize_end();
+                    i = str_cont.vectorize_next(i))
+            {
+                if (str_cont.isNA(i)) {
+                    builder.set_na(i);
+                    continue;
+                }
+
+                R_len_t str_cur_n     = str_cont.get(i).length();
+                const char* str_cur_s = str_cont.get(i).data();
+
+                status = U_ZERO_ERROR;
+                int buf_need = ucasemap_utf8ToTitle(
+                    ucasemap, buf.data(), buf.size(),
+                    (const char*)str_cur_s, str_cur_n, &status
+                );
+
+                if (U_FAILURE(status)) {
+                    buf.resize(buf_need, false/*destroy contents*/);
+                    status = U_ZERO_ERROR;
+                    buf_need = ucasemap_utf8ToTitle(
+                        ucasemap, buf.data(), buf.size(),
+                        (const char*)str_cur_s, str_cur_n, &status
+                    );
+
+                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */}) // this shouldn't happen
+                    // we do have the buffer size required to complete this op
+                }
+
+                ci::builder_set(
+                    builder, i, buf.data(), buf_need,
+                    cetype_ext_t::CE_ASCII_OR_UTF8
+                );
+            }
         }
 
-        SET_STRING_ELT(ret, i, Rf_mkCharLenCE(buf.data(), buf_need, CE_UTF8));
-    }
+        if (ucasemap) {
+            ucasemap_close(ucasemap);
+            ucasemap = NULL;
+        }
 
-    if (ucasemap) {
-        ucasemap_close(ucasemap);
-        ucasemap = NULL;
+        STRI__PROTECT(ret = builder.to_sexp());
     }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
 
@@ -193,84 +221,96 @@ SEXP ci_trans_casemap(SEXP str, int _type, SEXP locale)
     UCaseMap* ucasemap = NULL;
 
     STRI__ERROR_HANDLER_BEGIN(1)
-    UErrorCode status = U_ZERO_ERROR;
-    ucasemap = ucasemap_open(qloc, U_FOLD_CASE_DEFAULT, &status);
-    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-    // TODO: U_USING_DEFAULT_WARNING when qloc!=0
-    // NOTE: we can't check if there submitted locale is valid,
-    // because there is no API for it [ULOC_VALID_LOCALE]
-
-    R_len_t str_n = LENGTH(str);
-    StriContainerUTF8 str_cont(str, str_n);
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, str_n));
-
-
-    // STEP 1.
-    // Estimate the required buffer length
-    // Notice: The resulting number of code points may be larger or smaller than
-    // the number before case mapping
-    R_len_t bufsize = str_cont.getMaxNumBytes();
-    bufsize += 10; // a small margin
-    String8buf buf(bufsize);
-
-    // STEP 2.
-    // Do case folding
-    for (R_len_t i = str_cont.vectorize_init();
-            i != str_cont.vectorize_end();
-            i = str_cont.vectorize_next(i))
     {
-        if (str_cont.isNA(i)) {
-            SET_STRING_ELT(ret, i, NA_STRING);
-            continue;
+        UErrorCode status = U_ZERO_ERROR;
+        ucasemap = ucasemap_open(qloc, U_FOLD_CASE_DEFAULT, &status);
+        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+
+        // TODO: U_USING_DEFAULT_WARNING when qloc!=0
+        // NOTE: we can't check if there submitted locale is valid,
+        // because there is no API for it [ULOC_VALID_LOCALE]
+
+        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+        R_len_t str_n = ci::checked_r_len(
+            context.size(str), "character vectors"
+        );
+        charport::charvec::Builder builder(str_n);
+        {
+            StriContainerUTF8 str_cont(context, str, str_n);
+
+            // STEP 1.
+            // Estimate the required buffer length
+            // Notice: The resulting number of code points may be larger or smaller than
+            // the number before case mapping
+            R_len_t bufsize = str_cont.getMaxNumBytes();
+            bufsize += 10; // a small margin
+            String8buf buf(bufsize);
+
+            // STEP 2.
+            // Do case folding
+            for (R_len_t i = str_cont.vectorize_init();
+                    i != str_cont.vectorize_end();
+                    i = str_cont.vectorize_next(i))
+            {
+                if (str_cont.isNA(i)) {
+                    builder.set_na(i);
+                    continue;
+                }
+
+                R_len_t str_cur_n     = str_cont.get(i).length();
+                const char* str_cur_s = str_cont.get(i).data();
+
+                int buf_need;
+                bool retry = false;
+                while (true) {
+                    status = U_ZERO_ERROR;
+                    if (_type == STRI_CASEMAP_TOLOWER) {
+                        buf_need = ucasemap_utf8ToLower(
+                            ucasemap, buf.data(), buf.size(),
+                            (const char*)str_cur_s, str_cur_n, &status
+                        );
+                    }
+                    else if (_type == STRI_CASEMAP_TOUPPER) {
+                        buf_need = ucasemap_utf8ToUpper(
+                            ucasemap, buf.data(), buf.size(),
+                            (const char*)str_cur_s, str_cur_n, &status
+                        );
+                    }
+                    else {
+                        buf_need = ucasemap_utf8FoldCase(
+                            ucasemap, buf.data(), buf.size(),
+                            (const char*)str_cur_s, str_cur_n, &status
+                        );
+                    }
+
+                    if (!U_FAILURE(status)) break;
+
+                    if (!retry) {
+                        buf.resize(buf_need, false/*destroy contents*/);
+                        // we now have the buffer size required to complete this op
+                        retry = true;
+                    }
+                    else {
+                        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */}) // this shouldn't happen
+                    }
+                }
+
+                ci::builder_set(
+                    builder, i, buf.data(), buf_need,
+                    cetype_ext_t::CE_ASCII_OR_UTF8
+                );
+            }
         }
 
-        R_len_t str_cur_n     = str_cont.get(i).length();
-        const char* str_cur_s = str_cont.get(i).c_str();
-
-        int buf_need;
-        bool retry = false;
-        while (true) {
-            status = U_ZERO_ERROR;
-            if (_type == STRI_CASEMAP_TOLOWER) {
-                buf_need = ucasemap_utf8ToLower(
-                    ucasemap, buf.data(), buf.size(),
-                    (const char*)str_cur_s, str_cur_n, &status
-                );
-            }
-            else if (_type == STRI_CASEMAP_TOUPPER) {
-                buf_need = ucasemap_utf8ToUpper(
-                    ucasemap, buf.data(), buf.size(),
-                    (const char*)str_cur_s, str_cur_n, &status
-                );
-            }
-            else {
-                buf_need = ucasemap_utf8FoldCase(
-                    ucasemap, buf.data(), buf.size(),
-                    (const char*)str_cur_s, str_cur_n, &status
-                );
-            }
-
-            if (!U_FAILURE(status)) break;
-
-            if (!retry) {
-                buf.resize(buf_need, false/*destroy contents*/);
-                // we now have the buffer size required to complete this op
-                retry = true;
-            }
-            else {
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */}) // this shouldn't happen
-            }
+        if (ucasemap) {
+            ucasemap_close(ucasemap);
+            ucasemap = NULL;
         }
 
-        SET_STRING_ELT(ret, i, Rf_mkCharLenCE(buf.data(), buf_need, CE_UTF8));
+        STRI__PROTECT(ret = builder.to_sexp());
     }
-
-    if (ucasemap) {
-        ucasemap_close(ucasemap);
-        ucasemap = NULL;
-    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
 

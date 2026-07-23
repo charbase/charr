@@ -32,10 +32,12 @@
 
 
 #include "ci_stringi.h"
+#include "ci_builder.h"
 #include "ci_container_utf16.h"
 #include "ci_container_usearch.h"
 #include "ci_string8buf.h"
 #include <deque>
+#include <vector>
 using namespace std;
 
 
@@ -72,89 +74,140 @@ SEXP ci__replace_allfirstlast_coll(SEXP str, SEXP pattern, SEXP replacement, SEX
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
 
     UCollator* collator = NULL;
-    collator = ci__ucol_open(opts_collator);
 
     STRI__ERROR_HANDLER_BEGIN(3)
-    R_len_t vectorize_length = ci__recycling_rule(true, 3, LENGTH(str), LENGTH(pattern), LENGTH(replacement));
-    StriContainerUTF16 str_cont(str, vectorize_length, false); // writable
-    StriContainerUStringSearch pattern_cont(pattern, vectorize_length, collator);  // collator is not owned by pattern_cont
-    StriContainerUTF16 replacement_cont(replacement, vectorize_length);
+    // Deviation from stringi: catch R errors from collator option parsing so
+    // queued warnings and any opened collator are released before R resumes.
+    charport::unwind_protect([&]() -> SEXP {
+        collator = ci__ucol_open(
+            STRI__DEFERRED_WARNINGS, opts_collator
+        );
+        return R_NilValue;
+    });
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t replacement_n = ci::checked_r_len(
+        context.size(replacement), "character vectors"
+    );
+    R_len_t vectorize_length = 0;
+    // Deviation from stringi: queue recycling warnings while the collator is
+    // live and emit them after the collator closes.
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_length = ci__recycling_rule(
+            false, 3, str_n, pattern_n, replacement_n
+        );
+        if (vectorize_length > 0 &&
+                (vectorize_length%str_n != 0 ||
+                 vectorize_length%pattern_n != 0 ||
+                 vectorize_length%replacement_n != 0))
+            STRI__DEFERRED_WARNINGS.push(MSG__WARN_RECYCLING_RULE);
+        return R_NilValue;
+    });
 
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
+    charport::charvec::Builder builder(vectorize_length);
     {
-        STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-                str_cont.setNA(i);,
-                /*just skip on empty str*/;)
+        StriContainerUTF16 str_cont(
+            context, str, vectorize_length, false
+        ); // writable
+        StriContainerUStringSearch pattern_cont(
+            context, pattern, vectorize_length, collator
+        );  // collator is not owned by pattern_cont
+        StriContainerUTF16 replacement_cont(
+            context, replacement, vectorize_length
+        );
 
-        UStringSearch *matcher = pattern_cont.getMatcher(i, str_cont.get(i));
-        usearch_reset(matcher);
+        for (R_len_t i = pattern_cont.vectorize_init();
+                i != pattern_cont.vectorize_end();
+                i = pattern_cont.vectorize_next(i))
+        {
+            STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
+                    str_cont.setNA(i);,
+                    /*just skip on empty str*/;)
 
-        UErrorCode status = U_ZERO_ERROR;
-        R_len_t remUChars = 0;
-        deque< pair<R_len_t, R_len_t> > occurrences;
+            UStringSearch *matcher = pattern_cont.getMatcher(i, str_cont.get(i));
+            usearch_reset(matcher);
 
-        if (type >= 0) { // first or all
-            int start = (int)usearch_first(matcher, &status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+            UErrorCode status = U_ZERO_ERROR;
+            R_len_t remUChars = 0;
+            deque< pair<R_len_t, R_len_t> > occurrences;
 
-            if (start == USEARCH_DONE) // no match
-                continue; // no change in str_cont[i] at all
+            if (type >= 0) { // first or all
+                int start = (int)usearch_first(matcher, &status);
+                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
 
-            if (replacement_cont.isNA(i)) {
-                str_cont.setNA(i);
-                continue;
+                if (start == USEARCH_DONE) // no match
+                    continue; // no change in str_cont[i] at all
+
+                if (replacement_cont.isNA(i)) {
+                    str_cont.setNA(i);
+                    continue;
+                }
+
+                while (start != USEARCH_DONE) {
+                    R_len_t mlen = usearch_getMatchedLength(matcher);
+                    remUChars += mlen;
+                    occurrences.push_back(pair<R_len_t, R_len_t>(start, start+mlen));
+                    if (type > 0) break; // break if first and not all
+                    start = usearch_next(matcher, &status);
+                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                }
             }
+            else { // if last
+                int start = (int)usearch_last(matcher, &status);
+                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                if (start == USEARCH_DONE) // no match
+                    continue; // no change in str_cont[i] at all
 
-            while (start != USEARCH_DONE) {
+                if (replacement_cont.isNA(i)) {
+                    str_cont.setNA(i);
+                    continue;
+                }
                 R_len_t mlen = usearch_getMatchedLength(matcher);
                 remUChars += mlen;
                 occurrences.push_back(pair<R_len_t, R_len_t>(start, start+mlen));
-                if (type > 0) break; // break if first and not all
-                start = usearch_next(matcher, &status);
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
             }
-        }
-        else { // if last
-            int start = (int)usearch_last(matcher, &status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-            if (start == USEARCH_DONE) // no match
-                continue; // no change in str_cont[i] at all
 
-            if (replacement_cont.isNA(i)) {
-                str_cont.setNA(i);
-                continue;
+            R_len_t replacement_cur_n = replacement_cont.get(i).length();
+            R_len_t noccurrences = (R_len_t)occurrences.size();
+            UnicodeString ans(str_cont.get(i).length()-remUChars+noccurrences*replacement_cur_n, (UChar)0xfffd, 0);
+            R_len_t jlast = 0;
+            R_len_t anslast = 0;
+            deque< pair<R_len_t, R_len_t> >::iterator iter = occurrences.begin();
+            for (; iter != occurrences.end(); ++iter) {
+                pair<R_len_t, R_len_t> match = *iter;
+                ans.replace(anslast, match.first-jlast, str_cont.get(i), jlast, match.first-jlast);
+                anslast += match.first-jlast;
+                jlast = match.second;
+                ans.replace(anslast, replacement_cur_n, replacement_cont.get(i));
+                anslast += replacement_cur_n;
             }
-            R_len_t mlen = usearch_getMatchedLength(matcher);
-            remUChars += mlen;
-            occurrences.push_back(pair<R_len_t, R_len_t>(start, start+mlen));
+            ans.replace(anslast, str_cont.get(i).length()-jlast, str_cont.get(i), jlast, str_cont.get(i).length()-jlast);
+            str_cont.getWritable(i) = ans;
         }
 
-        R_len_t replacement_cur_n = replacement_cont.get(i).length();
-        R_len_t noccurrences = (R_len_t)occurrences.size();
-        UnicodeString ans(str_cont.get(i).length()-remUChars+noccurrences*replacement_cur_n, (UChar)0xfffd, 0);
-        R_len_t jlast = 0;
-        R_len_t anslast = 0;
-        deque< pair<R_len_t, R_len_t> >::iterator iter = occurrences.begin();
-        for (; iter != occurrences.end(); ++iter) {
-            pair<R_len_t, R_len_t> match = *iter;
-            ans.replace(anslast, match.first-jlast, str_cont.get(i), jlast, match.first-jlast);
-            anslast += match.first-jlast;
-            jlast = match.second;
-            ans.replace(anslast, replacement_cur_n, replacement_cont.get(i));
-            anslast += replacement_cur_n;
+        vector<char> utf8_buffer;
+        for (R_len_t i=0; i<vectorize_length; ++i) {
+            if (str_cont.isNA(i))
+                builder.set_na(i);
+            else
+                ci::builder_set(builder, i, str_cont.get(i), utf8_buffer);
         }
-        ans.replace(anslast, str_cont.get(i).length()-jlast, str_cont.get(i), jlast, str_cont.get(i).length()-jlast);
-        str_cont.getWritable(i) = ans;
     }
 
+    SEXP ret;
+    STRI__PROTECT(ret = builder.to_sexp());
     if (collator) {
         ucol_close(collator);
         collator=NULL;
     }
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
-    return str_cont.toR();
+    return ret;
     STRI__ERROR_HANDLER_END(
         if (collator) ucol_close(collator);
     )
@@ -185,113 +238,171 @@ SEXP ci__replace_all_coll_no_vectorize_all(SEXP str, SEXP pattern, SEXP replacem
 {   // version beta
     PROTECT(str          = ci__prepare_arg_string(str, "str"));
 
+    UCollator* collator = NULL;
+
+    STRI__ERROR_HANDLER_BEGIN(1)
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+
     // if str_n is 0, then return an empty vector
-    R_len_t str_n = LENGTH(str);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
     if (str_n <= 0) {
-        UNPROTECT(1);
-        return ci__vector_empty_strings(0);
-    }
-
-    PROTECT(pattern      = ci__prepare_arg_string(pattern, "pattern"));
-    PROTECT(replacement  = ci__prepare_arg_string(replacement, "replacement"));
-    R_len_t pattern_n = LENGTH(pattern);
-    R_len_t replacement_n = LENGTH(replacement);
-    if (pattern_n < replacement_n || pattern_n <= 0 || replacement_n <= 0) {
-        UNPROTECT(3);
-        Rf_error(MSG__WARN_RECYCLING_RULE2);
-    }
-    if (pattern_n % replacement_n != 0) {
-        Rf_warning(MSG__WARN_RECYCLING_RULE);
-    }
-
-    if (pattern_n == 1) {// this will be much faster:
+        charport::charvec::Builder builder(0);
         SEXP ret;
-        PROTECT(ret = ci__replace_allfirstlast_coll(str, pattern, replacement, opts_collator, 0));
-        UNPROTECT(4);
+        STRI__PROTECT(ret = builder.to_sexp());
+        context.emitWarnings();
+        STRI__UNPROTECT_ALL
         return ret;
     }
 
-    UCollator* collator = NULL;
-    collator = ci__ucol_open(opts_collator);
+    // Deviation from stringi: lazy preparation now runs inside the C++
+    // boundary, so queue its controlled warnings with the operation.
+    STRI__PROTECT(pattern = charport::unwind_protect([&]() -> SEXP {
+        return ci__prepare_arg_string(
+            pattern, "pattern", true, &STRI__DEFERRED_WARNINGS
+        );
+    }));
+    STRI__PROTECT(replacement = charport::unwind_protect([&]() -> SEXP {
+        return ci__prepare_arg_string(
+            replacement, "replacement", true,
+            &STRI__DEFERRED_WARNINGS
+        );
+    }));
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t replacement_n = ci::checked_r_len(
+        context.size(replacement), "character vectors"
+    );
+    charport::unwind_protect([&]() -> SEXP {
+        // Deviation from stringi: keep controlled recycling conditions on the
+        // C++ path so R signalling happens after operation cleanup.
+        if (pattern_n < replacement_n || pattern_n <= 0 || replacement_n <= 0)
+            throw StriException(MSG__WARN_RECYCLING_RULE2);
+        if (pattern_n % replacement_n != 0)
+            context.warn(MSG__WARN_RECYCLING_RULE);
+        return R_NilValue;
+    });
 
-    STRI__ERROR_HANDLER_BEGIN(3)
-    StriContainerUTF16 str_cont(str, str_n, false); // writable
-    StriContainerUStringSearch pattern_cont(pattern, pattern_n, collator);  // collator is not owned by pattern_cont
-    StriContainerUTF16 replacement_cont(replacement, pattern_n);
+    if (pattern_n == 1) {// this will be much faster:
+        SEXP ret;
+        // Deviation from stringi: replay outer preparation diagnostics before
+        // delegation, while no Reader, collator, or output owner is active.
+        context.emitWarnings();
+        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+            return ci__replace_allfirstlast_coll(
+                str, pattern, replacement, opts_collator, 0
+            );
+        }));
+        STRI__UNPROTECT_ALL
+        return ret;
+    }
 
-    for (R_len_t i = 0; i<pattern_n; ++i)
+    // Deviation from stringi: catch R errors from collator option parsing so
+    // queued warnings and any opened collator are released before R resumes.
+    charport::unwind_protect([&]() -> SEXP {
+        collator = ci__ucol_open(
+            STRI__DEFERRED_WARNINGS, opts_collator
+        );
+        return R_NilValue;
+    });
+
+    charport::charvec::Builder builder(str_n);
     {
-        if (pattern_cont.isNA(i)) {
-            if (collator) {
-                ucol_close(collator);
-                collator=NULL;
+        StriContainerUTF16 str_cont(
+            context, str, str_n, false
+        ); // writable
+        StriContainerUStringSearch pattern_cont(
+            context, pattern, pattern_n, collator
+        );  // collator is not owned by pattern_cont
+        StriContainerUTF16 replacement_cont(
+            context, replacement, pattern_n
+        );
+        bool return_all_na = false;
+
+        for (R_len_t i = 0; i<pattern_n; ++i)
+        {
+            if (pattern_cont.isNA(i)) {
+                // Deviation from stringi: stage the all-NA return until the
+                // pattern container destroys its matcher before the borrowed
+                // collator closes and before Builder output is wrapped.
+                return_all_na = true;
+                break;
             }
-            STRI__UNPROTECT_ALL
-            return ci__vector_NA_strings(str_n);
-        }
-        else if (pattern_cont.get(i).length() <= 0) {
-            if (collator) {
-                ucol_close(collator);
-                collator=NULL;
-            }
-            Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
-            STRI__UNPROTECT_ALL
-            return ci__vector_NA_strings(str_n);
-        }
-
-        for (R_len_t j = 0; j<str_n; ++j) {
-            if (str_cont.isNA(j) || str_cont.get(j).length() <= 0) continue;
-
-            UStringSearch *matcher = pattern_cont.getMatcher(i, str_cont.get(j));
-            usearch_reset(matcher);
-            UErrorCode status = U_ZERO_ERROR;
-            R_len_t remUChars = 0;
-            deque< pair<R_len_t, R_len_t> > occurrences;
-
-            int start = (int)usearch_first(matcher, &status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-            if (start == USEARCH_DONE) // no match
-                continue; // no change in str_cont[j] at all
-
-            if (replacement_cont.isNA(i)) {
-                str_cont.setNA(j);
-                continue;
+            else if (pattern_cont.get(i).length() <= 0) {
+                // StriContainerUStringSearch already queued stringi's first
+                // warning; preserve this sequential path's second warning.
+                context.warn(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+                return_all_na = true;
+                break;
             }
 
-            while (start != USEARCH_DONE) {
-                R_len_t mlen = usearch_getMatchedLength(matcher);
-                remUChars += mlen;
-                occurrences.push_back(pair<R_len_t, R_len_t>(start, start+mlen));
-                start = usearch_next(matcher, &status);
+            for (R_len_t j = 0; j<str_n; ++j) {
+                if (str_cont.isNA(j) || str_cont.get(j).length() <= 0) continue;
+
+                UStringSearch *matcher = pattern_cont.getMatcher(i, str_cont.get(j));
+                usearch_reset(matcher);
+                UErrorCode status = U_ZERO_ERROR;
+                R_len_t remUChars = 0;
+                deque< pair<R_len_t, R_len_t> > occurrences;
+
+                int start = (int)usearch_first(matcher, &status);
                 STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-            }
 
-            R_len_t replacement_cur_n = replacement_cont.get(i).length();
-            R_len_t noccurrences = (R_len_t)occurrences.size();
-            UnicodeString ans(str_cont.get(j).length()-remUChars+noccurrences*replacement_cur_n, (UChar)0xfffd, 0);
-            R_len_t jlast = 0;
-            R_len_t anslast = 0;
-            deque< pair<R_len_t, R_len_t> >::iterator iter = occurrences.begin();
-            for (; iter != occurrences.end(); ++iter) {
-                pair<R_len_t, R_len_t> match = *iter;
-                ans.replace(anslast, match.first-jlast, str_cont.get(j), jlast, match.first-jlast);
-                anslast += match.first-jlast;
-                jlast = match.second;
-                ans.replace(anslast, replacement_cur_n, replacement_cont.get(i));
-                anslast += replacement_cur_n;
+                if (start == USEARCH_DONE) // no match
+                    continue; // no change in str_cont[j] at all
+
+                if (replacement_cont.isNA(i)) {
+                    str_cont.setNA(j);
+                    continue;
+                }
+
+                while (start != USEARCH_DONE) {
+                    R_len_t mlen = usearch_getMatchedLength(matcher);
+                    remUChars += mlen;
+                    occurrences.push_back(pair<R_len_t, R_len_t>(start, start+mlen));
+                    start = usearch_next(matcher, &status);
+                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                }
+
+                R_len_t replacement_cur_n = replacement_cont.get(i).length();
+                R_len_t noccurrences = (R_len_t)occurrences.size();
+                UnicodeString ans(str_cont.get(j).length()-remUChars+noccurrences*replacement_cur_n, (UChar)0xfffd, 0);
+                R_len_t jlast = 0;
+                R_len_t anslast = 0;
+                deque< pair<R_len_t, R_len_t> >::iterator iter = occurrences.begin();
+                for (; iter != occurrences.end(); ++iter) {
+                    pair<R_len_t, R_len_t> match = *iter;
+                    ans.replace(anslast, match.first-jlast, str_cont.get(j), jlast, match.first-jlast);
+                    anslast += match.first-jlast;
+                    jlast = match.second;
+                    ans.replace(anslast, replacement_cur_n, replacement_cont.get(i));
+                    anslast += replacement_cur_n;
+                }
+                ans.replace(anslast, str_cont.get(j).length()-jlast, str_cont.get(j), jlast, str_cont.get(j).length()-jlast);
+                str_cont.getWritable(j) = ans;
             }
-            ans.replace(anslast, str_cont.get(j).length()-jlast, str_cont.get(j), jlast, str_cont.get(j).length()-jlast);
-            str_cont.getWritable(j) = ans;
+        }
+
+        vector<char> utf8_buffer;
+        for (R_len_t j=0; j<str_n; ++j) {
+            if (return_all_na || str_cont.isNA(j))
+                builder.set_na(j);
+            else
+                ci::builder_set(builder, j, str_cont.get(j), utf8_buffer);
         }
     }
 
+    SEXP ret;
+    STRI__PROTECT(ret = builder.to_sexp());
     if (collator) {
         ucol_close(collator);
         collator=NULL;
     }
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
-    return str_cont.toR();
+    return ret;
     STRI__ERROR_HANDLER_END(
         if (collator) ucol_close(collator);
     )

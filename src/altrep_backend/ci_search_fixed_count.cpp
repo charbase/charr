@@ -76,29 +76,52 @@ SEXP ci_count_fixed(SEXP str, SEXP pattern, SEXP opts_fixed)
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
 
     STRI__ERROR_HANDLER_BEGIN(2)
-    R_len_t vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
-    StriContainerUTF8 str_cont(str, vectorize_length);
-    StriContainerByteSearch pattern_cont(pattern, vectorize_length, pattern_flags);
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(INTSXP, vectorize_length));
+    {
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t vectorize_length = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_length = ci__recycling_rule(
+            STRI__DEFERRED_WARNINGS, 2, str_n, pattern_n
+        );
+        return R_NilValue;
+    });
+
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(INTSXP, vectorize_length);
+    }));
     int* ret_tab = INTEGER(ret);
 
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-                ret_tab[i] = NA_INTEGER, ret_tab[i] = 0)
+        StriContainerUTF8 str_cont(context, str, vectorize_length);
+        StriContainerByteSearch pattern_cont(
+            context, pattern, vectorize_length, pattern_flags
+        );
 
-        StriByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
-        matcher->reset(str_cont.get(i).c_str(), str_cont.get(i).length());
-        R_len_t found = 0;
-        while (USEARCH_DONE != matcher->findNext())
-            ++found;
-        ret_tab[i] = found;
+        for (R_len_t i = pattern_cont.vectorize_init();
+                i != pattern_cont.vectorize_end();
+                i = pattern_cont.vectorize_next(i))
+        {
+            STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
+                    ret_tab[i] = NA_INTEGER, ret_tab[i] = 0)
+
+            StriByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
+            matcher->reset(str_cont.get(i).data(), str_cont.get(i).length());
+            R_len_t found = 0;
+            while (USEARCH_DONE != matcher->findNext())
+                ++found;
+            ret_tab[i] = found;
+        }
     }
 
+    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END( ;/* do nothing special on error */ )

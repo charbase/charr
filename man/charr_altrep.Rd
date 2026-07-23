@@ -2,17 +2,12 @@
 % Please edit documentation in R/backend-switch.R
 \name{charr_altrep}
 \alias{charr_altrep}
-\alias{charr_threads}
-\title{Select charr's copied backend}
+\title{Select charr's string backend}
 \usage{
 charr_altrep(on = NULL)
-
-charr_threads(n = NULL)
 }
 \arguments{
 \item{on}{\code{NULL} to query, or \code{TRUE}/\code{FALSE} to set.}
-
-\item{n}{\code{NULL} to query, or a single integer >= 1 to set.}
 }
 \value{
 The current value when querying; the previous value (invisibly)
@@ -20,20 +15,17 @@ when setting.
 }
 \description{
 With the switch off, charr routes its string operations to installed
-stringi. With it on, the same operations run through charr's private copy
-of stringi's R and C++ implementation. The copied implementation currently
-materializes ordinary R character vectors; charport integration comes next.
+stringi. With it on, the same operations run through charr's ALTREP-aware
+implementation. Dispatch happens in R before a native entry point is
+called; the two C++ paths are separate, and the ALTREP containers do not
+inspect this setting.
 }
 \details{
-Setting \code{CHARR_ALTREP=true} before loading charr enables the copied backend.
-
-\code{charr_threads()} records the worker count intended for the later charport
-implementation. The copied stringi implementation does not use it yet.
+Setting \code{CHARR_ALTREP=true} before loading charr enables charr's ALTREP
+implementation.
 }
 \examples{
 old <- charr_altrep(TRUE)
 charr_altrep()
 charr_altrep(old)
-
-charr_threads()
 }

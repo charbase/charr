@@ -34,7 +34,9 @@
 #ifndef __ci_container_utf16_h
 #define __ci_container_utf16_h
 
+#include "ci_reader.h"
 #include "ci_container_base.h"
+#include <memory>
 #include <vector>
 
 
@@ -63,19 +65,22 @@ class StriContainerUTF16 : public StriContainerBase {
 
 protected:
 
-    UnicodeString* str;       ///< data - \code{UnicodeString}s
+    std::unique_ptr<UnicodeString[]> str;  ///< data - \code{UnicodeString}s
 
 
 public:
 
     StriContainerUTF16();
     StriContainerUTF16(R_len_t nrecycle);
-    StriContainerUTF16(SEXP rstr, R_len_t nrecycle, bool shallowrecycle=true);
+    // rstr must be a prepared STRSXP protected by the caller until construction
+    // finishes. UTF-16 values are owned, so this class retains no Reader lease.
+    StriContainerUTF16(
+        ci::ReaderContext& context, SEXP rstr,
+        R_len_t nrecycle, bool shallowrecycle=true
+    );
     StriContainerUTF16(StriContainerUTF16& container);
     ~StriContainerUTF16();
     StriContainerUTF16& operator=(StriContainerUTF16& container);
-    SEXP toR(R_len_t i) const;
-    SEXP toR() const;
 
 
     /** check if the vectorized ith element is NA
@@ -162,7 +167,9 @@ public:
 };
 
 
-SEXP ci__subset_by_logical(const StriContainerUTF16& str_cont,
-                             const std::vector<int>& which, int result_counter);
+charport::charvec::Store ci__subset_by_logical(
+    const StriContainerUTF16& str_cont,
+    const std::vector<int>& which, int result_counter
+);
 
 #endif

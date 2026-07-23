@@ -84,36 +84,59 @@ SEXP ci_detect_fixed(SEXP str, SEXP pattern, SEXP negate,
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
 
     STRI__ERROR_HANDLER_BEGIN(2)
-    int vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
-    StriContainerUTF8 str_cont(str, vectorize_length);
-    StriContainerByteSearch pattern_cont(pattern, vectorize_length, pattern_flags);
-
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(LGLSXP, vectorize_length));
+    {
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
+    R_len_t pattern_n = ci::checked_r_len(
+        context.size(pattern), "character vectors"
+    );
+    R_len_t vectorize_length = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        vectorize_length = ci__recycling_rule(
+            STRI__DEFERRED_WARNINGS, 2, str_n, pattern_n
+        );
+        return R_NilValue;
+    });
+
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(LGLSXP, vectorize_length);
+    }));
     int* ret_tab = LOGICAL(ret);
 
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
     {
-        if (max_count_1 == 0) {
-            ret_tab[i] = NA_LOGICAL;
-            continue;
-        }
+        StriContainerUTF8 str_cont(context, str, vectorize_length);
+        StriContainerByteSearch pattern_cont(
+            context, pattern, vectorize_length, pattern_flags
+        );
 
-        STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-                ret_tab[i] = NA_LOGICAL,
-        {   ret_tab[i] = negate_1;
+        for (R_len_t i = pattern_cont.vectorize_init();
+                i != pattern_cont.vectorize_end();
+                i = pattern_cont.vectorize_next(i))
+        {
+            if (max_count_1 == 0) {
+                ret_tab[i] = NA_LOGICAL;
+                continue;
+            }
+
+            STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
+                    ret_tab[i] = NA_LOGICAL,
+            {   ret_tab[i] = negate_1;
+                if (max_count_1 > 0 && ret_tab[i]) --max_count_1;
+            })
+
+            StriByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
+            matcher->reset(str_cont.get(i).data(), str_cont.get(i).length());
+            ret_tab[i] = (int)(matcher->findFirst() != USEARCH_DONE);
+            if (negate_1) ret_tab[i] = !ret_tab[i];
             if (max_count_1 > 0 && ret_tab[i]) --max_count_1;
-        })
-
-        StriByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
-        matcher->reset(str_cont.get(i).c_str(), str_cont.get(i).length());
-        ret_tab[i] = (int)(matcher->findFirst() != USEARCH_DONE);
-        if (negate_1) ret_tab[i] = !ret_tab[i];
-        if (max_count_1 > 0 && ret_tab[i]) --max_count_1;
+        }
     }
 
+    }
+    STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END( ;/* do nothing special on error */ )

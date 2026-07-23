@@ -43,27 +43,33 @@
  * Prior to memory allocation, you should check for < 0!
  *
  * Note that ICU permits only strings of length < 2^31.
- * @param s character vector
+ * @param context operation-level Reader context
+ * @param str character vector
  * @return maximal number of bytes
  *
  * @version 0.1-?? (Marek Gagolewski)
  */
-R_len_t ci__numbytes_max(SEXP str)
+R_len_t ci__numbytes_max(ci::ReaderContext& context, SEXP str)
 {
     // STRI_ASSERT - str is a character vector
-    R_len_t ns = LENGTH(str);
+    R_len_t ns = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
     if (ns <= 0) return -1;
     R_len_t maxlen = -1;
-    for (R_len_t i=0; i<ns; ++i) {
-        SEXP cs = STRING_ELT(str, i);
-        if (cs != NA_STRING) {
-            /* INPUT ENCODING CHECK: this function does not need this. */
-            R_len_t cns = LENGTH(cs);
-            if (cns > maxlen) maxlen = cns;
+    {
+        std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(str);
+        const charport::StrViews& views = borrow->views();
+        for (R_len_t i=0; i<ns; ++i) {
+            const charport::StrView cs = views[i];
+            if (!cs.is_na()) {
+                /* INPUT ENCODING CHECK: this function does not need this. */
+                R_len_t cns = cs.len;
+                if (cns > maxlen) maxlen = cns;
+            }
         }
     }
     return maxlen;
-    // TODO: overload this function for StriContainers.....
 }
 
 
@@ -99,52 +105,73 @@ SEXP ci_length(SEXP str)
 
     STRI__ERROR_HANDLER_BEGIN(1)
 
-    R_len_t str_n = LENGTH(str);
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(INTSXP, str_n));
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(INTSXP, str_n);
+    }));
     int* retint = INTEGER(ret);
 
     StriUcnv ucnvNative(NULL);
 
-    for (R_len_t k = 0; k < str_n; k++) {
-        SEXP curs = STRING_ELT(str, k);
-        if (curs == NA_STRING) {
-            retint[k] = NA_INTEGER;
-            continue;
-        }
+    if (str_n > 0) {
+        // The copied stringi loop counts a leading UTF-8 BOM as a code point.
+        // Read the source records directly because StriContainerUTF8 removes it.
+        std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(str);
+        const charport::StrViews& views = borrow->views();
 
-        R_len_t curs_n = LENGTH(curs);  // O(1) - stored in SEXPREC
-        if (IS_ASCII(curs) || IS_LATIN1(curs)) {
-            retint[k] = curs_n;
-        }
-        else if (IS_BYTES(curs)) {
-            throw StriException(MSG__BYTESENC);
-        }
-        else if (IS_UTF8(curs) || ucnvNative.isUTF8()) { // UTF-8 or native is UTF-8
-            const char* curs_s = CHAR(curs);  // TODO: ALTREP will be problematic?
-            retint[k] = ci__length_string(curs_s, curs_n);
-        }
-        else if (ucnvNative.is8bit()) { // native-8bit
-            retint[k] = curs_n;
-        }
-        else { // native encoding, not 8 bit
-
-            UConverter* uconv = ucnvNative.getConverter();
-
-            // native encoding which is neither 8-bit nor UTF-8 (e.g., 'Big5')
-            // this is weird, but we're prepared
-            UErrorCode status = U_ZERO_ERROR;
-            const char* source = CHAR(curs);  // TODO: ALTREP will be problematic?
-            const char* sourceLimit = source + curs_n;
-            R_len_t j;
-            for (j = 0; source != sourceLimit; j++) {
-                /*ignore_retval=*/ucnv_getNextUChar(uconv, &source, sourceLimit, &status);
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+        for (R_len_t k = 0; k < str_n; k++) {
+            const charport::StrView curs = views[k];
+            if (curs.is_na()) {
+                retint[k] = NA_INTEGER;
+                continue;
             }
-            retint[k] = j; // all right, we got it!
+
+            R_len_t curs_n = curs.len;
+            if (curs.enc == cetype_ext_t::CE_ASCII ||
+                    curs.enc == cetype_ext_t::CE_LATIN1) {
+                retint[k] = curs_n;
+            }
+            else if (curs.enc == cetype_ext_t::CE_BYTES) {
+                throw StriException(MSG__BYTESENC);
+            }
+            else if (curs.enc == cetype_ext_t::CE_UTF8 ||
+                    curs.enc == cetype_ext_t::CE_ASCII_OR_UTF8 ||
+                    (curs.enc == cetype_ext_t::CE_NATIVE &&
+                     ucnvNative.isUTF8())) { // UTF-8 or native is UTF-8
+                const char* curs_s = curs.ptr;
+                retint[k] = ci__length_string(curs_s, curs_n);
+            }
+            else if (curs.enc == cetype_ext_t::CE_NATIVE &&
+                    ucnvNative.is8bit()) { // native-8bit
+                retint[k] = curs_n;
+            }
+            else if (curs.enc == cetype_ext_t::CE_NATIVE) { // native encoding, not 8 bit
+
+                UConverter* uconv = ucnvNative.getConverter();
+
+                // native encoding which is neither 8-bit nor UTF-8 (e.g., 'Big5')
+                // this is weird, but we're prepared
+                UErrorCode status = U_ZERO_ERROR;
+                const char* source = curs.ptr;
+                const char* sourceLimit = source + curs_n;
+                R_len_t j;
+                for (j = 0; source != sourceLimit; j++) {
+                    /*ignore_retval=*/ucnv_getNextUChar(uconv, &source, sourceLimit, &status);
+                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                }
+                retint[k] = j; // all right, we got it!
+            }
+            else {
+                throw StriException("unknown charport string encoding");
+            }
         }
     }
 
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
 
@@ -171,17 +198,27 @@ SEXP ci_length(SEXP str)
 SEXP ci_numbytes(SEXP str)
 {
     PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
-    R_len_t str_n = LENGTH(str);
 
     STRI__ERROR_HANDLER_BEGIN(1)
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(INTSXP, str_n));
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(INTSXP, str_n);
+    }));
     int* retint = INTEGER(ret);
-    for (R_len_t i=0; i<str_n; ++i) {
-        SEXP curs = STRING_ELT(str, i);
-        /* INPUT ENCODING CHECK: this function does not need this. */
-        retint[i] = (curs == NA_STRING)?NA_INTEGER:LENGTH(curs); // O(1) - stored by R
+    if (str_n > 0) {
+        std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(str);
+        const charport::StrViews& views = borrow->views();
+        for (R_len_t i=0; i<str_n; ++i) {
+            const charport::StrView curs = views[i];
+            /* INPUT ENCODING CHECK: this function does not need this. */
+            retint[i] = curs.is_na() ? NA_INTEGER : curs.len;
+        }
     }
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END({ /* no special action on error */ })
@@ -207,17 +244,27 @@ SEXP ci_numbytes(SEXP str)
 SEXP ci_isempty(SEXP str)
 {
     PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
-    R_len_t str_n = LENGTH(str);
 
     STRI__ERROR_HANDLER_BEGIN(1)
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(LGLSXP, str_n));
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(LGLSXP, str_n);
+    }));
     int* retlog = LOGICAL(ret);
-    for (R_len_t i=0; i<str_n; ++i) {
-        SEXP curs = STRING_ELT(str, i);
-        /* INPUT ENCODING CHECK: this function does not need this. */
-        retlog[i] = (curs == NA_STRING)?NA_LOGICAL:(LENGTH(curs) <= 0);
+    if (str_n > 0) {
+        std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(str);
+        const charport::StrViews& views = borrow->views();
+        for (R_len_t i=0; i<str_n; ++i) {
+            const charport::StrView curs = views[i];
+            /* INPUT ENCODING CHECK: this function does not need this. */
+            retlog[i] = curs.is_na() ? NA_LOGICAL : curs.len <= 0;
+        }
     }
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END({ /* no special action on error */ })
@@ -497,27 +544,34 @@ SEXP ci_width(SEXP str)
     PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
 
     STRI__ERROR_HANDLER_BEGIN(1)
-    R_len_t str_n = LENGTH(str);
-    StriContainerUTF8 str_cont(str, str_n);
-
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    R_len_t str_n = ci::checked_r_len(
+        context.size(str), "character vectors"
+    );
     SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(INTSXP, str_n));
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(INTSXP, str_n);
+    }));
     int* retint = INTEGER(ret);
 
-    for (R_len_t i = str_cont.vectorize_init();
-            i != str_cont.vectorize_end();
-            i = str_cont.vectorize_next(i))
     {
-        if (str_cont.isNA(i)) {
-            retint[i] = NA_INTEGER;
-            continue;
-        }
+        StriContainerUTF8 str_cont(context, str, str_n);
+        for (R_len_t i = str_cont.vectorize_init();
+                i != str_cont.vectorize_end();
+                i = str_cont.vectorize_next(i))
+        {
+            if (str_cont.isNA(i)) {
+                retint[i] = NA_INTEGER;
+                continue;
+            }
 
-        const char* str_cur_s = str_cont.get(i).c_str();
-        R_len_t     str_cur_n = str_cont.get(i).length();
-        retint[i] = ci__width_string(str_cur_s, str_cur_n);
+            const char* str_cur_s = str_cont.get(i).data();
+            R_len_t     str_cur_n = str_cont.get(i).length();
+            retint[i] = ci__width_string(str_cur_s, str_cur_n);
+        }
     }
 
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END({ /* no special action on error */ })

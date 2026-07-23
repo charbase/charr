@@ -71,9 +71,17 @@ private:
         skip_size = 0;
     }
 
-    void setType(SEXP opts_brkiter, const char* default_type);
-    void setLocale(SEXP opts_brkiter);
-    void setSkipRuleStatus(SEXP opts_brkiter);
+    void setType(
+        SEXP opts_brkiter, const char* default_type,
+        R_len_t default_type_length,
+        ci::DeferredWarnings& warnings
+    );
+    void setLocale(
+        SEXP opts_brkiter, ci::DeferredWarnings& warnings
+    );
+    void setSkipRuleStatus(
+        SEXP opts_brkiter, ci::DeferredWarnings& warnings
+    );
 
 
 public:
@@ -83,11 +91,21 @@ public:
         setEmptyOpts();
     }
 
-    StriBrkIterOptions(SEXP opts_brkiter, const char* default_type) {
+    template <size_t N>
+    StriBrkIterOptions(
+        SEXP opts_brkiter, const char (&default_type)[N],
+        ci::DeferredWarnings& warnings
+    ) {
         setEmptyOpts();
-        setLocale(opts_brkiter);
-        setSkipRuleStatus(opts_brkiter);
-        setType(opts_brkiter, default_type);
+        charport::unwind_protect([&]() -> SEXP {
+            setLocale(opts_brkiter, warnings);
+            setSkipRuleStatus(opts_brkiter, warnings);
+            setType(
+                opts_brkiter, default_type,
+                static_cast<R_len_t>(N-1), warnings
+            );
+            return R_NilValue;
+        });
     }
 };
 
@@ -111,15 +129,15 @@ private:
 
     UBreakIterator* uiterator;
 
-    void open() {
+    void open(ci::DeferredWarnings& warnings) {
 #ifndef NDEBUG
         if (uiterator) throw StriException("!NDEBUG: StriUBreakIterator::open()");
 #endif
         UErrorCode status = U_ZERO_ERROR;
         if (!rules.isEmpty()) {
             UParseError parseErr;
-            uiterator = ubrk_openRules(rules.getTerminatedBuffer(),
-                                       -1/*null-terminated*/, NULL, 0,
+            uiterator = ubrk_openRules(rules.getBuffer(), rules.length(),
+                                       NULL, 0,
                                        &parseErr, &status);
         }
         else {
@@ -145,8 +163,11 @@ private:
         if (status == U_USING_DEFAULT_WARNING && uiterator && locale) {
             UErrorCode status2 = U_ZERO_ERROR;
             const char* valid_locale = ubrk_getLocaleByType(uiterator, ULOC_VALID_LOCALE, &status2);
-            if (valid_locale && !strcmp(valid_locale, "root"))
-                Rf_warning("%s", ICUError::getICUerrorName(status));
+            if (valid_locale && !strcmp(valid_locale, "root")) {
+                // Deviation from stringi: queue the controllable warning so
+                // the iterator owner is released before R handles it.
+                warnings.push(ICUError::getICUerrorName(status));
+            }
         }
     }
 
@@ -185,8 +206,8 @@ public:
     }
 
 
-    UBreakIterator* getIterator() {
-        if (!uiterator) open();
+    UBreakIterator* getIterator(ci::DeferredWarnings& warnings) {
+        if (!uiterator) open(warnings);
         return uiterator;
     }
 
@@ -227,7 +248,7 @@ private:
         searchLen = 0;
     }
 
-    void open() {
+    void open(ci::DeferredWarnings& warnings) {
         UErrorCode status = U_ZERO_ERROR;
         Locale loc = Locale::createFromName(locale);
         if (!rules.isEmpty()) {
@@ -260,8 +281,11 @@ private:
         if (status == U_USING_DEFAULT_WARNING && rbiterator && locale) {
             UErrorCode status2 = U_ZERO_ERROR;
             const char* valid_locale = rbiterator->getLocaleID(ULOC_VALID_LOCALE, status2);
-            if (valid_locale && !strcmp(valid_locale, "root"))
-                Rf_warning("%s", ICUError::getICUerrorName(status));
+            if (valid_locale && !strcmp(valid_locale, "root")) {
+                // Deviation from stringi: queue the controllable warning so
+                // Reader and ICU resources are released before R handles it.
+                warnings.push(ICUError::getICUerrorName(status));
+            }
         }
     }
 
@@ -298,7 +322,11 @@ public:
         }
     }
 
-    void setupMatcher(const char* searchStr, R_len_t searchLen);
+    void setupMatcher(
+        const char* searchStr,
+        R_len_t searchLen,
+        ci::DeferredWarnings& warnings
+    );
 
     void first();
     bool next();
