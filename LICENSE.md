@@ -26,9 +26,8 @@ SOFTWARE.
 
 # Bundled ICU4C
 
-`src/icu74` contains the source of ICU4C 74.1 (Copyright (c) Unicode, Inc. and
-others), distributed under the Unicode License v3; the full text is in
-`src/icu74/LICENSE`. These sources are vendored from the stringi package's
-distribution (Copyright (c) Marek Gagolewski), which pins the same ICU version
-so that charr's Unicode results are byte-identical to stringi's. ICU's data
-file is not bundled; charr loads stringi's already-installed copy at runtime.
+`src/icu78` contains pristine runtime source from the official ICU4C 78.3
+release (Copyright (c) Unicode, Inc. and others), distributed under the
+Unicode License v3. Charr also ships a trimmed archive derived from ICU4C
+78.3's official data. The complete license and third-party notices are in
+`src/icu78/LICENSE` and are installed as `icu/LICENSE`.

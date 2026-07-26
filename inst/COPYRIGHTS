@@ -5,9 +5,11 @@ stringi
 -------
 
 Charr's initial private backend is copied from stringi's R and C++
-implementation. Its ICU4C vendoring layout, build configuration, and
-portability patches are also adapted from stringi. Copied files retain their
-upstream copyright notices and identify the pinned source commit.
+implementation. Its original ICU4C vendoring layout and build configuration
+were also adapted from stringi. The current ICU4C 78.3 runtime source is a
+pristine official import; package-specific settings remain in charr's build
+flags and configuration header. Copied stringi files retain their upstream
+copyright notices and identify the pinned source commit.
 
 Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
 All rights reserved.
@@ -40,7 +42,26 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ICU4C
 -----
 
-Charr bundles ICU4C 74.1 source code and data from Unicode, Inc. and others.
+Charr bundles ICU4C 78.3 source code and data from Unicode, Inc. and others.
 The complete Unicode License v3 and ICU third-party notices are included in
-`icu/LICENSE` in the installed package and `src/icu74/LICENSE` in the source
+`icu/LICENSE` in the installed package and `src/icu78/LICENSE` in the source
 package.
+
+stringr
+-------
+
+Charr is a fork of stringr, and its R surface, documentation and tests derive
+from it. Copyright (c) 2023 stringr authors, Posit Software, PBC, under the MIT
+License; the terms are in `LICENSE.md`.
+
+Tatoeba
+-------
+
+Charr's benchmark measures against sentences from the Tatoeba Project
+(<https://tatoeba.org>), released under Creative Commons Attribution 2.0 France
+with attribution to Tatoeba. Some sentences are additionally available under
+CC0 1.0, and sentences from the Tanaka Corpus are in the public domain.
+
+No Tatoeba data is included in this package or in its repository. The benchmark
+reads a sentence export the maintainer supplies locally, and the corpus it
+derives from that export is untracked.

@@ -33,7 +33,7 @@
 #include "ci_stringi.h"
 #include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
 #include "ci_container_usearch.h"
 #include <unicode/uregex.h>
 #include "ci_string8buf.h"
@@ -111,7 +111,7 @@ void ci__locate_set_dimnames_list(
  *                const StriContainer& for increased performance
  */
 charport::charvec::Store ci__subset_by_logical(
-    const StriContainerUTF8& str_cont,
+    const Utf8Input& str_cont,
     const std::vector<int>& which, int result_counter
 )
 {
@@ -125,7 +125,7 @@ charport::charvec::Store ci__subset_by_logical(
                     NULL, 0, cetype_ext_t::CE_NA
                 );
             if (which[j]) {
-                const String8& value = str_cont.get(j);
+                const Utf8Record& value = str_cont.get(j);
                 if (value.isNA())
                     return charport::charvec::Store::scalar(
                         NULL, 0, cetype_ext_t::CE_NA

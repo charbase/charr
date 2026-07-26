@@ -4,8 +4,8 @@
 # R CMD INSTALL sources it INSTEAD of the default libs installation, so this
 # file must copy the shared objects itself before its real job: decompressing
 # the trimmed ICU data archive (built by tools/trim-icudt.R, shipped as
-# src/icu74/data/icudt74l.dat.xz) into the installed package, where .onLoad
-# reads it via system.file("icu", "icudt74l.dat").
+# src/icu78/data/icudt78l.dat.xz) into the installed package, where .onLoad
+# reads it via system.file("icu", "icudt78l.dat").
 
 libs <- Sys.glob(paste0("*", SHLIB_EXT))
 libs_dir <- file.path(R_PACKAGE_DIR, paste0("libs", R_ARCH))
@@ -28,12 +28,12 @@ if (!identical(icu_mode, "system")) {
   if (.Platform$endian != "little") {
     stop("charr bundles a little-endian ICU data archive; on a big-endian ",
          "platform install against the system ICU4C instead ",
-         "(pkg-config + ICU4C >= 61)")
+         "(certified versions: ICU4C 78.2 or 78.3)")
   }
 
-  dat_name <- "icudt74l.dat"
-  xz_path <- file.path("icu74", "data", paste0(dat_name, ".xz"))
-  md5_path <- file.path("icu74", "data", paste0(dat_name, ".md5sum"))
+  dat_name <- "icudt78l.dat"
+  xz_path <- file.path("icu78", "data", paste0(dat_name, ".xz"))
+  md5_path <- file.path("icu78", "data", paste0(dat_name, ".md5sum"))
   icu_dir <- file.path(R_PACKAGE_DIR, "icu")
   dat_path <- file.path(icu_dir, dat_name)
   md5_expected <- scan(md5_path, what = character(), n = 1L, quiet = TRUE)

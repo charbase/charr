@@ -35,7 +35,7 @@
 #include "ci_builder.h"
 #include "ci_container_bytesearch.h"
 #include "ci_container_listutf8.h"
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
 #include "ci_container_utf16.h"
 
 #include <R_ext/Altrep.h>
@@ -73,7 +73,7 @@ const void* ci_test_erroring_altrep_dataptr_or_null(SEXP)
 }
 
 std::unique_ptr<StriByteSearchMatcher> make_test_byte_matcher(
-    const String8& pattern, bool case_insensitive
+    const Utf8Record& pattern, bool case_insensitive
 )
 {
     if (case_insensitive) {
@@ -258,7 +258,7 @@ SEXP ci_test_UnicodeContainer16b(SEXP str)
 }
 
 
-/** for testing efficiency of StriContainerUTF8  [internal]
+/** for testing efficiency of Utf8Input  [internal]
  * @param str character vector
  * @return R_NilValue
  *
@@ -273,7 +273,7 @@ SEXP ci_test_UnicodeContainer8(SEXP str)
         R_len_t n = ci::checked_r_len(
             context.size(str), "character vectors"
         );
-        StriContainerUTF8 ss(context, str, n);
+        Utf8Input ss(context, str, n);
     }
     context.emitWarnings();
     STRI__UNPROTECT_ALL
@@ -282,7 +282,7 @@ SEXP ci_test_UnicodeContainer8(SEXP str)
 }
 
 
-/** Round-trip through StriContainerUTF8 and a charvec Builder [internal]. */
+/** Round-trip through Utf8Input and a charvec Builder [internal]. */
 SEXP ci_test_UnicodeContainer8b(SEXP str)
 {
     PROTECT(str = ci__prepare_arg_string(str, "str"));
@@ -295,7 +295,7 @@ SEXP ci_test_UnicodeContainer8b(SEXP str)
         );
         charport::charvec::Builder builder(n);
         {
-            StriContainerUTF8 ss(context, str, n);
+            Utf8Input ss(context, str, n);
             for (R_len_t i=0; i<n; ++i)
                 ci::builder_set(builder, i, ss.getNAble(i));
         }
@@ -321,8 +321,8 @@ SEXP ci_test_UnicodeContainer8_alias(SEXP str)
         );
         charport::charvec::Builder builder(n);
         {
-            StriContainerUTF8 first(context, str, n);
-            StriContainerUTF8 second(context, str, n);
+            Utf8Input first(context, str, n);
+            Utf8Input second(context, str, n);
             for (R_len_t i=0; i<n; ++i)
                 ci::builder_set(builder, i, second.getNAble(i));
         }
@@ -349,8 +349,8 @@ SEXP ci_test_UnicodeContainer8_independent(SEXP str)
         );
         charport::charvec::Builder builder(n);
         {
-            StriContainerUTF8 first(first_context, str, n);
-            StriContainerUTF8 second(second_context, str, n);
+            Utf8Input first(first_context, str, n);
+            Utf8Input second(second_context, str, n);
             for (R_len_t i=0; i<n; ++i)
                 ci::builder_set(builder, i, second.getNAble(i));
         }
@@ -430,7 +430,7 @@ SEXP ci_test_ByteSearchMatcher(
         if (str_n < 1 || pattern_n != 1)
             throw StriException("test matcher requires a subject and one pattern");
 
-        StriContainerUTF8 strings(context, str, str_n, true);
+        Utf8Input strings(context, str, str_n, true);
         StriContainerByteSearch patterns(
             context, pattern, pattern_n, 0
         );
@@ -465,23 +465,23 @@ SEXP ci_test_ByteSearchMatcher(
 }
 
 
-/** Exercise owned String8 self-assignment [internal]. */
-SEXP ci_test_String8_assignment()
+/** Exercise assignment and output copying for UTF-8 views [internal]. */
+SEXP ci_test_Utf8Record_views()
 {
     STRI__ERROR_HANDLER_BEGIN(0)
     charport::charvec::Builder builder(3);
-    String8 value("owned", 5, true, false, true);
+    Utf8Record value("owned", 5, charr::altrep::Utf8RecordState::ascii);
     value = value;
     ci::builder_set(builder, 0, value);
-    value.setNA();
-    String8 missing(value);
+    Utf8Record missing;
     value = missing;
     ci::builder_set(builder, 1, value);
     char source_bytes[8] = {'b', 'o', 'r', 'r', 'o', 'w', 'e', 'd'};
-    String8 borrowed(source_bytes, 8, false, false, true);
-    value.assignOwned(borrowed);
+    Utf8Record borrowed(
+        source_bytes, 8, charr::altrep::Utf8RecordState::ascii
+    );
+    ci::builder_set(builder, 2, borrowed);
     source_bytes[0] = 'X';
-    ci::builder_set(builder, 2, value);
 
     SEXP ret;
     STRI__PROTECT(ret = builder.to_sexp());
@@ -522,12 +522,12 @@ SEXP ci_test_UTF8EncodingMarks()
     };
     ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
     {
-        StriContainerUTF8 values(context, input, 5, true);
+        Utf8Input values(context, input, 5, true);
         for (R_len_t i=0; i<4; ++i)
             classification[i] = values.get(i).isASCII() ? TRUE : FALSE;
         classification[4] = !values.isNA(4) && values.get(4).length() == 0;
 
-        StriContainerUTF8 grown_values(context, grown, 2, true);
+        Utf8Input grown_values(context, grown, 2, true);
         classification[5] = !grown_values.isNA(0) &&
             grown_values.get(0).length() == 0 &&
             !grown_values.get(0).isASCII();

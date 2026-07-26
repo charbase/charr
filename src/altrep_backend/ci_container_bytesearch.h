@@ -34,7 +34,7 @@
 #ifndef __ci_container_bytesearch_h
 #define __ci_container_bytesearch_h
 
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
 #include "ci_bytesearch_matcher.h"
 
 // #define STRI__BYTESEARCH_DISABLE_SHORTPAT
@@ -69,7 +69,7 @@
  * @version 1.3.1 (Marek Gagolewski, 2019-02-06)
  *          #337: warn on empty search pattern here
  */
-class StriContainerByteSearch : public StriContainerUTF8 {
+class StriContainerByteSearch : public Utf8Input {
 
 private:
 

@@ -27,21 +27,21 @@ NULL
 #' @rdname case
 str_to_upper <- function(string, locale = "en") {
   check_string(locale)
-  copy_names(string, ci_trans_toupper(string, locale = locale))
+  copy_names(string, stri_trans_toupper(string, locale = locale))
 }
 #' @export
 #' @rdname case
 str_to_lower <- function(string, locale = "en") {
   check_string(locale)
-  copy_names(string, ci_trans_tolower(string, locale = locale))
+  copy_names(string, stri_trans_tolower(string, locale = locale))
 }
 #' @export
 #' @rdname case
 str_to_title <- function(string, locale = "en") {
   check_string(locale)
-  out <- ci_trans_totitle(
+  out <- stri_trans_totitle(
     string,
-    opts_brkiter = ci_opts_brkiter(locale = locale)
+    opts_brkiter = .charr_opts_brkiter(locale = locale)
   )
   copy_names(string, out)
 }
@@ -49,9 +49,9 @@ str_to_title <- function(string, locale = "en") {
 #' @rdname case
 str_to_sentence <- function(string, locale = "en") {
   check_string(locale)
-  out <- ci_trans_totitle(
+  out <- stri_trans_totitle(
     string,
-    opts_brkiter = ci_opts_brkiter(type = "sentence", locale = locale)
+    opts_brkiter = .charr_opts_brkiter(type = "sentence", locale = locale)
   )
   copy_names(string, out)
 }

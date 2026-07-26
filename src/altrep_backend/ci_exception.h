@@ -75,7 +75,7 @@ public:
         const UnwindCallbackProtector&
     ) = delete;
 
-    SEXP protect(SEXP value)
+    SEXP hold(SEXP value)
     {
         PROTECT(value);
         ++count_;
@@ -88,7 +88,7 @@ public:
         count_ += count;
     }
 
-    void unprotect(int count)
+    void release(int count)
     {
         UNPROTECT(count);
         count_ -= count;

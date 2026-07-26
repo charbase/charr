@@ -32,8 +32,65 @@
 
 
 #include "ci_stringi.h"
-#include "ci_container_utf16.h"
 #include "ci_container_regex.h"
+#include "altrep/utf8_input.h"
+
+#include <unicode/ustring.h>
+
+namespace {
+
+class ReusableUtf16Text {
+private:
+    UnicodeString text_;
+
+public:
+    UnicodeString& set(const charport::StrView& value)
+    {
+        if (value.len <= 0) {
+            text_.remove();
+            return text_;
+        }
+
+        UChar* destination = text_.getBuffer(value.len);
+        if (!destination)
+            throw StriException(MSG__MEM_ALLOC_ERROR);
+
+        int32_t length = 0;
+        if (value.enc == cetype_ext_t::CE_ASCII) {
+            for (int32_t i = 0; i < value.len; ++i)
+                destination[i] = static_cast<unsigned char>(value.ptr[i]);
+            length = value.len;
+        }
+        else {
+            UErrorCode status = U_ZERO_ERROR;
+            u_strFromUTF8WithSub(
+                destination, value.len, &length,
+                value.ptr, value.len, 0xfffd, nullptr, &status
+            );
+            text_.releaseBuffer(length);
+            STRI__CHECKICUSTATUS_THROW(status, {/* nothing to release */})
+            return text_;
+        }
+
+        text_.releaseBuffer(length);
+        return text_;
+    }
+};
+
+int count_matches(RegexMatcher* matcher, UnicodeString& subject)
+{
+    matcher->reset(subject);
+    UErrorCode status = U_ZERO_ERROR;
+    int count = 0;
+    while (matcher->find(status)) {
+        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+        ++count;
+    }
+    STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+    return count;
+}
+
+} // namespace
 
 
 /**
@@ -106,32 +163,45 @@ SEXP ci_count_regex(SEXP str, SEXP pattern, SEXP opts_regex)
     }));
     int* ret_tab = INTEGER(ret);
 
-    {
-        StriContainerUTF16 str_cont(context, str, vectorize_length);
+    if (vectorize_length > 0) {
         StriContainerRegexPattern pattern_cont(
             context, pattern, vectorize_length, pattern_opts
         );
-
-        for (R_len_t i = pattern_cont.vectorize_init();
-                i != pattern_cont.vectorize_end();
-                i = pattern_cont.vectorize_next(i))
-        {
-            STRI__CONTINUE_ON_EMPTY_OR_NA_PATTERN(str_cont, pattern_cont,
-                                                  ret_tab[i] = NA_INTEGER)
-
-            // see search_regex_detect for UText implementation (often slower)
-            RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
-            matcher->reset(str_cont.get(i));
-            UErrorCode status = U_ZERO_ERROR;
-            int count = 0;
-            while (1) {
-                int m_res = (bool)matcher->find(status);
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                if (!m_res) break;
-
-                ++count;
+        ReusableUtf16Text subject_text;
+        charr::altrep::Utf8Input subjects(
+            context, str, vectorize_length, true,
+            charr::altrep::Utf8BomPolicy::preserve
+        );
+        if (pattern_n == 1) {
+            const bool pattern_unusable = pattern_cont.isNA(0) ||
+                pattern_cont.get(0).length() <= 0;
+            RegexMatcher* matcher = nullptr;
+            for (R_len_t i = 0; i < vectorize_length; ++i) {
+                if (subjects.is_na(i) || pattern_unusable) {
+                    ret_tab[i] = NA_INTEGER;
+                    continue;
+                }
+                if (!matcher)
+                    matcher = pattern_cont.getMatcher(0);
+                ret_tab[i] = count_matches(
+                    matcher, subject_text.set(subjects.text(i))
+                );
             }
-            ret_tab[i] = count;
+        }
+        else {
+            for (R_len_t i = pattern_cont.vectorize_init();
+                    i != pattern_cont.vectorize_end();
+                    i = pattern_cont.vectorize_next(i)) {
+                if (subjects.is_na(i) || pattern_cont.isNA(i) ||
+                        pattern_cont.get(i).length() <= 0) {
+                    ret_tab[i] = NA_INTEGER;
+                    continue;
+                }
+                ret_tab[i] = count_matches(
+                    pattern_cont.getMatcher(i),
+                    subject_text.set(subjects.text(i))
+                );
+            }
         }
     }
 

@@ -34,8 +34,9 @@
 #include "ci_stringi.h"
 #include "ci_container_utf16.h"
 #include "ci_container_usearch.h"
-#include <deque>
+#include "ci_utf16_cursor.h"
 #include <utility>
+#include <vector>
 using namespace std;
 
 
@@ -110,7 +111,7 @@ SEXP ci__locate_firstlast_coll(SEXP str, SEXP pattern, SEXP opts_collator, bool 
     int* ret_tab = INTEGER(ret);
 
     {
-        StriContainerUTF16 str_cont(
+        ci::Utf16Cursor str_cont(
             context, str, vectorize_length
         );
         StriContainerUStringSearch pattern_cont(
@@ -309,7 +310,7 @@ SEXP ci_locate_all_coll(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_co
 
     SEXP ret;
     {
-        StriContainerUTF16 str_cont(
+        ci::Utf16Cursor str_cont(
             context, str, vectorize_length
         );
         StriContainerUStringSearch pattern_cont(
@@ -318,11 +319,16 @@ SEXP ci_locate_all_coll(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_co
         STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
             return Rf_allocVector(VECSXP, vectorize_length);
         }));
-        deque< pair<R_len_t, R_len_t> > occurrences;
+        vector< pair<R_len_t, R_len_t> > occurrences;
+        // These two result shapes are immutable and identical within a call.
+        // Sharing them avoids repeated matrix allocation; R duplicates a
+        // child under copy-on-modify if the caller later changes it.
+        SEXP argument_na = R_NilValue;
+        SEXP no_match = R_NilValue;
 
         // Deviation from stringi: one loop-level unwind bridge protects every
         // child allocation and list write while the Reader and ICU owners are
-        // live. The reusable scratch deque lives outside the callback, so it
+        // live. Reusable contiguous scratch lives outside the callback, so it
         // is destroyed on an R error without paying one bridge per child.
         charport::unwind_protect([&]() -> SEXP {
           for (R_len_t i = pattern_cont.vectorize_init();
@@ -331,24 +337,27 @@ SEXP ci_locate_all_coll(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_co
           {
             ci::UnwindCallbackProtector protector;
             occurrences.clear();
-            if (str_cont.isNA(i) || pattern_cont.isNA(i) ||
+            const UnicodeString& source = str_cont.get(i);
+            if (source.isBogus() || pattern_cont.isNA(i) ||
                     pattern_cont.get(i).length() <= 0) {
-                SEXP ans;
-                ans = protector.protect(ci__matrix_NA_INTEGER(1, 2));
-                SET_VECTOR_ELT(ret, i, ans);
+                if (argument_na == R_NilValue)
+                    argument_na = protector.hold(
+                        ci__matrix_NA_INTEGER(1, 2)
+                    );
+                SET_VECTOR_ELT(ret, i, argument_na);
                 continue;
             }
-            else if (str_cont.get(i).length() <= 0) {
-                SEXP ans;
-                ans = protector.protect(ci__matrix_NA_INTEGER(
-                    omit_no_match1?0:1, 2,
-                    get_length1?-1:NA_INTEGER
-                ));
-                SET_VECTOR_ELT(ret, i, ans);
+            else if (source.length() <= 0) {
+                if (no_match == R_NilValue)
+                    no_match = protector.hold(ci__matrix_NA_INTEGER(
+                        omit_no_match1?0:1, 2,
+                        get_length1?-1:NA_INTEGER
+                    ));
+                SET_VECTOR_ELT(ret, i, no_match);
                 continue;
             }
 
-            UStringSearch *matcher = pattern_cont.getMatcher(i, str_cont.get(i));
+            UStringSearch *matcher = pattern_cont.getMatcher(i, source);
             usearch_reset(matcher);
 
             UErrorCode status = U_ZERO_ERROR;
@@ -356,26 +365,26 @@ SEXP ci_locate_all_coll(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_co
             STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
 
             if (start == USEARCH_DONE) {
-                SEXP ans;
-                ans = protector.protect(ci__matrix_NA_INTEGER(
-                    omit_no_match1?0:1, 2,
-                    get_length1?-1:NA_INTEGER
-                ));
-                SET_VECTOR_ELT(ret, i, ans);
+                if (no_match == R_NilValue)
+                    no_match = protector.hold(ci__matrix_NA_INTEGER(
+                        omit_no_match1?0:1, 2,
+                        get_length1?-1:NA_INTEGER
+                    ));
+                SET_VECTOR_ELT(ret, i, no_match);
                 continue;
             }
 
             while (start != USEARCH_DONE) {
-                occurrences.push_back(pair<R_len_t, R_len_t>(
+                occurrences.emplace_back(
                     start, start+usearch_getMatchedLength(matcher)
-                ));
+                );
                 start = usearch_next(matcher, &status);
                 STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
             }
 
             R_len_t noccurrences = (R_len_t)occurrences.size();
             SEXP ans;
-            ans = protector.protect(Rf_allocMatrix(
+            ans = protector.hold(Rf_allocMatrix(
                 INTSXP, noccurrences, 2
             ));
             int* ans_tab = INTEGER(ans);

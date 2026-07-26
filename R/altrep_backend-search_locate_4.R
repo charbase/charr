@@ -158,118 +158,30 @@
 #
 # @export
 # @rdname ci_locate
-ci_locate_all <- function(str, ..., regex, fixed, coll, charclass)
-{
-    providedarg <- c(
-        regex=!missing(regex),
-        fixed=!missing(fixed),
-        coll=!missing(coll),
-        charclass=!missing(charclass))
-
-    if (sum(providedarg) != 1)
-        stop("you have to specify either `regex`, `fixed`, `coll`, or `charclass`")
-
-    if (providedarg["regex"])
-        ci_locate_all_regex(str, regex, ...)
-    else if (providedarg["fixed"])
-        ci_locate_all_fixed(str, fixed, ...)
-    else if (providedarg["coll"])
-        ci_locate_all_coll(str, coll, ...)
-    else if (providedarg["charclass"])
-        ci_locate_all_charclass(str, charclass, ...)
-}
 
 
 # @export
 # @rdname ci_locate
-ci_locate_first <- function(str, ..., regex, fixed, coll, charclass)
-{
-    providedarg <- c(
-        regex=!missing(regex),
-        fixed=!missing(fixed),
-        coll=!missing(coll),
-        charclass=!missing(charclass))
-
-    if (sum(providedarg) != 1)
-        stop("you have to specify either `regex`, `fixed`, `coll`, or `charclass`")
-
-    if (providedarg["regex"])
-        ci_locate_first_regex(str, regex, ...)
-    else if (providedarg["fixed"])
-        ci_locate_first_fixed(str, fixed, ...)
-    else if (providedarg["coll"])
-        ci_locate_first_coll(str, coll, ...)
-    else if (providedarg["charclass"])
-        ci_locate_first_charclass(str, charclass, ...)
-}
 
 
 # @export
 # @rdname ci_locate
-ci_locate_last <- function(str, ..., regex, fixed, coll, charclass)
-{
-    providedarg <- c(
-        regex=!missing(regex),
-        fixed=!missing(fixed),
-        coll=!missing(coll),
-        charclass=!missing(charclass))
-
-    if (sum(providedarg) != 1)
-        stop("you have to specify either `regex`, `fixed`, `coll`, or `charclass`")
-
-    if (providedarg["regex"])
-        ci_locate_last_regex(str, regex, ...)
-    else if (providedarg["fixed"])
-        ci_locate_last_fixed(str, fixed, ...)
-    else if (providedarg["coll"])
-        ci_locate_last_coll(str, coll, ...)
-    else if (providedarg["charclass"])
-        ci_locate_last_charclass(str, charclass, ...)
-}
 
 
 # @export
 # @rdname ci_locate
-ci_locate <- function(
-    str, ..., regex, fixed, coll, charclass,
-    mode=c("first", "all", "last")
-) {
-    # `first` is default for compatibility with stringr
-    mode <- match.arg(mode)  # this is slow
-
-    switch(mode,
-        first=ci_locate_first(str, ..., regex=regex, fixed=fixed,
-            coll=coll, charclass=charclass),
-        last=ci_locate_last(str, ..., regex=regex,
-            fixed=fixed, coll=coll, charclass=charclass),
-        all=ci_locate_all(str, ..., regex=regex, fixed=fixed,
-            coll=coll, charclass=charclass))
-}
 
 
 # @export
 # @rdname ci_locate
-ci_locate_all_charclass <- function(
-    str, pattern, merge=TRUE, omit_no_match=FALSE, get_length=FALSE
-) {
-    .Call(C_ci_locate_all_charclass, str, pattern, merge, omit_no_match, get_length)
-}
 
 
 # @export
 # @rdname ci_locate
-ci_locate_first_charclass <- function(str, pattern, get_length=FALSE)
-{
-    .Call(C_ci_locate_first_charclass, str, pattern, get_length)
-}
 
 
 # @export
 # @rdname ci_locate
-ci_locate_last_charclass <- function(str, pattern, get_length=FALSE)
-{
-    .Call(C_ci_locate_last_charclass, str, pattern, get_length)
-}
 
 
 # @export
@@ -375,11 +287,3 @@ ci_locate_first_fixed <- function(
 
 # @export
 # @rdname ci_locate
-ci_locate_last_fixed <- function(
-    str, pattern, get_length=FALSE, ..., opts_fixed=NULL
-) {
-    if (!missing(...))
-        opts_fixed <- do.call(ci_opts_fixed, as.list(c(opts_fixed, ...)))
-
-    .Call(C_ci_locate_last_fixed, str, pattern, opts_fixed, get_length)
-}

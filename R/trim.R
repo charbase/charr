@@ -21,9 +21,9 @@ str_trim <- function(string, side = c("both", "left", "right")) {
 
   out <- switch(
     side,
-    left = ci_trim_left(string),
-    right = ci_trim_right(string),
-    both = ci_trim_both(string)
+    left = stri_trim_left(string),
+    right = stri_trim_right(string),
+    both = stri_trim_both(string)
   )
   copy_names(string, out)
 }
@@ -31,5 +31,5 @@ str_trim <- function(string, side = c("both", "left", "right")) {
 #' @export
 #' @rdname str_trim
 str_squish <- function(string) {
-  copy_names(string, ci_trim_both(str_replace_all(string, "\\s+", " ")))
+  copy_names(string, stri_trim_both(str_replace_all(string, "\\s+", " ")))
 }

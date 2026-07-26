@@ -5,7 +5,7 @@
 #define CHARR_CI_BUILDER_H
 
 #include "ci_reader.h"
-#include "ci_string8.h"
+#include "ci_utf8.h"
 
 #include <limits>
 #include <stdexcept>
@@ -52,7 +52,7 @@ inline charport::charvec::Store scalar_store(
 }
 
 
-inline charport::charvec::Store scalar_store(const String8& value)
+inline charport::charvec::Store scalar_store(const Utf8Record& value)
 {
     if (value.isNA())
         return charport::charvec::Store::scalar(
@@ -106,7 +106,7 @@ inline void builder_set(
 
 inline void builder_set(
     charport::charvec::Builder& builder, R_xlen_t i,
-    const String8& value
+    const Utf8Record& value
 )
 {
     if (value.isNA()) {
@@ -122,9 +122,24 @@ inline void builder_set(
 }
 
 
+// Resolves to CE_ASCII or CE_UTF8 without scanning: u_strToUTF8 emits exactly
+// one byte per UTF-16 code unit only when every code point is below 0x80.
+// Anything higher costs strictly more UTF-8 bytes than UTF-16 code units
+// (2 or 3 bytes for one unit, 4 bytes for a surrogate pair), so equal lengths
+// is precisely the ASCII case.
+inline cetype_ext_t utf8_mark_from_lengths(
+    int32_t utf16_length, int32_t utf8_length
+) noexcept
+{
+    return utf8_length == utf16_length
+        ? cetype_ext_t::CE_ASCII
+        : cetype_ext_t::CE_UTF8;
+}
+
+
 inline const char* unicode_to_utf8(
     const UnicodeString& value, std::vector<char>& utf8_buffer,
-    int32_t& utf8_length
+    int32_t& utf8_length, cetype_ext_t& utf8_mark
 )
 {
     const int32_t utf16_length = value.length();
@@ -137,19 +152,27 @@ inline const char* unicode_to_utf8(
         // Deviation from stringi: Builder treats a null pointer as NA, while
         // vector::data() may be null for an empty buffer under C++11.
         utf8_buffer.clear();
+        utf8_mark = cetype_ext_t::CE_ASCII;
         return "";
     }
 
-    const int32_t capacity = UCNV_GET_MAX_BYTES_FOR_STRING(utf16_length, 3);
-    utf8_buffer.resize(static_cast<size_t>(capacity));
+    const size_t capacity = static_cast<size_t>(
+        UCNV_GET_MAX_BYTES_FOR_STRING(utf16_length, 3)
+    );
+    // Grow-only, matching String8buf::resize. vector::resize down and then up
+    // again value-initializes the re-exposed range, so shrinking between
+    // elements would memset the buffer on every subsequent long string.
+    if (utf8_buffer.size() < capacity)
+        utf8_buffer.resize(capacity);
     UErrorCode status = U_ZERO_ERROR;
     u_strToUTF8(
-        utf8_buffer.data(), capacity, &utf8_length,
+        utf8_buffer.data(), static_cast<int32_t>(capacity), &utf8_length,
         value.getBuffer(), utf16_length, &status
     );
     if (U_FAILURE(status))
         throw StriException(status);
 
+    utf8_mark = utf8_mark_from_lengths(utf16_length, utf8_length);
     return utf8_buffer.data();
 }
 
@@ -164,10 +187,12 @@ inline charport::charvec::Store scalar_store(
         );
 
     int32_t utf8_length = 0;
-    const char* utf8 = unicode_to_utf8(value, utf8_buffer, utf8_length);
+    cetype_ext_t utf8_mark = cetype_ext_t::CE_ASCII;
+    const char* utf8 = unicode_to_utf8(
+        value, utf8_buffer, utf8_length, utf8_mark
+    );
     return scalar_store(
-        utf8, static_cast<size_t>(utf8_length),
-        cetype_ext_t::CE_ASCII_OR_UTF8
+        utf8, static_cast<size_t>(utf8_length), utf8_mark
     );
 }
 
@@ -185,11 +210,11 @@ inline void builder_set(
     // StriContainerUTF16::toR used one reusable conversion buffer. Keep that
     // behavior while sending the length-delimited UTF-8 result to Builder.
     int32_t utf8_length = 0;
-    const char* utf8 = unicode_to_utf8(value, utf8_buffer, utf8_length);
-    builder_set(
-        builder, i, utf8, utf8_length,
-        cetype_ext_t::CE_ASCII_OR_UTF8
+    cetype_ext_t utf8_mark = cetype_ext_t::CE_ASCII;
+    const char* utf8 = unicode_to_utf8(
+        value, utf8_buffer, utf8_length, utf8_mark
     );
+    builder_set(builder, i, utf8, utf8_length, utf8_mark);
 }
 
 
@@ -220,7 +245,7 @@ inline void builder_append(
 
 
 inline void builder_append(
-    charport::charvec::GrowableBuilder& builder, const String8& value
+    charport::charvec::GrowableBuilder& builder, const Utf8Record& value
 )
 {
     if (value.isNA()) {
@@ -247,10 +272,11 @@ inline void builder_append(
     }
 
     int32_t utf8_length = 0;
-    const char* utf8 = unicode_to_utf8(value, utf8_buffer, utf8_length);
-    builder_append(
-        builder, utf8, utf8_length, cetype_ext_t::CE_ASCII_OR_UTF8
+    cetype_ext_t utf8_mark = cetype_ext_t::CE_ASCII;
+    const char* utf8 = unicode_to_utf8(
+        value, utf8_buffer, utf8_length, utf8_mark
     );
+    builder_append(builder, utf8, utf8_length, utf8_mark);
 }
 
 

@@ -120,40 +120,18 @@
 # @family search_extract
 # @export
 # @rdname ci_match
-ci_match_all <- function(str, ..., regex)
-{
-    ci_match_all_regex(str, regex, ...)
-}
 
 
 # @export
 # @rdname ci_match
-ci_match_first <- function(str, ..., regex)
-{
-    ci_match_first_regex(str, regex, ...)
-}
 
 
 # @export
 # @rdname ci_match
-ci_match_last <- function(str, ..., regex)
-{
-    ci_match_last_regex(str, regex, ...)
-}
 
 
 # @export
 # @rdname ci_match
-ci_match <- function(str, ..., regex, mode = c("first", "all", "last"))
-{
-    # `first` is default for compatibility with stringr
-    mode <- match.arg(mode)  # this is slow
-
-    switch(mode,
-        first = ci_match_first_regex(str, regex, ...),
-        last = ci_match_last_regex(str, regex, ...),
-        all = ci_match_all_regex(str, regex, ...))
-}
 
 
 # @export

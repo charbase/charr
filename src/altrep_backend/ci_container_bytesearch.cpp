@@ -33,6 +33,7 @@
 
 #include "ci_stringi.h"
 #include "ci_container_bytesearch.h"
+#include "ci_reader.h"
 #include <unicode/usearch.h>
 
 
@@ -41,7 +42,7 @@
  *
  */
 StriContainerByteSearch::StriContainerByteSearch()
-    : StriContainerUTF8()
+    : Utf8Input()
 {
     this->matcher = NULL;
     this->flags = 0;
@@ -56,7 +57,7 @@ StriContainerByteSearch::StriContainerByteSearch()
 StriContainerByteSearch::StriContainerByteSearch(
     ci::ReaderContext& context, SEXP rstr,
     R_len_t _nrecycle, uint32_t _flags
-) : StriContainerUTF8(context, rstr, _nrecycle, true)
+) : Utf8Input(context, rstr, _nrecycle, true)
 {
     this->flags = _flags;
     this->matcher = NULL;
@@ -77,7 +78,7 @@ StriContainerByteSearch::StriContainerByteSearch(
  *
  */
 StriContainerByteSearch::StriContainerByteSearch(StriContainerByteSearch& container)
-    :    StriContainerUTF8((StriContainerUTF8&)container)
+    :    Utf8Input((Utf8Input&)container)
 {
     this->matcher = NULL;
     this->flags = container.flags;
@@ -97,7 +98,7 @@ StriContainerByteSearch& StriContainerByteSearch::operator=(StriContainerByteSea
     // and then reusing this object's lifetime; assignment also copies flags.
     delete matcher;
     matcher = NULL;
-    (StriContainerUTF8&) (*this) = (StriContainerUTF8&)container;
+    (Utf8Input&) (*this) = (Utf8Input&)container;
     flags = container.flags;
     return *this;
 }
@@ -119,7 +120,7 @@ StriContainerByteSearch::~StriContainerByteSearch()
  * @version 0.5-1 (Marek Gagolewski, 2015-02-14)
  */
 StriByteSearchMatcher* StriContainerByteSearch::getMatcher(R_len_t i) {
-    if (i >= n && matcher && matcher->getPatternStr() == get(i).data()) {
+    if (i >= get_n() && matcher && matcher->getPatternStr() == get(i).data()) {
         // matcher reuse
     }
     else {

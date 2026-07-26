@@ -40,7 +40,7 @@
 
 namespace {
 
-void delete_containers(StriContainerUTF8** data, R_len_t n) noexcept
+void delete_containers(Utf8Input** data, R_len_t n) noexcept
 {
     if (!data)
         return;
@@ -89,7 +89,7 @@ StriContainerListUTF8::StriContainerListUTF8(
     this->init_Base(rvec_length, rvec_length, true);
 
     if (this->n > 0) {
-        std::vector<std::unique_ptr<StriContainerUTF8> > containers;
+        std::vector<std::unique_ptr<Utf8Input> > containers;
         containers.reserve(static_cast<size_t>(this->n));
         bool recycling_warning = false;
         for (R_len_t i=0; i<this->n; ++i) {
@@ -108,14 +108,14 @@ StriContainerListUTF8::StriContainerListUTF8(
 
         for (R_len_t i=0; i<this->n; ++i) {
             SEXP element = elements[static_cast<size_t>(i)];
-            containers.emplace_back(new StriContainerUTF8(
+            containers.emplace_back(new Utf8Input(
                 context, element,
                 _nrecycle, _shallowrecycle
             ));
         }
 
-        std::unique_ptr<StriContainerUTF8*[]> new_data(
-            new StriContainerUTF8*[this->n]
+        std::unique_ptr<Utf8Input*[]> new_data(
+            new Utf8Input*[this->n]
         );
         for (R_len_t i=0; i<this->n; ++i)
             new_data[i] = containers[static_cast<size_t>(i)].release();
@@ -128,17 +128,17 @@ StriContainerListUTF8::StriContainerListUTF8(StriContainerListUTF8& container)
     : StriContainerBase((StriContainerBase&)container), data(NULL)
 {
     if (container.data) {
-        std::vector<std::unique_ptr<StriContainerUTF8> > containers;
+        std::vector<std::unique_ptr<Utf8Input> > containers;
         containers.reserve(static_cast<size_t>(this->n));
         for (int i=0; i<container.n; ++i) {
             if (container.data[i])
-                containers.emplace_back(new StriContainerUTF8(*container.data[i]));
+                containers.emplace_back(new Utf8Input(*container.data[i]));
             else
                 containers.emplace_back();
         }
 
-        std::unique_ptr<StriContainerUTF8*[]> new_data(
-            new StriContainerUTF8*[this->n]
+        std::unique_ptr<Utf8Input*[]> new_data(
+            new Utf8Input*[this->n]
         );
         for (R_len_t i=0; i<this->n; ++i)
             new_data[i] = containers[static_cast<size_t>(i)].release();
@@ -152,20 +152,20 @@ StriContainerListUTF8& StriContainerListUTF8::operator=(StriContainerListUTF8& c
     if (this == &container)
         return *this;
 
-    std::vector<std::unique_ptr<StriContainerUTF8> > containers;
+    std::vector<std::unique_ptr<Utf8Input> > containers;
     if (container.data) {
         containers.reserve(static_cast<size_t>(container.n));
         for (int i=0; i<container.n; ++i) {
             if (container.data[i])
-                containers.emplace_back(new StriContainerUTF8(*container.data[i]));
+                containers.emplace_back(new Utf8Input(*container.data[i]));
             else
                 containers.emplace_back();
         }
     }
 
-    std::unique_ptr<StriContainerUTF8*[]> new_data;
+    std::unique_ptr<Utf8Input*[]> new_data;
     if (container.data) {
-        new_data.reset(new StriContainerUTF8*[container.n]);
+        new_data.reset(new Utf8Input*[container.n]);
         for (R_len_t i=0; i<container.n; ++i)
             new_data[i] = containers[static_cast<size_t>(i)].release();
     }

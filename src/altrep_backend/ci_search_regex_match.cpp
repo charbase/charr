@@ -33,14 +33,16 @@
 
 #include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
 #include "ci_container_regex.h"
+#include "altrep/utf8_input.h"
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
 #include <deque>
 #include <utility>
+#include <unicode/utf8.h>
 using namespace std;
 
 
@@ -146,6 +148,347 @@ R_xlen_t ci__match_matrix_size(R_len_t nrow, R_len_t ncol)
     return static_cast<R_xlen_t>(nrow)*ncol;
 }
 
+
+class CiRegexMatchSubject {
+private:
+    UnicodeString text_;
+    vector<int32_t> byte_offsets_;
+    const char* data_;
+
+public:
+    CiRegexMatchSubject() : text_(), byte_offsets_(), data_(NULL)
+    {
+    }
+
+    UnicodeString& set(const charport::StrView& input)
+    {
+        data_ = input.ptr;
+        if (input.len <= 0) {
+            text_.remove();
+            byte_offsets_.assign(1, 0);
+            return text_;
+        }
+
+        UChar* output = text_.getBuffer(input.len);
+        if (!output)
+            throw StriException(MSG__MEM_ALLOC_ERROR);
+        byte_offsets_.resize(static_cast<size_t>(input.len)+1);
+
+        int32_t source_i = 0;
+        int32_t output_i = 0;
+        byte_offsets_[0] = 0;
+        if (input.enc == cetype_ext_t::CE_ASCII) {
+            for (; source_i<input.len; ++source_i) {
+                output[output_i++] =
+                    static_cast<unsigned char>(input.ptr[source_i]);
+                byte_offsets_[static_cast<size_t>(output_i)] = source_i+1;
+            }
+        }
+        else {
+            while (source_i < input.len) {
+                const int32_t source_begin = source_i;
+                UChar32 code_point;
+                U8_NEXT_OR_FFFD(
+                    input.ptr, source_i, input.len, code_point
+                );
+                if (code_point <= 0xffff) {
+                    output[output_i++] = static_cast<UChar>(code_point);
+                    byte_offsets_[static_cast<size_t>(output_i)] = source_i;
+                }
+                else {
+                    output[output_i++] = U16_LEAD(code_point);
+                    byte_offsets_[static_cast<size_t>(output_i)] = source_begin;
+                    output[output_i++] = U16_TRAIL(code_point);
+                    byte_offsets_[static_cast<size_t>(output_i)] = source_i;
+                }
+            }
+        }
+
+        text_.releaseBuffer(output_i);
+        byte_offsets_.resize(static_cast<size_t>(output_i)+1);
+        return text_;
+    }
+
+    charport::ByteView slice(int32_t start, int32_t end) const
+    {
+        if (start < 0 || end < start || end > text_.length())
+            throw StriException("invalid ICU regex match boundary");
+        const int32_t byte_start =
+            byte_offsets_[static_cast<size_t>(start)];
+        const int32_t byte_end = byte_offsets_[static_cast<size_t>(end)];
+        const char* output = data_ ? data_+byte_start : "";
+        return make_byteview(output, byte_end-byte_start);
+    }
+};
+
+
+charport::StrView ci__match_text(
+    const charr::altrep::Utf8Input& inputs, R_len_t i
+)
+{
+    return inputs.text(i);
+}
+
+
+void ci__match_capture_offsets(
+    RegexMatcher* matcher, R_len_t groups, UErrorCode& status,
+    vector<pair<int32_t, int32_t> >& offsets
+)
+{
+    const int32_t match_start = matcher->start(status);
+    STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+    const int32_t match_end = matcher->end(status);
+    STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+    offsets[0] = make_pair(match_start, match_end);
+    for (R_len_t j=1; j<=groups; ++j) {
+        const int32_t group_start = matcher->start(j, status);
+        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+        const int32_t group_end = matcher->end(j, status);
+        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+        offsets[static_cast<size_t>(j)] = make_pair(
+            group_start, group_end
+        );
+    }
+}
+
+
+void ci__match_firstlast_scalar(
+    ci::ReaderContext& context, SEXP str, SEXP pattern,
+    R_len_t str_n, R_len_t pattern_n, R_len_t vectorize_length,
+    const StriRegexMatcherOptions& pattern_opts, bool first,
+    const charport::StrView& cg_missing, CiMatchRegexMatrix& result
+)
+{
+    StriContainerRegexPattern pattern_cont(
+        context, pattern,
+        str_n > 0 ? vectorize_length : pattern_n, pattern_opts
+    );
+    charr::altrep::Utf8Input inputs(
+        context, str, vectorize_length
+    );
+    for (R_xlen_t i=0; i<inputs.source_size(); ++i) {
+        if (inputs.is_bytes(i))
+            throw StriException(MSG__BYTESENC);
+    }
+
+    const bool pattern_na = pattern_cont.isNA(0);
+    const bool pattern_empty = !pattern_na &&
+        pattern_cont.get(0).length() <= 0;
+    RegexMatcher* matcher = NULL;
+    R_len_t groups = 0;
+    if (!pattern_na && !pattern_empty) {
+        matcher = pattern_cont.getMatcher(0);
+        groups = matcher->groupCount();
+    }
+
+    result.nrow = vectorize_length;
+    result.ncol = groups+1;
+    const R_xlen_t output_size = ci__match_matrix_size(
+        result.nrow, result.ncol
+    );
+    charport::charvec::Builder output(output_size);
+    ci__match_set_all_na(output, output_size);
+    if (pattern_empty) {
+        const R_len_t warnings = vectorize_length > 0
+            ? vectorize_length : pattern_n;
+        for (R_len_t i=0; i<warnings; ++i)
+            context.warn(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+    }
+    else if (!pattern_na) {
+        CiRegexMatchSubject subject;
+        vector<pair<int32_t, int32_t> > offsets(
+            static_cast<size_t>(groups+1)
+        );
+        for (R_len_t i=0; i<vectorize_length; ++i) {
+            const charport::StrView input = ci__match_text(inputs, i);
+            if (input.is_na())
+                continue;
+
+            matcher->reset(subject.set(input));
+            UErrorCode status = U_ZERO_ERROR;
+            int found = static_cast<int>(matcher->find(status));
+            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+            if (found) {
+                ci__match_capture_offsets(
+                    matcher, groups, status, offsets
+                );
+                if (!first) {
+                    while (matcher->find(status)) {
+                        STRI__CHECKICUSTATUS_THROW(
+                            status, {/* nothing special */}
+                        )
+                        ci__match_capture_offsets(
+                            matcher, groups, status, offsets
+                        );
+                    }
+                    STRI__CHECKICUSTATUS_THROW(
+                        status, {/* nothing special */}
+                    )
+                }
+            }
+
+            for (R_len_t j=0; j<=groups; ++j) {
+                const R_xlen_t output_i = i+
+                    static_cast<R_xlen_t>(j)*vectorize_length;
+                if (!found || offsets[static_cast<size_t>(j)].first < 0) {
+                    ci__match_set_cg_missing(
+                        output, output_i, cg_missing
+                    );
+                    continue;
+                }
+                const charport::ByteView value = subject.slice(
+                    offsets[static_cast<size_t>(j)].first,
+                    offsets[static_cast<size_t>(j)].second
+                );
+                ci::builder_set(
+                    output, output_i, value.ptr,
+                    static_cast<size_t>(value.len),
+                    cetype_ext_t::CE_ASCII_OR_UTF8
+                );
+            }
+        }
+    }
+
+    if (!pattern_na && !pattern_empty) {
+        const vector<string>& names = pattern_cont.getCaptureGroupNames(0);
+        if (ci__match_has_capture_names(names))
+            result.capture_names = names;
+    }
+    result.output = output.release_store();
+}
+
+
+void ci__match_all_scalar(
+    ci::ReaderContext& context, SEXP str, SEXP pattern,
+    R_len_t vectorize_length,
+    const StriRegexMatcherOptions& pattern_opts, bool omit_no_match,
+    const charport::StrView& cg_missing,
+    vector<CiMatchRegexMatrix>& results
+)
+{
+    StriContainerRegexPattern pattern_cont(
+        context, pattern, vectorize_length, pattern_opts
+    );
+    charr::altrep::Utf8Input inputs(
+        context, str, vectorize_length
+    );
+    for (R_xlen_t i=0; i<inputs.source_size(); ++i) {
+        if (inputs.is_bytes(i))
+            throw StriException(MSG__BYTESENC);
+    }
+    if (vectorize_length <= 0)
+        return;
+
+    const bool pattern_na = pattern_cont.isNA(0);
+    const bool pattern_empty = !pattern_na &&
+        pattern_cont.get(0).length() <= 0;
+    charport::charvec::Builder output(0);
+    if (pattern_na || pattern_empty) {
+        for (R_len_t i=0; i<vectorize_length; ++i) {
+            if (pattern_empty)
+                context.warn(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+            CiMatchRegexMatrix& result = results[static_cast<size_t>(i)];
+            result.nrow = 1;
+            result.ncol = 1;
+            output.reset(1);
+            output.set_na(0);
+            result.output = output.release_store();
+        }
+        return;
+    }
+
+    RegexMatcher* matcher = pattern_cont.getMatcher(0);
+    const R_len_t groups = matcher->groupCount();
+    const R_len_t width = groups+1;
+    vector<string> capture_names;
+    const vector<string>& names = pattern_cont.getCaptureGroupNames(0);
+    if (ci__match_has_capture_names(names))
+        capture_names = names;
+    CiRegexMatchSubject subject;
+    vector<pair<int32_t, int32_t> > offsets;
+
+    for (R_len_t i=0; i<vectorize_length; ++i) {
+        CiMatchRegexMatrix& result = results[static_cast<size_t>(i)];
+        result.ncol = width;
+        result.capture_names = capture_names;
+        const charport::StrView input = ci__match_text(inputs, i);
+        if (input.is_na()) {
+            result.nrow = 1;
+            output.reset(width);
+            ci__match_set_all_na(output, width);
+            result.output = output.release_store();
+            continue;
+        }
+
+        matcher->reset(subject.set(input));
+        UErrorCode status = U_ZERO_ERROR;
+        offsets.clear();
+        while (matcher->find(status)) {
+            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+            const size_t old_size = offsets.size();
+            offsets.resize(old_size+static_cast<size_t>(width));
+            vector<pair<int32_t, int32_t> >::iterator begin =
+                offsets.begin()+old_size;
+            const int32_t match_start = matcher->start(status);
+            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+            const int32_t match_end = matcher->end(status);
+            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+            begin[0] = make_pair(match_start, match_end);
+            for (R_len_t j=1; j<=groups; ++j) {
+                const int32_t group_start = matcher->start(j, status);
+                STRI__CHECKICUSTATUS_THROW(
+                    status, {/* nothing special */}
+                )
+                const int32_t group_end = matcher->end(j, status);
+                STRI__CHECKICUSTATUS_THROW(
+                    status, {/* nothing special */}
+                )
+                begin[j] = make_pair(group_start, group_end);
+            }
+        }
+        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+
+        const R_len_t count = static_cast<R_len_t>(
+            offsets.size()/static_cast<size_t>(width)
+        );
+        result.nrow = count > 0 ? count : (omit_no_match ? 0 : 1);
+        const R_xlen_t output_size = ci__match_matrix_size(
+            result.nrow, width
+        );
+        output.reset(output_size);
+        ci__match_set_all_na(output, output_size);
+        if (count <= 0) {
+            result.output = output.release_store();
+            continue;
+        }
+
+        for (R_len_t row=0; row<count; ++row) {
+            for (R_len_t column=0; column<width; ++column) {
+                const pair<int32_t, int32_t>& offset = offsets[
+                    static_cast<size_t>(row)*width+column
+                ];
+                const R_xlen_t output_i = row+
+                    static_cast<R_xlen_t>(column)*count;
+                if (offset.first < 0) {
+                    ci__match_set_cg_missing(
+                        output, output_i, cg_missing
+                    );
+                    continue;
+                }
+                const charport::ByteView value = subject.slice(
+                    offset.first, offset.second
+                );
+                ci::builder_set(
+                    output, output_i, value.ptr,
+                    static_cast<size_t>(value.len),
+                    cetype_ext_t::CE_ASCII_OR_UTF8
+                );
+            }
+        }
+        result.output = output.release_store();
+    }
+}
+
 } // namespace
 
 
@@ -222,11 +565,25 @@ SEXP ci__match_firstlast_regex(SEXP str, SEXP pattern, SEXP cg_missing, SEXP opt
     });
 
     CiMatchRegexMatrix result;
-    {
-        StriContainerUTF8 str_cont(
+    if (pattern_n == 1) {
+        Utf8Input cg_missing_cont(
+            context, cg_missing, 1
+        );
+        shared_ptr<ci::ReaderBorrow> cg_missing_borrow =
+            context.acquire(cg_missing);
+        const charport::StrView cg_missing_value =
+            cg_missing_borrow->views()[0];
+        ci__match_firstlast_scalar(
+            context, str, pattern, str_n, pattern_n,
+            vectorize_length, pattern_opts, first,
+            cg_missing_value, result
+        );
+    }
+    else {
+        Utf8Input str_cont(
             context, str, vectorize_length
         );
-        StriContainerUTF8 cg_missing_cont(
+        Utf8Input cg_missing_cont(
             context, cg_missing, 1
         );
         // The copied container validates cg_missing as UTF-8 input, but
@@ -500,14 +857,27 @@ SEXP ci_match_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP cg_miss
     vector<CiMatchRegexMatrix> results(
         static_cast<size_t>(vectorize_length)
     );
-    {
-        StriContainerUTF8 str_cont(
+    if (pattern_n == 1) {
+        Utf8Input cg_missing_cont(
+            context, cg_missing, 1
+        );
+        shared_ptr<ci::ReaderBorrow> cg_missing_borrow =
+            context.acquire(cg_missing);
+        const charport::StrView cg_missing_value =
+            cg_missing_borrow->views()[0];
+        ci__match_all_scalar(
+            context, str, pattern, vectorize_length,
+            pattern_opts, omit_no_match1, cg_missing_value, results
+        );
+    }
+    else {
+        Utf8Input str_cont(
             context, str, vectorize_length
         );
         StriContainerRegexPattern pattern_cont(
             context, pattern, vectorize_length, pattern_opts
         );
-        StriContainerUTF8 cg_missing_cont(
+        Utf8Input cg_missing_cont(
             context, cg_missing, 1
         );
         // The copied container validates cg_missing as UTF-8 input, but
@@ -647,11 +1017,11 @@ SEXP ci_match_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP cg_miss
           ci::UnwindCallbackProtector protector;
           CiMatchRegexMatrix& result = results[static_cast<size_t>(i)];
           SEXP cur_res;
-          cur_res = protector.protect(charport::charvec::wrap(
+          cur_res = protector.hold(charport::charvec::wrap(
               std::move(result.output)
           ));
           SEXP dimnames;
-          dimnames = protector.protect(ci__match_capture_dimnames(
+          dimnames = protector.hold(ci__match_capture_dimnames(
               result.capture_names
           ));
           ci__match_set_matrix_attributes(

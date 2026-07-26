@@ -139,7 +139,6 @@ ci_opts_collator <- function(
 
 # @rdname ci_opts_collator
 # @export
-ci_coll <- ci_opts_collator
 
 
 # @title

@@ -10,5 +10,5 @@
 #' @examples
 #' str_reverse(c("abc", "caf\u00e9", NA))
 str_reverse <- function(string) {
-  copy_names(string, ci_reverse(string))
+  copy_names(string, stri_reverse(string))
 }

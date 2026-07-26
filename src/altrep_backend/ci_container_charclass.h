@@ -35,7 +35,7 @@
 #define __ci_container_charclass_h
 
 #include "ci_container_base.h"
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
 #include <memory>
 #include <unicode/uniset.h>
 
@@ -46,7 +46,7 @@
  * @version 0.1-?? (Marek Gagolewski, 2013-06-15)
  *
  * @version 0.2-1 (Marek Gagolewski, 2014-04-05)
- *          Use StriContainerUTF8 to convert pattern strings in a constructor;
+ *          Use Utf8Input to convert pattern strings in a constructor;
  *          Use UnicodeSet instead of CharClass
  *
  * @version 0.3-1 (Marek Gagolewski, 2014-11-02)
@@ -84,7 +84,7 @@ public:
 
         this->data = NULL;
         if (_n > 0) {
-            StriContainerUTF8 rvec_cont(context, rvec, _n, true);
+            Utf8Input rvec_cont(context, rvec, _n, true);
             std::unique_ptr<UnicodeSet[]> new_data(new UnicodeSet[_n]);
             for (int i=0; i<_n; ++i) {
                 if (rvec_cont.isNA(i))

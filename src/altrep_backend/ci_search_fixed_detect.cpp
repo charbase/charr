@@ -32,8 +32,10 @@
 
 
 #include "ci_stringi.h"
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
 #include "ci_container_bytesearch.h"
+
+#include <cstring>
 
 
 /**
@@ -48,7 +50,7 @@
  * @version 0.1-?? (Bartek Tartanus)
  *
  * @version 0.1-?? (Marek Gagolewski)
- *    use StriContainerUTF8, BUGFIX: the loop could go to far
+ *    use Utf8Input, BUGFIX: the loop could go to far
  *
  * @version 0.1-?? (Marek Gagolewski)
  *    corrected behavior on empty str/pattern
@@ -105,14 +107,80 @@ SEXP ci_detect_fixed(SEXP str, SEXP pattern, SEXP negate,
         return Rf_allocVector(LGLSXP, vectorize_length);
     }));
     int* ret_tab = LOGICAL(ret);
+    R_len_t general_start = 0;
+    std::shared_ptr<ci::ReaderBorrow> str_borrow;
+    std::shared_ptr<ci::ReaderBorrow> pattern_borrow;
+
+    // Borrowed UTF-8 and ASCII records can search a scalar ASCII byte in place.
+    // Other encodings and fixed-search options retain the general path below.
+    if (pattern_flags == 0 && pattern_n == 1 && str_n > 0) {
+        bool direct = false;
+        {
+            str_borrow = context.acquire(str);
+            pattern_borrow = context.acquire(pattern);
+            const charport::StrViews& str_views = str_borrow->views();
+            const charport::StrViews& pattern_views = pattern_borrow->views();
+            const charport::StrView pattern_view = pattern_views[0];
+            const bool pattern_direct =
+                !pattern_view.is_na() && pattern_view.len == 1 &&
+                static_cast<unsigned char>(pattern_view.ptr[0]) <= 0x7f &&
+                (pattern_view.enc == cetype_ext_t::CE_ASCII ||
+                 pattern_view.enc == cetype_ext_t::CE_UTF8 ||
+                 pattern_view.enc == cetype_ext_t::CE_ASCII_OR_UTF8);
+
+            if (pattern_direct) {
+                const unsigned char pattern_byte =
+                    static_cast<unsigned char>(pattern_view.ptr[0]);
+                direct = true;
+
+                for (R_len_t i = 0; i < vectorize_length; ++i) {
+                    const charport::StrView str_view = str_views[i];
+                    if (!str_view.is_na() &&
+                            str_view.enc != cetype_ext_t::CE_ASCII &&
+                            str_view.enc != cetype_ext_t::CE_UTF8 &&
+                            str_view.enc != cetype_ext_t::CE_ASCII_OR_UTF8) {
+                        direct = false;
+                        general_start = i;
+                        break;
+                    }
+
+                    if (max_count_1 == 0) {
+                        ret_tab[i] = NA_LOGICAL;
+                        continue;
+                    }
+                    if (str_view.is_na()) {
+                        ret_tab[i] = NA_LOGICAL;
+                        continue;
+                    }
+
+                    const bool found = str_view.len > 0 && std::memchr(
+                        str_view.ptr, pattern_byte,
+                        static_cast<std::size_t>(str_view.len)
+                    ) != NULL;
+                    ret_tab[i] = negate_1 ? !found : found;
+                    if (max_count_1 > 0 && ret_tab[i])
+                        --max_count_1;
+                }
+            }
+        }
+
+        if (direct) {
+            pattern_borrow.reset();
+            str_borrow.reset();
+            context.emitWarnings();
+            STRI__UNPROTECT_ALL
+            return ret;
+        }
+    }
 
     {
-        StriContainerUTF8 str_cont(context, str, vectorize_length);
+        Utf8Input str_cont(context, str, vectorize_length);
         StriContainerByteSearch pattern_cont(
             context, pattern, vectorize_length, pattern_flags
         );
 
-        for (R_len_t i = pattern_cont.vectorize_init();
+        for (R_len_t i = general_start > 0 ?
+                    general_start : pattern_cont.vectorize_init();
                 i != pattern_cont.vectorize_end();
                 i = pattern_cont.vectorize_next(i))
         {
@@ -149,7 +217,7 @@ SEXP ci_detect_fixed(SEXP str, SEXP pattern, SEXP negate,
 //
 //   STRI__ERROR_HANDLER_BEGIN
 //   int vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
-//   StriContainerUTF8 str_cont(str, vectorize_length);
+//   Utf8Input str_cont(str, vectorize_length);
 //   StriContainerByteSearch pattern_cont(pattern, vectorize_length);
 //
 //   SEXP ret;
@@ -157,8 +225,8 @@ SEXP ci_detect_fixed(SEXP str, SEXP pattern, SEXP negate,
 //   int* ret_tab = LOGICAL(ret);
 //
 //
-//   const String8* last_s = NULL;
-//   const String8* last_p = NULL;
+//   const Utf8Record* last_s = NULL;
+//   const Utf8Record* last_p = NULL;
 //   UErrorCode err = U_ZERO_ERROR;
 //
 //   for (R_len_t i = pattern_cont.vectorize_init();
@@ -169,8 +237,8 @@ SEXP ci_detect_fixed(SEXP str, SEXP pattern, SEXP negate,
 //         ret_tab[i] = NA_LOGICAL,
 //         ret_tab[i] = FALSE)
 //
-//      const String8* cur_s = &(str_cont.get(i));
-//      const String8* cur_p = &(pattern_cont.get(i));
+//      const Utf8Record* cur_s = &(str_cont.get(i));
+//      const Utf8Record* cur_p = &(pattern_cont.get(i));
 //
 //      if (last_p != cur_p) {
 //         last_p = cur_p;

@@ -32,12 +32,183 @@
 
 
 #include "ci_stringi.h"
-#include "ci_container_utf8_indexable.h"
 #include "ci_container_integer.h"
 #include "ci_brkiter.h"
+#include "ci_reader.h"
+#include "../altrep/utf8_input.h"
 
-#include <deque>
+#include <cstring>
 #include <utility>
+#include <vector>
+
+
+namespace {
+
+class Utf8PositionCursor {
+public:
+    Utf8PositionCursor(
+        const char* data, R_len_t length, bool ascii
+    ) noexcept
+        : data_(data), length_(length), byte_(0), position_(0),
+          ascii_(ascii)
+    {
+    }
+
+    R_len_t at(R_len_t target) noexcept
+    {
+        if (ascii_)
+            return target;
+        while (byte_ < target) {
+            U8_FWD_1(data_, byte_, length_);
+            ++position_;
+        }
+        return position_;
+    }
+
+private:
+    const char* data_;
+    R_len_t length_;
+    R_len_t byte_;
+    R_len_t position_;
+    bool ascii_;
+};
+
+bool first_ascii_word(
+    const char* data, R_len_t length, R_len_t& word_end
+) noexcept
+{
+    // This is deliberately narrower than ICU word iteration. A plain ASCII
+    // letter run followed by ASCII whitespace (or the end) has the same first
+    // boundary in the root and English rules; everything else stays on ICU.
+    if (length <= 0)
+        return false;
+
+    const auto is_letter = [](unsigned char value) {
+        return (value >= 'A' && value <= 'Z') ||
+            (value >= 'a' && value <= 'z');
+    };
+    const auto is_whitespace = [](unsigned char value) {
+        return value == ' ' || (value >= '\t' && value <= '\r');
+    };
+
+    if (!is_letter(static_cast<unsigned char>(data[0])))
+        return false;
+
+    R_len_t i = 1;
+    while (i < length && is_letter(static_cast<unsigned char>(data[i])))
+        ++i;
+    if (i < length && !is_whitespace(static_cast<unsigned char>(data[i])))
+        return false;
+
+    word_end = i;
+    return true;
+}
+
+struct LocaleOptionState {
+    bool reject_fast = false;
+    bool warn_default = false;
+};
+
+// ICU canonicalizes root and a few malformed locale IDs to the same null
+// pointer. Keep just enough of the raw option to distinguish an intentional
+// root/default request from a fallback that must still warn.
+LocaleOptionState locale_option_state(SEXP options, const char* locale)
+{
+    LocaleOptionState state;
+    if (locale || !Rf_isVectorList(options))
+        return state;
+
+    SEXP names = Rf_getAttrib(options, R_NamesSymbol);
+    for (R_len_t i = 0; i < LENGTH(options); ++i) {
+        if (std::strcmp(CHAR(STRING_ELT(names, i)), "locale"))
+            continue;
+
+        SEXP value = VECTOR_ELT(options, i);
+        if (Rf_isNull(value))
+            return state;
+        state.reject_fast = true;
+        if (TYPEOF(value) != STRSXP || XLENGTH(value) <= 0 ||
+                STRING_ELT(value, 0) == NA_STRING) {
+            return state;
+        }
+
+        const char* begin = CHAR(STRING_ELT(value, 0));
+        const char* end = begin+std::strlen(begin);
+        while (begin < end && (*begin == ' ' || *begin == '\t' ||
+                *begin == '\n' || *begin == '\r')) {
+            ++begin;
+        }
+        while (begin < end && (end[-1] == ' ' || end[-1] == '\t' ||
+                end[-1] == '\n' || end[-1] == '\r')) {
+            --end;
+        }
+        const bool is_root = end-begin == 4 &&
+            (begin[0] == 'r' || begin[0] == 'R') &&
+            (begin[1] == 'o' || begin[1] == 'O') &&
+            (begin[2] == 'o' || begin[2] == 'O') &&
+            (begin[3] == 't' || begin[3] == 'T');
+        if (begin == end || is_root)
+            state.reject_fast = false;
+        else
+            state.warn_default = true;
+        return state;
+    }
+    return state;
+}
+
+class BoundaryLocateOptions : public StriBrkIterOptions {
+public:
+    template <std::size_t N>
+    BoundaryLocateOptions(
+        SEXP options, const char (&default_type)[N],
+        ci::DeferredWarnings& warnings
+    ) : StriBrkIterOptions(options, default_type, warnings)
+    {
+        locale_state_ = locale_option_state(options, locale);
+    }
+
+    bool can_use_first_ascii_word() const noexcept
+    {
+        if (type != UBRK_WORD || !rules.isEmpty() || skip_size != 0 ||
+                (locale && std::strchr(locale, '@'))) {
+            return false;
+        }
+
+        if (!locale && locale_state_.reject_fast)
+            return false;
+        const char* locale_id = locale ? locale : uloc_getDefault();
+        if (!locale_id)
+            return false;
+        if (ci__is_C_locale(locale_id))
+            locale_id = "en_US_POSIX";
+        if (!std::strcmp(locale_id, "root"))
+            return true;
+
+        char language[ULOC_LANG_CAPACITY];
+        UErrorCode status = U_ZERO_ERROR;
+        const int32_t size = uloc_getLanguage(
+            locale_id, language, ULOC_LANG_CAPACITY, &status
+        );
+        return U_SUCCESS(status) && size > 0 &&
+            !std::strcmp(language, "en");
+    }
+
+    bool warn_default_locale() const noexcept
+    {
+        return locale_state_.warn_default;
+    }
+
+private:
+    LocaleOptionState locale_state_;
+};
+
+struct BoundaryLocateElement {
+    bool argument_na = true;
+    std::size_t offset = 0;
+    R_len_t count = 0;
+};
+
+}
 
 
 /**
@@ -64,9 +235,12 @@ SEXP ci__locate_firstlast_boundaries(
     {
     // Deviation from stringi: keep the option's ICU storage inside the
     // unwind-safe scope so it is released before warning replay.
-    StriBrkIterOptions opts_brkiter2(
+    BoundaryLocateOptions opts_brkiter2(
         opts_brkiter, "line_break", STRI__DEFERRED_WARNINGS
     );
+    const bool use_first_ascii_word = first &&
+        opts_brkiter2.can_use_first_ascii_word();
+    bool warn_default_locale = opts_brkiter2.warn_default_locale();
     ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
     R_len_t str_length = ci::checked_r_len(
         context.size(str), "character vectors"
@@ -77,60 +251,74 @@ SEXP ci__locate_firstlast_boundaries(
     }));
     int* ret_tab = INTEGER(ret);
 
-    {
-        StriContainerUTF8_indexable str_cont(
-            context, str, str_length
-        );
+    auto process = [&](auto record) {
         StriRuleBasedBreakIterator brkiter(opts_brkiter2);
-
         for (R_len_t i = 0; i < str_length; ++i)
         {
             ret_tab[i]            = NA_INTEGER;
             ret_tab[i+str_length] = NA_INTEGER;
 
-            if (str_cont.isNA(i))
+            charport::StrView value = record(i);
+            if (value.is_na())
                 continue;
+            if (value.enc == cetype_ext_t::CE_BYTES)
+                throw StriException(MSG__BYTESENC);
 
             if (get_length1) {
                 ret_tab[i]            = -1;
                 ret_tab[i+str_length] = -1;
             }
 
-            if (str_cont.get(i).length() == 0) {
+            if (value.len == 0)
+                continue;
+
+            R_len_t word_end = 0;
+            if (use_first_ascii_word && first_ascii_word(
+                    value.ptr, value.len, word_end
+            )) {
+                ret_tab[i] = 1;
+                ret_tab[i+str_length] = word_end;
                 continue;
             }
 
+            if (warn_default_locale) {
+                STRI__DEFERRED_WARNINGS.push(
+                    ICUError::getICUerrorName(U_USING_DEFAULT_WARNING)
+                );
+                warn_default_locale = false;
+            }
             brkiter.setupMatcher(
-                str_cont.get(i).data(), str_cont.get(i).length(),
+                value.ptr, value.len,
                 STRI__DEFERRED_WARNINGS
             );
-            pair<R_len_t,R_len_t> curpair;
-
+            pair<R_len_t, R_len_t> occurrence;
+            bool matched;
             if (first) {
                 brkiter.first();
-                if (!brkiter.next(curpair)) {
-                    continue;
-                }
+                matched = brkiter.next(occurrence);
             }
             else {
                 brkiter.last();
-                if (!brkiter.previous(curpair)) {
-                    continue;
-                }
+                matched = brkiter.previous(occurrence);
             }
+            if (!matched)
+                continue;
 
-            ret_tab[i]            = curpair.first;
-            ret_tab[i+str_length] = curpair.second;
-
-            // Adjust UTF8 byte index -> UChar32 index
-            str_cont.UTF8_to_UChar32_index(i,
-                                           ret_tab+i, ret_tab+i+str_length, 1,
-                                           1, // 0-based index -> 1-based
-                                           0  // end returns position of next character after match
-                                          );
-
-            if (get_length1) ret_tab[i+str_length] -= ret_tab[i] - 1;  // to->length
+            Utf8PositionCursor cursor(
+                value.ptr, value.len,
+                value.enc == cetype_ext_t::CE_ASCII
+            );
+            const R_len_t start = cursor.at(occurrence.first) + 1;
+            const R_len_t end = cursor.at(occurrence.second);
+            ret_tab[i] = start;
+            ret_tab[i+str_length] = get_length1
+                ? end-start+1 : end;
         }
+    };
+
+    {
+        charr::altrep::Utf8Input input(context, str, str_length);
+        process([&](R_len_t i) { return input.record(i).view(); });
     }
 
     charport::unwind_protect([&]() -> SEXP {
@@ -231,82 +419,97 @@ SEXP ci_locate_all_boundaries(SEXP str, SEXP omit_no_match, SEXP opts_brkiter, S
         context.size(str), "character vectors"
     );
 
-    {
-        StriContainerUTF8_indexable str_cont(
-            context, str, str_length
-        );
-        StriRuleBasedBreakIterator brkiter(opts_brkiter2);
-        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
-            return Rf_allocVector(VECSXP, str_length);
-        }));
-        std::deque< std::pair<R_len_t, R_len_t> > occurrences;
-        std::pair<R_len_t, R_len_t> curpair;
+    std::vector<BoundaryLocateElement> elements(
+        static_cast<std::size_t>(str_length)
+    );
+    std::vector< std::pair<R_len_t, R_len_t> > occurrences;
+    occurrences.reserve(static_cast<std::size_t>(str_length));
 
-        // Deviation from stringi: one loop-level unwind bridge protects every
-        // child allocation and list write while the Reader and ICU owners are
-        // live. The reusable scratch deque lives outside the callback, so it
-        // is destroyed on an R error without paying one bridge per child.
-        charport::unwind_protect([&]() -> SEXP {
-          for (R_len_t i = 0; i < str_length; ++i)
-          {
-            ci::UnwindCallbackProtector protector;
-            occurrences.clear();
-            if (str_cont.isNA(i)) {
-                SEXP ans;
-                ans = protector.protect(ci__matrix_NA_INTEGER(1, 2));
-                SET_VECTOR_ELT(ret, i, ans);
+    auto process = [&](auto record) {
+        StriRuleBasedBreakIterator brkiter(opts_brkiter2);
+        for (R_len_t i = 0; i < str_length; ++i)
+        {
+            BoundaryLocateElement& element = elements[
+                static_cast<std::size_t>(i)
+            ];
+            element.offset = occurrences.size();
+
+            charport::StrView value = record(i);
+            if (value.is_na())
                 continue;
-            }
+            if (value.enc == cetype_ext_t::CE_BYTES)
+                throw StriException(MSG__BYTESENC);
+            element.argument_na = false;
 
             brkiter.setupMatcher(
-                str_cont.get(i).data(), str_cont.get(i).length(),
+                value.ptr, value.len,
                 STRI__DEFERRED_WARNINGS
             );
             brkiter.first();
 
-            while (brkiter.next(curpair))
-                occurrences.push_back(curpair);
+            Utf8PositionCursor cursor(
+                value.ptr, value.len,
+                value.enc == cetype_ext_t::CE_ASCII
+            );
+            pair<R_len_t, R_len_t> occurrence;
+            while (brkiter.next(occurrence)) {
+                const R_len_t start = cursor.at(occurrence.first) + 1;
+                const R_len_t end = cursor.at(occurrence.second);
+                occurrences.push_back(std::make_pair(
+                    start, get_length1 ? end-start+1 : end
+                ));
+            }
+            element.count = static_cast<R_len_t>(
+                occurrences.size()-element.offset
+            );
+        }
+    };
 
-            R_len_t noccurrences = (R_len_t)occurrences.size();
-            if (noccurrences <= 0) {
-                SEXP ans;
-                ans = protector.protect(ci__matrix_NA_INTEGER(
+    {
+        charr::altrep::Utf8Input input(context, str, str_length);
+        process([&](R_len_t i) { return input.record(i).view(); });
+    }
+
+    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        return Rf_allocVector(VECSXP, str_length);
+    }));
+
+    charport::unwind_protect([&]() -> SEXP {
+        for (R_len_t i = 0; i < str_length; ++i)
+        {
+            ci::UnwindCallbackProtector protector;
+            const BoundaryLocateElement& element = elements[
+                static_cast<std::size_t>(i)
+            ];
+            SEXP ans;
+            if (element.argument_na) {
+                ans = protector.hold(ci__matrix_NA_INTEGER(1, 2));
+            }
+            else if (element.count <= 0) {
+                ans = protector.hold(ci__matrix_NA_INTEGER(
                     omit_no_match1?0:1, 2,
                     get_length1?-1:NA_INTEGER
                 ));
-                SET_VECTOR_ELT(ret, i, ans);
-                continue;
             }
-
-            SEXP ans;
-            ans = protector.protect(Rf_allocMatrix(
-                INTSXP, noccurrences, 2
-            ));
-            int* ans_tab = INTEGER(ans);
-            for (R_len_t j = 0; j < noccurrences; ++j) {
-                ans_tab[j] = occurrences[j].first;
-                ans_tab[j+noccurrences] = occurrences[j].second;
+            else {
+                ans = protector.hold(Rf_allocMatrix(
+                    INTSXP, element.count, 2
+                ));
+                int* ans_tab = INTEGER(ans);
+                for (R_len_t j = 0; j < element.count; ++j) {
+                    const std::pair<R_len_t, R_len_t>& occurrence =
+                        occurrences[element.offset+
+                            static_cast<std::size_t>(j)];
+                    ans_tab[j] = occurrence.first;
+                    ans_tab[j+element.count] = occurrence.second;
+                }
             }
-
-            // Adjust UChar index -> UChar32 index (1-2 byte UTF16 to 1 byte UTF32-code points)
-            str_cont.UTF8_to_UChar32_index(i, ans_tab,
-                                           ans_tab+noccurrences, noccurrences,
-                                           1, // 0-based index -> 1-based
-                                           0  // end returns position of next character after match
-                                          );
-
-            if (get_length1) {
-                for (R_len_t j=0; j < noccurrences; ++j)
-                    ans_tab[j+noccurrences] -= ans_tab[j] - 1;  // to->length
-            }
-
             SET_VECTOR_ELT(ret, i, ans);
-          }
+        }
 
-          ci__locate_set_dimnames_list(ret, get_length1);
-          return R_NilValue;
-        });
-    }
+        ci__locate_set_dimnames_list(ret, get_length1);
+        return R_NilValue;
+    });
     }
     STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL

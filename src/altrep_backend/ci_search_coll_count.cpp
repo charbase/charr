@@ -35,6 +35,7 @@
 #include "ci_container_base.h"
 #include "ci_container_utf16.h"
 #include "ci_container_usearch.h"
+#include "ci_utf16_cursor.h"
 
 
 /**
@@ -104,7 +105,7 @@ SEXP ci_count_coll(SEXP str, SEXP pattern, SEXP opts_collator)
     int* ret_tab = INTEGER(ret);
 
     {
-        StriContainerUTF16 str_cont(context, str, vectorize_length);
+        ci::Utf16Cursor str_cont(context, str, vectorize_length);
         StriContainerUStringSearch pattern_cont(
             context, pattern, vectorize_length, collator
         );  // collator is not owned by pattern_cont
@@ -113,12 +114,22 @@ SEXP ci_count_coll(SEXP str, SEXP pattern, SEXP opts_collator)
                 i != pattern_cont.vectorize_end();
                 i = pattern_cont.vectorize_next(i))
         {
-            STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-                    ret_tab[i] = NA_INTEGER,
-                    ret_tab[i] = 0)
+            const UnicodeString& source = str_cont.get(i);
+            if (source.isBogus() || pattern_cont.isNA(i) ||
+                    pattern_cont.get(i).length() <= 0) {
+                ret_tab[i] = NA_INTEGER;
+                continue;
+            }
+            if (source.length() <= 0) {
+                ret_tab[i] = 0;
+                continue;
+            }
 
-            UStringSearch *matcher = pattern_cont.getMatcher(i, str_cont.get(i));
-            usearch_reset(matcher);
+            // getMatcher() has just installed this record's text, which
+            // restarts iteration on its own. A usearch_reset() here would only
+            // re-derive collator state that has not changed since the matcher
+            // was opened.
+            UStringSearch *matcher = pattern_cont.getMatcher(i, source);
             UErrorCode status = U_ZERO_ERROR;
             R_len_t found = 0;
             while (!U_FAILURE(status) && ((int)usearch_next(matcher, &status) != USEARCH_DONE))

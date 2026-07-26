@@ -33,11 +33,19 @@
 
 #include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_container_utf8_indexable.h"
-#include <deque>
+#include "ci_utf8.h"
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <optional>
+#include <stdexcept>
+#include <string>
 #include <vector>
 #include <utility>
 #include <unicode/brkiter.h>
+#include <unicode/bytestream.h>
+#include <unicode/normalizer2.h>
+#include <unicode/stringpiece.h>
 #include <unicode/uniset.h>
 
 
@@ -64,6 +72,173 @@ struct CiWrapIcuState {
     CiWrapIcuState& operator=(const CiWrapIcuState&) = delete;
 };
 
+struct CiWrapScratch {
+    std::vector<R_len_t> end_orig;
+    std::vector<R_len_t> widths_orig;
+    std::vector<R_len_t> widths_trim;
+    std::vector<R_len_t> end_trim;
+    std::vector<R_len_t> wrap_after;
+    std::vector<double> cost;
+    std::vector<double> best;
+    std::vector<uint8_t> breaks;
+
+    void clear_words()
+    {
+        end_orig.clear();
+        widths_orig.clear();
+        widths_trim.clear();
+        end_trim.clear();
+        wrap_after.clear();
+    }
+};
+
+struct CiWrapRecordView {
+    const char* data;
+    R_len_t length;
+    bool ascii;
+};
+
+bool ci__wrap_has_bom(const char* data, R_len_t length)
+{
+    return length >= 3 && STRI__ENC_HAS_BOM_UTF8(data, length);
+}
+
+class CiWrapRecordNormalizer {
+private:
+    const Normalizer2* normalizer;
+    std::string prepared;
+    std::string normalized;
+
+    static bool is_ascii(const char* data, R_len_t length)
+    {
+        for (R_len_t i = 0; i < length; ++i) {
+            if (static_cast<unsigned char>(data[i]) >= 0x80)
+                return false;
+        }
+        return true;
+    }
+
+    void append_space(bool& in_space_run)
+    {
+        if (!in_space_run)
+            prepared.push_back(' ');
+        in_space_run = true;
+    }
+
+public:
+    explicit CiWrapRecordNormalizer(const Normalizer2* normalizer_) :
+        normalizer(normalizer_) {}
+
+    CiWrapRecordView run(
+        const char* value, R_len_t length,
+        const UnicodeSet& linebreaks, const UnicodeSet& whitespaces
+    )
+    {
+        prepared.clear();
+        prepared.reserve(static_cast<std::size_t>(length));
+
+        R_len_t cursor = 0;
+        bool field_start = true;
+        bool in_space_run = false;
+
+        // The first field and the next two whole-record stages each consume
+        // one leading BOM after the UTF-8 input adapter has consumed its own.
+        int leading_bom_stages = 3;
+        while (leading_bom_stages > 0 &&
+                ci__wrap_has_bom(value+cursor, length-cursor)) {
+            cursor += 3;
+            --leading_bom_stages;
+            field_start = false;
+        }
+
+        while (cursor < length) {
+            if (field_start &&
+                    ci__wrap_has_bom(value+cursor, length-cursor)) {
+                cursor += 3;
+                field_start = false;
+                continue;
+            }
+
+            const R_len_t begin = cursor;
+            UChar32 code_point;
+            U8_NEXT(value, cursor, length, code_point);
+            if (code_point < 0)
+                throw StriException(MSG__INVALID_UTF8);
+
+            if (linebreaks.contains(code_point)) {
+                if (code_point == '\r' && cursor < length &&
+                        value[cursor] == '\n')
+                    ++cursor;
+                append_space(in_space_run);
+                field_start = true;
+                continue;
+            }
+
+            field_start = false;
+            if (code_point == ' ' || code_point == '\t') {
+                append_space(in_space_run);
+                continue;
+            }
+
+            prepared.append(
+                value+begin, static_cast<std::size_t>(cursor-begin)
+            );
+            in_space_run = false;
+        }
+
+        R_len_t begin = 0;
+        const R_len_t prepared_length = static_cast<R_len_t>(prepared.size());
+        while (begin < prepared_length) {
+            const R_len_t previous = begin;
+            UChar32 code_point;
+            U8_NEXT(prepared.data(), begin, prepared_length, code_point);
+            if (!whitespaces.contains(code_point)) {
+                begin = previous;
+                break;
+            }
+        }
+
+        R_len_t end = prepared_length;
+        while (end > begin) {
+            R_len_t previous = end;
+            UChar32 code_point;
+            U8_PREV(prepared.data(), 0, previous, code_point);
+            if (!whitespaces.contains(code_point))
+                break;
+            end = previous;
+        }
+
+        const char* trimmed_data = end == begin
+            ? ""
+            : prepared.data()+begin;
+        const R_len_t trimmed_length = end-begin;
+        if (is_ascii(trimmed_data, trimmed_length))
+            return CiWrapRecordView{trimmed_data, trimmed_length, true};
+
+        normalized.clear();
+        UErrorCode status = U_ZERO_ERROR;
+        StringByteSink<std::string> sink(&normalized);
+        normalizer->normalizeUTF8(
+            0,
+            StringPiece(trimmed_data, trimmed_length),
+            sink, nullptr, status
+        );
+        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+        if (normalized.size() > static_cast<std::size_t>(R_LEN_T_MAX))
+            throw StriException("normalized string exceeds R's string length limit");
+
+        const char* data = normalized.empty() ? "" : normalized.data();
+        R_len_t output_length = static_cast<R_len_t>(normalized.size());
+        if (ci__wrap_has_bom(data, output_length)) {
+            data += 3;
+            output_length -= 3;
+        }
+        return CiWrapRecordView{
+            data, output_length, is_ascii(data, output_length)
+        };
+    }
+};
+
 }
 
 
@@ -86,7 +261,7 @@ struct CiWrapIcuState {
  * @version 0.4-1 (Marek Gagolewski, 2014-12-06)
  *    new args: add_para_1, add_para_n
  */
-void ci__wrap_greedy(std::deque<R_len_t>& wrap_after,
+void ci__wrap_greedy(std::vector<R_len_t>& wrap_after,
                        R_len_t nwords, int width_val,
                        const std::vector<R_len_t>& widths_orig,
                        const std::vector<R_len_t>& widths_trim,
@@ -127,14 +302,29 @@ void ci__wrap_greedy(std::deque<R_len_t>& wrap_after,
  *    new args: add_para_1, add_para_n,
  *    cost of the last line is zero
  */
-void ci__wrap_dynamic(std::deque<R_len_t>& wrap_after,
+void ci__wrap_dynamic(CiWrapScratch& scratch,
                         R_len_t nwords, int width_val, double exponent_val,
                         const std::vector<R_len_t>& widths_orig,
                         const std::vector<R_len_t>& widths_trim,
                         int add_para_1, int add_para_n)
 {
-#define IDX(i,j) (i)*nwords+(j)
-    vector<double> cost(nwords*nwords);
+    const std::size_t words = static_cast<std::size_t>(nwords);
+    if (words != 0 &&
+            words > std::numeric_limits<std::size_t>::max()/words) {
+        throw std::length_error("word-wrap matrix is too large");
+    }
+    const std::size_t matrix_size = words*words;
+    if (matrix_size > scratch.cost.max_size() ||
+            matrix_size > scratch.breaks.max_size()) {
+        throw std::length_error("word-wrap matrix is too large");
+    }
+    scratch.cost.resize(matrix_size);
+    scratch.best.resize(words);
+    scratch.breaks.assign(matrix_size, 0);
+    std::vector<double>& cost = scratch.cost;
+    std::vector<double>& f = scratch.best;
+    std::vector<uint8_t>& where = scratch.breaks;
+#define IDX(i,j) static_cast<std::size_t>(i)*words+static_cast<std::size_t>(j)
     // where cost[IDX(i,j)] == cost of printing words i..j in a single line, i<=j
 
     // calculate costs:
@@ -172,8 +362,8 @@ void ci__wrap_dynamic(std::deque<R_len_t>& wrap_after,
         }
     }
 
-    vector<double> f(nwords); // f[j] == total cost of  (optimally) printing words 0..j
-    vector<bool> where(nwords*nwords, false); // where[IDX(i,j)] == false iff
+    // f[j] == total cost of (optimally) printing words 0..j
+    // where[IDX(i,j)] == false iff
     // we don't wrap after i-th word, i<=j
     // when (optimally) printing words 0..j
 
@@ -209,7 +399,8 @@ void ci__wrap_dynamic(std::deque<R_len_t>& wrap_after,
     //result is in the last row of where...
     for (int k=0; k<nwords; ++k)
         if (where[IDX(k, nwords-1)])
-            wrap_after.push_back(k);
+            scratch.wrap_after.push_back(k);
+#undef IDX
 }
 
 
@@ -218,15 +409,139 @@ struct StriWrapLineStart {
     R_len_t nbytes;
     R_len_t count;
     R_len_t width;
+    bool ascii;
 
-    StriWrapLineStart(const String8& s, R_len_t v) :
-        str(s.data(), static_cast<std::size_t>(s.length())) {
+    StriWrapLineStart(const Utf8Record& s, R_len_t v) :
+        str(
+            s.isNA() ? "" : s.data(),
+            s.isNA() ? 0 : static_cast<std::size_t>(s.length())
+        ) {
+        if (s.isNA()) {
+            nbytes = count = width = 0;
+            ascii = false;
+            return;
+        }
         nbytes  = s.length()+v;
         count   = s.countCodePoints()+v;
         width   = ci__width_string(s.data(), s.length())+v;
+        ascii   = s.isASCII();
         str.append(std::string(v, ' '));
     }
 };
+
+
+bool ci__wrap_ascii_fits(
+    const char* value, R_len_t length, int width_val, int line_start_width,
+    bool use_length, const UnicodeSet& whitespaces,
+    R_len_t& output_end
+)
+{
+    if (length <= 0)
+        return false;
+
+    R_len_t measured = 0;
+    R_len_t last_width = 0;
+    bool last_whitespace = false;
+    bool reset = true;
+    UChar32 previous = 0;
+    UChar32 current = 0;
+    for (R_len_t i = 0; i < length; ++i) {
+        const unsigned char byte = static_cast<unsigned char>(value[i]);
+        if (byte >= 0x80)
+            return false;
+        if (byte >= 0x0a && byte <= 0x0d)
+            throw StriException(MSG__NEWLINE_FOUND);
+
+        previous = current;
+        current = byte;
+        last_width = use_length
+            ? 1
+            : ci__width_char_with_context(current, previous, reset);
+        measured += last_width;
+        last_whitespace = whitespaces.contains(current);
+    }
+
+    output_end = length-(last_whitespace ? 1 : 0);
+    const int64_t trimmed = static_cast<int64_t>(measured)-
+        (last_whitespace ? last_width : 0);
+    return static_cast<int64_t>(line_start_width)+trimmed <= width_val;
+}
+
+
+void ci__wrap_add_word(
+    CiWrapScratch& scratch, const char* value,
+    R_len_t begin, R_len_t end, bool use_length,
+    const UnicodeSet& linebreaks, const UnicodeSet& whitespaces
+)
+{
+    R_len_t width_orig = 0;
+    R_len_t width_trim = 0;
+    R_len_t count_orig = 0;
+    R_len_t count_trim = 0;
+    R_len_t end_trim = begin;
+    UChar32 previous;
+    UChar32 current = 0;
+    bool reset = true;
+
+    R_len_t j = begin;
+    while (j < end) {
+        const R_len_t previous_byte = j;
+        previous = current;
+        U8_NEXT(value, j, end, current);
+        if (current < 0)
+            throw StriException(MSG__INVALID_UTF8);
+        if (linebreaks.contains(current))
+            throw StriException(MSG__NEWLINE_FOUND);
+
+        width_orig += ci__width_char_with_context(
+            current, previous, reset
+        );
+        ++count_orig;
+        if (whitespaces.contains(current)) {
+            width_trim = ci__width_char_with_context(
+                current, previous, reset
+            );
+            count_trim = 1;
+            end_trim = previous_byte;
+        }
+        else {
+            width_trim = 0;
+            count_trim = 0;
+            end_trim = j;
+        }
+    }
+
+    scratch.end_orig.push_back(end);
+    scratch.widths_orig.push_back(
+        use_length ? count_orig : width_orig
+    );
+    scratch.widths_trim.push_back(
+        use_length ? count_orig-count_trim : width_orig-width_trim
+    );
+    scratch.end_trim.push_back(end_trim);
+}
+
+
+bool ci__wrap_fits_one_line(
+    const CiWrapScratch& scratch, int line_start_width, int width_val
+)
+{
+    int64_t measured = line_start_width;
+    for (R_len_t width : scratch.widths_orig)
+        measured += width;
+    measured -= scratch.widths_orig.back()-scratch.widths_trim.back();
+    return measured <= width_val;
+}
+
+
+bool ci__wrap_is_ascii(const char* value, R_len_t length)
+{
+    for (R_len_t i = 0; i < length; ++i) {
+        if (static_cast<unsigned char>(value[i]) >= 0x80)
+            return false;
+    }
+    return true;
+}
 
 
 /** Word wrap text
@@ -272,8 +587,14 @@ struct StriWrapLineStart {
  */
 SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent,
                SEXP indent, SEXP exdent, SEXP prefix, SEXP initial, SEXP whitespace_only,
-               SEXP use_length, SEXP locale)
+               SEXP use_length, SEXP locale, SEXP normalize, SEXP output_mode)
 {
+    // Mode 0 returns one line vector per input, mode 1 flattens every line,
+    // and mode 2 joins each input's lines for the public str_wrap() result.
+    const int output_mode_val = Rf_asInteger(output_mode);
+    const bool flatten_val = output_mode_val == 1;
+    const bool join_val = output_mode_val == 2;
+    bool normalize_val       = ci__prepare_arg_logical_1_notNA(normalize, "normalize");
     bool use_length_val      = ci__prepare_arg_logical_1_notNA(use_length, "use_length");
     double exponent_val      = ci__prepare_arg_double_1_notNA(cost_exponent, "cost_exponent");
     bool whitespace_only_val = ci__prepare_arg_logical_1_notNA(whitespace_only, "whitespace_only");
@@ -301,6 +622,8 @@ SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent,
     ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
     R_len_t str_length = 0;
     std::vector<charport::charvec::Store> stores;
+    std::optional<charport::charvec::Store> joined_store;
+    charport::charvec::GrowableBuilder flat_output;
     {
     // Deviation from stringi: scope ICU state with the Reader-backed work so
     // it is gone before deferred warnings or R output assembly can unwind.
@@ -326,13 +649,14 @@ SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent,
     // Deviation from stringi: retain each lazy child as a Store until list
     // assembly. The line count is known before a child is constructed, so its
     // storage is exact rather than growable.
-    stores.reserve(static_cast<std::size_t>(str_length));
+    if (!flatten_val && !join_val)
+        stores.reserve(static_cast<std::size_t>(str_length));
     {
-        StriContainerUTF8_indexable str_cont(
+        IndexedUtf8Input str_cont(
             context, str, str_length
         );
-        StriContainerUTF8 prefix_cont(context, prefix, 1);
-        StriContainerUTF8 initial_cont(context, initial, 1);
+        Utf8Input prefix_cont(context, prefix, 1);
+        Utf8Input initial_cont(context, initial, 1);
         // Deviation from stringi: this guard is declared after the Reader
         // containers so exception unwinding releases ICU's borrowed view
         // before it releases the Reader borrow.
@@ -360,20 +684,112 @@ SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent,
     UnicodeSet uset_whitespaces(UnicodeString::fromUTF8("\\p{White_space}"), status);
     STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
     uset_whitespaces.freeze();
+
+    const Normalizer2* normalizer = nullptr;
+    if (normalize_val) {
+        status = U_ZERO_ERROR;
+        normalizer = Normalizer2::getNFCInstance(status);
+        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+    }
     charport::charvec::Builder output(0);
+    charport::charvec::Builder joined_output(join_val ? str_length : 0);
+    CiWrapScratch scratch;
+    CiWrapRecordNormalizer record_normalizer(normalizer);
 
     for (R_len_t i = 0; i < str_length; ++i)
     {
-        if (str_cont.isNA(i) || prefix_cont.isNA(0) || initial_cont.isNA(0)) {
-            stores.push_back(charport::charvec::Store::scalar(
-                NULL, 0, cetype_ext_t::CE_NA
-            ));
+        const bool source_is_na = str_cont.isNA(i);
+        CiWrapRecordView record{nullptr, 0, false};
+        if (!source_is_na) {
+            const Utf8Record& source = str_cont.get(i);
+            record = CiWrapRecordView{
+                source.data(), source.length(), source.isASCII()
+            };
+            if (normalize_val) {
+                record = record_normalizer.run(
+                    source.data(), source.length(),
+                    uset_linebreaks, uset_whitespaces
+                );
+            }
+        }
+
+        if (source_is_na || prefix_cont.isNA(0) || initial_cont.isNA(0)) {
+            if (flatten_val)
+                ci::builder_append(
+                    flat_output, NULL, 0, cetype_ext_t::CE_NA
+                );
+            else if (join_val)
+                joined_output.set_na(i);
+            else
+                stores.push_back(charport::charvec::Store::scalar(
+                    NULL, 0, cetype_ext_t::CE_NA
+                ));
+            continue;
+        }
+
+        const char* str_cur_s = record.data;
+        R_len_t str_cur_n = record.length;
+        const bool str_cur_ascii = record.ascii;
+        const int first_start_width = use_length_val
+            ? ((i == 0) ? ii.count : pi.count)
+            : ((i == 0) ? ii.width : pi.width);
+        const int next_start_width = use_length_val ? pe.count : pe.width;
+        auto line_start = [&](R_len_t line) -> const StriWrapLineStart& {
+            return line == 0 ? ((i == 0) ? ii : pi) : pe;
+        };
+        auto emit_line = [&] (
+            R_len_t line, R_len_t begin, R_len_t end
+        ) {
+            const StriWrapLineStart& start = line_start(line);
+            const R_len_t body_length = end-begin;
+            const std::size_t body_size = static_cast<std::size_t>(body_length);
+            const std::size_t output_size = start.str.size()+body_size;
+            const bool output_ascii = start.ascii &&
+                (str_cur_ascii || ci__wrap_is_ascii(
+                    str_cur_s+begin, body_length
+                ));
+            const cetype_ext_t output_encoding = output_ascii
+                ? cetype_ext_t::CE_ASCII
+                : cetype_ext_t::CE_UTF8;
+            char* destination;
+            if (flatten_val) {
+                destination = flat_output.append_reserve(
+                    output_size, output_encoding
+                );
+            }
+            else if (join_val) {
+                destination = joined_output.reserve(
+                    i, output_size, output_encoding
+                );
+            }
+            else {
+                destination = output.reserve(
+                    line, output_size, output_encoding
+                );
+            }
+            if (!start.str.empty())
+                std::memcpy(destination, start.str.data(), start.str.size());
+            if (body_size > 0) {
+                std::memcpy(
+                    destination+start.str.size(), str_cur_s+begin, body_size
+                );
+            }
+        };
+
+        R_len_t ascii_end = 0;
+        if (ci__wrap_ascii_fits(
+                str_cur_s, str_cur_n, width_val, first_start_width,
+                use_length_val, uset_whitespaces, ascii_end
+        )) {
+            if (!flatten_val && !join_val)
+                output.reset(1);
+            emit_line(0, 0, ascii_end);
+            if (!flatten_val && !join_val)
+                stores.push_back(output.release_store());
             continue;
         }
 
         status = U_ZERO_ERROR;
-        const char* str_cur_s = str_cont.get(i).data();
-        R_len_t str_cur_n = str_cont.get(i).length();
         icu_state.text = utext_openUTF8(
             icu_state.text, str_cur_s, str_cur_n, &status
         );
@@ -383,198 +799,209 @@ SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent,
         icu_state.iterator->setText(icu_state.text, status);
         STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
 
-        // first generate a list of positions of line breaks
-        deque< R_len_t > occurrences_list; // this could be an R_len_t queue
+        scratch.clear_words();
         R_len_t match = icu_state.iterator->first();
+#ifndef NDEBUG
+        if (match != 0)
+            throw StriException("NDEBUG: ci_wrap: (first boundary != 0)");
+#endif
+        R_len_t previous_end = 0;
         while (match != BreakIterator::DONE) {
-
-            if (!whitespace_only_val)
-                occurrences_list.push_back(match);
-            else {
+            bool accepted = !whitespace_only_val;
+            if (whitespace_only_val) {
                 if (match > 0 && match < str_cur_n) {
                     UChar32 c;
                     U8_GET((const uint8_t*)str_cur_s, 0, match-1, str_cur_n, c);
                     if (uset_whitespaces.contains(c))
-                        occurrences_list.push_back(match);
+                        accepted = true;
                 }
                 else
-                    occurrences_list.push_back(match);
+                    accepted = true;
+            }
+            if (accepted && match > 0) {
+                ci__wrap_add_word(
+                    scratch, str_cur_s, previous_end, match,
+                    use_length_val, uset_linebreaks, uset_whitespaces
+                );
+                previous_end = match;
             }
 
             match = icu_state.iterator->next();
         }
 
-        R_len_t noccurrences = (R_len_t)occurrences_list.size(); // number of boundaries
-        if (noccurrences <= 1) { // no match (1 boundary == 0)
-            stores.push_back(ci::scalar_store(str_cont.get(i)));
-            continue;
-        }
-
-        // the number of "words" is:
-        R_len_t nwords = noccurrences - 1;
-
-        // convert occurrences_list to a vector
-        // in order to obtain end positions (in a string) of each "words",
-        // noting that occurrences_list.at(0) == 0
-#ifndef NDEBUG
-        if (occurrences_list.at(0) != 0)
-            throw StriException("NDEBUG: ci_wrap: (occurrences_list.at(0) != 0)");
-#endif
-
-        std::vector<R_len_t> end_pos_orig(nwords);
-        deque<R_len_t>::iterator iter = ++(occurrences_list.begin());
-        for (R_len_t j = 0; iter != occurrences_list.end(); ++iter, ++j) {
-            end_pos_orig[j] = (*iter); // this is a UTF-8 index
-        }
-
-
-        // now:
-        // we'll get the total widths/number of code points in each "word"
-        std::vector<R_len_t> widths_orig(nwords);
-        // we'll get the total widths/number of code points without trailing whitespaces
-        std::vector<R_len_t> widths_trim(nwords);
-        // we'll get the end positions without trailing whitespaces
-        std::vector<R_len_t> end_pos_trim(nwords);
-        // detect line endings (fail on a match)
-
-        UChar32 p;
-        UChar32 c = 0;
-        bool reset = true;
-        R_len_t j = 0;
-        R_len_t cur_block = 0;
-        R_len_t cur_width_orig = 0;
-        R_len_t cur_width_trim = 0;
-        R_len_t cur_count_orig = 0;
-        R_len_t cur_count_trim = 0;
-        R_len_t cur_end_pos_trim = 0;
-        while (j < str_cur_n) {
-            R_len_t jlast = j;
-            p = c;
-            U8_NEXT(str_cur_s, j, str_cur_n, c);
-            if (c < 0) // invalid utf-8 sequence
-                throw StriException(MSG__INVALID_UTF8);
-
-            if (uset_linebreaks.contains(c))
-                throw StriException(MSG__NEWLINE_FOUND);
-
-            // OLD: cur_width_orig += ci__width_char(c);
-            cur_width_orig += ci__width_char_with_context(c, p, reset);
-            ++cur_count_orig;
-            if (uset_whitespaces.contains(c)) {
-// OLD: trim all white spaces from the end:
-//            ++cur_count_trim;
-//           [we have the normalize arg for that]
-
-// NEW: trim just one white space at the end:
-                // OLD: cur_width_trim = ci__width_char(c);
-                cur_width_trim = ci__width_char_with_context(c, p, reset);
-                cur_count_trim = 1;
-                cur_end_pos_trim = jlast;
+        const R_len_t nwords = static_cast<R_len_t>(scratch.end_orig.size());
+        if (nwords == 0) {
+            const cetype_ext_t encoding = str_cur_ascii
+                ? cetype_ext_t::CE_ASCII
+                : cetype_ext_t::CE_UTF8;
+            if (flatten_val) {
+                ci::builder_append(
+                    flat_output, str_cur_s,
+                    static_cast<std::size_t>(str_cur_n), encoding
+                );
+            }
+            else if (join_val) {
+                ci::builder_set(
+                    joined_output, i, str_cur_s,
+                    static_cast<std::size_t>(str_cur_n), encoding
+                );
             }
             else {
-                cur_width_trim = 0;
-                cur_count_trim = 0;
-                cur_end_pos_trim = j;
+                stores.push_back(ci::scalar_store(
+                    str_cur_s, static_cast<std::size_t>(str_cur_n), encoding
+                ));
             }
-
-            if (j >= str_cur_n || end_pos_orig[cur_block] <= j) {
-                // we'll start a new block in a moment
-                if (use_length_val) {
-                    widths_orig[cur_block] = cur_count_orig;
-                    widths_trim[cur_block] = cur_count_orig-cur_count_trim;
-                }
-                else {
-                    widths_orig[cur_block] = cur_width_orig;
-                    widths_trim[cur_block] = cur_width_orig-cur_width_trim;
-                }
-                end_pos_trim[cur_block] = cur_end_pos_trim;
-                cur_block++;
-                cur_width_orig = 0;
-                cur_width_trim = 0;
-                cur_count_orig = 0;
-                cur_count_trim = 0;
-                cur_end_pos_trim = j;
-                reset = true;
-            }
-        }
-
-        // do wrap
-        std::deque<R_len_t> wrap_after; // wrap line after which word in {0..nwords-1}?
-        if (exponent_val <= 0.0) {
-            ci__wrap_greedy(wrap_after, nwords, width_val,
-                widths_orig, widths_trim,
-                (use_length_val)?((i==0)?ii.count:pi.count):((i==0)?ii.width:pi.width),
-                (use_length_val)?pe.count:pe.width);
-        }
-        else {
-            ci__wrap_dynamic(wrap_after, nwords, width_val, exponent_val,
-                widths_orig, widths_trim,
-                (use_length_val)?((i==0)?ii.count:pi.count):((i==0)?ii.width:pi.width),
-                (use_length_val)?pe.count:pe.width);
-        }
-
-        // wrap_after.size() line breaks => wrap_after.size()+1 lines
-        R_len_t nlines = (R_len_t)wrap_after.size()+1;
-        R_len_t last_pos = 0;
-
-        if (nlines == 1) {
-            std::string cs;
-            if (i == 0) cs = ii.str;
-            else        cs = pi.str;
-            cs.append(
-                str_cur_s,
-                static_cast<std::size_t>(end_pos_trim[nwords-1])
-            );
-            stores.push_back(ci::scalar_store(
-                cs, cetype_ext_t::CE_ASCII_OR_UTF8
-            ));
             continue;
         }
 
-        output.reset(nlines);
-        deque<R_len_t>::iterator iter_wrap = wrap_after.begin();
-        for (R_len_t u = 0; iter_wrap != wrap_after.end(); ++iter_wrap, ++u) {
-            R_len_t wrap_after_cur = *iter_wrap;
-            R_len_t cur_pos = end_pos_trim[wrap_after_cur];
-
-            std::string cs;
-            if (i == 0 && u == 0)     cs = ii.str;
-            else if (i > 0 && u == 0) cs = pi.str;
-            else                      cs = pe.str;
-            cs.append(str_cur_s+last_pos, cur_pos-last_pos);
-            ci::builder_set(
-                output, u, cs, cetype_ext_t::CE_ASCII_OR_UTF8
-            );
-
-            last_pos = end_pos_orig[wrap_after_cur];
+        if (!ci__wrap_fits_one_line(
+                scratch, first_start_width, width_val
+        )) {
+            if (exponent_val <= 0.0) {
+                ci__wrap_greedy(
+                    scratch.wrap_after, nwords, width_val,
+                    scratch.widths_orig, scratch.widths_trim,
+                    first_start_width, next_start_width
+                );
+            }
+            else {
+                ci__wrap_dynamic(
+                    scratch, nwords, width_val, exponent_val,
+                    scratch.widths_orig, scratch.widths_trim,
+                    first_start_width, next_start_width
+                );
+            }
         }
 
-        // last line goes here:
-        std::string cs;
-        if (i == 0 && nlines-1 == 0)     cs = ii.str;
-        else if (i > 0 && nlines-1 == 0) cs = pi.str;
-        else                             cs = pe.str;
-        cs.append(str_cur_s+last_pos, end_pos_trim[nwords-1]-last_pos);
-        ci::builder_set(
-            output, nlines-1, cs, cetype_ext_t::CE_ASCII_OR_UTF8
+        const R_len_t nlines = static_cast<R_len_t>(
+            scratch.wrap_after.size()+1
         );
-        stores.push_back(output.release_store());
+        if (join_val) {
+            const std::size_t maximum = static_cast<std::size_t>(R_LEN_T_MAX);
+            std::size_t joined_size = static_cast<std::size_t>(nlines-1);
+            bool joined_ascii = true;
+            auto add_line = [&] (
+                R_len_t line, R_len_t begin, R_len_t end
+            ) {
+                const StriWrapLineStart& start = line_start(line);
+                const R_len_t body_length = end-begin;
+                const std::size_t body_size = static_cast<std::size_t>(
+                    body_length
+                );
+                if (start.str.size() > maximum-joined_size)
+                    throw StriException("wrapped string exceeds R's string length limit");
+                joined_size += start.str.size();
+                if (body_size > maximum-joined_size)
+                    throw StriException("wrapped string exceeds R's string length limit");
+                joined_size += body_size;
+                joined_ascii = joined_ascii && start.ascii &&
+                    (str_cur_ascii || ci__wrap_is_ascii(
+                        str_cur_s+begin, body_length
+                    ));
+            };
+
+            R_len_t joined_last_pos = 0;
+            R_len_t line = 0;
+            for (R_len_t wrap_after_cur : scratch.wrap_after) {
+                const R_len_t cur_pos = scratch.end_trim[wrap_after_cur];
+                add_line(line, joined_last_pos, cur_pos);
+                joined_last_pos = scratch.end_orig[wrap_after_cur];
+                ++line;
+            }
+            add_line(
+                nlines-1, joined_last_pos,
+                scratch.end_trim[nwords-1]
+            );
+
+            char* destination = joined_output.reserve(
+                i, joined_size,
+                joined_ascii
+                    ? cetype_ext_t::CE_ASCII
+                    : cetype_ext_t::CE_UTF8
+            );
+            std::size_t destination_pos = 0;
+            auto emit_joined_line = [&] (
+                R_len_t current_line, R_len_t begin, R_len_t end
+            ) {
+                if (current_line > 0)
+                    destination[destination_pos++] = '\n';
+                const StriWrapLineStart& start = line_start(current_line);
+                if (!start.str.empty()) {
+                    std::memcpy(
+                        destination+destination_pos,
+                        start.str.data(), start.str.size()
+                    );
+                    destination_pos += start.str.size();
+                }
+                const std::size_t body_size = static_cast<std::size_t>(
+                    end-begin
+                );
+                if (body_size > 0) {
+                    std::memcpy(
+                        destination+destination_pos,
+                        str_cur_s+begin, body_size
+                    );
+                    destination_pos += body_size;
+                }
+            };
+
+            joined_last_pos = 0;
+            line = 0;
+            for (R_len_t wrap_after_cur : scratch.wrap_after) {
+                const R_len_t cur_pos = scratch.end_trim[wrap_after_cur];
+                emit_joined_line(line, joined_last_pos, cur_pos);
+                joined_last_pos = scratch.end_orig[wrap_after_cur];
+                ++line;
+            }
+            emit_joined_line(
+                nlines-1, joined_last_pos,
+                scratch.end_trim[nwords-1]
+            );
+            continue;
+        }
+
+        R_len_t last_pos = 0;
+        if (!flatten_val)
+            output.reset(nlines);
+        R_len_t u = 0;
+        for (R_len_t wrap_after_cur : scratch.wrap_after) {
+            const R_len_t cur_pos = scratch.end_trim[wrap_after_cur];
+            emit_line(u, last_pos, cur_pos);
+            last_pos = scratch.end_orig[wrap_after_cur];
+            ++u;
+        }
+
+        emit_line(nlines-1, last_pos, scratch.end_trim[nwords-1]);
+        if (!flatten_val)
+            stores.push_back(output.release_store());
     }
+    if (join_val)
+        joined_store.emplace(joined_output.release_store());
     }
     }
 
     // Deviation from stringi: protect the complete lazy list, then release
     // its staging Stores before deferred warnings are replayed.
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
-        return Rf_allocVector(VECSXP, str_length);
-    }));
-    for (R_len_t i=0; i<str_length; ++i) {
-        SEXP ans;
-        STRI__PROTECT(ans = charport::charvec::wrap(
-            std::move(stores[i])
+    if (flatten_val) {
+        STRI__PROTECT(ret = flat_output.to_sexp());
+    }
+    else if (join_val) {
+        STRI__PROTECT(ret = charport::charvec::wrap(
+            std::move(*joined_store)
         ));
-        SET_VECTOR_ELT(ret, i, ans);
-        STRI__UNPROTECT(1);
+    }
+    else {
+        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+            return Rf_allocVector(VECSXP, str_length);
+        }));
+        for (R_len_t i=0; i<str_length; ++i) {
+            SEXP ans;
+            STRI__PROTECT(ans = charport::charvec::wrap(
+                std::move(stores[i])
+            ));
+            SET_VECTOR_ELT(ret, i, ans);
+            STRI__UNPROTECT(1);
+        }
     }
     }
     STRI__DEFERRED_WARNINGS.emit();

@@ -100,91 +100,29 @@
 # @family search_subset
 # @export
 # @rdname ci_subset
-ci_subset <- function(str, ..., regex, fixed, coll, charclass)
-{
-    providedarg <- c(
-        regex = !missing(regex),
-        fixed = !missing(fixed),
-        coll = !missing(coll),
-        charclass = !missing(charclass))
-
-    if (sum(providedarg) != 1)
-        stop("you have to specify either `regex`, `fixed`, `coll`, or `charclass`")
-
-    if (providedarg["regex"])
-        ci_subset_regex(str, regex, ...)
-    else if (providedarg["fixed"])
-        ci_subset_fixed(str, fixed, ...)
-    else if (providedarg["coll"])
-        ci_subset_coll(str, coll, ...)
-    else if (providedarg["charclass"])
-        ci_subset_charclass(str, charclass, ...)
-}
 
 
 # @export
 # @rdname ci_subset
 # @usage ci_subset(str, ..., regex, fixed, coll, charclass) <- value
-`ci_subset<-` <- function(str, ..., regex, fixed, coll, charclass, value)
-{
-    providedarg <- c(
-        regex = !missing(regex),
-        fixed = !missing(fixed),
-        coll = !missing(coll),
-        charclass = !missing(charclass))
-
-    if (sum(providedarg) != 1)
-        stop("you have to specify either `regex`, `fixed`, `coll`, or `charclass`")
-
-    if (providedarg["regex"])
-        `ci_subset_regex<-`(str, regex, ..., value = value)
-    else if (providedarg["fixed"])
-        `ci_subset_fixed<-`(str, fixed, ..., value = value)
-    else if (providedarg["coll"])
-        `ci_subset_coll<-`(str, coll, ..., value = value)
-    else if (providedarg["charclass"])
-        `ci_subset_charclass<-`(str, charclass, ..., value = value)
-}
 
 
 # @export
 # @rdname ci_subset
-ci_subset_fixed <- function(str, pattern, omit_na = FALSE, negate = FALSE, ...,
-    opts_fixed = NULL)
-{
-    if (!missing(...))
-        opts_fixed <- do.call(ci_opts_fixed, as.list(c(opts_fixed, ...)))
-    .Call(C_ci_subset_fixed, str, pattern, omit_na, negate, opts_fixed)
-}
 
 
 # @export
 # @rdname ci_subset
 # @usage ci_subset_fixed(str, pattern, negate=FALSE, ..., opts_fixed=NULL) <- value
-`ci_subset_fixed<-` <- function(str, pattern, negate = FALSE, ...,
-    opts_fixed = NULL,  value)
-{
-    if (!missing(...))
-        opts_fixed <- do.call(ci_opts_fixed, as.list(c(opts_fixed, ...)))
-    .Call(C_ci_subset_fixed_replacement, str, pattern, negate, opts_fixed, value)
-}
 
 
 # @export
 # @rdname ci_subset
-ci_subset_charclass <- function(str, pattern, omit_na = FALSE, negate = FALSE)
-{
-    .Call(C_ci_subset_charclass, str, pattern, omit_na, negate)
-}
 
 
 # @export
 # @rdname ci_subset
 # @usage ci_subset_charclass(str, pattern, negate=FALSE) <- value
-`ci_subset_charclass<-` <- function(str, pattern, negate = FALSE, value)
-{
-    .Call(C_ci_subset_charclass_replacement, str, pattern, negate, value)
-}
 
 
 # @export
@@ -201,13 +139,6 @@ ci_subset_coll <- function(str, pattern, omit_na = FALSE, negate = FALSE, ...,
 # @export
 # @rdname ci_subset
 # @usage ci_subset_coll(str, pattern, negate=FALSE, ..., opts_collator=NULL) <- value
-`ci_subset_coll<-` <- function(str, pattern, negate = FALSE, ..., opts_collator = NULL,
-    value)
-{
-    if (!missing(...))
-        opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-    .Call(C_ci_subset_coll_replacement, str, pattern, negate, opts_collator, value)
-}
 
 
 # @export
@@ -224,10 +155,3 @@ ci_subset_regex <- function(str, pattern, omit_na = FALSE, negate = FALSE, ...,
 # @export
 # @rdname ci_subset
 # @usage ci_subset_regex(str, pattern, negate=FALSE, ..., opts_regex=NULL) <- value
-`ci_subset_regex<-` <- function(str, pattern, negate = FALSE, ..., opts_regex = NULL,
-    value)
-{
-    if (!missing(...))
-        opts_regex <- do.call(ci_opts_regex, as.list(c(opts_regex, ...)))
-    .Call(C_ci_subset_regex_replacement, str, pattern, negate, opts_regex, value)
-}

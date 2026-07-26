@@ -110,14 +110,3 @@ ci_pad_right <- function(str, width = floor(0.9 * getOption("width")), pad = " "
 
 # @rdname ci_pad
 # @export
-ci_pad <- function(str, width = floor(0.9 * getOption("width")), side = c("left",
-    "right", "both"), pad = " ", use_length = FALSE)
-{
-    # `left` is the default for compatibility with stringr
-    side <- match.arg(side)  # this is slow
-
-    switch(side,
-        both = ci_pad_both(str, width, pad, use_length),
-        left = ci_pad_left(str, width, pad, use_length),
-        right = ci_pad_right(str, width, pad, use_length))
-}

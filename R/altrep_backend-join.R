@@ -69,17 +69,12 @@ ci_dup <- function(str, times)
 # e1 \%s*\% e2
 # @rdname ci_dup
 # @export
-`%s*%` <- function(e1, e2)
-{
-    .Call(C_ci_dup, e1, e2)
-}
 
 
 # @usage
 # e1 \%stri*\% e2
 # @rdname ci_dup
 # @export
-`%stri*%` <- `%s*%`
 
 
 
@@ -118,17 +113,12 @@ ci_dup <- function(str, times)
 # e1 \%s+\% e2
 #
 # @export
-`%s+%` <- function(e1, e2)
-{
-    .Call(C_ci_join2, e1, e2)
-}
 
 
 # @usage
 # e1 \%stri+\% e2
 # @rdname operator_add
 # @export
-`%stri+%` <- `%s+%`
 
 
 # @title
@@ -195,7 +185,6 @@ ci_c <- ci_join
 
 # @rdname ci_join
 # @export
-ci_paste <- ci_join
 
 
 # @title
@@ -305,9 +294,7 @@ ci_join_list <- function(x, sep = "", collapse = NULL)
 
 # @rdname ci_join_list
 # @export
-ci_c_list <- ci_join_list
 
 
 # @rdname ci_join_list
 # @export
-ci_paste_list <- ci_join_list

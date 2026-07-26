@@ -112,71 +112,35 @@ ci_trans_nfc <- function(str)
 
 # @rdname ci_trans_nf
 # @export
-ci_trans_nfd <- function(str)
-{
-    .Call(C_ci_trans_nfd, str)
-}
 
 
 # @rdname ci_trans_nf
 # @export
-ci_trans_nfkd <- function(str)
-{
-    .Call(C_ci_trans_nfkd, str)
-}
 
 
 # @rdname ci_trans_nf
 # @export
-ci_trans_nfkc <- function(str)
-{
-    .Call(C_ci_trans_nfkc, str)
-}
 
 
 # @rdname ci_trans_nf
 # @export
-ci_trans_nfkc_casefold <- function(str)
-{
-    .Call(C_ci_trans_nfkc_casefold, str)
-}
 
 
 # @rdname ci_trans_nf
 # @export
-ci_trans_isnfc <- function(str)
-{
-    .Call(C_ci_trans_isnfc, str)
-}
 
 
 # @rdname ci_trans_nf
 # @export
-ci_trans_isnfd <- function(str)
-{
-    .Call(C_ci_trans_isnfd, str)
-}
 
 
 # @rdname ci_trans_nf
 # @export
-ci_trans_isnfkd <- function(str)
-{
-    .Call(C_ci_trans_isnfkd, str)
-}
 
 
 # @rdname ci_trans_nf
 # @export
-ci_trans_isnfkc <- function(str)
-{
-    .Call(C_ci_trans_isnfkc, str)
-}
 
 
 # @rdname ci_trans_nf
 # @export
-ci_trans_isnfkc_casefold <- function(str)
-{
-    .Call(C_ci_trans_isnfkc_casefold, str)
-}

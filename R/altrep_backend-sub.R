@@ -358,4 +358,3 @@ ci_sub_replace_all <- function(..., replacement, value=replacement)
 
 # @rdname ci_sub_all
 # @export
-ci_sub_all_replace <- ci_sub_replace_all

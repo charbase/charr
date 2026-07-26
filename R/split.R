@@ -71,33 +71,33 @@ str_split <- function(string, pattern, n = Inf, simplify = FALSE) {
 
   out <- switch(
     type(pattern),
-    empty = ci_split_boundaries(
+    empty = stri_split_boundaries(
       string,
       n = n,
       simplify = simplify,
       opts_brkiter = opts(pattern)
     ),
-    bound = ci_split_boundaries(
+    bound = stri_split_boundaries(
       string,
       n = n,
       simplify = simplify,
       opts_brkiter = opts(pattern)
     ),
-    fixed = ci_split_fixed(
+    fixed = stri_split_fixed(
       string,
       pattern,
       n = n,
       simplify = simplify,
       opts_fixed = opts(pattern)
     ),
-    regex = ci_split_regex(
+    regex = stri_split_regex(
       string,
       pattern,
       n = n,
       simplify = simplify,
       opts_regex = opts(pattern)
     ),
-    coll = ci_split_coll(
+    coll = stri_split_coll(
       string,
       pattern,
       n = n,

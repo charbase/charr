@@ -143,92 +143,18 @@
 # @family search_replace
 # @export
 # @rdname ci_replace
-ci_replace_all <- function(str, replacement, ..., regex, fixed, coll, charclass)
-{
-    providedarg <- c(
-        regex = !missing(regex),
-        fixed = !missing(fixed),
-        coll = !missing(coll),
-        charclass = !missing(charclass))
-
-    if (sum(providedarg) != 1)
-        stop("you have to specify either `regex`, `fixed`, `coll`, or `charclass`")
-
-    if (providedarg["regex"])
-        ci_replace_all_regex(str, regex, replacement, ...)
-    else if (providedarg["fixed"])
-        ci_replace_all_fixed(str, fixed, replacement, ...)
-    else if (providedarg["coll"])
-        ci_replace_all_coll(str, coll, replacement, ...)
-    else if (providedarg["charclass"])
-        ci_replace_all_charclass(str, charclass, replacement, ...)
-}
 
 
 # @export
 # @rdname ci_replace
-ci_replace_first <- function(str, replacement, ..., regex, fixed, coll, charclass)
-{
-    providedarg <- c(
-        regex = !missing(regex),
-        fixed = !missing(fixed),
-        coll = !missing(coll),
-        charclass = !missing(charclass))
-
-    if (sum(providedarg) != 1)
-        stop("you have to specify either `regex`, `fixed`, `coll`, or `charclass`")
-
-    if (providedarg["regex"])
-        ci_replace_first_regex(str, regex, replacement, ...)
-    else if (providedarg["fixed"])
-        ci_replace_first_fixed(str, fixed, replacement, ...)
-    else if (providedarg["coll"])
-        ci_replace_first_coll(str, coll, replacement, ...)
-    else if (providedarg["charclass"])
-        ci_replace_first_charclass(str, charclass, replacement, ...)
-}
 
 
 # @export
 # @rdname ci_replace
-ci_replace_last <- function(str, replacement, ..., regex, fixed, coll, charclass)
-{
-    providedarg <- c(
-        regex = !missing(regex),
-        fixed = !missing(fixed),
-        coll = !missing(coll),
-        charclass = !missing(charclass))
-
-    if (sum(providedarg) != 1)
-        stop("you have to specify either `regex`, `fixed`, `coll`, or `charclass`")
-
-    if (providedarg["regex"])
-        ci_replace_last_regex(str, regex, replacement, ...)
-    else if (providedarg["fixed"])
-        ci_replace_last_fixed(str, fixed, replacement, ...)
-    else if (providedarg["coll"])
-        ci_replace_last_coll(str, coll, replacement, ...)
-    else if (providedarg["charclass"])
-        ci_replace_last_charclass(str, charclass, replacement, ...)
-}
 
 
 # @export
 # @rdname ci_replace
-ci_replace <- function(str, replacement, ..., regex, fixed, coll, charclass,
-    mode = c("first", "all", "last"))
-{
-    # `first` is default for compatibility with stringr
-    mode <- match.arg(mode)  # this is slow
-
-    switch(mode,
-        first = ci_replace_first(str, replacement, ..., regex = regex,
-            fixed = fixed, coll = coll, charclass = charclass),
-        last = ci_replace_last(str, replacement, ..., regex = regex,
-            fixed = fixed, coll = coll, charclass = charclass),
-        all = ci_replace_all(str, replacement, ..., regex = regex,
-            fixed = fixed, coll = coll, charclass = charclass))
-}
 
 
 # @export
@@ -245,18 +171,10 @@ ci_replace_all_charclass <- function(str, pattern, replacement, merge = FALSE,
 
 # @export
 # @rdname ci_replace
-ci_replace_first_charclass <- function(str, pattern, replacement)
-{
-    .Call(C_ci_replace_first_charclass, str, pattern, replacement)
-}
 
 
 # @export
 # @rdname ci_replace
-ci_replace_last_charclass <- function(str, pattern, replacement)
-{
-    .Call(C_ci_replace_last_charclass, str, pattern, replacement)
-}
 
 
 # @export
@@ -371,7 +289,3 @@ ci_replace_last_regex <- function(str, pattern, replacement, ..., opts_regex = N
 #
 # @family search_replace
 # @export
-ci_replace_rstr <- function(x)
-{
-    .Call(C_ci_replace_rstr, x)
-}

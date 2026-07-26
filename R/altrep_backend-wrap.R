@@ -135,26 +135,23 @@ ci_wrap <- function(str, width = floor(0.9 * getOption("width")),
     cost_exponent = 2,
     simplify = TRUE, normalize = TRUE, normalise = normalize,
     indent = 0, exdent = 0, prefix = "", initial = prefix,
-    whitespace_only = FALSE, use_length = FALSE, locale = NULL)
+    whitespace_only = FALSE, use_length = FALSE, locale = NULL,
+    .output_mode = as.integer(isTRUE(simplify)))
 {
     simplify <- as.logical(simplify)
 
     if (!missing(normalise))
         normalize <- normalise
     normalize <- as.logical(normalize)
-    if (normalize) {
-        # this will give an informative warning or error if sth is wrong
-        str <- sapply(ci_split_lines(str), function(s) ci_flatten(s, collapse = " "))
-        str <- ci_trim(ci_replace_all_charclass(str, "[\\u0020\\r\\n\\t]", " ",
-            merge = TRUE))
-        str <- ci_trans_nfc(str)
-    }
+    normalize <- if (normalize) TRUE else FALSE
 
     ret <- .Call(C_ci_wrap, str, width, cost_exponent, indent, exdent, prefix,
-        initial, whitespace_only, use_length, locale)
+        initial, whitespace_only, use_length, locale, normalize,
+        .output_mode)
 
+    # TRUE asks C for the flat result. NA deliberately takes the list path and
+    # reaches this condition, preserving stringi's delayed missing-value error.
     if (simplify) {
-        # this will give an informative warning or error if sth is wrong
-        as.character(unlist(ret))
+        ret
     } else ret
 }

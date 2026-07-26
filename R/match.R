@@ -54,7 +54,7 @@ str_match <- function(string, pattern) {
     cli::cli_abort(tr_("{.arg pattern} must be a regular expression."))
   }
 
-  out <- ci_match_first_regex(string, pattern, opts_regex = opts(pattern))
+  out <- stri_match_first_regex(string, pattern, opts_regex = opts(pattern))
   preserve_names_if_possible(string, pattern, out)
 }
 
@@ -66,7 +66,7 @@ str_match_all <- function(string, pattern) {
     cli::cli_abort(tr_("{.arg pattern} must be a regular expression."))
   }
 
-  out <- ci_match_all_regex(
+  out <- stri_match_all_regex(
     string,
     pattern,
     omit_no_match = TRUE,

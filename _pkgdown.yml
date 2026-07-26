@@ -1,0 +1,96 @@
+url: https://charport.github.io/charr/
+
+template:
+  bootstrap: 5
+  light-switch: true
+  bslib:
+    font-size-base: "0.9rem"
+
+# The funder holds the fnd role, which pkgdown would otherwise print in the
+# "Developed by" footer alongside the author. The authors page credits everyone.
+authors:
+  footer:
+    roles: [aut, cre]
+
+navbar:
+  structure:
+    left: [under_the_hood, reference]
+    right: [search, github, lightswitch]
+  components:
+    under_the_hood:
+      text: "Under the hood"
+      href: articles/under-the-hood.html
+
+articles:
+- title: Start Here
+  navbar: ~
+  contents:
+  - charr
+- title: Under the hood
+  contents:
+  - under-the-hood
+
+reference:
+- title: Backend Selection
+  contents:
+  - charr_backend
+- title: Detect Matches
+  contents:
+  - str_detect
+  - str_starts
+  - str_like
+  - str_which
+  - str_subset
+  - str_count
+  - str_locate
+- title: Extract And Match
+  contents:
+  - str_extract
+  - str_match
+  - word
+  - invert_match
+- title: Manage Lengths
+  contents:
+  - str_length
+  - str_pad
+  - str_trim
+  - str_trunc
+  - str_wrap
+- title: Mutate Strings
+  contents:
+  - str_sub
+  - str_replace
+  - str_remove
+  - str_replace_na
+  - str_reverse
+  - case
+  - str_to_camel
+- title: Join And Split
+  contents:
+  - str_c
+  - str_flatten
+  - str_dup
+  - str_split
+  - str_glue
+  - str_interp
+- title: Order And Compare
+  contents:
+  - str_order
+  - str_equal
+  - str_unique
+- title: Read And Convert
+  contents:
+  - str_read_lines
+  - str_conv
+- title: Patterns And Modifiers
+  contents:
+  - modifiers
+  - str_escape
+- title: Inspect And Data
+  contents:
+  - str_view
+  - stringr-data
+- title: Package
+  contents:
+  - charr-package
+  - "%>%"

@@ -141,117 +141,30 @@
 #
 # @export
 # @rdname ci_extract
-ci_extract_all <- function(str, ..., regex, fixed, coll, charclass)
-{
-    providedarg <- c(
-        regex = !missing(regex),
-        fixed = !missing(fixed),
-        coll = !missing(coll),
-        charclass = !missing(charclass))
-
-    if (sum(providedarg) != 1)
-        stop("you have to specify either `regex`, `fixed`, `coll`, or `charclass`")
-
-    if (providedarg["regex"])
-        ci_extract_all_regex(str, regex, ...)
-    else if (providedarg["fixed"])
-        ci_extract_all_fixed(str, fixed, ...)
-    else if (providedarg["coll"])
-        ci_extract_all_coll(str, coll, ...)
-    else if (providedarg["charclass"])
-        ci_extract_all_charclass(str, charclass, ...)
-}
 
 
 # @export
 # @rdname ci_extract
-ci_extract_first <- function(str, ..., regex, fixed, coll, charclass)
-{
-    providedarg <- c(
-        regex = !missing(regex),
-        fixed = !missing(fixed),
-        coll = !missing(coll),
-        charclass = !missing(charclass))
-
-    if (sum(providedarg) != 1)
-        stop("you have to specify either `regex`, `fixed`, `coll`, or `charclass`")
-
-    if (providedarg["regex"])
-        ci_extract_first_regex(str, regex, ...)
-    else if (providedarg["fixed"])
-        ci_extract_first_fixed(str, fixed, ...)
-    else if (providedarg["coll"])
-        ci_extract_first_coll(str, coll, ...)
-    else if (providedarg["charclass"])
-        ci_extract_first_charclass(str, charclass, ...)
-}
 
 
 # @export
 # @rdname ci_extract
-ci_extract_last <- function(str, ..., regex, fixed, coll, charclass)
-{
-    providedarg <- c(
-        regex = !missing(regex),
-        fixed = !missing(fixed),
-        coll = !missing(coll),
-        charclass = !missing(charclass))
-
-    if (sum(providedarg) != 1)
-        stop("you have to specify either `regex`, `fixed`, `coll`, or `charclass`")
-
-    if (providedarg["regex"])
-        ci_extract_last_regex(str, regex, ...)
-    else if (providedarg["fixed"])
-        ci_extract_last_fixed(str, fixed, ...)
-    else if (providedarg["coll"])
-        ci_extract_last_coll(str, coll, ...)
-    else if (providedarg["charclass"])
-        ci_extract_last_charclass(str, charclass, ...)
-}
 
 
 # @export
 # @rdname ci_extract
-ci_extract <- function(str, ..., regex, fixed, coll, charclass,
-    mode = c("first", "all", "last"))
-{
-    # `first` is default for compatibility with stringr
-    mode <- match.arg(mode)  # this is slow
-
-    switch(mode,
-        first = ci_extract_first(str, ..., regex = regex, fixed = fixed,
-            coll = coll, charclass = charclass),
-        last = ci_extract_last(str, ..., regex = regex,
-            fixed = fixed, coll = coll, charclass = charclass),
-        all = ci_extract_all(str, ..., regex = regex, fixed = fixed,
-            coll = coll, charclass = charclass))
-}
 
 
 # @export
 # @rdname ci_extract
-ci_extract_all_charclass <- function(str, pattern, merge = TRUE, simplify = FALSE,
-    omit_no_match = FALSE)
-{
-    .Call(C_ci_extract_all_charclass, str, pattern, merge, simplify, omit_no_match)
-}
 
 
 # @export
 # @rdname ci_extract
-ci_extract_first_charclass <- function(str, pattern)
-{
-    .Call(C_ci_extract_first_charclass, str, pattern)
-}
 
 
 # @export
 # @rdname ci_extract
-ci_extract_last_charclass <- function(str, pattern)
-{
-    .Call(C_ci_extract_last_charclass, str, pattern)
-}
 
 
 # @export

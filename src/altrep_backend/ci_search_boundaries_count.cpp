@@ -32,9 +32,152 @@
 
 
 #include "ci_stringi.h"
-#include "ci_container_utf8_indexable.h"
-#include "ci_container_integer.h"
+#include "ci_reader.h"
 #include "ci_brkiter.h"
+#include "ci_utf8.h"
+
+#include <cstdint>
+#include <cstring>
+#include <stdexcept>
+
+
+namespace {
+
+bool has_direct_utf8_views(const charport::StrViews& values)
+{
+    bool direct = true;
+    for (R_xlen_t i = 0; i < values.size(); ++i) {
+        const charport::StrView value = values[i];
+        if (value.is_na())
+            continue;
+        if (value.ptr == nullptr || value.len < 0)
+            throw std::runtime_error("Reader returned an invalid string view");
+        if (value.enc == cetype_ext_t::CE_BYTES)
+            throw StriException(MSG__BYTESENC);
+        if (value.enc != cetype_ext_t::CE_ASCII &&
+                value.enc != cetype_ext_t::CE_UTF8 &&
+                value.enc != cetype_ext_t::CE_ASCII_OR_UTF8) {
+            direct = false;
+        }
+    }
+    return direct;
+}
+
+charport::StrView direct_utf8_view(charport::StrView value) noexcept
+{
+    if (value.enc != cetype_ext_t::CE_ASCII && value.len >= 3 &&
+            static_cast<uint8_t>(value.ptr[0]) == UTF8_BOM_BYTE1 &&
+            static_cast<uint8_t>(value.ptr[1]) == UTF8_BOM_BYTE2 &&
+            static_cast<uint8_t>(value.ptr[2]) == UTF8_BOM_BYTE3) {
+        value.ptr += 3;
+        value.len -= 3;
+    }
+    return value;
+}
+
+class BoundaryCounter : public StriBrkIterOptions {
+private:
+    BreakIterator* iterator_;
+    UText* text_;
+
+    void open(ci::DeferredWarnings& warnings)
+    {
+        UErrorCode status = U_ZERO_ERROR;
+        const Locale locale_value = Locale::createFromName(locale);
+        if (!rules.isEmpty()) {
+            UParseError parse_error;
+            iterator_ = new RuleBasedBreakIterator(
+                UnicodeString(rules), parse_error, status
+            );
+        }
+        else {
+            switch (type) {
+            case UBRK_CHARACTER:
+                iterator_ = BreakIterator::createCharacterInstance(
+                    locale_value, status
+                );
+                break;
+            case UBRK_LINE:
+                iterator_ = BreakIterator::createLineInstance(
+                    locale_value, status
+                );
+                break;
+            case UBRK_SENTENCE:
+                iterator_ = BreakIterator::createSentenceInstance(
+                    locale_value, status
+                );
+                break;
+            case UBRK_WORD:
+                iterator_ = BreakIterator::createWordInstance(
+                    locale_value, status
+                );
+                break;
+            default:
+                throw StriException(MSG__INTERNAL_ERROR);
+            }
+        }
+        STRI__CHECKICUSTATUS_THROW(status, {})
+
+        if (status == U_USING_DEFAULT_WARNING && iterator_ && locale) {
+            UErrorCode locale_status = U_ZERO_ERROR;
+            const char* valid_locale = iterator_->getLocaleID(
+                ULOC_VALID_LOCALE, locale_status
+            );
+            if (valid_locale && !std::strcmp(valid_locale, "root"))
+                warnings.push(ICUError::getICUerrorName(status));
+        }
+    }
+
+public:
+    explicit BoundaryCounter(const StriBrkIterOptions& options)
+        : StriBrkIterOptions(options), iterator_(nullptr), text_(nullptr)
+    {
+    }
+
+    ~BoundaryCounter()
+    {
+        delete iterator_;
+        if (text_)
+            utext_close(text_);
+    }
+
+    R_len_t count(
+        const char* value, R_len_t length, ci::DeferredWarnings& warnings
+    )
+    {
+        if (!iterator_)
+            open(warnings);
+
+        UErrorCode status = U_ZERO_ERROR;
+        text_ = utext_openUTF8(text_, value, length, &status);
+        STRI__CHECKICUSTATUS_THROW(status, {})
+        status = U_ZERO_ERROR;
+        iterator_->setText(text_, status);
+        STRI__CHECKICUSTATUS_THROW(status, {})
+
+        R_len_t count = 0;
+        if (skip_size <= 0) {
+            while (iterator_->next() != BreakIterator::DONE)
+                ++count;
+            return count;
+        }
+
+        while (iterator_->next() != BreakIterator::DONE) {
+            const int rule = iterator_->getRuleStatus();
+            R_len_t skip = 0;
+            for (; skip < skip_size; skip += 2) {
+                if (rule >= skip_rules[skip] &&
+                        rule < skip_rules[skip+1])
+                    break;
+            }
+            if (skip == skip_size)
+                ++count;
+        }
+        return count;
+    }
+};
+
+}
 
 
 /** Count the number of BreakIterator boundaries
@@ -74,29 +217,31 @@ SEXP ci_count_boundaries(SEXP str, SEXP opts_brkiter)
     int* ret_tab = INTEGER(ret);
 
     {
-        StriContainerUTF8_indexable str_cont(
-            context, str, str_length
-        );
-        StriRuleBasedBreakIterator brkiter(opts_brkiter2);
-
-        for (R_len_t i = 0; i < str_length; ++i)
-        {
-            if (str_cont.isNA(i)) {
-                ret_tab[i] = NA_INTEGER;
-                continue;
+        std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(str);
+        const charport::StrViews& views = borrow->views();
+        BoundaryCounter counter(opts_brkiter2);
+        if (has_direct_utf8_views(views)) {
+            for (R_len_t i = 0; i < str_length; ++i) {
+                const charport::StrView value = direct_utf8_view(views[i]);
+                ret_tab[i] = value.is_na()
+                    ? NA_INTEGER
+                    : counter.count(
+                        value.ptr, value.len, STRI__DEFERRED_WARNINGS
+                    );
             }
-
-            brkiter.setupMatcher(
-                str_cont.get(i).data(), str_cont.get(i).length(),
-                STRI__DEFERRED_WARNINGS
-            );
-            brkiter.first();
-
-            R_len_t cur_count = 0;
-            while (brkiter.next())
-                ++cur_count;
-
-            ret_tab[i] = cur_count;
+        }
+        else {
+            Utf8Input input(borrow, str_length);
+            const Utf8Record* records = input.source_data();
+            for (R_len_t i = 0; i < str_length; ++i) {
+                const Utf8Record& value = records[i];
+                ret_tab[i] = value.isNA()
+                    ? NA_INTEGER
+                    : counter.count(
+                        value.data(), value.length(),
+                        STRI__DEFERRED_WARNINGS
+                    );
+            }
         }
     }
 

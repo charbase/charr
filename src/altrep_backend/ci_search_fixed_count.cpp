@@ -33,8 +33,78 @@
 
 #include "ci_stringi.h"
 #include "ci_container_base.h"
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
 #include "ci_container_bytesearch.h"
+
+
+namespace {
+
+inline R_len_t count_ascii_byte(
+    const char* data, R_len_t length, unsigned char pattern
+) noexcept
+{
+    R_len_t count = 0;
+    const unsigned char* current =
+        reinterpret_cast<const unsigned char*>(data);
+    const unsigned char* end = current + length;
+    for (; current != end; ++current)
+        count += (*current == pattern);
+    return count;
+}
+
+
+bool direct_ascii_encoding(cetype_ext_t encoding) noexcept
+{
+    return encoding == cetype_ext_t::CE_ASCII ||
+        encoding == cetype_ext_t::CE_UTF8 ||
+        encoding == cetype_ext_t::CE_ASCII_OR_UTF8;
+}
+
+
+bool count_ascii_scalar_direct(
+    ci::ReaderContext& context, SEXP str, SEXP pattern,
+    uint32_t pattern_flags, R_len_t vectorize_length, int* result,
+    R_len_t& general_start,
+    std::shared_ptr<ci::ReaderBorrow>& str_borrow,
+    std::shared_ptr<ci::ReaderBorrow>& pattern_borrow
+)
+{
+    // A scalar ASCII byte can be counted in borrowed records. Broader
+    // encodings and search options retain the general UTF-8 matcher path.
+    if (vectorize_length == 0)
+        return true;
+    if (pattern_flags != 0 || context.size(pattern) != 1)
+        return false;
+
+    str_borrow = context.acquire(str);
+    pattern_borrow = context.acquire(pattern);
+    const charport::StrView pattern_view = pattern_borrow->views()[0];
+    if (pattern_view.is_na() || !direct_ascii_encoding(pattern_view.enc) ||
+            pattern_view.len != 1 ||
+            static_cast<unsigned char>(pattern_view.ptr[0]) > 0x7f)
+        return false;
+
+    const unsigned char pattern_byte =
+        static_cast<unsigned char>(pattern_view.ptr[0]);
+    const charport::StrViews& values = str_borrow->views();
+
+    for (R_len_t i = 0; i < vectorize_length; ++i) {
+        const charport::StrView value = values[i];
+        if (value.is_na()) {
+            result[i] = NA_INTEGER;
+            continue;
+        }
+        if (!direct_ascii_encoding(value.enc)) {
+            general_start = i;
+            return false;
+        }
+        result[i] = count_ascii_byte(value.ptr, value.len, pattern_byte);
+    }
+
+    return true;
+}
+
+}
 
 
 /**
@@ -48,7 +118,7 @@
  * @version 0.1-?? (Bartek Tartanus)
  *
  * @version 0.1-?? (Marek Gagolewski)
- *          use StriContainerUTF8
+ *          use Utf8Input
  *
  * @version 0.1-?? (Marek Gagolewski)
  *          corrected behavior on empty str/pattern
@@ -97,14 +167,22 @@ SEXP ci_count_fixed(SEXP str, SEXP pattern, SEXP opts_fixed)
         return Rf_allocVector(INTSXP, vectorize_length);
     }));
     int* ret_tab = INTEGER(ret);
+    R_len_t general_start = 0;
+    std::shared_ptr<ci::ReaderBorrow> str_borrow;
+    std::shared_ptr<ci::ReaderBorrow> pattern_borrow;
 
-    {
-        StriContainerUTF8 str_cont(context, str, vectorize_length);
+    if (!count_ascii_scalar_direct(
+            context, str, pattern, pattern_flags,
+            vectorize_length, ret_tab, general_start,
+            str_borrow, pattern_borrow
+    )) {
+        Utf8Input str_cont(context, str, vectorize_length);
         StriContainerByteSearch pattern_cont(
             context, pattern, vectorize_length, pattern_flags
         );
 
-        for (R_len_t i = pattern_cont.vectorize_init();
+        for (R_len_t i = general_start > 0 ?
+                    general_start : pattern_cont.vectorize_init();
                 i != pattern_cont.vectorize_end();
                 i = pattern_cont.vectorize_next(i))
         {

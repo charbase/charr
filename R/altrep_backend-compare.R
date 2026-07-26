@@ -261,157 +261,93 @@ ci_cmp_ge <- function(e1, e2, ..., opts_collator = NULL)
 # @rdname operator_compare
 # @aliases operator_compare oper_comparison oper_compare
 # @export
-"%s<%" <- function(e1, e2)
-{
-    ci_cmp_lt(e1, e2)
-}
 
 
 # @usage
 # e1 \%s<=\% e2
 # @rdname operator_compare
 # @export
-"%s<=%" <- function(e1, e2)
-{
-    ci_cmp_le(e1, e2)
-}
 
 
 # @usage
 # e1 \%s>\% e2
 # @rdname operator_compare
 # @export
-"%s>%" <- function(e1, e2)
-{
-    ci_cmp_gt(e1, e2)
-}
 
 
 # @usage
 # e1 \%s>=\% e2
 # @rdname operator_compare
 # @export
-"%s>=%" <- function(e1, e2)
-{
-    ci_cmp_ge(e1, e2)
-}
 
 
 # @usage
 # e1 \%s==\% e2
 # @rdname operator_compare
 # @export
-"%s==%" <- function(e1, e2)
-{
-    ci_cmp_equiv(e1, e2)
-}
 
 
 # @usage
 # e1 \%s!=\% e2
 # @rdname operator_compare
 # @export
-"%s!=%" <- function(e1, e2)
-{
-    ci_cmp_nequiv(e1, e2)
-}
 
 
 # @usage
 # e1 \%s===\% e2
 # @rdname operator_compare
 # @export
-"%s===%" <- function(e1, e2)
-{
-    ci_cmp_eq(e1, e2)
-}
 
 
 # @usage
 # e1 \%s!==\% e2
 # @rdname operator_compare
 # @export
-"%s!==%" <- function(e1, e2)
-{
-    ci_cmp_neq(e1, e2)
-}
 
 
 # @usage
 # e1 \%stri<\% e2
 # @rdname operator_compare
 # @export
-"%stri<%" <- function(e1, e2)
-{
-    ci_cmp_lt(e1, e2)
-}
 
 
 # @usage
 # e1 \%stri<=\% e2
 # @rdname operator_compare
 # @export
-"%stri<=%" <- function(e1, e2)
-{
-    ci_cmp_le(e1, e2)
-}
 
 
 # @usage
 # e1 \%stri>\% e2
 # @rdname operator_compare
 # @export
-"%stri>%" <- function(e1, e2)
-{
-    ci_cmp_gt(e1, e2)
-}
 
 
 # @usage
 # e1 \%stri>=\% e2
 # @rdname operator_compare
 # @export
-"%stri>=%" <- function(e1, e2)
-{
-    ci_cmp_ge(e1, e2)
-}
 
 
 # @usage
 # e1 \%stri==\% e2
 # @rdname operator_compare
 # @export
-"%stri==%" <- function(e1, e2)
-{
-    ci_cmp_equiv(e1, e2)
-}
 
 
 # @usage
 # e1 \%stri!=\% e2
 # @rdname operator_compare
 # @export
-"%stri!=%" <- function(e1, e2)
-{
-    ci_cmp_nequiv(e1, e2)
-}
 
 
 # @usage
 # e1 \%stri===\% e2
 # @rdname operator_compare
 # @export
-"%stri===%" <- function(e1, e2)
-{
-    ci_cmp_eq(e1, e2)
-}
 
 
 # @usage
 # e1 \%stri!==\% e2
 # @rdname operator_compare
 # @export
-"%stri!==%" <- function(e1, e2)
-{
-    ci_cmp_neq(e1, e2)
-}

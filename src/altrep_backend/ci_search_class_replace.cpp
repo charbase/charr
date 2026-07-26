@@ -33,7 +33,7 @@
 
 #include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
 #include "ci_container_charclass.h"
 #include "ci_container_logical.h"
 #include "ci_string8buf.h"
@@ -108,8 +108,8 @@ SEXP ci__replace_all_charclass_yes_vectorize_all(SEXP str, SEXP pattern, SEXP re
 
     charport::charvec::Builder builder(vectorize_length);
     {
-        StriContainerUTF8 str_cont(context, str, vectorize_length);
-        StriContainerUTF8 replacement_cont(
+        Utf8Input str_cont(context, str, vectorize_length);
+        Utf8Input replacement_cont(
             context, replacement, vectorize_length
         );
         StriContainerCharClass pattern_cont(
@@ -267,8 +267,8 @@ SEXP ci__replace_all_charclass_no_vectorize_all(SEXP str, SEXP pattern, SEXP rep
     charport::charvec::Builder builder(str_n);
 
     {
-        StriContainerUTF8 str_cont(context, str, str_n, false); // writable);
-        StriContainerUTF8 replacement_cont(
+        Utf8Workspace str_cont(context, str, str_n);
+        Utf8Input replacement_cont(
             context, replacement, pattern_n
         );
         StriContainerCharClass pattern_cont(
@@ -310,8 +310,8 @@ SEXP ci__replace_all_charclass_no_vectorize_all(SEXP str, SEXP pattern, SEXP rep
                     (R_len_t)occurrences.size()*replacement_cur_n-sumbytes;
                 buf.resize(buf_need, false/*destroy contents*/);
 
-                str_cont.getWritable(j).replaceAllAtPos(
-                    buf_need, replacement_cont.get(i).data(),
+                str_cont.replaceAllAtPos(
+                    j, buf_need, replacement_cont.get(i).data(),
                     replacement_cur_n, occurrences
                 );
             }
@@ -413,8 +413,8 @@ SEXP ci__replace_firstlast_charclass(SEXP str, SEXP pattern, SEXP replacement, b
 
     charport::charvec::Builder builder(vectorize_length);
     {
-        StriContainerUTF8 str_cont(context, str, vectorize_length);
-        StriContainerUTF8 replacement_cont(
+        Utf8Input str_cont(context, str, vectorize_length);
+        Utf8Input replacement_cont(
             context, replacement, vectorize_length
         );
         StriContainerCharClass pattern_cont(

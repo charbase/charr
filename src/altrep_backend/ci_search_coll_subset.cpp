@@ -33,7 +33,7 @@
 #include "ci_stringi.h"
 #include "ci_builder.h"
 #include "ci_container_utf16.h"
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
 #include "ci_container_usearch.h"
 #include <unicode/uregex.h>
 #include <vector>
@@ -252,7 +252,7 @@ SEXP ci_subset_coll_replacement(SEXP str, SEXP pattern, SEXP negate, SEXP opts_c
         charport::charvec::Builder output(vectorize_length);
         std::vector<int> detected(vectorize_length, 0);
         {
-            StriContainerUTF8 value_cont(
+            Utf8Input value_cont(
                 context, value, value_length
             );
             StriContainerUTF16 str_cont(

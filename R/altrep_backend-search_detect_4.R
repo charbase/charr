@@ -109,23 +109,6 @@
 # @family search_detect
 # @export
 # @rdname ci_detect
-ci_detect <- function(str, ..., regex, fixed, coll, charclass)
-{
-    providedarg <- c(
-        regex = !missing(regex),
-        fixed = !missing(fixed),
-        coll = !missing(coll),
-        charclass = !missing(charclass))
-
-    if (sum(providedarg) != 1)
-        stop("you have to specify one of: `regex`, `fixed`, `coll`, or `charclass`")
-
-    if (providedarg["regex"])
-        ci_detect_regex(str, regex, ...) else if (providedarg["fixed"])
-        ci_detect_fixed(str, fixed, ...) else if (providedarg["coll"])
-        ci_detect_coll(str, coll, ...) else if (providedarg["charclass"])
-        ci_detect_charclass(str, charclass, ...)
-}
 
 
 # @export
@@ -142,10 +125,6 @@ ci_detect_fixed <- function(
 
 # @export
 # @rdname ci_detect
-ci_detect_charclass <- function(str, pattern, negate = FALSE, max_count = -1)
-{
-    .Call(C_ci_detect_charclass, str, pattern, negate, max_count)
-}
 
 
 # @export

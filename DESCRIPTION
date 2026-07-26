@@ -1,25 +1,36 @@
 Package: charr
-Title: Record of an ALTREP Translation of Common String Operations
+Title: Optimization Experiment for the Stringr API
 Version: 0.0.0.9000
 Authors@R: c(
     person("Travers", "Ching", , "traversc@gmail.com", role = c("aut", "cre", "cph")),
-    person("Hadley", "Wickham", , "hadley@posit.co", role = c("aut", "cph"),
+    person("Hadley", "Wickham", , "hadley@posit.co", role = c("ctb", "cph"),
            comment = "Author of stringr, of which charr is a fork"),
-    person("Posit Software, PBC", role = c("cph", "fnd"),
+    person("Posit Software, PBC", role = c("ctb", "cph"),
            comment = "Copyright holder of stringr"),
     person("Unicode, Inc. and others", role = c("ctb", "cph"),
            comment = "ICU4C source code and data (Unicode License v3)"),
     person("Marek", "Gagolewski", role = c("ctb", "cph"),
-           comment = "Author of stringi; stringi implementation and ICU4C vendoring used by charr")
+           comment = "Author of stringi; stringi implementation used by charr"),
+    person("R Consortium", role = "fnd",
+           comment = "Infrastructure Steering Committee grant: Universal ALTREP Interoperability for Strings")
   )
-Description: A benchmark and record-keeping snapshot derived from the
-    'stringr' package. It contains a separate 'stringi'-derived backend that
-    reads and returns 'ALTREP' character vectors through 'charport'. An R
-    switch routes operations either to installed 'stringi' or to the separate
-    translated backend. This package records the mechanical translation and
-    is not intended as a complete replacement for 'stringr' or 'stringi'.
+Description: An optimization and benchmarking experiment derived from the
+    'stringr' package. It provides the original route through installed
+    'stringi', an independent backend returning ordinary R character vectors,
+    and an independent backend returning 'ALTREP' character vectors through
+    'charport'. The package records both a mechanical translation and later
+    architecture and performance work; it is not currently intended as a
+    drop-in replacement for 'stringr' or 'stringi'.
 License: MIT + file LICENSE
-URL: https://github.com/charport/charr
+Copyright: This package is a fork of the 'stringr' package owned by Posit
+    Software, PBC under the MIT License. It includes R and C++ code from the
+    'stringi' package owned by Marek Gagolewski under the BSD 3-Clause License,
+    and it bundles ICU4C source code and data owned by Unicode, Inc. and others
+    under the Unicode License v3; see inst/COPYRIGHTS and inst/icu/LICENSE.
+    Benchmark measurements use sentences from the Tatoeba Project
+    (<https://tatoeba.org>) under Creative Commons Attribution 2.0 France; no
+    Tatoeba data is included in this package.
+URL: https://github.com/charport/charr, https://charport.github.io/charr/
 BugReports: https://github.com/charport/charr/issues
 Depends:
     R (>= 4.2.0)
@@ -39,13 +50,16 @@ Suggests:
     dplyr,
     htmltools,
     htmlwidgets,
+    quarto,
     testthat (>= 3.0.0),
     tibble
+VignetteBuilder: quarto
 Remotes: traversc/charport
-SystemRequirements: GNU make, ICU4C (>= 61, optional)
+SystemRequirements: GNU make, C++17, ICU4C 78.2 or 78.3 (optional; bundled
+    otherwise)
 Biarch: true
 Config/testthat/edition: 3
 Encoding: UTF-8
 LazyData: true
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.3
+Config/roxygen2/version: 8.0.0

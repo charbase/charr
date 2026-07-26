@@ -46,7 +46,10 @@
  * TODO: rewrite most code to use the C++11 std::string.
  *
  * @version 0.2-1 (Marek Gagolewski, 2014-03-24)
- *          Separated from String8
+ *          Separate mutable buffer type
+ *
+ * @version charr 0.1.0
+ *          This is reusable output scratch; input records remain view-only.
  *
  * @version 0.5-1 (Marek Gagolewski, 2015-02-14)
  *          Use malloc+realloc
@@ -150,7 +153,7 @@ public:
 
     /** Replace substrings with a given replacement string
      *
-     * TODO: How does this relate to String8::replaceAllAtPos? Is it redundant?
+     * This is reusable output scratch; input records remain view-only.
      *
      * @return number of bytes written
      *

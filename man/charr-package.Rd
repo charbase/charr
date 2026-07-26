@@ -4,14 +4,17 @@
 \name{charr-package}
 \alias{charr}
 \alias{charr-package}
-\title{charr: Record of an ALTREP Translation of Common String Operations}
+\title{charr: Optimization Experiment for the Stringr API}
 \description{
-A benchmark and record-keeping snapshot derived from the 'stringr' package. It contains a separate 'stringi'-derived backend that reads and returns 'ALTREP' character vectors through 'charport'. An R switch routes operations either to installed 'stringi' or to the separate translated backend. This package records the mechanical translation and is not intended as a complete replacement for 'stringr' or 'stringi'.
+\if{html}{\figure{logo.svg}{options: style='float: right' alt='logo' width='120'}}
+
+An optimization and benchmarking experiment derived from the 'stringr' package. It provides the original route through installed 'stringi', an independent backend returning ordinary R character vectors, and an independent backend returning 'ALTREP' character vectors through 'charport'. The package records both a mechanical translation and later architecture and performance work; it is not currently intended as a drop-in replacement for 'stringr' or 'stringi'.
 }
 \seealso{
 Useful links:
 \itemize{
   \item \url{https://github.com/charport/charr}
+  \item \url{https://charport.github.io/charr/}
   \item Report bugs at \url{https://github.com/charport/charr/issues}
 }
 
@@ -22,14 +25,15 @@ Useful links:
 Authors:
 \itemize{
   \item Travers Ching \email{traversc@gmail.com} [copyright holder]
-  \item Hadley Wickham \email{hadley@posit.co} (Author of stringr, of which charr is a fork) [copyright holder]
 }
 
 Other contributors:
 \itemize{
-  \item Posit Software, PBC (Copyright holder of stringr) [copyright holder, funder]
+  \item Hadley Wickham \email{hadley@posit.co} (Author of stringr, of which charr is a fork) [contributor, copyright holder]
+  \item Posit Software, PBC (Copyright holder of stringr) [contributor, copyright holder]
   \item Unicode, Inc. and others (ICU4C source code and data (Unicode License v3)) [contributor, copyright holder]
-  \item Marek Gagolewski (Author of stringi; stringi implementation and ICU4C vendoring used by charr) [contributor, copyright holder]
+  \item Marek Gagolewski (Author of stringi; stringi implementation used by charr) [contributor, copyright holder]
+  \item R Consortium (Infrastructure Steering Committee grant: Universal ALTREP Interoperability for Strings) [funder]
 }
 
 }

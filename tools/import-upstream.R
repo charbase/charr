@@ -1,13 +1,16 @@
 #!/usr/bin/env Rscript
-# tools/import-upstream.R -- upstream sync and backend rename for charr.
+# tools/import-upstream.R -- upstream sync and backend-seam validation.
 #
 # This is the source of truth for the pinned stringr commit and the complete
-# set of stringi entry points renamed to charr's ci_* backend seam.
+# set of stringi leaves dispatched by charr. Imported stringr sources retain
+# their stri_* calls. Three namespace-qualified nested calls are made
+# unqualified so the selected private environment owns them, and the four pure
+# option-list constructors are replaced with backend-neutral charr helpers.
 #
 # Usage:
 #   Rscript tools/import-upstream.R check
 #   Rscript tools/import-upstream.R import <stringr-checkout>
-#   Rscript tools/import-upstream.R rename
+#   Rscript tools/import-upstream.R prepare
 #   Rscript tools/import-upstream.R validate
 
 UPSTREAM_REPO <- "https://github.com/tidyverse/stringr"
@@ -24,10 +27,10 @@ UPSTREAM_DROPPED <- c(
   "man/stringr-package.Rd"
 )
 
-# Every stringi function called by the pinned stringr R sources, including the
-# four pure option-list constructors. `replacement` records the two functions
-# also used in replacement position.
-BACKENDS <- local({
+# Every computational stringi function called by the pinned stringr sources,
+# plus charr's str_reverse() and str_read_lines() extensions. `replacement`
+# records the two functions also used in replacement position.
+STRINGI_LEAVES <- local({
   b <- function(name, replacement = FALSE) {
     data.frame(stringi = name, replacement = replacement)
   }
@@ -45,6 +48,7 @@ BACKENDS <- local({
     b("stri_sub", replacement = TRUE),
     b("stri_sub_all", replacement = TRUE),
     b("stri_length"), b("stri_c"), b("stri_flatten"), b("stri_dup"),
+    b("stri_reverse"),
     b("stri_trim_left"), b("stri_trim_right"), b("stri_trim_both"),
     b("stri_replace_na"),
     b("stri_detect_regex"), b("stri_count_regex"),
@@ -69,18 +73,31 @@ BACKENDS <- local({
     b("stri_split_boundaries"), b("stri_wrap"),
     b("stri_pad_left"), b("stri_pad_right"), b("stri_pad_both"),
     b("stri_width"), b("stri_escape_unicode"), b("stri_conv"),
-    b("stri_opts_fixed"), b("stri_opts_regex"),
-    b("stri_opts_collator"), b("stri_opts_brkiter")
+    b("stri_read_lines")
   ))
 })
-BACKENDS$charr <- sub("^stri_", "ci_", BACKENDS$stringi)
+
+OPTION_BUILDERS <- c(
+  stri_opts_fixed = ".charr_opts_fixed",
+  stri_opts_regex = ".charr_opts_regex",
+  stri_opts_collator = ".charr_opts_collator",
+  stri_opts_brkiter = ".charr_opts_brkiter"
+)
+
+ROUTED_QUALIFIERS <- c(
+  "stri_c",
+  "stri_sub_all",
+  "stri_duplicated"
+)
 
 OWNED_MARKER <- "^# charr-owned"
 
-rename_line <- function(line, table) {
-  for (i in order(-nchar(table$stringi))) {
-    from <- table$stringi[i]
-    to <- table$charr[i]
+prepare_line <- function(line) {
+  for (name in ROUTED_QUALIFIERS) {
+    line <- gsub(paste0("\\bstringi::", name, "\\b"), name, line)
+  }
+  for (from in names(OPTION_BUILDERS)) {
+    to <- OPTION_BUILDERS[[from]]
     line <- gsub(paste0("\\bstringi::", from, "\\b"), to, line)
     line <- gsub(paste0("\\b", from, "\\b"), to, line)
   }
@@ -97,30 +114,86 @@ stringr_r_files <- function() {
   files[!owned]
 }
 
+dispatch_leaf_map <- function() {
+  expressions <- parse("R/aaa-backend-core.R")
+  environment <- new.env(parent = baseenv())
+  for (expression in expressions) {
+    eval(expression, envir = environment)
+    if (exists(".charr_leaf_map", envir = environment, inherits = FALSE)) {
+      return(environment$.charr_leaf_map)
+    }
+  }
+  stop("R/aaa-backend-core.R does not define .charr_leaf_map")
+}
+
 cmd_validate <- function() {
   calls <- unique(unlist(lapply(stringr_r_files(), function(f) {
     parsed <- getParseData(parse(f, keep.source = TRUE))
     parsed$text[
       parsed$token == "SYMBOL_FUNCTION_CALL" &
-        grepl("^(ci|stri)_", parsed$text)
+        grepl("^(ci|stri)_|^[.]charr_opts_", parsed$text)
     ]
   })))
 
-  residual <- sort(calls[grepl("^stri_", calls)])
-  used <- sort(unique(calls[grepl("^ci_", calls)]))
-  expected <- sort(BACKENDS$charr)
+  ci_calls <- sort(calls[grepl("^ci_", calls)])
+  used <- sort(unique(calls[grepl("^stri_", calls)]))
+  expected <- sort(STRINGI_LEAVES$stringi)
+  used_options <- sort(unique(calls[grepl("^[.]charr_opts_", calls)]))
+  expected_options <- sort(unname(OPTION_BUILDERS))
   problems <- character()
-  if (length(residual)) {
+
+  qualified_source <- unlist(lapply(
+    stringr_r_files(),
+    readLines,
+    warn = FALSE
+  ))
+  remaining_qualified <- ROUTED_QUALIFIERS[vapply(
+    ROUTED_QUALIFIERS,
+    function(name) any(grepl(
+      paste0("\\bstringi::", name, "\\b"),
+      qualified_source
+    )),
+    logical(1)
+  )]
+  if (length(remaining_qualified) > 0L) {
     problems <- c(
       problems,
-      paste0("unrenamed stringi calls: ", paste(residual, collapse = ", "))
+      paste0(
+        "nested calls bypass backend routing: ",
+        paste(remaining_qualified, collapse = ", ")
+      )
+    )
+  }
+
+  leaf_map <- dispatch_leaf_map()
+  expected_bindings <- c(
+    STRINGI_LEAVES$stringi,
+    paste0(STRINGI_LEAVES$stringi[STRINGI_LEAVES$replacement], "<-")
+  )
+  expected_bindings <- sort(expected_bindings)
+  actual_bindings <- sort(names(leaf_map))
+  expected_private <- sub("^stri_", "ci_", names(leaf_map))
+  if (
+    !identical(actual_bindings, expected_bindings) ||
+      !identical(unname(leaf_map), expected_private)
+  ) {
+    problems <- c(problems, "R dispatch leaf map differs from the import manifest")
+  }
+
+  if (length(ci_calls)) {
+    problems <- c(
+      problems,
+      paste0(
+        "stringr sources call private ci_* leaves: ",
+        paste(ci_calls, collapse = ", ")
+      )
     )
   }
   if (length(setdiff(used, expected))) {
     problems <- c(
       problems,
       paste0(
-        "ci calls absent from registry: ",
+        "stringi calls absent from leaf registry: ",
         paste(setdiff(used, expected), collapse = ", ")
       )
     )
@@ -129,16 +202,29 @@ cmd_validate <- function() {
     problems <- c(
       problems,
       paste0(
-        "registry entries unused by stringr: ",
+        "leaf registry entries unused by stringr or charr extensions: ",
         paste(setdiff(expected, used), collapse = ", ")
       )
     )
   }
+  if (!identical(used_options, expected_options)) {
+    problems <- c(
+      problems,
+      paste0(
+        "backend-neutral option builders differ from the manifest: used ",
+        paste(used_options, collapse = ", "),
+        "; expected ", paste(expected_options, collapse = ", ")
+      )
+    )
+  }
   if (length(problems)) stop(paste(problems, collapse = "\n"))
-  cat(sprintf("validate: %d stringi entry points fully covered\n", length(used)))
+  cat(sprintf(
+    "validate: %d stringi leaves and %d neutral option builders covered\n",
+    length(used), length(used_options)
+  ))
 }
 
-cmd_rename <- function() {
+cmd_prepare <- function() {
   files <- stringr_r_files()
   total <- 0L
   for (f in files) {
@@ -146,8 +232,8 @@ cmd_rename <- function() {
     code <- !grepl("^\\s*#", lines)
     out <- lines
     out[code] <- vapply(
-      lines[code], rename_line, character(1),
-      table = BACKENDS, USE.NAMES = FALSE
+      lines[code], prepare_line, character(1),
+      USE.NAMES = FALSE
     )
     n <- sum(out != lines)
     if (n > 0L) {
@@ -156,7 +242,7 @@ cmd_rename <- function() {
       total <- total + n
     }
   }
-  cat(sprintf("rename: %d line(s) rewritten total\n", total))
+  cat(sprintf("prepare: %d backend-seam line(s) rewritten total\n", total))
   cmd_validate()
 }
 
@@ -191,8 +277,12 @@ cmd_import <- function(checkout) {
   if (system(cmd) != 0L) stop("archive extraction failed")
   file.remove(UPSTREAM_DROPPED[file.exists(UPSTREAM_DROPPED)])
   cat(sprintf("imported upstream subset at %s\n", UPSTREAM_COMMIT))
-  cmd_rename()
-  cat("review the diff: upstream files should show only ci_* renames\n")
+  cmd_prepare()
+  cat(
+    "review the diff: stri_* names should remain; only the three routed ",
+    "qualifiers and neutral option constructors should differ\n",
+    sep = ""
+  )
 }
 
 main <- function(args) {
@@ -204,11 +294,11 @@ main <- function(args) {
     mode,
     check = cmd_check(),
     import = cmd_import(args[[2]]),
-    rename = cmd_rename(),
+    prepare = cmd_prepare(),
     validate = cmd_validate(),
     cat(
       "usage: Rscript tools/import-upstream.R ",
-      "check | import <stringr-checkout> | rename | validate\n",
+      "check | import <stringr-checkout> | prepare | validate\n",
       sep = ""
     )
   )

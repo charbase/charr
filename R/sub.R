@@ -65,9 +65,9 @@ str_sub <- function(string, start = 1L, end = -1L) {
   vctrs::vec_size_common(string = string, start = start, end = end)
 
   out <- if (is.matrix(start)) {
-    ci_sub(string, from = start)
+    stri_sub(string, from = start)
   } else {
-    ci_sub(string, from = start, to = end)
+    stri_sub(string, from = start, to = end)
   }
   # Preserve names unless `string` is recycled
   if (length(out) == length(string)) copy_names(string, out) else out
@@ -85,9 +85,9 @@ str_sub <- function(string, start = 1L, end = -1L) {
   )
 
   if (is.matrix(start)) {
-    ci_sub(string, from = start, omit_na = omit_na) <- value
+    stri_sub(string, from = start, omit_na = omit_na) <- value
   } else {
-    ci_sub(string, from = start, to = end, omit_na = omit_na) <- value
+    stri_sub(string, from = start, to = end, omit_na = omit_na) <- value
   }
   string
 }
@@ -96,9 +96,9 @@ str_sub <- function(string, start = 1L, end = -1L) {
 #' @rdname str_sub
 str_sub_all <- function(string, start = 1L, end = -1L) {
   out <- if (is.matrix(start)) {
-    ci_sub_all(string, from = start)
+    stri_sub_all(string, from = start)
   } else {
-    ci_sub_all(string, from = start, to = end)
+    stri_sub_all(string, from = start, to = end)
   }
   copy_names(string, out)
 }

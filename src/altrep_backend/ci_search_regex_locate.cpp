@@ -38,10 +38,142 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <unicode/ustring.h>
 using namespace std;
 
 
 namespace {
+
+class ReusableLocateUtf16Text {
+private:
+    UnicodeString text_;
+
+public:
+    UnicodeString& set(const charport::StrView& value)
+    {
+        if (value.len <= 0) {
+            text_.remove();
+            return text_;
+        }
+
+        UChar* destination = text_.getBuffer(value.len);
+        if (!destination)
+            throw StriException(MSG__MEM_ALLOC_ERROR);
+
+        int32_t length = 0;
+        if (value.enc == cetype_ext_t::CE_ASCII) {
+            for (int32_t i = 0; i < value.len; ++i)
+                destination[i] = static_cast<unsigned char>(value.ptr[i]);
+            length = value.len;
+        }
+        else {
+            UErrorCode status = U_ZERO_ERROR;
+            u_strFromUTF8WithSub(
+                destination, value.len, &length,
+                value.ptr, value.len, 0xfffd, nullptr, &status
+            );
+            text_.releaseBuffer(length);
+            STRI__CHECKICUSTATUS_THROW(status, {/* nothing to release */})
+            return text_;
+        }
+
+        text_.releaseBuffer(length);
+        return text_;
+    }
+};
+
+
+bool ci__locate_can_borrow_utf8(const charport::StrViews& values)
+{
+    for (R_xlen_t i = 0; i < values.size(); ++i) {
+        const charport::StrView value = values[i];
+        if (value.is_na())
+            continue;
+        if (value.enc == cetype_ext_t::CE_BYTES)
+            throw StriException(MSG__BYTESENC);
+        if (value.enc != cetype_ext_t::CE_ASCII &&
+                value.enc != cetype_ext_t::CE_UTF8 &&
+                value.enc != cetype_ext_t::CE_ASCII_OR_UTF8)
+            return false;
+    }
+    return true;
+}
+
+
+void ci__locate_adjust_occurrences(
+    const UnicodeString& subject,
+    vector< pair<R_len_t, R_len_t> >& occurrences,
+    size_t begin,
+    R_len_t count,
+    bool get_length
+)
+{
+    if (count <= 0)
+        return;
+
+    const UChar* data = subject.getBuffer();
+    const int32_t size = subject.length();
+    R_len_t start_slot = 0;
+    R_len_t end_slot = 0;
+    int32_t utf16_index = 0;
+    int32_t codepoint_index = 0;
+
+    while (utf16_index < size &&
+            (start_slot < count || end_slot < count)) {
+        while (start_slot < count &&
+                occurrences[begin+start_slot].first <= utf16_index) {
+            occurrences[begin+start_slot].first = codepoint_index + 1;
+            ++start_slot;
+        }
+        while (end_slot < count &&
+                occurrences[begin+end_slot].second <= utf16_index) {
+            occurrences[begin+end_slot].second = codepoint_index;
+            ++end_slot;
+        }
+        U16_FWD_1(data, utf16_index, size);
+        ++codepoint_index;
+    }
+    while (start_slot < count &&
+            occurrences[begin+start_slot].first <= size) {
+        occurrences[begin+start_slot].first = codepoint_index + 1;
+        ++start_slot;
+    }
+    while (end_slot < count &&
+            occurrences[begin+end_slot].second <= size) {
+        occurrences[begin+end_slot].second = codepoint_index;
+        ++end_slot;
+    }
+
+    if (get_length) {
+        for (R_len_t i = 0; i < count; ++i)
+            occurrences[begin+i].second -= occurrences[begin+i].first - 1;
+    }
+}
+
+
+SEXP ci__locate_adjusted_matrix(
+    const vector< pair<R_len_t, R_len_t> >& occurrences,
+    size_t begin,
+    R_len_t count,
+    bool omit_no_match,
+    bool get_length
+)
+{
+    if (count <= 0) {
+        return ci__matrix_NA_INTEGER(
+            omit_no_match ? 0 : 1, 2,
+            get_length ? -1 : NA_INTEGER
+        );
+    }
+
+    SEXP result = Rf_allocMatrix(INTSXP, count, 2);
+    int* values = INTEGER(result);
+    for (R_len_t i = 0; i < count; ++i) {
+        values[i] = occurrences[begin+i].first;
+        values[i+count] = occurrences[begin+i].second;
+    }
+    return result;
+}
 
 bool ci__capture_names_present(const vector<string>& names)
 {
@@ -154,7 +286,7 @@ SEXP ci__locate_get_fromto_matrix(
         );
     }
 
-    ans = protector.protect(Rf_allocMatrix(INTSXP, noccurrences, 2));
+    ans = protector.hold(Rf_allocMatrix(INTSXP, noccurrences, 2));
     int* ans_tab = INTEGER(ans);
     deque< pair<R_len_t, R_len_t> >::iterator iter = occurrences.begin();
     for (R_len_t j = 0; iter != occurrences.end(); ++iter, ++j) {
@@ -184,7 +316,7 @@ SEXP ci__locate_get_fromto_matrix(
         );
     }
 
-    ans = protector.protect(Rf_allocMatrix(INTSXP, noccurrences, 2));
+    ans = protector.hold(Rf_allocMatrix(INTSXP, noccurrences, 2));
     int* ans_tab = INTEGER(ans);
     deque< pair<R_len_t, R_len_t> >::iterator iter = occurrences.begin();
     for (R_len_t j = 0; iter != occurrences.end(); ++iter, ++j) {
@@ -324,6 +456,111 @@ SEXP ci_locate_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_r
         return Rf_allocVector(VECSXP, vectorize_length);
     }));
 
+    bool direct_completed = false;
+    if (vectorize_length > 0 && !capture_groups1 && pattern_n == 1) {
+        struct DirectElement {
+            size_t begin;
+            R_len_t count;
+            bool missing;
+        };
+
+        vector<DirectElement> elements(
+            static_cast<size_t>(vectorize_length),
+            DirectElement{0, 0, true}
+        );
+        vector< pair<R_len_t, R_len_t> > direct_occurrences;
+        direct_occurrences.reserve(static_cast<size_t>(vectorize_length));
+
+        std::shared_ptr<ci::ReaderBorrow> subject_borrow =
+            context.acquire(str);
+        const charport::StrViews& subjects = subject_borrow->views();
+        std::shared_ptr<ci::ReaderBorrow> pattern_borrow =
+            context.acquire(pattern);
+        const charport::StrView direct_pattern =
+            pattern_borrow->views()[0];
+        const bool pattern_usable_directly =
+            !direct_pattern.is_na() && direct_pattern.len > 0 &&
+            (direct_pattern.enc == cetype_ext_t::CE_ASCII ||
+             direct_pattern.enc == cetype_ext_t::CE_UTF8 ||
+             direct_pattern.enc == cetype_ext_t::CE_ASCII_OR_UTF8);
+        if (pattern_usable_directly &&
+                ci__locate_can_borrow_utf8(subjects)) {
+            direct_completed = true;
+            {
+                StriContainerRegexPattern pattern_cont(
+                    context, pattern, vectorize_length, pattern_opts
+                );
+                RegexMatcher* matcher = pattern_cont.getMatcher(0);
+                ReusableLocateUtf16Text subject_buffer;
+
+                for (R_len_t i = 0; i < vectorize_length; ++i) {
+                    DirectElement& element = elements[static_cast<size_t>(i)];
+                    element.begin = direct_occurrences.size();
+                    const charport::StrView value = subjects[i % str_n];
+                    if (value.is_na())
+                        continue;
+                    element.missing = false;
+
+                    UnicodeString& subject = subject_buffer.set(value);
+                    matcher->reset(subject);
+                    UErrorCode status = U_ZERO_ERROR;
+                    int found = static_cast<int>(matcher->find(status));
+                    STRI__CHECKICUSTATUS_THROW(status, {})
+                    while (found) {
+                        const int start = static_cast<int>(matcher->start(status));
+                        STRI__CHECKICUSTATUS_THROW(status, {})
+                        const int end = static_cast<int>(matcher->end(status));
+                        STRI__CHECKICUSTATUS_THROW(status, {})
+                        direct_occurrences.push_back(make_pair(start, end));
+                        ++element.count;
+                        found = static_cast<int>(matcher->find(status));
+                        STRI__CHECKICUSTATUS_THROW(status, {})
+                    }
+
+                    if (value.enc == cetype_ext_t::CE_ASCII) {
+                        for (R_len_t j = 0; j < element.count; ++j) {
+                            pair<R_len_t, R_len_t>& occurrence =
+                                direct_occurrences[element.begin+j];
+                            ++occurrence.first;
+                            if (get_length1)
+                                occurrence.second -= occurrence.first - 1;
+                        }
+                    }
+                    else {
+                        ci__locate_adjust_occurrences(
+                            subject, direct_occurrences, element.begin,
+                            element.count, get_length1
+                        );
+                    }
+                }
+            }
+        }
+        pattern_borrow.reset();
+        subject_borrow.reset();
+
+        if (direct_completed) {
+            charport::unwind_protect([&]() -> SEXP {
+                for (R_len_t i = 0; i < vectorize_length; ++i) {
+                    const DirectElement& element =
+                        elements[static_cast<size_t>(i)];
+                    SEXP child;
+                    if (element.missing)
+                        PROTECT(child = ci__matrix_NA_INTEGER(1, 2));
+                    else
+                        PROTECT(child = ci__locate_adjusted_matrix(
+                            direct_occurrences, element.begin, element.count,
+                            omit_no_match1, get_length1
+                        ));
+                    SET_VECTOR_ELT(ret, i, child);
+                    UNPROTECT(1);
+                }
+                ci__locate_set_dimnames_list(ret, get_length1);
+                return R_NilValue;
+            });
+        }
+    }
+
+    if (!direct_completed) {
     {
         StriContainerUTF16 str_cont(
             context, str, vectorize_length
@@ -351,10 +588,10 @@ SEXP ci_locate_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_r
                     context.warn(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
 
                 SEXP ans;
-                ans = protector.protect(ci__matrix_NA_INTEGER(1, 2));
+                ans = protector.hold(ci__matrix_NA_INTEGER(1, 2));
                 if (capture_groups1) {
                     SEXP cgs;
-                    cgs = protector.protect(Rf_allocVector(VECSXP, 0));
+                    cgs = protector.hold(Rf_allocVector(VECSXP, 0));
                     Rf_setAttrib(
                         ans,
                         Rf_ScalarString(Rf_mkChar("capture_groups")),
@@ -419,10 +656,10 @@ SEXP ci_locate_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_r
 
             SEXP ans;
             if (string_missing) {
-                ans = protector.protect(ci__matrix_NA_INTEGER(1, 2));
+                ans = protector.hold(ci__matrix_NA_INTEGER(1, 2));
             }
             else {
-                ans = protector.protect(ci__locate_get_fromto_matrix(
+                ans = protector.hold(ci__locate_get_fromto_matrix(
                     occurrences, str_cont, i,
                     omit_no_match1, get_length1
                 ));
@@ -430,29 +667,29 @@ SEXP ci_locate_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_r
 
             if (capture_groups1) {
                 SEXP cgs;
-                cgs = protector.protect(Rf_allocVector(
+                cgs = protector.hold(Rf_allocVector(
                     VECSXP, pattern_cur_groups
                 ));
                 for (R_len_t j=0; j<pattern_cur_groups; ++j) {
                     SEXP ans2;
                     if (string_missing) {
-                        ans2 = protector.protect(
+                        ans2 = protector.hold(
                             ci__matrix_NA_INTEGER(1, 2)
                         );
                     }
                     else {
-                        ans2 = protector.protect(ci__locate_get_fromto_matrix(
+                        ans2 = protector.hold(ci__locate_get_fromto_matrix(
                             capture_occurrences[j],
                             str_cont, i,
                             omit_no_match1, get_length1
                         ));
                     }
                     SET_VECTOR_ELT(cgs, j, ans2);
-                    protector.unprotect(1);
+                    protector.release(1);
                 }
 
                 SEXP names;
-                names = protector.protect(ci__capture_names_to_r(
+                names = protector.hold(ci__capture_names_to_r(
                     *capture_names
                 ));
                 ci__locate_set_dimnames_list(cgs, get_length1);
@@ -469,6 +706,7 @@ SEXP ci_locate_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_r
           ci__locate_set_dimnames_list(ret, get_length1);  // all matrices get from&to colnames
           return R_NilValue;
         });
+    }
     }
     }
     STRI__DEFERRED_WARNINGS.emit();
@@ -549,10 +787,92 @@ SEXP ci__locate_firstlast_regex(
     }));
     int* ret_tab = INTEGER(ret);
 
+    bool direct_completed = false;
+    if (vectorize_length > 0 && !capture_groups1 && pattern_n == 1) {
+        std::shared_ptr<ci::ReaderBorrow> subject_borrow =
+            context.acquire(str);
+        const charport::StrViews& subjects = subject_borrow->views();
+        std::shared_ptr<ci::ReaderBorrow> pattern_borrow =
+            context.acquire(pattern);
+        const charport::StrView direct_pattern =
+            pattern_borrow->views()[0];
+        const bool pattern_usable_directly =
+            !direct_pattern.is_na() && direct_pattern.len > 0 &&
+            (direct_pattern.enc == cetype_ext_t::CE_ASCII ||
+             direct_pattern.enc == cetype_ext_t::CE_UTF8 ||
+             direct_pattern.enc == cetype_ext_t::CE_ASCII_OR_UTF8);
+        if (pattern_usable_directly &&
+                ci__locate_can_borrow_utf8(subjects)) {
+            direct_completed = true;
+            {
+                StriContainerRegexPattern pattern_cont(
+                    context, pattern, vectorize_length, pattern_opts
+                );
+                RegexMatcher* matcher = pattern_cont.getMatcher(0);
+                ReusableLocateUtf16Text subject_buffer;
+                vector< pair<R_len_t, R_len_t> > occurrence(1);
+
+                for (R_len_t i = 0; i < vectorize_length; ++i) {
+                    ret_tab[i] = NA_INTEGER;
+                    ret_tab[i+vectorize_length] = NA_INTEGER;
+                    const charport::StrView value = subjects[i % str_n];
+                    if (value.is_na())
+                        continue;
+
+                    UnicodeString& subject = subject_buffer.set(value);
+                    matcher->reset(subject);
+                    UErrorCode status = U_ZERO_ERROR;
+                    int found = static_cast<int>(matcher->find(status));
+                    STRI__CHECKICUSTATUS_THROW(status, {})
+                    if (!found) {
+                        if (get_length1) {
+                            ret_tab[i] = -1;
+                            ret_tab[i+vectorize_length] = -1;
+                        }
+                        continue;
+                    }
+
+                    do {
+                        occurrence[0].first = static_cast<int>(
+                            matcher->start(status)
+                        );
+                        STRI__CHECKICUSTATUS_THROW(status, {})
+                        occurrence[0].second = static_cast<int>(
+                            matcher->end(status)
+                        );
+                        STRI__CHECKICUSTATUS_THROW(status, {})
+                        if (first)
+                            break;
+                        found = static_cast<int>(matcher->find(status));
+                        STRI__CHECKICUSTATUS_THROW(status, {})
+                    } while (found);
+
+                    if (value.enc == cetype_ext_t::CE_ASCII) {
+                        ++occurrence[0].first;
+                        if (get_length1) {
+                            occurrence[0].second -=
+                                occurrence[0].first - 1;
+                        }
+                    }
+                    else {
+                        ci__locate_adjust_occurrences(
+                            subject, occurrence, 0, 1, get_length1
+                        );
+                    }
+                    ret_tab[i] = occurrence[0].first;
+                    ret_tab[i+vectorize_length] = occurrence[0].second;
+                }
+            }
+        }
+        pattern_borrow.reset();
+        subject_borrow.reset();
+    }
+
     deque< deque< pair<R_len_t, R_len_t> > > cg_occurrences;
     vector<string> capture_names;
     //cg_occurrences[i] -- i-th capture group
 
+    if (!direct_completed) {
     {
         StriContainerUTF16 str_cont(
             context, str, vectorize_length
@@ -680,6 +1000,7 @@ SEXP ci__locate_firstlast_regex(
                     capture_names = current_names;
             }
         }
+    }
     }
 
     if (capture_groups1) {

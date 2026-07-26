@@ -122,10 +122,21 @@ ci_read_lines <- function(con, encoding = NULL,
     stopifnot(is.null(encoding) || is.character(encoding))
 
     if (is.null(encoding) || encoding == "")
-        encoding <- ci_enc_get()  # this need to be done manually, see ?ci_encode
+        encoding <- NULL
 
-    if (encoding == "auto")
+    if (!is.null(encoding) && encoding == "auto")
         stop("encoding `auto` is no longer supported")  # TODO: remove in the future
+
+    if (
+        is.character(con) &&
+        length(con) == 1L &&
+        !is.null(encoding) &&
+        length(encoding) == 1L &&
+        !is.na(encoding) &&
+        tolower(encoding) %in% c("utf-8", "utf8")
+    ) {
+        return(.Call(C_ci_read_lines, con, encoding))
+    }
 
     txt <- ci_read_raw(con)
     txt <- ci_encode(txt, encoding, "UTF-8")
@@ -161,19 +172,3 @@ ci_read_lines <- function(con, encoding = NULL,
 #
 # @family files
 # @export
-ci_write_lines <- function(str, con,
-    encoding = "UTF-8",
-    sep = ifelse(.Platform$OS.type == "windows", "\r\n", "\n"),
-    fname = con)
-{
-    if (!missing(fname) && missing(con)) { # DEPRECATED
-        warning("The 'fname' argument in ci_write_lines is a deprecated alias of 'con' and will be removed in a future release of 'stringi'.")
-        con <- fname
-    }
-
-    stopifnot(is.character(sep), length(sep) == 1)
-    str <- ci_join(str, sep, collapse = "")
-    str <- ci_encode(str, "", encoding, to_raw = TRUE)[[1]]
-    writeBin(str, con, useBytes = TRUE)
-    invisible(NULL)
-}

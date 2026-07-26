@@ -141,41 +141,11 @@ ci_locate_first_boundaries <- function(
 
 # @export
 # @rdname ci_locate_boundaries
-ci_locate_all_words <- function(
-    str, omit_no_match=FALSE, locale=NULL, get_length=FALSE
-) {
-    ci_locate_all_boundaries(
-        str, omit_no_match=omit_no_match, get_length=get_length,
-        opts_brkiter=ci_opts_brkiter(
-            type="word", skip_word_none=TRUE, locale=locale
-        )
-    )
-}
 
 
 # @export
 # @rdname ci_locate_boundaries
-ci_locate_last_words <- function(
-    str, locale=NULL, get_length=FALSE
-) {
-    ci_locate_last_boundaries(
-        str, get_length=get_length,
-        opts_brkiter=ci_opts_brkiter(
-            type="word", skip_word_none=TRUE, locale=locale
-        )
-    )
-}
 
 
 # @export
 # @rdname ci_locate_boundaries
-ci_locate_first_words <- function(
-    str, locale=NULL, get_length=FALSE
-) {
-    ci_locate_first_boundaries(
-        str, get_length=get_length,
-        opts_brkiter=ci_opts_brkiter(
-            type="word", skip_word_none=TRUE, locale=locale
-        )
-    )
-}

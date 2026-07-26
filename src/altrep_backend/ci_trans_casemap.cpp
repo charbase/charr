@@ -33,15 +33,357 @@
 
 #include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_container_utf8.h"
-#include "ci_string8buf.h"
 #include "ci_brkiter.h"
+#include "ci_string8buf.h"
+#include "altrep/native_to_utf8.h"
+
+#include <algorithm>
+#include <limits>
+#include <memory>
+#include <utility>
+
 #include <unicode/ucasemap.h>
 
 
 #define STRI_CASEMAP_TOLOWER   1
 #define STRI_CASEMAP_TOUPPER   2
 #define STRI_CASEMAP_CASEFOLD  3
+#define STRI_CASEMAP_TOTITLE   4
+
+
+namespace {
+
+struct CasemapInput {
+    const char* data;
+    int32_t length;
+    bool ascii;
+};
+
+
+bool ci__casemap_title_locale(const char* locale) noexcept
+{
+    if (!locale)
+        return false;
+    if (ci__is_C_locale(locale))
+        return true;
+    if (locale[0] == '\0')
+        return true;
+    if (locale[0] == 'r' && locale[1] == 'o' && locale[2] == 'o' &&
+        locale[3] == 't' && locale[4] == '\0')
+        return true;
+    if (locale[0] != 'e' || locale[1] != 'n')
+        return false;
+    if (locale[2] != '\0' && locale[2] != '_' && locale[2] != '-')
+        return false;
+    for (const char* current = locale + 2; *current; ++current) {
+        if (*current == '@')
+            return false;
+    }
+    return true;
+}
+
+
+class CasemapTitleOptions : public StriBrkIterOptions {
+public:
+    CasemapTitleOptions(
+        SEXP options, ci::DeferredWarnings& warnings
+    ) : StriBrkIterOptions(options, "word", warnings) {}
+
+    bool ascii_fast_path(const char* locale) const noexcept
+    {
+        // Only the standard English/root word iterator has the simple
+        // letter-run behavior used by the byte loop below.
+        return type == UBRK_WORD && rules.isEmpty() && skip_size == 0 &&
+            ci__casemap_title_locale(locale);
+    }
+};
+
+
+bool ci__casemap_has_bom(const char* data, int32_t length) noexcept
+{
+    return length >= 3 && STRI__ENC_HAS_BOM_UTF8(data, length);
+}
+
+
+bool ci__casemap_is_turkic_locale(const char* locale) noexcept
+{
+    if (!locale || locale[0] == '\0' || locale[1] == '\0')
+        return false;
+    const bool delimiter = locale[2] == '\0' || locale[2] == '_' ||
+        locale[2] == '-' || locale[2] == '@';
+    return delimiter &&
+        ((locale[0] == 't' && locale[1] == 'r') ||
+         (locale[0] == 'a' && locale[1] == 'z'));
+}
+
+
+bool ci__casemap_is_turkic(const UCaseMap* casemap) noexcept
+{
+    return ci__casemap_is_turkic_locale(ucasemap_getLocale(casemap));
+}
+
+
+bool ci__casemap_ascii_simple(const char* locale, int type) noexcept
+{
+    return type == STRI_CASEMAP_CASEFOLD ||
+        ((type == STRI_CASEMAP_TOLOWER ||
+          type == STRI_CASEMAP_TOUPPER) &&
+         !ci__casemap_is_turkic_locale(locale));
+}
+
+
+bool ci__casemap_ascii_output(
+    const UCaseMap* casemap, const CasemapInput& input
+) noexcept
+{
+    return input.ascii && !ci__casemap_is_turkic(casemap);
+}
+
+
+void ci__casemap_ascii(
+    const char* input, int32_t length, int type, char* output
+) noexcept
+{
+    if (type == STRI_CASEMAP_TOUPPER) {
+        for (int32_t i = 0; i < length; ++i) {
+            unsigned char byte = static_cast<unsigned char>(input[i]);
+            if (byte >= 'a' && byte <= 'z')
+                byte -= static_cast<unsigned char>('a'-'A');
+            output[i] = static_cast<char>(byte);
+        }
+    }
+    else {
+        for (int32_t i = 0; i < length; ++i) {
+            unsigned char byte = static_cast<unsigned char>(input[i]);
+            if (byte >= 'A' && byte <= 'Z')
+                byte += static_cast<unsigned char>('a'-'A');
+            output[i] = static_cast<char>(byte);
+        }
+    }
+}
+
+
+bool ci__casemap_ascii_title_eligible(
+    const CasemapInput& input
+) noexcept
+{
+    for (int32_t i = 0; i < input.length; ++i) {
+        const unsigned char byte = static_cast<unsigned char>(input.data[i]);
+        if (byte >= 0x80U)
+            return false;
+        if ((byte >= 'A' && byte <= 'Z') ||
+            (byte >= 'a' && byte <= 'z'))
+            continue;
+        const bool whitespace = byte == ' ' || (byte >= '\t' && byte <= '\r');
+        const bool punctuation =
+            (byte >= 0x21U && byte <= 0x2fU) ||
+            (byte >= 0x3aU && byte <= 0x40U) ||
+            (byte >= 0x5bU && byte <= 0x60U) ||
+            (byte >= 0x7bU && byte <= 0x7eU);
+        // ICU can keep these characters inside a word. Digits take the same
+        // fallback through the non-punctuation branch.
+        if ((!whitespace && !punctuation) || byte == '\'' || byte == '_')
+            return false;
+        if (byte == '.' && i > 0 && i + 1 < input.length) {
+            const unsigned char previous = static_cast<unsigned char>(
+                input.data[i-1]
+            );
+            const unsigned char next = static_cast<unsigned char>(
+                input.data[i+1]
+            );
+            const bool previous_letter =
+                (previous >= 'A' && previous <= 'Z') ||
+                (previous >= 'a' && previous <= 'z');
+            const bool next_letter =
+                (next >= 'A' && next <= 'Z') ||
+                (next >= 'a' && next <= 'z');
+            if (previous_letter && next_letter)
+                return false;
+        }
+    }
+    return true;
+}
+
+
+void ci__casemap_ascii_title(
+    const CasemapInput& input, char* output
+) noexcept
+{
+    bool word_start = true;
+    for (int32_t i = 0; i < input.length; ++i) {
+        unsigned char byte = static_cast<unsigned char>(input.data[i]);
+        if (byte >= 'A' && byte <= 'Z') {
+            if (!word_start)
+                byte += static_cast<unsigned char>('a'-'A');
+            word_start = false;
+        }
+        else if (byte >= 'a' && byte <= 'z') {
+            if (word_start)
+                byte -= static_cast<unsigned char>('a'-'A');
+            word_start = false;
+        }
+        else {
+            word_start = true;
+        }
+        output[i] = static_cast<char>(byte);
+    }
+}
+
+
+void ci__casemap_ascii_title(
+    const CasemapInput& input, charport::charvec::Builder& builder,
+    R_xlen_t index
+)
+{
+    char* output = builder.reserve(
+        index, static_cast<std::size_t>(input.length),
+        cetype_ext_t::CE_ASCII
+    );
+    ci__casemap_ascii_title(input, output);
+}
+
+
+int32_t ci__casemap_call(
+    UCaseMap* casemap, int type, char* dest, int32_t capacity,
+    const char* src, int32_t length, UErrorCode* status
+) noexcept
+{
+    if (type == STRI_CASEMAP_TOLOWER) {
+        return ucasemap_utf8ToLower(
+            casemap, dest, capacity, src, length, status
+        );
+    }
+    if (type == STRI_CASEMAP_TOUPPER) {
+        return ucasemap_utf8ToUpper(
+            casemap, dest, capacity, src, length, status
+        );
+    }
+    if (type == STRI_CASEMAP_CASEFOLD) {
+        return ucasemap_utf8FoldCase(
+            casemap, dest, capacity, src, length, status
+        );
+    }
+    return ucasemap_utf8ToTitle(
+        casemap, dest, capacity, src, length, status
+    );
+}
+
+
+void ci__casemap_icu(
+    UCaseMap* casemap, int type, const CasemapInput& input,
+    String8buf& buffer, charport::charvec::Builder& builder,
+    R_xlen_t index
+)
+{
+    const std::size_t margin = 10;
+    buffer.resize(static_cast<std::size_t>(input.length) + margin, false);
+
+    const std::size_t int32_max = static_cast<std::size_t>(
+        std::numeric_limits<int32_t>::max()
+    );
+    int32_t capacity = static_cast<int32_t>(
+        std::min(buffer.size(), int32_max)
+    );
+
+    UErrorCode status = U_ZERO_ERROR;
+    int32_t output_length = ci__casemap_call(
+        casemap, type, buffer.data(), capacity,
+        input.data, input.length, &status
+    );
+    if (!U_FAILURE(status)) {
+        const bool output_ascii = ci__casemap_ascii_output(casemap, input) ||
+            ci::is_ascii(buffer.data(), static_cast<std::size_t>(output_length));
+        ci::builder_set(
+            builder, index, buffer.data(), output_length,
+            output_ascii ? cetype_ext_t::CE_ASCII : cetype_ext_t::CE_UTF8
+        );
+        return;
+    }
+
+    if (output_length < 0)
+        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+
+    buffer.resize(static_cast<std::size_t>(output_length), false);
+    capacity = static_cast<int32_t>(
+        std::min(buffer.size(), int32_max)
+    );
+    status = U_ZERO_ERROR;
+    output_length = ci__casemap_call(
+        casemap, type, buffer.data(), capacity,
+        input.data, input.length, &status
+    );
+    STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+
+    const bool output_ascii = ci__casemap_ascii_output(casemap, input) ||
+        ci::is_ascii(buffer.data(), static_cast<std::size_t>(output_length));
+    ci::builder_set(
+        builder, index, buffer.data(), output_length,
+        output_ascii ? cetype_ext_t::CE_ASCII : cetype_ext_t::CE_UTF8
+    );
+}
+
+
+CasemapInput ci__casemap_input(
+    const charport::StrView& value,
+    charr::altrep::NativeToUtf8& converter,
+    bool classify_ascii = true
+)
+{
+    if (value.len < 0 || !value.ptr)
+        throw StriException("Reader returned an invalid string view");
+
+    const char* data = value.ptr;
+    int32_t length = value.len;
+    bool strip_bom = false;
+    bool ascii = false;
+    bool ascii_known = false;
+
+    switch (value.enc) {
+    case cetype_ext_t::CE_ASCII:
+        ascii = true;
+        ascii_known = true;
+        break;
+    case cetype_ext_t::CE_UTF8:
+        strip_bom = true;
+        // An explicit UTF-8 mark is authoritative. Among records already in
+        // UTF-8, only the ambiguous mark needs a payload scan.
+        ascii_known = true;
+        break;
+    case cetype_ext_t::CE_ASCII_OR_UTF8:
+        strip_bom = ci__casemap_has_bom(data, length);
+        break;
+    case cetype_ext_t::CE_BYTES:
+        throw StriException(MSG__BYTESENC);
+    case cetype_ext_t::CE_LATIN1: {
+        const charport::ByteView converted = converter.latin1(data, length);
+        data = converted.ptr;
+        length = converted.len;
+        break;
+    }
+    case cetype_ext_t::CE_NATIVE: {
+        const bool native_bom = ci__casemap_has_bom(data, length);
+        const charport::ByteView converted = converter.native(data, length);
+        data = converted.ptr;
+        length = converted.len;
+        strip_bom = native_bom;
+        break;
+    }
+    case cetype_ext_t::CE_NA:
+        throw StriException("non-missing Reader record has NA encoding");
+    default:
+        throw StriException("unknown charport string encoding");
+    }
+
+    if (strip_bom && ci__casemap_has_bom(data, length)) {
+        data += 3;
+        length -= 3;
+    }
+    if (!ascii_known && classify_ascii)
+        ascii = ci::is_ascii(data, static_cast<std::size_t>(length));
+    return CasemapInput{data, length, ascii};
+}
+
+} // namespace
 
 
 /**
@@ -66,8 +408,8 @@ SEXP ci_trans_totitle(SEXP str, SEXP opts_brkiter) {
         // Deviation from stringi: construct break-iterator options inside the
         // C++ error boundary before preparing str, preserving condition order
         // without letting a later R unwind skip their ICU-owned storage.
-        StriBrkIterOptions opts_brkiter2(
-            opts_brkiter, "word", STRI__DEFERRED_WARNINGS
+        CasemapTitleOptions opts_brkiter2(
+            opts_brkiter, STRI__DEFERRED_WARNINGS
         );
         STRI__PROTECT(str = charport::unwind_protect([&]() -> SEXP {
             return ci__prepare_arg_string(
@@ -87,72 +429,59 @@ SEXP ci_trans_totitle(SEXP str, SEXP opts_brkiter) {
         );
         STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
         brkiter.free(false);
+        const bool ascii_fast_path = opts_brkiter2.ascii_fast_path(
+            ucasemap_getLocale(ucasemap)
+        );
         // ucasemap_setOptions(ucasemap, U_TITLECASE_NO_LOWERCASE, &status); // to do?
         // now briter is owned by ucasemap.
         // it will be released on ucasemap_close
         // (checked with ICU man & src code)
 
-        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-        R_len_t str_n = ci::checked_r_len(
-            context.size(str), "character vectors"
-        );
-        charport::charvec::Builder builder(str_n);
-        {
-            StriContainerUTF8 str_cont(context, str, str_n);
-
-            // STEP 1.
-            // Estimate the required buffer length
-            // Notice: The resulting number of codepoints may be larger or smaller than
-            // the number before casefolding
-            R_len_t bufsize = str_cont.getMaxNumBytes();
-            bufsize += 10; // a small margin
-            String8buf buf(bufsize);
-
-            // STEP 2.
-            // Do case folding
-            for (R_len_t i = str_cont.vectorize_init();
-                    i != str_cont.vectorize_end();
-                    i = str_cont.vectorize_next(i))
-            {
-                if (str_cont.isNA(i)) {
+        // Stage native storage first so ALTREP construction happens after the
+        // foreign Reader and its views have been released.
+        charport::charvec::Store output = [&]() {
+            charport::Reader reader(str);
+            R_len_t str_n = ci::checked_r_len(
+                reader.size(), "character vectors"
+            );
+            charport::charvec::Builder builder(str_n);
+            charport::StrViews values(str_n);
+            if (str_n > 0)
+                reader.views(0, str_n, values);
+            charr::altrep::NativeToUtf8 converter;
+            std::unique_ptr<String8buf> buffer;
+            for (R_len_t i = 0; i < str_n; ++i) {
+                const charport::StrView value = values[i];
+                if (value.is_na()) {
                     builder.set_na(i);
                     continue;
                 }
 
-                R_len_t str_cur_n     = str_cont.get(i).length();
-                const char* str_cur_s = str_cont.get(i).data();
-
-                status = U_ZERO_ERROR;
-                int buf_need = ucasemap_utf8ToTitle(
-                    ucasemap, buf.data(), buf.size(),
-                    (const char*)str_cur_s, str_cur_n, &status
+                const CasemapInput input = ci__casemap_input(
+                    value, converter, !ascii_fast_path
                 );
-
-                if (U_FAILURE(status)) {
-                    buf.resize(buf_need, false/*destroy contents*/);
-                    status = U_ZERO_ERROR;
-                    buf_need = ucasemap_utf8ToTitle(
-                        ucasemap, buf.data(), buf.size(),
-                        (const char*)str_cur_s, str_cur_n, &status
-                    );
-
-                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */}) // this shouldn't happen
-                    // we do have the buffer size required to complete this op
+                if (ascii_fast_path &&
+                    ci__casemap_ascii_title_eligible(input)) {
+                    ci__casemap_ascii_title(input, builder, i);
                 }
-
-                ci::builder_set(
-                    builder, i, buf.data(), buf_need,
-                    cetype_ext_t::CE_ASCII_OR_UTF8
-                );
+                else {
+                    if (!buffer)
+                        buffer.reset(new String8buf(64));
+                    ci__casemap_icu(
+                        ucasemap, STRI_CASEMAP_TOTITLE, input,
+                        *buffer, builder, i
+                    );
+                }
             }
-        }
+            return builder.release_store();
+        }();
 
         if (ucasemap) {
             ucasemap_close(ucasemap);
             ucasemap = NULL;
         }
 
-        STRI__PROTECT(ret = builder.to_sexp());
+        STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
     }
     STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
@@ -186,12 +515,12 @@ SEXP ci_trans_totitle(SEXP str, SEXP opts_brkiter) {
  *          make StriException-friendly
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-11-19)
- *          use UCaseMap + StriContainerUTF8
+ *          use UCaseMap + Utf8Input
  *          **THIS DOES NOT WORK WITH ICU 4.8**, we have to revert the changes
  *          ** BTW, since stringi_0.1-25 we require ICU>=50 **
  *
  * @version 0.2-1 (Marek Gagolewski, 2014-03-18)
- *          use UCaseMap + StriContainerUTF8
+ *          use UCaseMap + Utf8Input
  *          (this is much faster for UTF-8 and slightly faster for 8bit enc)
  *          Estimates minimal buffer size.
  *
@@ -223,82 +552,53 @@ SEXP ci_trans_casemap(SEXP str, int _type, SEXP locale)
     STRI__ERROR_HANDLER_BEGIN(1)
     SEXP ret;
     {
-        UErrorCode status = U_ZERO_ERROR;
-        ucasemap = ucasemap_open(qloc, U_FOLD_CASE_DEFAULT, &status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-        // TODO: U_USING_DEFAULT_WARNING when qloc!=0
-        // NOTE: we can't check if there submitted locale is valid,
-        // because there is no API for it [ULOC_VALID_LOCALE]
-
         ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
         R_len_t str_n = ci::checked_r_len(
             context.size(str), "character vectors"
         );
         charport::charvec::Builder builder(str_n);
         {
-            StriContainerUTF8 str_cont(context, str, str_n);
-
-            // STEP 1.
-            // Estimate the required buffer length
-            // Notice: The resulting number of code points may be larger or smaller than
-            // the number before case mapping
-            R_len_t bufsize = str_cont.getMaxNumBytes();
-            bufsize += 10; // a small margin
-            String8buf buf(bufsize);
-
-            // STEP 2.
-            // Do case folding
-            for (R_len_t i = str_cont.vectorize_init();
-                    i != str_cont.vectorize_end();
-                    i = str_cont.vectorize_next(i))
-            {
-                if (str_cont.isNA(i)) {
+            std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(str);
+            const charport::StrViews& values = borrow->views();
+            charr::altrep::NativeToUtf8 converter;
+            const bool simple_ascii = ci__casemap_ascii_simple(
+                qloc, _type
+            );
+            std::unique_ptr<String8buf> buffer;
+            for (R_len_t i = 0; i < str_n; ++i) {
+                const charport::StrView value = values[i];
+                if (value.is_na()) {
                     builder.set_na(i);
                     continue;
                 }
 
-                R_len_t str_cur_n     = str_cont.get(i).length();
-                const char* str_cur_s = str_cont.get(i).data();
-
-                int buf_need;
-                bool retry = false;
-                while (true) {
-                    status = U_ZERO_ERROR;
-                    if (_type == STRI_CASEMAP_TOLOWER) {
-                        buf_need = ucasemap_utf8ToLower(
-                            ucasemap, buf.data(), buf.size(),
-                            (const char*)str_cur_s, str_cur_n, &status
-                        );
-                    }
-                    else if (_type == STRI_CASEMAP_TOUPPER) {
-                        buf_need = ucasemap_utf8ToUpper(
-                            ucasemap, buf.data(), buf.size(),
-                            (const char*)str_cur_s, str_cur_n, &status
-                        );
-                    }
-                    else {
-                        buf_need = ucasemap_utf8FoldCase(
-                            ucasemap, buf.data(), buf.size(),
-                            (const char*)str_cur_s, str_cur_n, &status
-                        );
-                    }
-
-                    if (!U_FAILURE(status)) break;
-
-                    if (!retry) {
-                        buf.resize(buf_need, false/*destroy contents*/);
-                        // we now have the buffer size required to complete this op
-                        retry = true;
-                    }
-                    else {
-                        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */}) // this shouldn't happen
-                    }
+                const CasemapInput input = ci__casemap_input(
+                    value, converter
+                );
+                if (simple_ascii && input.ascii) {
+                    char* output = builder.reserve(
+                        i, static_cast<std::size_t>(input.length),
+                        cetype_ext_t::CE_ASCII
+                    );
+                    ci__casemap_ascii(
+                        input.data, input.length, _type, output
+                    );
+                    continue;
                 }
 
-                ci::builder_set(
-                    builder, i, buf.data(), buf_need,
-                    cetype_ext_t::CE_ASCII_OR_UTF8
+                if (!ucasemap) {
+                    UErrorCode status = U_ZERO_ERROR;
+                    ucasemap = ucasemap_open(
+                        qloc, U_FOLD_CASE_DEFAULT, &status
+                    );
+                    STRI__CHECKICUSTATUS_THROW(
+                        status, {/* nothing special */}
+                    )
+                }
+                if (!buffer)
+                    buffer.reset(new String8buf(64));
+                ci__casemap_icu(
+                    ucasemap, _type, input, *buffer, builder, i
                 );
             }
         }

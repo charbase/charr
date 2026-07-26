@@ -30,151 +30,110 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-
 #include "ci_stringi.h"
 #include "ci_container_listraw.h"
 
+#include <stdexcept>
+#include <vector>
 
-/**
- * Default constructor
- *
- */
+struct StriContainerListRaw::Storage {
+    std::shared_ptr<ci::ReaderBorrow> borrow;
+    std::vector<charr::altrep::ByteView> records;
+};
+
+namespace {
+
+const char empty_bytes[] = "";
+
+charr::altrep::ByteView raw_view(SEXP value)
+{
+    if (Rf_isNull(value))
+        return charr::altrep::ByteView();
+
+    const char* data = nullptr;
+    R_len_t length = 0;
+    charport::unwind_protect([&]() -> SEXP {
+        length = LENGTH(value);
+        data = reinterpret_cast<const char*>(RAW(value));
+        return R_NilValue;
+    });
+    if (length == 0)
+        return charr::altrep::ByteView(empty_bytes, 0);
+    // RAW() materializes an ALTREP raw vector when necessary. Its data pointer
+    // remains valid while the argument (or its parent list) is rooted by the
+    // active .Call, so the container can keep a view instead of another copy.
+    return charr::altrep::ByteView(data, length);
+}
+
+} // namespace
+
 StriContainerListRaw::StriContainerListRaw()
-    : StriContainerBase(), borrow(), data(NULL)
+    : StriContainerBase(), storage_(new Storage())
 {
 }
 
-
-/**
- * Construct String Container from R object
- * @param rstr R object
- *
- * if you want nrecycle > n, call set_nrecycle
- *
- * @version 1.6.2 (Marek Gagolewski, 2021-05-14)
- *    #354 Force the copying of ALTREP data
- */
 StriContainerListRaw::StriContainerListRaw(
-    ci::ReaderContext& context, SEXP rstr
-)
-    : StriContainerBase(), borrow(), data(NULL)
+    ci::ReaderContext& context, SEXP input
+) : StriContainerBase(), storage_(new Storage())
 {
-    if (Rf_isNull(rstr)) {
-        this->init_Base(1, 1, true);
-        std::unique_ptr<String8[]> new_data(new String8[this->n]);
-        this->data = new_data.release(); // 1 string, NA
+    if (Rf_isNull(input)) {
+        init_Base(1, 1, true);
+        storage_->records.push_back(charr::altrep::ByteView());
+        return;
     }
-    else if (isRaw(rstr)) {
-        this->init_Base(1, 1, true);
-        std::unique_ptr<String8[]> new_data(new String8[this->n]);
-        bool memalloc = ALTREP(rstr);  // #354: force copying of ALTREP data
-        const char* raw_data = NULL;
-        R_len_t raw_length = 0;
-        charport::unwind_protect([&]() -> SEXP {
-            raw_length = LENGTH(rstr);
-            raw_data = reinterpret_cast<const char*>(RAW(rstr));
-            return R_NilValue;
-        });
-        new_data[0].initialize(raw_data, raw_length,
-                               memalloc, false/*killbom*/, false/*isASCII*/); // shallow copy
-        this->data = new_data.release();
+
+    if (isRaw(input)) {
+        init_Base(1, 1, true);
+        storage_->records.push_back(raw_view(input));
+        return;
     }
-    else if (Rf_isVectorList(rstr)) {
-        R_len_t nv = LENGTH(rstr);
-        this->init_Base(nv, nv, true);
-        std::unique_ptr<String8[]> new_data(new String8[this->n]);
-        for (R_len_t i=0; i<this->n; ++i) {
-            SEXP cur = charport::unwind_protect([&]() -> SEXP {
-                return VECTOR_ELT(rstr, i);
-            });
-            if (!Rf_isNull(cur)) {
-                bool memalloc = ALTREP(cur);  // #354: force copying of ALTREP data
-                const char* raw_data = NULL;
-                R_len_t raw_length = 0;
-                charport::unwind_protect([&]() -> SEXP {
-                    raw_length = LENGTH(cur);
-                    raw_data = reinterpret_cast<const char*>(RAW(cur));
-                    return R_NilValue;
-                });
-                new_data[i].initialize(raw_data, raw_length,
-                                       memalloc, false/*killbom*/, false/*isASCII*/); // shallow copy
-            }
-            // else leave as-is, i.e., NA
-        }
-        this->data = new_data.release();
-    }
-    else { // it's surely a character vector (args have been checked)
-        R_len_t nv = ci::checked_r_len(
-            context.size(rstr), "character vectors"
+
+    if (Rf_isVectorList(input)) {
+        const R_len_t length = ci::checked_r_len(
+            XLENGTH(input), "lists"
         );
-        this->init_Base(nv, nv, true);
-        if (this->n == 0)
-            return;
-
-        std::shared_ptr<ci::ReaderBorrow> new_borrow = context.acquire(rstr);
-        const charport::StrViews& views = new_borrow->views();
-        // Deviation from stringi: borrow character bytes through charport
-        // without interpreting their encoding or materializing CHARSXPs.
-        std::unique_ptr<String8[]> new_data(new String8[this->n]);
-        bool uses_borrowed_data = false;
-        for (R_len_t i=0; i<this->n; ++i) {
-            const charport::StrView cur = views[i];
-            if (!cur.is_na()) {
-                new_data[i].initialize(
-                    cur.ptr, cur.len, false,
-                    false/*killbom*/, false/*isASCII*/
-                );
-                uses_borrowed_data = true;
-            }
-            // else leave as-is, i.e., NA
+        init_Base(length, length, true);
+        storage_->records.reserve(static_cast<std::size_t>(length));
+        for (R_len_t i = 0; i < length; ++i) {
+            SEXP value = charport::unwind_protect([&]() -> SEXP {
+                return VECTOR_ELT(input, i);
+            });
+            storage_->records.push_back(raw_view(value));
         }
-        if (uses_borrowed_data)
-            this->borrow = new_borrow;
-        this->data = new_data.release();
+        return;
+    }
+
+    const R_len_t length = ci::checked_r_len(
+        context.size(input), "character vectors"
+    );
+    init_Base(length, length, true);
+    if (length == 0)
+        return;
+    storage_->borrow = context.acquire(input);
+    const charport::StrViews& views = storage_->borrow->views();
+    storage_->records.reserve(static_cast<std::size_t>(length));
+    for (R_len_t i = 0; i < length; ++i) {
+        const charport::StrView value = views[i];
+        storage_->records.push_back(value.is_na()
+            ? charr::altrep::ByteView()
+            : charr::altrep::ByteView(value.ptr, value.len));
     }
 }
 
-
-StriContainerListRaw::StriContainerListRaw(StriContainerListRaw& container)
-    : StriContainerBase((StriContainerBase&)container),
-      borrow(container.borrow), data(NULL)
+bool StriContainerListRaw::isNA(R_len_t i) const
 {
-    if (container.data) {
-        std::unique_ptr<String8[]> new_data(new String8[this->n]);
-        for (int i=0; i<this->n; ++i) {
-            new_data[i] = container.data[i];
-        }
-        this->data = new_data.release();
-    }
+    if (i < 0 || i >= nrecycle || n == 0)
+        throw std::out_of_range("raw input index out of bounds");
+    return storage_->records[static_cast<std::size_t>(i % n)].isNA();
 }
 
-
-StriContainerListRaw& StriContainerListRaw::operator=(StriContainerListRaw& container)
+const charr::altrep::ByteView& StriContainerListRaw::get(R_len_t i) const
 {
-    if (this == &container)
-        return *this;
-
-    std::unique_ptr<String8[]> new_data;
-    if (container.data) {
-        new_data.reset(new String8[container.n]);
-        for (int i=0; i<container.n; ++i) {
-            new_data[i] = container.data[i];
-        }
-    }
-
-    delete [] this->data;
-    (StriContainerBase&) (*this) = (StriContainerBase&)container;
-    this->borrow = container.borrow;
-    this->data = new_data.release();
-    return *this;
-}
-
-
-StriContainerListRaw::~StriContainerListRaw()
-{
-    if (data) {
-        delete [] data;
-        data = NULL;
-    }
-    borrow.reset();
+    if (i < 0 || i >= nrecycle || n == 0)
+        throw std::out_of_range("raw input index out of bounds");
+    const charr::altrep::ByteView& value =
+        storage_->records[static_cast<std::size_t>(i % n)];
+    if (value.isNA())
+        throw StriException("cannot get a missing byte record");
+    return value;
 }

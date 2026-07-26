@@ -34,6 +34,7 @@
 #include "ci_stringi.h"
 #include "ci_container_utf16.h"
 #include "ci_container_usearch.h"
+#include "ci_utf16_cursor.h"
 #include <unicode/uregex.h>
 
 
@@ -115,7 +116,7 @@ SEXP ci_detect_coll(SEXP str, SEXP pattern, SEXP negate,
     int* ret_tab = LOGICAL(ret);
 
     {
-        StriContainerUTF16 str_cont(context, str, vectorize_length);
+        ci::Utf16Cursor str_cont(context, str, vectorize_length);
         StriContainerUStringSearch pattern_cont(
             context, pattern, vectorize_length, collator
         );  // collator is not owned by pattern_cont

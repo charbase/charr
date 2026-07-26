@@ -33,11 +33,75 @@
 
 #include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
 #include "ci_container_integer.h"
-#include "ci_string8buf.h"
+#include <algorithm>
 #include <cstring>
-#include <vector>
+#include <stdexcept>
+
+
+namespace {
+
+// ASCII width is exact without an ICU property lookup, including C0 and DEL.
+// Non-ASCII code points retain stringi's context-sensitive width rules.
+int ci__pad_width_string(const char* data, int length)
+{
+    int width = 0;
+    UChar32 previous = 0;
+    UChar32 current = 0;
+    R_len_t i = 0;
+    bool reset = true;
+
+    while (i < length) {
+        const unsigned char byte = static_cast<unsigned char>(data[i]);
+        previous = current;
+        if (byte < 0x80) {
+            current = byte;
+            ++i;
+            if (reset)
+                reset = false;
+            if (byte >= 0x20 && byte != 0x7f)
+                ++width;
+        }
+        else {
+            U8_NEXT(data, i, length, current);
+            if (current < 0)
+                throw StriException(MSG__INVALID_UTF8);
+            width += ci__width_char_with_context(current, previous, reset);
+        }
+    }
+
+    return width;
+}
+
+
+char* ci__pad_repeat(
+    char* output, const char* pattern, std::size_t pattern_length,
+    R_len_t count
+)
+{
+    if (count <= 0 || pattern_length == 0)
+        return output;
+
+    if (pattern_length == 1) {
+        std::memset(output, static_cast<unsigned char>(pattern[0]), count);
+        return output+count;
+    }
+
+    // Seed one copy, then double the initialized prefix instead of copying the
+    // same multi-byte pad once per output code point.
+    const std::size_t total = pattern_length*static_cast<std::size_t>(count);
+    std::memcpy(output, pattern, pattern_length);
+    std::size_t copied = pattern_length;
+    while (copied < total) {
+        const std::size_t chunk = std::min(copied, total-copied);
+        std::memcpy(output+copied, output, chunk);
+        copied += chunk;
+    }
+    return output+total;
+}
+
+} // namespace
 
 
 /**
@@ -105,11 +169,16 @@ SEXP ci_pad(SEXP str, SEXP width, SEXP side, SEXP pad, SEXP use_length)
         charport::charvec::Builder builder(vectorize_length);
         StriContainerInteger  width_cont(width, vectorize_length);
         {
-            StriContainerUTF8 str_cont(context, str, vectorize_length);
-//   StriContainerUTF8      side_cont(side, vectorize_length);
-            StriContainerUTF8 pad_cont(context, pad, vectorize_length);
+            Utf8Input str_cont(context, str, vectorize_length);
+//   Utf8Input      side_cont(side, vectorize_length);
+            Utf8Input pad_cont(context, pad, vectorize_length);
 
-            String8buf buf(0); // TODO: prealloc
+            const bool scalar_pad = pad_length == 1;
+            bool scalar_pad_validated = false;
+            R_len_t scalar_pad_n = 0;
+            const char* scalar_pad_s = NULL;
+            bool scalar_pad_ascii = false;
+
             for (R_len_t i=0; i<vectorize_length; ++i) {
                 if (str_cont.isNA(i) || pad_cont.isNA(i)
                         || /*side_cont.isNA(i) ||*/ width_cont.isNA(i)) {
@@ -118,81 +187,106 @@ SEXP ci_pad(SEXP str, SEXP width, SEXP side, SEXP pad, SEXP use_length)
                 }
 
                 // get the current string
-                R_len_t str_cur_n = str_cont.get(i).length();
-                const char* str_cur_s = str_cont.get(i).data();
+                const Utf8Record& str_cur = str_cont.get(i);
+                R_len_t str_cur_n = str_cur.length();
+                const char* str_cur_s = str_cur.data();
                 R_len_t str_cur_width;
 
                 // get the width/length of padding code point(s)
-                R_len_t pad_cur_n = pad_cont.get(i).length();
-                const char* pad_cur_s = pad_cont.get(i).data();
-                R_len_t pad_cur_width;
-                if (use_length_val) {
-                    pad_cur_width = 1;
-                    str_cur_width = str_cont.get(i).countCodePoints();
-                    R_len_t k = 0;
-                    UChar32 pad_cur = 0;
-                    U8_NEXT(pad_cur_s, k, pad_cur_n, pad_cur);
-                    if (pad_cur <= 0 || k < pad_cur_n)
-                        throw StriException(MSG__NOT_EQ_N_CODEPOINTS, "pad", 1);
+                const Utf8Record& pad_cur = pad_cont.get(i);
+                R_len_t pad_cur_n = pad_cur.length();
+                const char* pad_cur_s = pad_cur.data();
+                if (scalar_pad && scalar_pad_validated) {
+                    pad_cur_n = scalar_pad_n;
+                    pad_cur_s = scalar_pad_s;
                 }
                 else {
-                    pad_cur_width = ci__width_string(pad_cur_s, pad_cur_n);
-                    str_cur_width = ci__width_string(str_cur_s, str_cur_n);
-                    if (pad_cur_width != 1)
+                    if (use_length_val) {
+                        R_len_t k = 0;
+                        UChar32 pad_codepoint = 0;
+                        U8_NEXT(pad_cur_s, k, pad_cur_n, pad_codepoint);
+                        if (pad_codepoint <= 0 || k < pad_cur_n)
+                            throw StriException(MSG__NOT_EQ_N_CODEPOINTS, "pad", 1);
+                    }
+                    else if (ci__pad_width_string(pad_cur_s, pad_cur_n) != 1) {
                         throw StriException(MSG__NOT_EQ_N_WIDTH, "pad", 1);
+                    }
+
+                    if (scalar_pad) {
+                        scalar_pad_n = pad_cur_n;
+                        scalar_pad_s = pad_cur_s;
+                        scalar_pad_ascii = pad_cur.isASCII();
+                        scalar_pad_validated = true;
+                    }
                 }
+
+                if (use_length_val)
+                    str_cur_width = str_cur.countCodePoints();
+                else
+                    str_cur_width = ci__pad_width_string(str_cur_s, str_cur_n);
 
                 // get the minimal width
                 R_len_t width_cur = width_cont.get(i);
 
                 if (str_cur_width >= width_cur)  {
                     // no padding at all
-                    ci::builder_set(builder, i, str_cont.get(i));
+                    builder.set(
+                        i, str_cur_s, static_cast<std::size_t>(str_cur_n),
+                        str_cur.isASCII()
+                            ? cetype_ext_t::CE_ASCII
+                            : cetype_ext_t::CE_UTF8
+                    );
                     continue;
                 }
 
                 R_len_t padnum = width_cur-str_cur_width;
-                buf.resize(str_cur_n+padnum*pad_cur_n, false);
+                const std::size_t pad_bytes =
+                    static_cast<std::size_t>(pad_cur_n);
+                if (pad_bytes > 0 &&
+                        static_cast<std::size_t>(padnum) >
+                        (static_cast<std::size_t>(R_LEN_T_MAX)-
+                            static_cast<std::size_t>(str_cur_n))/pad_bytes)
+                    throw std::length_error(
+                        "padded string exceeds R's string length limit"
+                    );
+                const std::size_t output_length =
+                    static_cast<std::size_t>(str_cur_n)+
+                    static_cast<std::size_t>(padnum)*pad_bytes;
+                const bool output_ascii = str_cur.isASCII() &&
+                    (scalar_pad ? scalar_pad_ascii : pad_cur.isASCII());
+                // The final length is known, so write directly into Builder
+                // storage and avoid a temporary String8buf copy.
+                char* buftmp = builder.reserve(
+                    i, output_length,
+                    output_ascii
+                        ? cetype_ext_t::CE_ASCII
+                        : cetype_ext_t::CE_UTF8
+                );
 
-                char* buftmp = buf.data();
-                R_len_t k = 0;
+                R_len_t left_count = 0;
                 switch(_side) {
 
                 case 0: // left
-                    for (k=0; k<padnum; ++k) {
-                        memcpy(buftmp, pad_cur_s, pad_cur_n);
-                        buftmp += pad_cur_n;
-                    }
-                    memcpy(buftmp, str_cur_s, str_cur_n);
-                    buftmp += str_cur_n;
+                    left_count = padnum;
                     break;
 
                 case 1: // right
-                    memcpy(buftmp, str_cur_s, str_cur_n);
-                    buftmp += str_cur_n;
-                    for (k=0; k<padnum; ++k) {
-                        memcpy(buftmp, pad_cur_s, pad_cur_n);
-                        buftmp += pad_cur_n;
-                    }
                     break;
 
                 case 2: // both
-                    for (k=0; k<padnum/2; ++k) {
-                        memcpy(buftmp, pad_cur_s, pad_cur_n);
-                        buftmp += pad_cur_n;
-                    }
-                    memcpy(buftmp, str_cur_s, str_cur_n);
-                    buftmp += str_cur_n;
-                    for (; k<padnum; ++k) {
-                        memcpy(buftmp, pad_cur_s, pad_cur_n);
-                        buftmp += pad_cur_n;
-                    }
+                    left_count = padnum/2;
                     break;
                 }
 
-                ci::builder_set(
-                    builder, i, buf.data(), (int)(buftmp-buf.data()),
-                    cetype_ext_t::CE_ASCII_OR_UTF8
+                buftmp = ci__pad_repeat(
+                    buftmp, pad_cur_s, pad_bytes, left_count
+                );
+                if (str_cur_n > 0) {
+                    std::memcpy(buftmp, str_cur_s, str_cur_n);
+                    buftmp += str_cur_n;
+                }
+                ci__pad_repeat(
+                    buftmp, pad_cur_s, pad_bytes, padnum-left_count
                 );
             }
         }

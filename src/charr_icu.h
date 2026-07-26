@@ -11,6 +11,7 @@ SEXP C_charr_abi_ok(void);
 // `path`; in system mode `path` is ignored (see src/charr_icu.cpp for the
 // copyright and provenance note).
 SEXP C_charr_icu_init(SEXP path);
+SEXP C_charr_icu_info(void);
 SEXP C_charr_icu_version(void);
 SEXP C_charr_icu_ok(void);
 SEXP C_charr_icu_smoke(void);

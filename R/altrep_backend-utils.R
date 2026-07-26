@@ -82,14 +82,6 @@
 #
 # @family utils
 # @export
-ci_list2matrix <- function(x,
-    byrow = FALSE, fill = NA_character_, n_min = 0, by_row = byrow)
-{
-    if (!missing(by_row))
-        byrow <- by_row
-
-    .Call(C_ci_list2matrix, x, byrow, ci_enc_toutf8(fill), n_min)
-}
 
 
 # @title
@@ -109,12 +101,6 @@ ci_list2matrix <- function(x,
 #
 # @family utils
 # @export
-ci_na2empty <- function(x)
-{
-    x <- ci_enc_toutf8(x)
-    x[is.na(x)] <- ""
-    x
-}
 
 
 # @title
@@ -148,46 +134,26 @@ ci_na2empty <- function(x)
 # @family utils
 # @rdname ci_remove_empty
 # @export
-ci_remove_empty <- function(x, na_empty = FALSE)
-{
-    x <- ci_enc_toutf8(x)
-    if (identical(na_empty, TRUE))
-        x[!is.na(x) & !ci_isempty(x)]
-    else
-        x[!ci_isempty(x)]
-}
 
 
 # @rdname ci_remove_empty
 # @export
-ci_omit_empty <- ci_remove_empty
 
 
 # @rdname ci_remove_empty
 # @export
-ci_remove_empty_na <- function(x)
-{
-    ci_remove_empty(x, TRUE)
-}
 
 
 # @rdname ci_remove_empty
 # @export
-ci_omit_empty_na <- ci_remove_empty_na
 
 
 # @rdname ci_remove_empty
 # @export
-ci_remove_na <- function(x)
-{
-    x <- ci_enc_toutf8(x)
-    x[!is.na(x)]
-}
 
 
 # @rdname ci_remove_empty
 # @export
-ci_omit_na <- ci_remove_na
 
 
 # @title

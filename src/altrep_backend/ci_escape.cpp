@@ -33,14 +33,179 @@
 
 #include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_container_utf8.h"
 #include "ci_container_utf16.h"
+#include "ci_reader.h"
+#include "../altrep/native_to_utf8.h"
+#include "../altrep/utf8_output.h"
 
+#include <cstdint>
+#include <stdexcept>
+#include <utility>
 
-#define StriEscape_BUFSIZE 12
 
 static const char CI__EMBEDDED_NUL_MESSAGE[] =
     "embedded nul in string";
+
+namespace {
+
+struct EscapeInput {
+    const char* ptr;
+    int length;
+};
+
+
+bool has_utf8_bom(const char* ptr, int length) noexcept
+{
+    return length >= 3 &&
+        static_cast<uint8_t>(ptr[0]) == UTF8_BOM_BYTE1 &&
+        static_cast<uint8_t>(ptr[1]) == UTF8_BOM_BYTE2 &&
+        static_cast<uint8_t>(ptr[2]) == UTF8_BOM_BYTE3;
+}
+
+
+EscapeInput normalize_escape_input(
+    const charport::StrView& value,
+    charr::altrep::NativeToUtf8& converter
+)
+{
+    if (value.ptr == nullptr || value.len < 0)
+        throw std::runtime_error("Reader returned an invalid string view");
+    if (value.enc == cetype_ext_t::CE_ASCII)
+        return EscapeInput{value.ptr, value.len};
+    if (value.enc == cetype_ext_t::CE_BYTES)
+        throw StriException(MSG__BYTESENC);
+
+    const char* ptr = value.ptr;
+    int length = value.len;
+    bool strip_bom = value.enc == cetype_ext_t::CE_UTF8 ||
+        value.enc == cetype_ext_t::CE_ASCII_OR_UTF8;
+
+    if (value.enc == cetype_ext_t::CE_LATIN1 ||
+            value.enc == cetype_ext_t::CE_NATIVE) {
+        const bool native = value.enc == cetype_ext_t::CE_NATIVE;
+        const charport::ByteView converted = native
+            ? converter.native(ptr, length)
+            : converter.latin1(ptr, length);
+        strip_bom = native && has_utf8_bom(ptr, length);
+        ptr = converted.ptr;
+        length = converted.len;
+    }
+    else if (value.enc != cetype_ext_t::CE_UTF8 &&
+            value.enc != cetype_ext_t::CE_ASCII_OR_UTF8) {
+        throw std::runtime_error("Reader returned an unknown string encoding");
+    }
+
+    if (strip_bom && has_utf8_bom(ptr, length)) {
+        ptr += 3;
+        length -= 3;
+    }
+    return EscapeInput{ptr, length};
+}
+
+
+char short_escape(UChar32 code_point) noexcept
+{
+    switch (code_point) {
+    case 0x07: return 'a';
+    case 0x08: return 'b';
+    case 0x09: return 't';
+    case 0x0a: return 'n';
+    case 0x0b: return 'v';
+    case 0x0c: return 'f';
+    case 0x0d: return 'r';
+    case 0x22: return '"';
+    case 0x27: return '\'';
+    case 0x5c: return '\\';
+    default:   return '\0';
+    }
+}
+
+
+std::size_t escaped_width(UChar32 code_point) noexcept
+{
+    if (short_escape(code_point) != '\0')
+        return 2;
+    if (code_point >= 32 && code_point <= 126)
+        return 1;
+    return code_point <= 0xffff ? 6 : 10;
+}
+
+
+std::size_t escaped_size(const EscapeInput& input)
+{
+    std::size_t output_size = 0;
+    int32_t cursor = 0;
+    while (cursor < input.length) {
+        UChar32 code_point;
+        const uint8_t lead = static_cast<uint8_t>(input.ptr[cursor]);
+        if (lead <= 0x7f) {
+            code_point = lead;
+            ++cursor;
+        }
+        else {
+            U8_NEXT(input.ptr, cursor, input.length, code_point);
+            if (code_point < 0)
+                throw StriException(MSG__INVALID_UTF8);
+        }
+
+        const std::size_t width = escaped_width(code_point);
+        if (output_size >
+                static_cast<std::size_t>(R_LEN_T_MAX) - width) {
+            throw std::length_error(
+                "escaped string exceeds R's string length limit"
+            );
+        }
+        output_size += width;
+    }
+    return output_size;
+}
+
+
+char* write_hex(char* output, UChar32 value, int digits) noexcept
+{
+    static const char hex[] = "0123456789abcdef";
+    for (int shift = (digits-1)*4; shift >= 0; shift -= 4)
+        *output++ = hex[(static_cast<uint32_t>(value) >> shift) & 0x0fU];
+    return output;
+}
+
+
+void write_escape(const EscapeInput& input, char* output) noexcept
+{
+    int32_t cursor = 0;
+    while (cursor < input.length) {
+        UChar32 code_point;
+        const uint8_t lead = static_cast<uint8_t>(input.ptr[cursor]);
+        if (lead <= 0x7f) {
+            code_point = lead;
+            ++cursor;
+        }
+        else {
+            U8_NEXT_UNSAFE(input.ptr, cursor, code_point);
+        }
+
+        const char escaped = short_escape(code_point);
+        if (escaped != '\0') {
+            *output++ = '\\';
+            *output++ = escaped;
+        }
+        else if (code_point >= 32 && code_point <= 126) {
+            *output++ = static_cast<char>(code_point);
+        }
+        else if (code_point <= 0xffff) {
+            *output++ = '\\';
+            *output++ = 'u';
+            output = write_hex(output, code_point, 4);
+        }
+        else {
+            *output++ = '\\';
+            *output++ = 'U';
+            output = write_hex(output, code_point, 8);
+        }
+    }
+}
+
+} // namespace
 
 /**
  *  Escape Unicode code points
@@ -65,118 +230,39 @@ SEXP ci_escape_unicode(SEXP str)
 
     STRI__ERROR_HANDLER_BEGIN(1)
     SEXP ret;
+    charr::altrep::OutputStore output_store(0, 0);
     {
-        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-        R_len_t str_length = ci::checked_r_len(
-            context.size(str), "character vectors"
+        charport::Reader reader(str);
+        const R_len_t str_length = ci::checked_r_len(
+            reader.size(), "character vectors"
         );
-        charport::charvec::Builder builder(str_length);
+        charport::StrViews values(str_length);
+        if (str_length > 0)
+            reader.views(0, str_length, values);
 
-        std::string out; // @TODO: estimate len a priori?
-
-        {
-            StriContainerUTF8 str_cont(context, str, str_length);
-
-            for (R_len_t i = str_cont.vectorize_init();
-                    i != str_cont.vectorize_end();
-                    i = str_cont.vectorize_next(i))
-            {
-                if (str_cont.isNA(i)) {
-                    builder.set_na(i);
-                    continue;
-                }
-
-                const char* str_cur_s = str_cont.get(i).data();
-                R_len_t     str_cur_n = str_cont.get(i).length();
-
-                // estimate buf size
-                R_len_t bufsize = 0;
-                UChar32 c;
-                R_len_t j = 0;
-
-                while (j < str_cur_n) {
-                    U8_NEXT(str_cur_s, j, str_cur_n, c);
-                    if (c < 0)
-                        throw StriException(MSG__INVALID_UTF8);
-                    else if ((char)c >= 32 && (char)c <= 126)
-                        bufsize += 1;
-                    else if (c <= 0xff)
-                        bufsize += 6; // for \a, \n this will be overestimated
-                    else
-                        bufsize += 10;
-                }
-                out.clear();
-                if ((size_t)bufsize > (size_t)out.size())
-                    out.reserve(bufsize);
-
-                // do escape
-                j = 0;
-                char buf[StriEscape_BUFSIZE];
-                while (j < str_cur_n) {
-                    U8_NEXT(str_cur_s, j, str_cur_n, c);
-                    /* if (c < 0)
-                       throw StriException(MSG__INVALID_UTF8); // this has already been checked :)
-                    else */
-                    if (c <= ASCII_MAXCHARCODE) {
-                        switch ((char)c) {
-                        case 0x07:
-                            out.append("\\a");
-                            break;
-                        case 0x08:
-                            out.append("\\b");
-                            break;
-                        case 0x09:
-                            out.append("\\t");
-                            break;
-                        case 0x0a:
-                            out.append("\\n");
-                            break;
-                        case 0x0b:
-                            out.append("\\v");
-                            break;
-                        case 0x0c:
-                            out.append("\\f");
-                            break;
-                        case 0x0d:
-                            out.append("\\r");
-                            break;
-//               case 0x1b: out.append("\\e"); break; // R doesn't know that
-                        case 0x22:
-                            out.append("\\\"");
-                            break;
-                        case 0x27:
-                            out.append("\\'");
-                            break;
-                        case 0x5c:
-                            out.append("\\\\");
-                            break;
-                        default:
-                            if ((char)c >= 32 && (char)c <= 126) // printable characters
-                                out.append(1, (char)c);
-                            else {
-                                snprintf(buf, StriEscape_BUFSIZE, "\\u%04x", (uint16_t)c);
-                                out.append(buf, 6);
-                            }
-                        }
-                    }
-                    else if (c <= 0xffff) {
-                        snprintf(buf, StriEscape_BUFSIZE, "\\u%04x", (uint16_t)c);
-                        out.append(buf, 6);
-                    }
-                    else {
-                        snprintf(buf, StriEscape_BUFSIZE, "\\U%08x", (uint32_t)c);
-                        out.append(buf, 10);
-                    }
-                }
-
-                ci::builder_set(
-                    builder, i, out, cetype_ext_t::CE_ASCII
-                );
+        charr::altrep::OutputBuilder builder(str_length);
+        charr::altrep::NativeToUtf8 converter;
+        for (R_len_t i = 0; i < str_length; ++i) {
+            const charport::StrView source = values[i];
+            if (source.is_na()) {
+                builder.set_na(i);
+                continue;
             }
+
+            const EscapeInput input = normalize_escape_input(
+                source, converter
+            );
+            const std::size_t output_size = escaped_size(input);
+            char* output = builder.reserve(
+                i, output_size, cetype_ext_t::CE_ASCII
+            );
+            if (output_size > 0)
+                write_escape(input, output);
         }
 
-        STRI__PROTECT(ret = builder.to_sexp());
+        output_store = builder.release_store();
     }
+    STRI__PROTECT(ret = charr::altrep::finalize(std::move(output_store)));
 
     STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL

@@ -33,8 +33,10 @@
 
 #include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
 #include "ci_container_listutf8.h"
+
+#include <cstring>
 
 
 /**
@@ -154,7 +156,7 @@ SEXP ci_list2matrix(SEXP x, SEXP byrow, SEXP fill, SEXP n_min)
 * @version 0.2-1 (Bartek Tartanus, 2014-03-15)
 *
 * @version 0.2-1 (Marek Gagolewski, 2014-04-02)
-*          Use StriContainerUTF8 for replacement
+*          Use Utf8Input for replacement
 *
 * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
 *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
@@ -166,29 +168,103 @@ SEXP ci_replace_na(SEXP str, SEXP replacement) {
     // @TODO: ci_replace_na(str, character(0)) returns a char vect with no NAs
 
     STRI__ERROR_HANDLER_BEGIN(2)
-    SEXP ret;
-    {
-        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-        R_len_t str_len = ci::checked_r_len(
-            context.size(str), "character vectors"
-        );
-        charport::charvec::Builder builder(str_len);
-        {
-            StriContainerUTF8 str_cont(context, str, str_len);
-            StriContainerUTF8 replacement_cont(context, replacement, 1);
+    SEXP ret = R_NilValue;
+    // An input with no NAs and no attributes already is the exact result.
+    // This deliberately does not require a charvec source: rebuilding an
+    // ordinary STRSXP would copy every payload byte into fresh slices only to
+    // produce a value identical to the input. The base backend has always
+    // returned the input here (ci_utils.cpp, !has_na && NO_ATTRIB); gating this
+    // on charvec-ness was the source of a 1.5x regression against base.
+    const bool source_is_result_shaped = NO_ATTRIB(str) != 0;
 
-            for (R_len_t i=0; i<str_len; ++i) {
-                if (str_cont.isNA(i))
-                    ci::builder_set(builder, i, replacement_cont.getNAble(0));
-                else
-                    ci::builder_set(builder, i, str_cont.get(i));
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    charport::charvec::Builder builder(0);
+    bool build_output = false;
+    {
+        std::shared_ptr<ci::ReaderBorrow> str_borrow = context.acquire(str);
+        const charport::StrViews& views = str_borrow->views();
+        const R_len_t str_len = ci::checked_r_len(
+            str_borrow->size(), "character vectors"
+        );
+        bool direct = true;
+        bool has_na = false;
+        for (R_len_t i=0; i<str_len; ++i) {
+            const charport::StrView value = views[i];
+            if (value.is_na()) {
+                has_na = true;
+                continue;
+            }
+            if (value.enc == cetype_ext_t::CE_BYTES)
+                throw StriException(MSG__BYTESENC);
+            if ((value.enc != cetype_ext_t::CE_ASCII &&
+                 value.enc != cetype_ext_t::CE_UTF8) ||
+                    (value.enc == cetype_ext_t::CE_UTF8 &&
+                     STRI__ENC_HAS_BOM_UTF8(value.ptr, value.len))) {
+                direct = false;
+                break;
             }
         }
 
-        STRI__PROTECT(ret = builder.to_sexp());
+        if (direct) {
+            if (!has_na && source_is_result_shaped) {
+                // Constructed for its validation side effect: an invalid
+                // replacement must still signal even when nothing is replaced.
+                Utf8Input replacement_cont(
+                    context, replacement, 1
+                );
+                ret = str;
+            }
+            else {
+                // charvec::Builder copies into its own slices, so unlike the
+                // base backend (which reuses the source CHARSXPs via
+                // SET_STRING_ELT) this rebuild is O(total bytes), not O(n).
+                // Unavoidable while Builder has no borrow mode.
+                builder.reset(str_len);
+                build_output = true;
+                {
+                    Utf8Input replacement_cont(
+                        context, replacement, 1
+                    );
+                    for (R_len_t i=0; i<str_len; ++i) {
+                        const charport::StrView value = views[i];
+                        if (value.is_na()) {
+                            ci::builder_set(
+                                builder, i, replacement_cont.getNAble(0)
+                            );
+                        }
+                        else {
+                            ci::builder_set(
+                                builder, i, value.ptr,
+                                static_cast<size_t>(value.len), value.enc
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        else {
+            builder.reset(str_len);
+            build_output = true;
+            {
+                Utf8Input str_cont(context, str, str_len);
+                Utf8Input replacement_cont(context, replacement, 1);
+
+                for (R_len_t i=0; i<str_len; ++i) {
+                    if (str_cont.isNA(i))
+                        ci::builder_set(
+                            builder, i, replacement_cont.getNAble(0)
+                        );
+                    else
+                        ci::builder_set(builder, i, str_cont.get(i));
+                }
+            }
+        }
     }
 
-    STRI__DEFERRED_WARNINGS.emit();
+    if (build_output)
+        STRI__PROTECT(ret = builder.to_sexp());
+
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)

@@ -64,28 +64,6 @@
 #
 # @family encoding_management
 # @export
-ci_enc_list <- function(simplify=TRUE)
-{
-    simplify <- (is.logical(simplify) && length(simplify) == 1L && !is.na(simplify) && simplify)  # isTRUE(simplify)
-
-    ret <- .Call(C_ci_enc_list)
-    if (simplify) {
-        ci_sort(
-            unique(unlist(ret)),
-            locale="en_US", numeric=TRUE, strength=1
-        )
-    } else {
-        lapply(
-            ret[
-                ci_order(
-                    names(ret), locale="en_US", numeric=TRUE, strength=1
-                )
-            ],
-            ci_sort,
-            locale="en_US", numeric=TRUE, strength=1
-        )
-    }
-}
 
 
 # @title
@@ -177,16 +155,6 @@ ci_enc_info <- function(enc = NULL)
 # @family encoding_management
 # @rdname ci_enc_set
 # @export
-ci_enc_set <- function(enc)
-{
-    previous <- ci_enc_get()
-
-    # We call ci_info, because it generates some warnings,
-    # in case any problems are found:
-    .Call(C_ci_enc_set, enc)
-    message(ci_paste("New settings: ", ci_info(short = TRUE)))
-    invisible(previous)
-}
 
 
 # @rdname ci_enc_set
@@ -240,7 +208,3 @@ ci_enc_get <- function() {
 #
 # @family encoding_management
 # @export
-ci_enc_mark <- function(str)
-{
-    .Call(C_ci_enc_mark, str)
-}

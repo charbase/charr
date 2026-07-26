@@ -131,23 +131,6 @@
 # @rdname ci_split
 # @family search_split
 # @export
-ci_split <- function(str, ..., regex, fixed, coll, charclass)
-{
-    providedarg <- c(
-        regex = !missing(regex),
-        fixed = !missing(fixed),
-        coll = !missing(coll),
-        charclass = !missing(charclass))
-
-    if (sum(providedarg) != 1)
-        stop("you have to specify either `regex`, `fixed`, `coll`, or `charclass`")
-
-    if (providedarg["regex"])
-        ci_split_regex(str, regex, ...) else if (providedarg["fixed"])
-        ci_split_fixed(str, fixed, ...) else if (providedarg["coll"])
-        ci_split_coll(str, coll, ...) else if (providedarg["charclass"])
-        ci_split_charclass(str, charclass, ...)
-}
 
 
 # @export
@@ -197,11 +180,3 @@ ci_split_coll <- function(str, pattern, n = -1L,
 
 # @export
 # @rdname ci_split
-ci_split_charclass <- function(str, pattern, n = -1L,
-    omit_empty = FALSE, tokens_only = FALSE,
-    simplify = FALSE)
-{
-    # omit_empty defaults to FALSE for compatibility with the stringr package
-    # tokens_only defaults to FALSE for compatibility with the stringr package
-    .Call(C_ci_split_charclass, str, pattern, n, omit_empty, tokens_only, simplify)
-}

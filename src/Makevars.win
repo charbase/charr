@@ -1,17 +1,17 @@
-CXX_STD = CXX11
+CXX_STD = CXX17
 
-# --- Vendored ICU4C (src/icu74) --------------------------------------------
-# src/icu74 is ICU4C 74.1 (Unicode, Inc. and others; Unicode License v3, see
-# src/icu74/LICENSE), using stringi's source layout and portability patches
-# (BSD-3-Clause, see inst/COPYRIGHTS). The bundled-build preprocessor defines
-# below follow stringi's private static build. U_HAVE_LIB_SUFFIX /
+# --- Vendored ICU4C (src/icu78) --------------------------------------------
+# src/icu78 is pristine ICU4C 78.3 runtime source (Unicode, Inc. and others;
+# Unicode License v3, see src/icu78/LICENSE). Package-specific configuration
+# is supplied below and by src/uconfig_local.h. U_HAVE_LIB_SUFFIX /
 # U_LIB_SUFFIX_C_NAME rename every ICU C symbol to
-# ...74_charr so charr's statically linked ICU never collides with stringi's or
-# the system's.
-ICU_CPPFLAGS = -Ialtrep_backend -Iicu74 -Iicu74/unicode -Iicu74/common -Iicu74/i18n \
+# ...78_charr so charr's statically linked ICU never collides with stringi's or
+# the system's. DECNUMDIGITS=4 avoids GCC overflow diagnostics without
+# patching ICU's imported decNumber header.
+ICU_CPPFLAGS = -Ialtrep_backend -Iicu78 -Iicu78/unicode -Iicu78/common -Iicu78/i18n \
   -DU_STATIC_IMPLEMENTATION -DU_COMMON_IMPLEMENTATION -DU_I18N_IMPLEMENTATION \
   -D_REENTRANT -DUCONFIG_USE_LOCAL -DU_CHARSET_IS_UTF8=0 \
-  -DUCONFIG_NO_FILE_IO=1 -DSTRI_ICU_FOUND=0 \
+  -DUCONFIG_NO_FILE_IO=1 -DDECNUMDIGITS=4 -DSTRI_ICU_FOUND=0 \
   -UDEBUG -DNDEBUG -DWINVER=0x0601 -D_WIN32_WINNT=0x0601 -DU_USE_STRTOD_L=0 \
   -DU_HAVE_LIB_SUFFIX=1 -DU_LIB_SUFFIX_C_NAME=_charr -DCHARR_BUNDLED_ICU=1
 
@@ -19,12 +19,163 @@ PKG_CPPFLAGS = -I. $(ICU_CPPFLAGS)
 
 # On Windows, linking all ICU objects at once overflows the command line (see
 # stringi src/Makevars.win); collect them into static libs first.
-OBJECTS = $(patsubst %.cpp,%.o,$(wildcard *.cpp)) \
-  $(patsubst %.cpp,%.o,$(wildcard altrep_backend/*.cpp))
+RUNTIME_SOURCES = \
+  charr_icu.cpp \
+  runtime/registration.cpp
 
-ICU_COMMON_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu74/common/*.cpp))
-ICU_I18N_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu74/i18n/*.cpp))
-ICU_STUBDATA_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu74/stubdata/*.cpp))
+RUNTIME_OBJECTS = $(RUNTIME_SOURCES:.cpp=.o)
+
+BASE_FOUNDATION_SOURCES = \
+  base/native_to_utf8.cpp \
+  base/utf8_input.cpp \
+  base/utf8_index.cpp
+
+BASE_SOURCES = \
+  base/charr_base.cpp \
+  base/ci_brkiter.cpp \
+  base/ci_collator.cpp \
+  base/ci_common.cpp \
+  base/ci_compare.cpp \
+  base/ci_container_base.cpp \
+  base/ci_container_bytesearch.cpp \
+  base/ci_container_listint.cpp \
+  base/ci_container_listraw.cpp \
+  base/ci_container_listutf8.cpp \
+  base/ci_container_regex.cpp \
+  base/ci_container_usearch.cpp \
+  base/ci_container_utf16.cpp \
+  base/ci_encoding_conversion.cpp \
+  base/ci_encoding_management.cpp \
+  base/ci_escape.cpp \
+  base/ci_exception.cpp \
+  base/ci_join.cpp \
+  base/ci_length.cpp \
+  base/ci_pad.cpp \
+  base/ci_prepare_arg.cpp \
+  base/ci_reverse.cpp \
+  base/ci_search_boundaries_count.cpp \
+  base/ci_search_boundaries_extract.cpp \
+  base/ci_search_boundaries_locate.cpp \
+  base/ci_search_boundaries_split.cpp \
+  base/ci_search_class_replace.cpp \
+  base/ci_search_class_trim.cpp \
+  base/ci_search_coll_count.cpp \
+  base/ci_search_coll_detect.cpp \
+  base/ci_search_coll_extract.cpp \
+  base/ci_search_coll_locate.cpp \
+  base/ci_search_coll_replace.cpp \
+  base/ci_search_coll_split.cpp \
+  base/ci_search_coll_startsendswith.cpp \
+  base/ci_search_common.cpp \
+  base/ci_search_fixed_count.cpp \
+  base/ci_search_fixed_detect.cpp \
+  base/ci_search_fixed_extract.cpp \
+  base/ci_search_fixed_locate.cpp \
+  base/ci_search_fixed_replace.cpp \
+  base/ci_search_fixed_split.cpp \
+  base/ci_search_fixed_startsendswith.cpp \
+  base/ci_search_other_split.cpp \
+  base/ci_search_regex_count.cpp \
+  base/ci_search_regex_detect.cpp \
+  base/ci_search_regex_extract.cpp \
+  base/ci_search_regex_locate.cpp \
+  base/ci_search_regex_match.cpp \
+  base/ci_search_regex_replace.cpp \
+  base/ci_search_regex_split.cpp \
+  base/ci_sort.cpp \
+  base/ci_sub.cpp \
+  base/ci_trans_casemap.cpp \
+  base/ci_trans_normalization.cpp \
+  base/ci_ucnv.cpp \
+  base/ci_utils.cpp \
+  base/ci_wrap.cpp
+
+BASE_OBJECTS = $(BASE_FOUNDATION_SOURCES:.cpp=.o) \
+  $(BASE_SOURCES:.cpp=.o)
+
+ALTREP_FOUNDATION_SOURCES = \
+  altrep/native_to_utf8.cpp \
+  altrep/utf8_input.cpp \
+  altrep/utf8_index.cpp \
+  altrep/utf8_output.cpp
+
+ALTREP_SUPPORT_SOURCES = \
+  altrep_backend/ci_brkiter.cpp \
+  altrep_backend/ci_collator.cpp \
+  altrep_backend/ci_common.cpp \
+  altrep_backend/ci_container_base.cpp \
+  altrep_backend/ci_container_bytesearch.cpp \
+  altrep_backend/ci_container_listint.cpp \
+  altrep_backend/ci_container_listraw.cpp \
+  altrep_backend/ci_container_listutf8.cpp \
+  altrep_backend/ci_container_regex.cpp \
+  altrep_backend/ci_container_usearch.cpp \
+  altrep_backend/ci_container_utf16.cpp \
+  altrep_backend/ci_exception.cpp \
+  altrep_backend/ci_prepare_arg.cpp \
+  altrep_backend/ci_search_common.cpp \
+  altrep_backend/ci_ucnv.cpp
+
+ALTREP_OPERATION_SOURCES = \
+  altrep_backend/ci_compare.cpp \
+  altrep_backend/ci_encoding_conversion.cpp \
+  altrep_backend/ci_encoding_management.cpp \
+  altrep_backend/ci_escape.cpp \
+  altrep_backend/ci_join.cpp \
+  altrep_backend/ci_length.cpp \
+  altrep_backend/ci_pad.cpp \
+  altrep_backend/ci_reverse.cpp \
+  altrep_backend/ci_search_boundaries_count.cpp \
+  altrep_backend/ci_search_boundaries_extract.cpp \
+  altrep_backend/ci_search_boundaries_locate.cpp \
+  altrep_backend/ci_search_boundaries_split.cpp \
+  altrep_backend/ci_search_class_replace.cpp \
+  altrep_backend/ci_search_class_trim.cpp \
+  altrep_backend/ci_search_coll_count.cpp \
+  altrep_backend/ci_search_coll_detect.cpp \
+  altrep_backend/ci_search_coll_extract.cpp \
+  altrep_backend/ci_search_coll_locate.cpp \
+  altrep_backend/ci_search_coll_replace.cpp \
+  altrep_backend/ci_search_coll_split.cpp \
+  altrep_backend/ci_search_coll_startsendswith.cpp \
+  altrep_backend/ci_search_coll_subset.cpp \
+  altrep_backend/ci_search_fixed_count.cpp \
+  altrep_backend/ci_search_fixed_detect.cpp \
+  altrep_backend/ci_search_fixed_extract.cpp \
+  altrep_backend/ci_search_fixed_locate.cpp \
+  altrep_backend/ci_search_fixed_replace.cpp \
+  altrep_backend/ci_search_fixed_split.cpp \
+  altrep_backend/ci_search_fixed_startsendswith.cpp \
+  altrep_backend/ci_search_other_split.cpp \
+  altrep_backend/ci_search_regex_count.cpp \
+  altrep_backend/ci_search_regex_detect.cpp \
+  altrep_backend/ci_search_regex_extract.cpp \
+  altrep_backend/ci_search_regex_locate.cpp \
+  altrep_backend/ci_search_regex_match.cpp \
+  altrep_backend/ci_search_regex_replace.cpp \
+  altrep_backend/ci_search_regex_split.cpp \
+  altrep_backend/ci_search_regex_subset.cpp \
+  altrep_backend/ci_sort.cpp \
+  altrep_backend/ci_sub.cpp \
+  altrep_backend/ci_test.cpp \
+  altrep_backend/ci_trans_casemap.cpp \
+  altrep_backend/ci_trans_normalization.cpp \
+  altrep_backend/ci_utils.cpp \
+  altrep_backend/ci_wrap.cpp
+
+ALTREP_SOURCES = $(ALTREP_FOUNDATION_SOURCES) \
+  $(ALTREP_SUPPORT_SOURCES) \
+  $(ALTREP_OPERATION_SOURCES)
+
+ALTREP_OBJECTS = $(ALTREP_SOURCES:.cpp=.o)
+
+OBJECTS = $(RUNTIME_OBJECTS) \
+  $(BASE_OBJECTS) \
+  $(ALTREP_OBJECTS)
+
+ICU_COMMON_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu78/common/*.cpp))
+ICU_I18N_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu78/i18n/*.cpp))
+ICU_STUBDATA_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu78/stubdata/*.cpp))
 
 PKG_LIBS = -L. -licu_i18n -licu_common -licu_stubdata
 

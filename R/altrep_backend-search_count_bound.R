@@ -104,9 +104,3 @@ ci_count_boundaries <- function(str, ..., opts_brkiter = NULL)
 
 # @export
 # @rdname ci_count_boundaries
-ci_count_words <- function(str, locale = NULL)
-{
-    ci_count_boundaries(str,
-        opts_brkiter = ci_opts_brkiter(type = "word", skip_word_none = TRUE,
-        locale = locale))
-}

@@ -35,5 +35,5 @@ str_equal <- function(x, y, locale = "en", ignore_case = FALSE, ...) {
     ignore_case = ignore_case,
     ...
   )
-  ci_cmp_equiv(x, y, opts_collator = opts)
+  stri_cmp_equiv(x, y, opts_collator = opts)
 }

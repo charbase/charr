@@ -33,7 +33,7 @@
 
 #include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
 #include "ci_container_utf16.h"
 #include "ci_string8buf.h"
 #include <unicode/ucol.h>
@@ -51,13 +51,15 @@
 
 /** help struct for ci_order **/
 struct StriSortComparer {
-    StriContainerUTF8* cont;
+    const Utf8Record* records;
     bool decreasing;
     UCollator* col;
 
-    StriSortComparer(StriContainerUTF8* _cont, UCollator* _col, bool _decreasing)
+    StriSortComparer(
+        const Utf8Record* _records, UCollator* _col, bool _decreasing
+    )
     {
-        this->cont = _cont;
+        this->records = _records;
         this->col = _col;
         this->decreasing = _decreasing;
     }
@@ -65,10 +67,11 @@ struct StriSortComparer {
     bool operator() (int a, int b) const
     {
 //      if (col) {
+        const charport::StrView left = records[a].view();
+        const charport::StrView right = records[b].view();
         UErrorCode status = U_ZERO_ERROR;
         int ret = (int)ucol_strcollUTF8(col,
-            cont->get(a).data(), cont->get(a).length(),
-            cont->get(b).data(), cont->get(b).length(), &status);
+            left.ptr, left.len, right.ptr, right.len, &status);
         STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
         return (decreasing)?(ret > 0):(ret < 0);
 //      }
@@ -169,14 +172,15 @@ SEXP ci_order_rank_or_sort(SEXP str, SEXP decreasing, SEXP na_last,
     std::unique_ptr<charport::charvec::Builder> output;
     R_len_t output_length = vectorize_length;
     {
-        StriContainerUTF8 str_cont(context, str, vectorize_length);
+        Utf8Input str_cont(context, str, vectorize_length);
+        const Utf8Record* records = str_cont.source_data();
 
         deque<int> NA_pos;
         vector<int> order(vectorize_length);
 
         R_len_t k = 0;
         for (R_len_t i=0; i<vectorize_length; ++i) {
-            if (!str_cont.isNA(i))
+            if (!records[i].isNA())
                 order[k++] = i;
             else if (na_last_int != NA_LOGICAL)
                 NA_pos.push_back(i);
@@ -188,7 +192,7 @@ SEXP ci_order_rank_or_sort(SEXP str, SEXP decreasing, SEXP na_last,
         // TO DO: collation-based cmp: think of using sort keys...
         // however,  it's  very fast already now.
 
-        StriSortComparer comp(&str_cont, col, decr);
+        StriSortComparer comp(records, col, decr);
         std::stable_sort(order.begin(), order.end(), comp);
 
 
@@ -203,7 +207,7 @@ SEXP ci_order_rank_or_sort(SEXP str, SEXP decreasing, SEXP na_last,
             }
 
             for (std::vector<int>::iterator it=order.begin(); it!=order.end(); ++it, ++j)
-                ci::builder_set(*output, j, str_cont.get(*it));
+                ci::builder_set(*output, j, records[*it]);
 
             if (na_last_int != NA_LOGICAL && na_last_int) {
                 // put NAs last
@@ -240,14 +244,15 @@ SEXP ci_order_rank_or_sort(SEXP str, SEXP decreasing, SEXP na_last,
                 cur_idx = *it;
 
                 if (j_first > 1) {
+                    const charport::StrView previous =
+                        records[last_idx].view();
+                    const charport::StrView current = records[cur_idx].view();
                     UErrorCode status = U_ZERO_ERROR;
                     if (
                         0 != (int)ucol_strcollUTF8(
                             col,
-                            str_cont.get(last_idx).data(),
-                            str_cont.get(last_idx).length(),
-                            str_cont.get(cur_idx).data(),
-                            str_cont.get(cur_idx).length(), &status
+                            previous.ptr, previous.len,
+                            current.ptr, current.len, &status
                         )
                     ) {
                         j_min = j_first;
@@ -383,9 +388,10 @@ SEXP ci_unique(SEXP str, SEXP opts_collator)
     );
     std::unique_ptr<charport::charvec::Builder> output;
     {
-        StriContainerUTF8 str_cont(context, str, vectorize_length);
+        Utf8Input str_cont(context, str, vectorize_length);
+        const Utf8Record* records = str_cont.source_data();
 
-        StriSortComparer comp(&str_cont, col, true);
+        StriSortComparer comp(records, col, true);
         set<int,StriSortComparer> uniqueset(comp);
 
         bool was_na = false;
@@ -393,7 +399,7 @@ SEXP ci_unique(SEXP str, SEXP opts_collator)
         // CHARSXPs, then copy through Builder while the Reader is still live.
         deque<int> temp;
         for (R_len_t i=0; i<vectorize_length; ++i) {
-            if (str_cont.isNA(i)) {
+            if (records[i].isNA()) {
                 if (!was_na) {
                     was_na = true;
                     temp.push_back(-1);
@@ -415,7 +421,7 @@ SEXP ci_unique(SEXP str, SEXP opts_collator)
             if (*it < 0)
                 output->set_na(i++);
             else
-                ci::builder_set(*output, i++, str_cont.get(*it));
+                ci::builder_set(*output, i++, records[*it]);
         }
     }
 
@@ -481,15 +487,16 @@ SEXP ci_duplicated(SEXP str, SEXP fromLast, SEXP opts_collator)
     int* ret_tab = LOGICAL(ret);
 
     {
-        StriContainerUTF8 str_cont(context, str, vectorize_length);
+        Utf8Input str_cont(context, str, vectorize_length);
+        const Utf8Record* records = str_cont.source_data();
 
-        StriSortComparer comp(&str_cont, col, true);
+        StriSortComparer comp(records, col, true);
         set<int,StriSortComparer> uniqueset(comp);
 
         bool was_na = false;
         if (fromLastBool) {
             for (R_len_t i=vectorize_length-1; i>=0; --i) {
-                if (str_cont.isNA(i)) {
+                if (records[i].isNA()) {
                     ret_tab[i] = was_na;
                     if (!was_na)
                         was_na = true;
@@ -502,7 +509,7 @@ SEXP ci_duplicated(SEXP str, SEXP fromLast, SEXP opts_collator)
         }
         else {
             for (R_len_t i=0; i<vectorize_length; ++i) {
-                if (str_cont.isNA(i)) {
+                if (records[i].isNA()) {
                     ret_tab[i] = was_na;
                     if (!was_na)
                         was_na = true;
@@ -575,15 +582,16 @@ SEXP ci_duplicated_any(SEXP str, SEXP fromLast, SEXP opts_collator)
     ret_tab[0] = 0;
 
     {
-        StriContainerUTF8 str_cont(context, str, vectorize_length);
+        Utf8Input str_cont(context, str, vectorize_length);
+        const Utf8Record* records = str_cont.source_data();
 
-        StriSortComparer comp(&str_cont, col, true);
+        StriSortComparer comp(records, col, true);
         set<int,StriSortComparer> uniqueset(comp);
 
         bool was_na = false;
         if (fromLastBool) {
             for (R_len_t i=vectorize_length-1; i>=0; --i) {
-                if (str_cont.isNA(i)) {
+                if (records[i].isNA()) {
                     if (!was_na)
                         was_na = true;
                     else {
@@ -602,7 +610,7 @@ SEXP ci_duplicated_any(SEXP str, SEXP fromLast, SEXP opts_collator)
         }
         else {
             for (R_len_t i=0; i<vectorize_length; ++i) {
-                if (str_cont.isNA(i)) {
+                if (records[i].isNA()) {
                     if (!was_na)
                         was_na = true;
                     else {

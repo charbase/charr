@@ -106,44 +106,10 @@
 # @family search_detect
 # @export
 # @rdname ci_startsendswith
-ci_startswith <- function(str, ..., fixed, coll, charclass)
-{
-    providedarg <- c(
-        fixed = !missing(fixed),
-        coll = !missing(coll),
-        charclass = !missing(charclass))
-
-    if (sum(providedarg) != 1)
-        stop("you have to specify either `fixed`, `coll`, or `charclass`")
-
-    if (providedarg["fixed"])
-        ci_startswith_fixed(str, fixed, ...)
-    else if (providedarg["coll"])
-        ci_startswith_coll(str, coll, ...)
-    else if (providedarg["charclass"])
-        ci_startswith_charclass(str, charclass, ...)
-}
 
 
 # @export
 # @rdname ci_startsendswith
-ci_endswith <- function(str, ..., fixed, coll, charclass)
-{
-    providedarg <- c(
-        fixed = !missing(fixed),
-        coll = !missing(coll),
-        charclass = !missing(charclass))
-
-    if (sum(providedarg) != 1)
-        stop("you have to specify either `fixed`, `coll`, or `charclass`")
-
-    if (providedarg["fixed"])
-        ci_endswith_fixed(str, fixed, ...)
-    else if (providedarg["coll"])
-        ci_endswith_coll(str, coll, ...)
-    else if (providedarg["charclass"])
-        ci_endswith_charclass(str, charclass, ...)
-}
 
 
 # @export
@@ -170,18 +136,10 @@ ci_endswith_fixed <- function(str, pattern, to = -1L,
 
 # @export
 # @rdname ci_startsendswith
-ci_startswith_charclass <- function(str, pattern, from = 1L, negate = FALSE)
-{
-    .Call(C_ci_startswith_charclass, str, pattern, from, negate)
-}
 
 
 # @export
 # @rdname ci_startsendswith
-ci_endswith_charclass <- function(str, pattern, to = -1L, negate = FALSE)
-{
-    .Call(C_ci_endswith_charclass, str, pattern, to, negate)
-}
 
 
 # @export

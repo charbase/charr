@@ -32,9 +32,111 @@
 
 
 #include "ci_stringi.h"
-#include "ci_builder.h"
-#include "ci_container_utf8.h"
-#include "ci_string8buf.h"
+#include "ci_reader.h"
+#include "../altrep/native_to_utf8.h"
+#include "../altrep/utf8_output.h"
+
+#include <algorithm>
+#include <cstdint>
+
+
+namespace {
+
+struct ReverseInput {
+    const char* ptr;
+    int len;
+    bool ascii;
+};
+
+bool has_utf8_bom(const char* ptr, int len) noexcept
+{
+    return len >= 3 &&
+        static_cast<uint8_t>(ptr[0]) == UTF8_BOM_BYTE1 &&
+        static_cast<uint8_t>(ptr[1]) == UTF8_BOM_BYTE2 &&
+        static_cast<uint8_t>(ptr[2]) == UTF8_BOM_BYTE3;
+}
+
+ReverseInput normalize_input(
+    const charport::StrView& value,
+    charr::altrep::NativeToUtf8& converter
+)
+{
+    if (value.enc == cetype_ext_t::CE_ASCII)
+        return ReverseInput{value.ptr, value.len, true};
+    if (value.enc == cetype_ext_t::CE_BYTES)
+        throw StriException(MSG__BYTESENC);
+
+    const char* ptr = value.ptr;
+    int len = value.len;
+    bool ambiguous = value.enc == cetype_ext_t::CE_ASCII_OR_UTF8;
+    if (value.enc == cetype_ext_t::CE_LATIN1 ||
+            value.enc == cetype_ext_t::CE_NATIVE) {
+        const charport::ByteView converted =
+            value.enc == cetype_ext_t::CE_LATIN1
+            ? converter.latin1(ptr, len)
+            : converter.native(ptr, len);
+        ptr = converted.ptr;
+        len = converted.len;
+        // Conversion establishes valid UTF-8, but not whether the payload is
+        // ASCII. Resolve that mark before reserving native charvec storage.
+        ambiguous = true;
+    }
+    else if (value.enc != cetype_ext_t::CE_UTF8 && !ambiguous) {
+        throw StriException("unknown charport string encoding");
+    }
+
+    if (has_utf8_bom(ptr, len)) {
+        ptr += 3;
+        len -= 3;
+        // Removing the BOM may leave an otherwise ASCII payload.
+        ambiguous = true;
+    }
+    return ReverseInput{
+        ptr, len, ambiguous && ci::is_ascii(ptr, static_cast<std::size_t>(len))
+    };
+}
+
+void reverse_utf8(const ReverseInput& value, char* output)
+{
+    int32_t source_index = value.len;
+    int32_t output_index = 0;
+    while (source_index > 0) {
+        const uint8_t last_byte = static_cast<uint8_t>(
+            value.ptr[source_index - 1]
+        );
+        if (last_byte < 0x80) {
+            output[output_index++] = static_cast<char>(last_byte);
+            --source_index;
+            continue;
+        }
+
+        const int32_t code_point_end = source_index;
+        UChar32 code_point;
+        U8_PREV(value.ptr, 0, source_index, code_point);
+        if (code_point < 0)
+            throw StriException(MSG__INVALID_UTF8);
+
+        // U8_PREV has validated this sequence. Copying its original bytes is
+        // cheaper than reconstructing the same UTF-8 code point.
+        const int32_t code_point_width = code_point_end - source_index;
+        switch (code_point_width) {
+        case 4:
+            output[output_index + 3] = value.ptr[source_index + 3];
+            [[fallthrough]];
+        case 3:
+            output[output_index + 2] = value.ptr[source_index + 2];
+            [[fallthrough]];
+        case 2:
+            output[output_index + 1] = value.ptr[source_index + 1];
+            [[fallthrough]];
+        default:
+            output[output_index] = value.ptr[source_index];
+        }
+        output_index += code_point_width;
+    }
+}
+
+}
 
 
 /**
@@ -49,7 +151,7 @@
  *          use StriContainerUTF16
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
- *          make StriException-friendly + StriContainerUTF8 (bug fix, do reversing manually)
+ *          make StriException-friendly + Utf8Input (bug fix, do reversing manually)
  *
  * @version 0.2-1 (Marek Gagolewski, 2014-04-01)
  *          detect incorrect utf8 byte stream
@@ -65,63 +167,37 @@ SEXP ci_reverse(SEXP str)
     SEXP ret;
     {
         ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-        R_len_t str_len = ci::checked_r_len(
-            context.size(str), "character vectors"
-        );
-        charport::charvec::Builder builder(str_len);
-        {
-            StriContainerUTF8 str_cont(context, str, str_len); // no recycle
+        std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(str);
+        const charport::StrViews& values = borrow->views();
+        const R_xlen_t str_len = values.size();
+        charr::altrep::OutputBuilder builder(str_len);
+        charr::altrep::NativeToUtf8 converter;
 
-            // STEP 1.
-            // Calculate the required buffer length
-            R_len_t bufsize = 0;
-            for (R_len_t i=0; i<str_len; ++i) {
-                if (str_cont.isNA(i))
-                    continue;
-
-                R_len_t cursize = str_cont.get(i).length();
-                if (cursize > bufsize)
-                    bufsize = cursize;
+        for (R_xlen_t i = 0; i < str_len; ++i) {
+            const charport::StrView source = values[i];
+            if (source.is_na()) {
+                builder.set_na(i);
+                continue;
             }
 
-            // STEP 2.
-            // Alloc buffer & result vector
-            String8buf buf(bufsize);
-
-            for (R_len_t i = str_cont.vectorize_init();
-                    i != str_cont.vectorize_end();
-                    i = str_cont.vectorize_next(i))
-            {
-                if (str_cont.isNA(i)) {
-                    builder.set_na(i);
-                    continue;
-                }
-
-                R_len_t str_cur_n = str_cont.get(i).length();
-                const char* str_cur_s = str_cont.get(i).data();
-
-                R_len_t j, k;
-                UChar32 chr;
-                UBool isError = FALSE;
-
-                for (j=str_cur_n, k=0; !isError && j>0; ) {
-                    U8_PREV(str_cur_s, 0, j, chr); // go backwards
-                    if (chr < 0) {
-                        throw StriException(MSG__INVALID_UTF8);
-                    }
-                    U8_APPEND((uint8_t*)buf.data(), k, str_cur_n, chr, isError);
-                }
-
-                if (isError)
-                    throw StriException(MSG__INTERNAL_ERROR);
-
-                ci::builder_set(
-                    builder, i, buf.data(), str_cur_n,
-                    cetype_ext_t::CE_ASCII_OR_UTF8
+            const ReverseInput value = normalize_input(source, converter);
+            char* output = builder.reserve(
+                i, static_cast<std::size_t>(value.len),
+                value.ascii
+                    ? cetype_ext_t::CE_ASCII
+                    : cetype_ext_t::CE_UTF8
+            );
+            if (value.ascii) {
+                std::reverse_copy(
+                    value.ptr, value.ptr + value.len, output
                 );
+            }
+            else {
+                reverse_utf8(value, output);
             }
         }
 
+        borrow.reset();
         STRI__PROTECT(ret = builder.to_sexp());
     }
 

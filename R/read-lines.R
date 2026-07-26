@@ -15,5 +15,5 @@
 #' str_read_lines(path, encoding = "UTF-8")
 #' unlink(path)
 str_read_lines <- function(con, encoding = NULL) {
-  ci_read_lines(con, encoding = encoding)
+  stri_read_lines(con, encoding = encoding)
 }

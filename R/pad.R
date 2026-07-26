@@ -40,9 +40,9 @@ str_pad <- function(
 
   out <- switch(
     side,
-    left = ci_pad_left(string, width, pad = pad, use_length = !use_width),
-    right = ci_pad_right(string, width, pad = pad, use_length = !use_width),
-    both = ci_pad_both(string, width, pad = pad, use_length = !use_width)
+    left = stri_pad_left(string, width, pad = pad, use_length = !use_width),
+    right = stri_pad_right(string, width, pad = pad, use_length = !use_width),
+    both = stri_pad_both(string, width, pad = pad, use_length = !use_width)
   )
   # Preserve names unless `string` is recycled
   if (length(out) == length(string)) copy_names(string, out) else out

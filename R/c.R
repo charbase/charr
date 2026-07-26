@@ -58,5 +58,5 @@ str_c <- function(..., sep = "", collapse = NULL) {
   dots <- dots[!map_lgl(dots, is.null)]
   vctrs::vec_size_common(!!!dots)
 
-  inject(ci_c(!!!dots, sep = sep, collapse = collapse))
+  inject(stri_c(!!!dots, sep = sep, collapse = collapse))
 }

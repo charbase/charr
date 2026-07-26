@@ -135,65 +135,9 @@ private:
 } // namespace
 
 
-/**
- * Sets current (default) ICU charset
- *
- * If given charset is unavailable, an error is raised
- *
- * @param enc new charset (single string)
- * @return nothing (\code{R_NilValue})
- *
- * @version 0.1-?? (Marek Gagolewski)
- *
- * @version 0.2-1 (Marek Gagolewski)
- *          use StriUcnv; make StriException-friendly
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 1.3.1 (Marek Gagolewski, 2019-02-06)
- *    #335: if system ICU uses U_CHARSET_IS_UTF8=1, the function has no effect
- */
-SEXP ci_enc_set(SEXP enc)
-{
-    // here, the default encoding may not be requested:
-    const char* selected_enc
-        = ci__prepare_arg_enc(enc, "enc", false/*no default*/); /* this is R_alloc'ed */
-
-#ifdef U_CHARSET_IS_UTF8
-#if U_CHARSET_IS_UTF8
-    // #335: if system ICU uses U_CHARSET_IS_UTF8=1, the function has no effect
-    Rf_warning(MSG__U_CHARSET_IS_UTF8);
-    return R_NilValue;
-#endif
-#endif
-
-    STRI__ERROR_HANDLER_BEGIN(0)
-    {
-        StriUcnv uconv_obj(selected_enc);
-        // this will generate an error if selected_enc is not supported:
-        UConverter* uconv = uconv_obj.getConverter();
-
-        UErrorCode status = U_ZERO_ERROR;
-        // get "official" encoding name:
-        const char* name = ucnv_getName(uconv, &status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-        /*
-         DO NOT call this function when ANY ICU function is being used
-         from more than one thread! This function sets the current default
-         converter name. If this function needs to be called, it should be
-         called during application initialization.
-         Do not use unless you know what you are doing.
-         */
-        ucnv_setDefaultName(name); // set as default
-    }
-
-    STRI__DEFERRED_WARNINGS.emit();
-    return R_NilValue;
-
-    STRI__ERROR_HANDLER_END({/* no special action on error */})
-}
+// The stringr surface does not expose stringi's mutable ICU-default converter.
+// Charr resolves native encodings explicitly for each operation instead of
+// changing process-global ICU state that may be shared with other packages.
 
 
 /**

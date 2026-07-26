@@ -71,7 +71,7 @@ str_view <- function(
     out <- str_replace_all(out, pattern, str_view_highlighter(html))
   }
   if (use_escapes) {
-    out <- ci_escape_unicode(out)
+    out <- stri_escape_unicode(out)
     out <- str_replace_all(out, fixed("\\u001b"), "\u001b")
   } else {
     out <- str_view_special(out, html = html)
@@ -142,7 +142,7 @@ str_view_special <- function(x, html = TRUE) {
         return(character())
       }
 
-      cli::col_cyan("{", ci_escape_unicode(x), "}")
+      cli::col_cyan("{", stri_escape_unicode(x), "}")
     }
   }
 

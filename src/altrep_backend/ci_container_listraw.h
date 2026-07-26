@@ -30,74 +30,33 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifndef CHARR_CI_CONTAINER_LISTRAW_H
+#define CHARR_CI_CONTAINER_LISTRAW_H
 
-#ifndef __ci_container_listraw_h
-#define __ci_container_listraw_h
-
-#include "ci_reader.h"
-#include "ci_string8.h"
+#include "altrep/utf8_input.h"
 #include "ci_container_base.h"
+#include "ci_reader.h"
 
 #include <memory>
 
-
-/**
- * Contains R lists of raw vectors, single raw vectors,
- * or character string vectors treated as "byte"-encoded.
- * Useful for encoding conversion or detection.
- * Each string is represented by the String8 class,
- * with shallow copy of byte data.
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-08-08)
- *
- * @version 0.2-1  (Marek Gagolewski, 2014-03-25)
- *          data as String8* and not String8** (performance gain)
- */
 class StriContainerListRaw : public StriContainerBase {
+public:
+    struct Storage;
 
 private:
-
-    std::shared_ptr<ci::ReaderBorrow> borrow;
-    String8* data;
-
+    std::shared_ptr<Storage> storage_;
 
 public:
-
     StriContainerListRaw();
-    // Character input is borrowed through context. Raw vectors retain the
-    // copied stringi shallow-or-owned behavior.
-    StriContainerListRaw(ci::ReaderContext& context, SEXP rlist);
-    StriContainerListRaw(StriContainerListRaw& container);
-    ~StriContainerListRaw();
-    StriContainerListRaw& operator=(StriContainerListRaw& container);
+    StriContainerListRaw(ci::ReaderContext& context, SEXP input);
+    StriContainerListRaw(const StriContainerListRaw&) noexcept = default;
+    StriContainerListRaw& operator=(
+        const StriContainerListRaw&
+    ) noexcept = default;
+    ~StriContainerListRaw() = default;
 
-
-    /** check if the vectorized ith element is NA
-     * @param i index
-     * @return true if is NA
-     */
-    inline bool isNA(R_len_t i) const {
-#ifndef NDEBUG
-        if (i < 0 || i >= nrecycle)
-            throw StriException("StriContainerListRaw::isNA(): INDEX OUT OF BOUNDS");
-#endif
-        return (data[i%n].isNA());
-    }
-
-
-    /** get the vectorized ith element
-     * @param i index
-     * @return string, read only
-     */
-    const String8& get(R_len_t i) const {
-#ifndef NDEBUG
-        if (i < 0 || i >= nrecycle)
-            throw StriException("StriContainerListRaw::get(): INDEX OUT OF BOUNDS");
-        if (data[i%n].isNA())
-            throw StriException("StriContainerListRaw::get(): isNA");
-#endif
-        return data[i%n];
-    }
+    bool isNA(R_len_t i) const;
+    const charr::altrep::ByteView& get(R_len_t i) const;
 };
 
 #endif

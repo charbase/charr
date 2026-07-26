@@ -47,11 +47,11 @@ str_flatten <- function(string, collapse = "", last = NULL, na.rm = FALSE) {
   if (!is.null(last) && n >= 2) {
     string <- c(
       string[seq2(1, n - 2)],
-      ci_c(string[[n - 1]], last, string[[n]])
+      stri_c(string[[n - 1]], last, string[[n]])
     )
   }
 
-  ci_flatten(string, collapse = collapse)
+  stri_flatten(string, collapse = collapse)
 }
 
 #' @export

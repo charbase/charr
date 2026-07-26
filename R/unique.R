@@ -27,6 +27,6 @@ str_unique <- function(string, locale = "en", ignore_case = FALSE, ...) {
     ...
   )
 
-  keep <- !ci_duplicated(string, opts_collator = opts)
+  keep <- !stri_duplicated(string, opts_collator = opts)
   string[keep]
 }

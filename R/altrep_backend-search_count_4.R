@@ -94,33 +94,10 @@
 # @family search_count
 # @export
 # @rdname ci_count
-ci_count <- function(str, ..., regex, fixed, coll, charclass)
-{
-    providedarg <- c(
-        regex = !missing(regex),
-        fixed = !missing(fixed),
-        coll = !missing(coll),
-        charclass = !missing(charclass))
-
-    if (sum(providedarg) != 1)
-        stop("you have to specify either `regex`, `fixed`, `coll`, or `charclass`")
-
-    if (providedarg["regex"])
-        ci_count_regex(str, regex, ...)
-    else if (providedarg["fixed"])
-        ci_count_fixed(str, fixed, ...)
-    else if (providedarg["coll"])
-        ci_count_coll(str, coll, ...)
-    else if (providedarg["charclass"])
-        ci_count_charclass(str, charclass, ...)
-}
 
 
 # @export
 # @rdname ci_count
-ci_count_charclass <- function(str, pattern) {
-    .Call(C_ci_count_charclass, str, pattern)
-}
 
 
 # @export

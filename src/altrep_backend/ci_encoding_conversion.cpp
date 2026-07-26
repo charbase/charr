@@ -33,16 +33,20 @@
 
 #include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
 #include "ci_container_utf16.h"
 #include "ci_container_listraw.h"
 #include "ci_container_listint.h"
 #include "ci_string8buf.h"
 #include "ci_ucnv.h"
+#include "altrep/native_to_utf8.h"
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <stdexcept>
+#include <utility>
 #include <vector>
 
 
@@ -81,6 +85,167 @@ static cetype_ext_t ci__extended_encoding(cetype_t encoding)
 static const char* ci__nonnull_bytes(const char* data, size_t length)
 {
     return length == 0 && data == NULL ? "" : data;
+}
+
+
+static bool ci__utf8_identity_name(const char* encoding)
+{
+    return encoding != NULL &&
+        ucnv_compareNames(encoding, "UTF-8") == 0;
+}
+
+
+static bool ci__valid_utf8_bytes(
+    const char* data, R_len_t length, bool& ascii, bool& embedded_nul
+)
+{
+    ascii = true;
+    embedded_nul = false;
+    R_len_t i = 0;
+    while (i < length) {
+        const uint8_t byte = static_cast<uint8_t>(data[i]);
+        if (byte == 0)
+            embedded_nul = true;
+        if (byte <= 0x7fU) {
+            ++i;
+            continue;
+        }
+
+        ascii = false;
+        UChar32 code_point = 0;
+        U8_NEXT(data, i, length, code_point);
+        if (code_point < 0)
+            return false;
+    }
+    return true;
+}
+
+
+static bool ci__utf8_identity_character(
+    SEXP input, bool respect_marks, ci::ReaderContext& context,
+    std::shared_ptr<ci::ReaderBorrow>& borrow,
+    charport::charvec::Store& output
+)
+{
+    borrow = context.acquire(input);
+    const R_len_t size = ci::checked_r_len(
+        borrow->size(), "character vectors"
+    );
+    const charport::StrViews& views = borrow->views();
+    std::vector<cetype_ext_t> encodings(static_cast<size_t>(size));
+    for (R_len_t i=0; i<size; ++i) {
+        const charport::StrView value = views[i];
+        if (value.is_na()) {
+            encodings[static_cast<size_t>(i)] = cetype_ext_t::CE_NA;
+            continue;
+        }
+        if (value.len < 0 || (value.ptr == nullptr && value.len != 0))
+            throw std::runtime_error("Reader returned an invalid string view");
+        if (respect_marks &&
+                value.enc != cetype_ext_t::CE_ASCII &&
+                value.enc != cetype_ext_t::CE_UTF8 &&
+                value.enc != cetype_ext_t::CE_ASCII_OR_UTF8) {
+            return false;
+        }
+        if (value.enc == cetype_ext_t::CE_ASCII) {
+            encodings[static_cast<size_t>(i)] = cetype_ext_t::CE_ASCII;
+            continue;
+        }
+
+        bool value_is_ascii = false;
+        bool embedded_nul = false;
+        const char* data = ci__nonnull_bytes(
+            value.ptr, static_cast<size_t>(value.len)
+        );
+        if (!ci__valid_utf8_bytes(
+                data, value.len, value_is_ascii, embedded_nul
+            ) || embedded_nul) {
+            return false;
+        }
+        encodings[static_cast<size_t>(i)] = value_is_ascii
+            ? cetype_ext_t::CE_ASCII
+            : cetype_ext_t::CE_UTF8;
+    }
+
+    charport::charvec::Builder builder(size);
+    for (R_len_t i=0; i<size; ++i) {
+        const charport::StrView value = views[i];
+        const cetype_ext_t encoding = encodings[static_cast<size_t>(i)];
+        if (encoding == cetype_ext_t::CE_NA) {
+            builder.set_na(i);
+            continue;
+        }
+        ci::builder_set(
+            builder, i,
+            ci__nonnull_bytes(
+                value.ptr, static_cast<size_t>(value.len)
+            ),
+            static_cast<size_t>(value.len),
+            encoding
+        );
+    }
+    output = builder.release_store();
+    return true;
+}
+
+
+static size_t ci__transcode_direct(
+    UConverter* source_converter, UConverter* target_converter,
+    const char* input, R_len_t input_length, String8buf& output
+)
+{
+    const size_t maximum = static_cast<size_t>(BUF_MAX_LENGTH);
+    const size_t max_char_size = static_cast<size_t>(
+        ucnv_getMaxCharSize(target_converter)
+    );
+    size_t capacity = 64;
+    if (input_length > 0) {
+        const size_t input_size = static_cast<size_t>(input_length);
+        capacity = input_size > (maximum-1)/max_char_size
+            ? maximum-1
+            : input_size*max_char_size;
+        if (capacity < 64)
+            capacity = 64;
+    }
+    output.resize(capacity-1, false);
+
+    const char empty[] = "";
+    const char* source = input_length == 0 && input == nullptr ? empty : input;
+    const char* source_limit = source+input_length;
+    UChar pivot[1024];
+    UChar* pivot_source = pivot;
+    UChar* pivot_target = pivot;
+    bool reset = true;
+    size_t used = 0;
+
+    for (;;) {
+        char* target = output.data()+used;
+        const char* target_limit = output.data()+output.size();
+        UErrorCode status = U_ZERO_ERROR;
+        ucnv_convertEx(
+            target_converter, source_converter,
+            &target, target_limit, &source, source_limit,
+            pivot, &pivot_source, &pivot_target, pivot+1024,
+            reset, true, &status
+        );
+        used = static_cast<size_t>(target-output.data());
+        if (status != U_BUFFER_OVERFLOW_ERROR) {
+            STRI__CHECKICUSTATUS_THROW(status, {})
+            return used;
+        }
+
+        const size_t old_capacity = output.size();
+        if (old_capacity >= maximum)
+            throw StriException(MSG__BUF_SIZE_EXCEEDED);
+        const size_t new_capacity = old_capacity > maximum/2
+            ? maximum
+            : old_capacity*2;
+        output.resize(new_capacity-1, true);
+        // A target overflow leaves converter and pivot state mid-record.
+        // Continue that record after growing the buffer; the next record's
+        // first call uses reset=true again.
+        reset = false;
+    }
 }
 
 
@@ -281,7 +446,7 @@ SEXP ci_enc_toutf32(SEXP str)
         std::vector< std::vector<int> > outputs(static_cast<size_t>(n));
         std::vector<bool> missing(static_cast<size_t>(n), false);
         {
-            StriContainerUTF8 str_cont(context, str, n);
+            Utf8Input str_cont(context, str, n);
 
             R_len_t bufsize = 1; // to avoid allocating an empty buffer
             for (R_len_t i=0; i<n; ++i) {
@@ -397,19 +562,19 @@ SEXP ci_enc_toutf8(SEXP str, SEXP is_unknown_8bit, SEXP validate)
         );
         charport::charvec::Builder builder(n);
         if (!is_unknown_8bit_logical) {
-            // Trivial - everything we need is in StriContainerUTF8 :)
+            // Trivial - everything we need is in Utf8Input :)
             // which removes BOMs silently
             {
                 std::shared_ptr<ci::ReaderBorrow> borrow =
                     context.acquire(str);
                 const charport::StrViews& views = borrow->views();
-                StriContainerUTF8 str_cont(context, str, n);
+                Utf8Input str_cont(context, str, n);
                 for (R_len_t i=0; i<n; ++i) {
                     if (str_cont.isNA(i)) {
                         builder.set_na(i);
                         continue;
                     }
-                    const String8& value = str_cont.get(i);
+                    const Utf8Record& value = str_cont.get(i);
                     const charport::StrView source = views[i];
                     const cetype_ext_t encoding =
                         value.data() == source.ptr &&
@@ -652,9 +817,25 @@ SEXP ci_encode_from_marked(SEXP str, SEXP to, SEXP to_raw)
     bool to_raw_logical = ci__prepare_arg_logical_1_notNA(to_raw, "to_raw");
 
     STRI__ERROR_HANDLER_BEGIN(1)
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    std::shared_ptr<ci::ReaderBorrow> identity_borrow;
+
+    if (!to_raw_logical && ci__utf8_identity_name(selected_to)) {
+        charport::charvec::Store output(0, 0);
+        if (ci__utf8_identity_character(
+                str, true, context, identity_borrow, output
+            )) {
+            identity_borrow.reset();
+            SEXP ret;
+            STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+            context.emitWarnings();
+            STRI__UNPROTECT_ALL
+            return ret;
+        }
+    }
+
     SEXP ret;
     {
-        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
         R_len_t str_n = ci::checked_r_len(
             context.size(str), "character vectors"
         );
@@ -753,6 +934,7 @@ SEXP ci_encode_from_marked(SEXP str, SEXP to, SEXP to_raw)
             }
         }
 
+        identity_borrow.reset();
         if (!to_raw_logical) {
             STRI__PROTECT(ret = builder->to_sexp());
         }
@@ -785,7 +967,7 @@ SEXP ci_encode_from_marked(SEXP str, SEXP to, SEXP to_raw)
         }
     }
 
-    STRI__DEFERRED_WARNINGS.emit();
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
 
@@ -838,9 +1020,31 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
 
 
     STRI__ERROR_HANDLER_BEGIN(1)
+    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
+    std::shared_ptr<ci::ReaderBorrow> identity_borrow;
+
+    // Explicit UTF-8-to-UTF-8 character conversion needs validation, but no
+    // transcoding. Borrow each record once and copy valid bytes straight into
+    // the output Store; malformed input and embedded NULs keep the converter
+    // path, including its warnings and replacement behavior.
+    if (!to_raw_logical && TYPEOF(str) == STRSXP &&
+            ci__utf8_identity_name(selected_from) &&
+            ci__utf8_identity_name(selected_to)) {
+        charport::charvec::Store output(0, 0);
+        if (ci__utf8_identity_character(
+                str, false, context, identity_borrow, output
+            )) {
+            identity_borrow.reset();
+            SEXP ret;
+            STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+            context.emitWarnings();
+            STRI__UNPROTECT_ALL
+            return ret;
+        }
+    }
+
     SEXP ret;
     {
-        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
         R_len_t str_n = 0;
         std::vector<CiRawResult> raw_outputs;
         std::unique_ptr<charport::charvec::Builder> builder;
@@ -854,21 +1058,48 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
 
             // get the number of strings to convert; if == 0, then you know what's the result
             if (str_n > 0) {
-                // Open converters
-                StriUcnv ucnv1(selected_from, STRI__DEFERRED_WARNINGS);
-                StriUcnv ucnv2(selected_to, STRI__DEFERRED_WARNINGS);
-                UConverter* uconv_from = ucnv1.getConverter();
-                UConverter* uconv_to   = ucnv2.getConverter();
-                // Deviation from stringi: converter callbacks queue their warnings
-                // until the converters and Reader-backed input have been released.
+                // Optimized-backend deviation from stringi: R's native
+                // encoding follows the current LC_CTYPE, whereas ICU's
+                // default converter may be fixed to UTF-8 at build time.
+                // Decode default raw input with Riconv; explicit source
+                // encodings continue through ICU below.
+                if (!selected_from && !to_raw_logical && selected_to &&
+                        ucnv_compareNames(selected_to, "UTF-8") == 0) {
+                    charr::altrep::NativeToUtf8 native_to_utf8;
+                    for (R_len_t i=0; i<str_n; ++i) {
+                        if (str_cont.isNA(i)) {
+                            builder->set_na(i);
+                            continue;
+                        }
 
-                // Get target encoding mark
-                cetype_t encmark_to =
-                    to_raw_logical ? CE_BYTES : ucnv2.getCE();
-                cetype_ext_t encmark_to2 =
-                    ci__extended_encoding(encmark_to);
-                if (encmark_to2 == cetype_ext_t::CE_UTF8)
-                    encmark_to2 = cetype_ext_t::CE_ASCII_OR_UTF8;
+                        const charr::altrep::ByteView& input = str_cont.get(i);
+                        const charport::ByteView output =
+                            native_to_utf8.native(
+                                input.data(), input.length()
+                            );
+                        ci__reject_embedded_nul(output.ptr, output.len);
+                        ci::builder_set(
+                            *builder, i, output.ptr, output.len,
+                            cetype_ext_t::CE_ASCII_OR_UTF8
+                        );
+                    }
+                }
+                else {
+                    // Open converters
+                    StriUcnv ucnv1(selected_from, STRI__DEFERRED_WARNINGS);
+                    StriUcnv ucnv2(selected_to, STRI__DEFERRED_WARNINGS);
+                    UConverter* uconv_from = ucnv1.getConverter();
+                    UConverter* uconv_to   = ucnv2.getConverter();
+                    // Deviation from stringi: converter callbacks queue their warnings
+                    // until the converters and Reader-backed input have been released.
+
+                    // Get target encoding mark
+                    cetype_t encmark_to =
+                        to_raw_logical ? CE_BYTES : ucnv2.getCE();
+                    cetype_ext_t encmark_to2 =
+                        ci__extended_encoding(encmark_to);
+                    if (encmark_to2 == cetype_ext_t::CE_UTF8)
+                        encmark_to2 = cetype_ext_t::CE_ASCII_OR_UTF8;
 
 //               // estimate required buf size
 //                size_t bufsize = 0;
@@ -878,81 +1109,46 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
 //                }
 //                bufsize = bufsize*4; // this is just an estimate (for 8bit->utf8 conversions)
 //                String8buf buf(bufsize);
-                String8buf buf(0);
+                    String8buf buf(0);
 
-                for (R_len_t i=0; i<str_n; ++i) {
-                    if (str_cont.isNA(i)) {
-                        if (!to_raw_logical)
-                            builder->set_na(i);
-                        continue;
-                    }
+                    for (R_len_t i=0; i<str_n; ++i) {
+                        if (str_cont.isNA(i)) {
+                            if (!to_raw_logical)
+                                builder->set_na(i);
+                            continue;
+                        }
 
-                    const char* curs = str_cont.get(i).data();
-                    R_len_t curn     = str_cont.get(i).length();
+                        const charr::altrep::ByteView& input = str_cont.get(i);
+                        const char* curs = input.data();
+                        R_len_t curn     = input.length();
 
-                    UErrorCode status = U_ZERO_ERROR;
-                    UnicodeString encs(curs, curn, uconv_from, status); // FROM -> UTF-16 [this is the slow part]
-                    if (status == U_ILLEGAL_ARGUMENT_ERROR)
-                        throw StriException(MSG__MEM_ALLOC_ERROR);  // see #395
-                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-                    R_len_t curn_tmp = encs.length();
-                    const UChar* curs_tmp = encs.getBuffer(); // The buffer contents is (probably) not NUL-terminated.
-                    if (!curs_tmp) {
-                        throw StriException(MSG__INTERNAL_ERROR);
-                    }
-
-                    size_t bufneed = UCNV_GET_MAX_BYTES_FOR_STRING(
-                        curn_tmp, ucnv_getMaxCharSize(uconv_to)
-                    );
-                    // "The calculated size is guaranteed to be sufficient for this conversion."
-                    if (bufneed > BUF_MAX_LENGTH)
-                        bufneed = BUF_MAX_LENGTH;
-                    buf.resize(bufneed, false/*destroy contents*/); // grows or stays as-is
-
-                    status = U_ZERO_ERROR;
-                    ucnv_resetFromUnicode(uconv_to);
-                    bufneed = ucnv_fromUChars(
-                        uconv_to, buf.data(), buf.size(), curs_tmp,
-                        curn_tmp, &status
-                    );
-                    if (bufneed <= buf.size()) {
-                        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                    }
-                    else {// larger buffer needed
-                        if (bufneed > BUF_MAX_LENGTH)
-                            throw StriException(MSG__BUF_SIZE_EXCEEDED);
-                        buf.resize(bufneed, false/*destroy contents*/);
-                        status = U_ZERO_ERROR;
-                        ucnv_resetFromUnicode(uconv_to);
-                        bufneed = ucnv_fromUChars(
-                            uconv_to, buf.data(), buf.size(), curs_tmp,
-                            curn_tmp, &status
+                        const size_t bufneed = ci__transcode_direct(
+                            uconv_from, uconv_to, curs, curn, buf
                         );
-                        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                    }
 
-                    if (to_raw_logical) {
-                        CiRawResult& output =
-                            raw_outputs[static_cast<size_t>(i)];
-                        output.is_na = false;
-                        output.data.assign(
-                            reinterpret_cast<unsigned char*>(buf.data()),
-                            reinterpret_cast<unsigned char*>(buf.data())+bufneed
-                        );
-                    }
-                    else {
-                        // Deviation from stringi: Builder accepts zero bytes, so
-                        // preserve the copied character-output rejection locally.
-                        ci__reject_embedded_nul(buf.data(), bufneed);
-                        ci::builder_set(
-                            *builder, i, buf.data(), bufneed, encmark_to2
-                        );
+                        if (to_raw_logical) {
+                            CiRawResult& output =
+                                raw_outputs[static_cast<size_t>(i)];
+                            output.is_na = false;
+                            output.data.assign(
+                                reinterpret_cast<unsigned char*>(buf.data()),
+                                reinterpret_cast<unsigned char*>(buf.data())+bufneed
+                            );
+                        }
+                        else {
+                            // Deviation from stringi: Builder accepts zero bytes, so
+                            // preserve the copied character-output rejection locally.
+                            ci__reject_embedded_nul(buf.data(), bufneed);
+                            ci::builder_set(
+                                *builder, i, buf.data(), bufneed, encmark_to2
+                            );
+                        }
                     }
                 }
             }
         }
 
+        identity_borrow.reset();
         if (!to_raw_logical) {
             STRI__PROTECT(ret = builder->to_sexp());
         }
@@ -985,7 +1181,7 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
         }
     }
 
-    STRI__DEFERRED_WARNINGS.emit();
+    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
 

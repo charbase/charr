@@ -32,7 +32,8 @@
 
 #include "ci_stringi.h"
 #include "ci_brkiter.h"
-#include "ci_container_utf8.h"
+#include "ci_reader.h"
+#include "ci_utf8.h"
 
 
 /** Select Break Iterator
@@ -100,7 +101,7 @@ void StriBrkIterOptions::setType(
                         // Normalize the full vector before selecting record 0.
                         // This preserves stringi's error order when a later
                         // element has an unsupported encoding.
-                        StriContainerUTF8 curval_cont(
+                        Utf8Input curval_cont(
                             reader_context, curval, curval_length
                         );
                         if (curval_length > 1) {
@@ -119,7 +120,7 @@ void StriBrkIterOptions::setType(
                             throw StriException(
                                 MSG__INCORRECT_MATCH_OPTION, "type"
                             );
-                        const String8& value = curval_cont.get(0);
+                        const Utf8Record& value = curval_cont.get(0);
                         this->rules = UnicodeString::fromUTF8(
                             StringPiece(value.data(), value.length())
                         );

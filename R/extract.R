@@ -48,11 +48,11 @@ str_extract <- function(string, pattern, group = NULL) {
   opt <- opts(pattern)
   out <- switch(
     type(pattern),
-    empty = ci_extract_first_boundaries(string, opts_brkiter = opt),
-    bound = ci_extract_first_boundaries(string, opts_brkiter = opt),
-    fixed = ci_extract_first_fixed(string, pattern, opts_fixed = opt),
-    coll = ci_extract_first_coll(string, pattern, opts_collator = opt),
-    regex = ci_extract_first_regex(string, pattern, opts_regex = opt)
+    empty = stri_extract_first_boundaries(string, opts_brkiter = opt),
+    bound = stri_extract_first_boundaries(string, opts_brkiter = opt),
+    fixed = stri_extract_first_fixed(string, pattern, opts_fixed = opt),
+    coll = stri_extract_first_coll(string, pattern, opts_collator = opt),
+    regex = stri_extract_first_regex(string, pattern, opts_regex = opt)
   )
   preserve_names_if_possible(string, pattern, out)
 }
@@ -66,33 +66,33 @@ str_extract_all <- function(string, pattern, simplify = FALSE) {
   opt <- opts(pattern)
   out <- switch(
     type(pattern),
-    empty = ci_extract_all_boundaries(
+    empty = stri_extract_all_boundaries(
       string,
       simplify = simplify,
       omit_no_match = TRUE,
       opts_brkiter = opt
     ),
-    bound = ci_extract_all_boundaries(
+    bound = stri_extract_all_boundaries(
       string,
       simplify = simplify,
       omit_no_match = TRUE,
       opts_brkiter = opt
     ),
-    fixed = ci_extract_all_fixed(
+    fixed = stri_extract_all_fixed(
       string,
       pattern,
       simplify = simplify,
       omit_no_match = TRUE,
       opts_fixed = opt
     ),
-    coll = ci_extract_all_coll(
+    coll = stri_extract_all_coll(
       string,
       pattern,
       simplify = simplify,
       omit_no_match = TRUE,
       opts_collator = opt
     ),
-    regex = ci_extract_all_regex(
+    regex = stri_extract_all_regex(
       string,
       pattern,
       simplify = simplify,

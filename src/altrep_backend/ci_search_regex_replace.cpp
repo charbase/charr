@@ -33,9 +33,114 @@
 
 #include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
 #include "ci_container_utf16.h"
 #include "ci_container_regex.h"
+#include "altrep/utf8_input.h"
+
+#include <memory>
+#include <unicode/ustring.h>
+
+
+namespace {
+
+class ReusableUtf16Text {
+private:
+    UnicodeString text_;
+
+public:
+    UnicodeString& set(const charport::StrView& value)
+    {
+        if (value.len <= 0) {
+            text_.remove();
+            return text_;
+        }
+
+        UChar* destination = text_.getBuffer(value.len);
+        if (!destination)
+            throw StriException(MSG__MEM_ALLOC_ERROR);
+
+        int32_t length = 0;
+        if (value.enc == cetype_ext_t::CE_ASCII) {
+            for (int32_t i = 0; i < value.len; ++i)
+                destination[i] = static_cast<unsigned char>(value.ptr[i]);
+            length = value.len;
+        }
+        else {
+            UErrorCode status = U_ZERO_ERROR;
+            u_strFromUTF8WithSub(
+                destination, value.len, &length,
+                value.ptr, value.len, 0xfffd, nullptr, &status
+            );
+            text_.releaseBuffer(length);
+            STRI__CHECKICUSTATUS_THROW(status, {/* nothing to release */})
+            return text_;
+        }
+
+        text_.releaseBuffer(length);
+        return text_;
+    }
+};
+
+
+void replace_matches(
+    RegexMatcher* matcher, UnicodeString& subject,
+    const UnicodeString& replacement, int type, UnicodeString& output
+)
+{
+    matcher->reset(subject);
+    UErrorCode status = U_ZERO_ERROR;
+
+    if (type == 0) {
+        output = matcher->replaceAll(replacement, status);
+        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+        return;
+    }
+
+    if (type == 1) {
+        bool matched = static_cast<bool>(matcher->find(status));
+        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+        if (!matched) {
+            output.setTo(subject);
+            return;
+        }
+
+        output.remove();
+        matcher->appendReplacement(output, replacement, status);
+        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+        matcher->appendTail(output);
+        return;
+    }
+
+    if (type == -1) {
+        int start = -1;
+        int end = -1;
+        while (matcher->find(status)) {
+            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+            start = matcher->start(status);
+            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+            end = matcher->end(status);
+            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+        }
+        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+        if (start < 0) {
+            output.setTo(subject);
+            return;
+        }
+
+        matcher->find(start, status);
+        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+        output.remove();
+        matcher->appendReplacement(output, replacement, status);
+        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+        output.append(subject, end, subject.length()-end);
+        return;
+    }
+
+    throw StriException(MSG__INTERNAL_ERROR);
+}
+
+} // namespace
 
 
 /**
@@ -115,75 +220,89 @@ SEXP ci__replace_allfirstlast_regex(SEXP str, SEXP pattern, SEXP replacement, SE
 
     charport::charvec::Builder builder(vectorize_length);
     {
-        StriContainerUTF16 str_cont(
-            context, str, vectorize_length, false
-        ); // writable
+        charr::altrep::Utf8Input subjects(
+            context, str, vectorize_length, true,
+            charr::altrep::Utf8BomPolicy::preserve
+        );
         StriContainerRegexPattern pattern_cont(
             context, pattern, vectorize_length, pattern_opts
         );
-        StriContainerUTF16 replacement_cont(
-            context, replacement, vectorize_length
+        charr::altrep::Utf8Input replacements(
+            context, replacement, vectorize_length, true,
+            charr::altrep::Utf8BomPolicy::preserve
         );
+
+        ReusableUtf16Text subject_text;
+        ReusableUtf16Text replacement_text;
+        UnicodeString output_text;
         std::vector<char> utf8_buffer;
 
-        for (R_len_t i = pattern_cont.vectorize_init();
-                i != pattern_cont.vectorize_end();
-                i = pattern_cont.vectorize_next(i))
-        {
-            STRI__CONTINUE_ON_EMPTY_OR_NA_PATTERN(str_cont, pattern_cont,
-                                                  builder.set_na(i);)
+        const bool scalar_pattern = vectorize_length > 0 && pattern_n == 1;
+        const bool scalar_replacement = vectorize_length > 0 &&
+            replacement_n == 1;
+        const UnicodeString* scalar_replacement_text = nullptr;
+        if (scalar_replacement) {
+            const charport::StrView scalar_record =
+                replacements.record(0).view();
+            if (!scalar_record.is_na())
+                scalar_replacement_text = &replacement_text.set(scalar_record);
+        }
 
-            RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
-            matcher->reset(str_cont.get(i));
+        const bool scalar_pattern_unusable = scalar_pattern &&
+            (pattern_cont.isNA(0) || pattern_cont.get(0).length() <= 0);
+        RegexMatcher* scalar_matcher = nullptr;
 
-            UErrorCode status = U_ZERO_ERROR;
-            if (replacement_cont.isNA(i)) {
-                int m_res = matcher->find(status);
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                if (m_res)
-                    str_cont.setNA(i);
-                if (str_cont.isNA(i))
-                    builder.set_na(i);
-                else
-                    ci::builder_set(builder, i, str_cont.get(i), utf8_buffer);
+        for (R_len_t i = 0; i < vectorize_length; ++i) {
+            const charport::StrView subject_record =
+                subjects.record(i).view();
+            if (subject_record.is_na() || scalar_pattern_unusable ||
+                    (!scalar_pattern && (pattern_cont.isNA(i) ||
+                     pattern_cont.get(i).length() <= 0))) {
+                builder.set_na(i);
                 continue;
             }
 
-            if (type == 0) { // all
-                str_cont.set(i, matcher->replaceAll(replacement_cont.get(i), status));
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-            }
-            else if (type == 1) { // first
-                str_cont.set(i, matcher->replaceFirst(replacement_cont.get(i), status));
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-            }
-            else if (type == -1) { // end
-                int start = -1;
-                int end = -1;
-                while (1) { // find last match
-                    int m_res = matcher->find(status);
-                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                    if (!m_res) break;
-                    start = matcher->start(status);
-                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                    end = matcher->end(status);
-                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                }
-                if (start >= 0) {
-                    matcher->find(start, status); // go back
-                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                    UnicodeString out;
-                    matcher->appendReplacement(out, replacement_cont.get(i), status);
-                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                    out.append(str_cont.get(i), end, str_cont.get(i).length()-end);
-                    str_cont.set(i, out);
-                }
+            RegexMatcher* matcher;
+            if (scalar_pattern) {
+                if (!scalar_matcher)
+                    scalar_matcher = pattern_cont.getMatcher(0);
+                matcher = scalar_matcher;
             }
             else {
-                throw StriException(MSG__INTERNAL_ERROR);
+                matcher = pattern_cont.getMatcher(i);
             }
 
-            ci::builder_set(builder, i, str_cont.get(i), utf8_buffer);
+            UnicodeString& subject_value = subject_text.set(subject_record);
+            const UnicodeString* replacement_value = scalar_replacement_text;
+            if (!scalar_replacement) {
+                const charport::StrView replacement_record =
+                    replacements.record(i).view();
+                if (!replacement_record.is_na())
+                    replacement_value = &replacement_text.set(
+                        replacement_record
+                    );
+            }
+            if (!replacement_value) {
+                matcher->reset(subject_value);
+                UErrorCode status = U_ZERO_ERROR;
+                const bool matched = static_cast<bool>(matcher->find(status));
+                STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+                if (matched) {
+                    builder.set_na(i);
+                    continue;
+                }
+                output_text.setTo(subject_value);
+            }
+            else {
+                replace_matches(
+                    matcher, subject_value, *replacement_value,
+                    type, output_text
+                );
+            }
+
+            ci::builder_set(
+                builder, i, output_text, utf8_buffer
+            );
         }
     }
 
@@ -455,7 +574,7 @@ SEXP ci_replace_last_regex(SEXP str, SEXP pattern, SEXP replacement, SEXP opts_r
  * @param x
  * @return UTF-8 bytes
  */
-std::string ci__replace_rstr_1(const String8& _x)
+std::string ci__replace_rstr_1(const Utf8Record& _x)
 {
     STRI_ASSERT(!_x.isNA());
     R_len_t n = _x.length();
@@ -526,7 +645,7 @@ SEXP ci_replace_rstr(SEXP x)
     );
     charport::charvec::Builder builder(vectorize_length);
     {
-        StriContainerUTF8 x_cont(context, x, vectorize_length);
+        Utf8Input x_cont(context, x, vectorize_length);
 
         for (
             R_len_t i = x_cont.vectorize_init();

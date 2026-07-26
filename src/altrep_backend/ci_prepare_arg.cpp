@@ -32,7 +32,7 @@
 
 
 #include "ci_stringi.h"
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
 #include <cstdio>
 #include <cstring>
 #include <unicode/uloc.h>
@@ -1684,11 +1684,11 @@ TimeZone* ci__prepare_arg_timezone(
         // Deviation from stringi: read the prepared scalar through the common
         // UTF-8 adapter and pass ICU an explicit byte length.
         ci::ReaderContext context(warnings);
-        StriContainerUTF8 tz_cont(context, tz, 1);
+        Utf8Input tz_cont(context, tz, 1);
         if (tz_cont.isNA(0)) {
             throw StriException(MSG__ARG_EXPECTED_NOT_NA, argname);
         }
-        const String8& value = tz_cont.get(0);
+        const Utf8Record& value = tz_cont.get(0);
         tz_val.setTo(UnicodeString::fromUTF8(
             StringPiece(value.data(), value.length())
         ));

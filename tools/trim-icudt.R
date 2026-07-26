@@ -3,20 +3,18 @@
 # tools/trim-icudt.R — build charr's trimmed, xz-compressed ICU data archive.
 #
 # Usage:
-#   Rscript tools/trim-icudt.R [path/to/full/icudt74l.dat]
+#   Rscript tools/trim-icudt.R [path/to/full/icudt78l.dat]
 #
 # Reads a COMPLETE little-endian ICU common data archive, drops the categories
 # unreachable through charr's public API (rationale below), and writes
-#   src/icu74/data/icudt74l.dat.xz       (shipped in the source package)
-#   src/icu74/data/icudt74l.dat.md5sum   (of the decompressed trimmed .dat)
+#   src/icu78/data/icudt78l.dat.xz       (shipped in the source package)
+#   src/icu78/data/icudt78l.dat.md5sum   (of the decompressed trimmed .dat)
 # src/install.libs.R decompresses and verifies the archive at install time.
 #
 # Where to get the full archive when it is not in the tree:
-#   - charr git history:  git show 0c54520:inst/icu/icudt74l.dat > icudt74l.dat
-#   - a stringi checkout: <stringi>/src/icu74/data/icudt74l.dat.xz
-#   - stringi's mirror:   https://raw.githubusercontent.com/gagolews/stringi/
-#                         <commit>/src/icu<NN>/data/icudt<NN>l.dat.xz
-#     (see stri_download_icudt in stringi/R/install.R for the pinned commit)
+#   - `tools/icu78/extract-full-data.sh` verifies the official ICU4C 78.3
+#     source archive and extracts its `icu/source/data/in/icudt78l.dat` to
+#     `local/icu78/icudt78l.dat`.
 #
 # ── Why trimming is sound: the reader relation ────────────────────────────
 #
@@ -56,9 +54,10 @@
 #     identity vs installed stringi. Warning parity has a baseline: e.g.
 #     str_to_title(locale = "nl") warns on BOTH routes even with full data
 #     (brkitr has no nl bundle; stringi surfaces the root-fallback warning).
-#   - tests/testthat/test-icu-data.R holds the canary probes (values pinned to
-#     ICU 74.1 + CLDR 44). The 581-test stringr suite alone stayed green while
-#     CJK segmentation was broken — do not treat it as sufficiency evidence.
+#   - tests/testthat/test-icu-data.R holds the canary probes. The ICU 78.3
+#     import was checked against both the full and trimmed 78.3 archives. The
+#     stringr suite alone stayed green while CJK segmentation was broken — do
+#     not treat it as sufficiency evidence.
 #   - Sufficiency evidence so far: dual suite + those canaries. Entry-by-entry
 #     NECESSITY proofs (drop one kept item -> its canary must fail) are still
 #     owed per CLAUDE.md before calling the archive minimal; this script's
@@ -72,31 +71,31 @@
 #   2. Update `icudt_version` below; run this script against the full archive.
 #      The guards abort on renamed/moved/vanished critical items and on drop
 #      patterns that no longer match anything — investigate, don't silence.
-#   3. Reinstall; run the dual suite (both CHARR_ALTREP states, FAIL 0 SKIP 0).
+#   3. Reinstall; run the complete base and ALTREP backend suites.
 #      If a test-icu-data.R literal legitimately changed with Unicode/CLDR,
-#      re-derive it from installed stringi AT THE SAME ICU VERSION.
-#   4. Re-check compression choice if tempted (2026-07-14, 12.88 MB input):
-#      xz -9e 3.82 MB < zstd --ultra -22 4.49 MB < bzip2 5.91 MB < gzip 6.49.
-#      xz decompression is base R (xzfile, since 2.10); zstd needs R >= 4.5 or
-#      qs2. R's xzfile(compression = -9) == CLI `xz -9e` (verified byte-equal).
+#      re-derive it from a same-version ICU oracle.
+#   4. Re-check compression choice if tempted. For ICU 78.3 the 13,478,992-byte
+#      trimmed archive compresses to 3,846,908 bytes with xz -9e. xzfile is in
+#      base R, and R's compression = -9 is byte-identical to CLI `xz -9e`.
 
-icudt_version <- "74l"
+icudt_version <- "78l"
 
 args <- commandArgs(trailingOnly = TRUE)
 dat_name <- sprintf("icudt%s.dat", icudt_version)
-out_dir <- file.path("src", "icu74", "data")
+out_dir <- file.path("src", "icu78", "data")
 
 find_input <- function() {
   if (length(args) >= 1L) return(args[[1L]])
   cands <- c(
-    file.path("inst", "icu", dat_name),            # pre-2026-07 tree layout
+    file.path("local", "icu78", dat_name),         # extraction helper output
+    file.path("inst", "icu", dat_name),            # older local workflow
     file.path(dirname(out_dir), "data", dat_name)  # manually decompressed
   )
   for (p in cands) if (file.exists(p)) return(p)
   stop(
     "full ", dat_name, " not found; pass its path as the first argument.\n",
-    "Sources: git show 0c54520:inst/icu/icudt74l.dat, a stringi checkout's\n",
-    "src/icu74/data/*.dat.xz, or stringi's raw.githubusercontent mirror.",
+    "Run tools/icu78/extract-full-data.sh to verify and extract it from ",
+    "the official ICU4C 78.3 source archive.",
     call. = FALSE
   )
 }
@@ -136,7 +135,7 @@ parse_dat <- function(x) {
 
 # Drop policy: validated variant E of the 2026-07-14 feasibility study
 # (scratch/dat-feasibility-report.md). Patterns are PCRE, matched against
-# item names with the "icudt74l/" prefix removed.
+# item names with the "icudt78l/" prefix removed.
 drop_patterns <- c(
   "^zone/", "^curr/", "^lang/", "^unit/", "^region/",  # locale vocabulary
   "^translit/", "^rbnf/",                              # utrans, spellout
@@ -264,7 +263,7 @@ main <- function() {
               file.size(tmp_dat) / 1e6, md5))
   cat(sprintf("wrote %s (%.2f MB)\n", xz_path, file.size(xz_path) / 1e6))
   unlink(tmp_dat)  # only the .xz and .md5sum are committed/shipped
-  cat("next: R CMD INSTALL ., then the dual suite + test-icu-data.R\n")
+  cat("next: make install, then the base/ALTREP suites + ICU canaries\n")
 }
 
 main()

@@ -39,14 +39,12 @@ str_wrap <- function(
   check_number_whole(exdent)
   check_bool(whitespace_only)
 
-  out <- ci_wrap(
+  out <- .charr_wrap_joined(
     string,
     width = width,
     indent = indent,
     exdent = exdent,
-    whitespace_only = whitespace_only,
-    simplify = FALSE
+    whitespace_only = whitespace_only
   )
-  out <- vapply(out, str_c, collapse = "\n", character(1))
   copy_names(string, out)
 }

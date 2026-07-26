@@ -32,9 +32,52 @@
 
 
 #include "ci_stringi.h"
-#include "ci_container_utf16.h"
-#include "ci_container_utf8.h"
 #include "ci_container_regex.h"
+#include "altrep/utf8_input.h"
+
+#include <unicode/ustring.h>
+
+namespace {
+
+class ReusableUtf16Text {
+private:
+    UnicodeString text_;
+
+public:
+    UnicodeString& set(const charport::StrView& value)
+    {
+        if (value.len <= 0) {
+            text_.remove();
+            return text_;
+        }
+
+        UChar* destination = text_.getBuffer(value.len);
+        if (!destination)
+            throw StriException(MSG__MEM_ALLOC_ERROR);
+
+        int32_t length = 0;
+        if (value.enc == cetype_ext_t::CE_ASCII) {
+            for (int32_t i = 0; i < value.len; ++i)
+                destination[i] = static_cast<unsigned char>(value.ptr[i]);
+            length = value.len;
+        }
+        else {
+            UErrorCode status = U_ZERO_ERROR;
+            u_strFromUTF8WithSub(
+                destination, value.len, &length,
+                value.ptr, value.len, 0xfffd, nullptr, &status
+            );
+            text_.releaseBuffer(length);
+            STRI__CHECKICUSTATUS_THROW(status, {/* nothing to release */})
+            return text_;
+        }
+
+        text_.releaseBuffer(length);
+        return text_;
+    }
+};
+
+}
 
 /**
  * Detect if a pattern occurs in a string
@@ -116,44 +159,69 @@ SEXP ci_detect_regex(SEXP str, SEXP pattern, SEXP negate,
     }));
     int* ret_tab = LOGICAL(ret);
 
-    {
-        StriContainerUTF16 str_cont(context, str, vectorize_length);
-//      StriContainerUTF8 str_cont(context, str, vectorize_length); // utext_openUTF8, see below
+    if (vectorize_length > 0) {
+        ReusableUtf16Text str_text;
+        // The pattern container owns its UTF-16 data. Build it before the
+        // final subject borrow so an exact str/pattern alias cannot make a
+        // retained Reader view depend on another Reader access.
         StriContainerRegexPattern pattern_cont(
             context, pattern, vectorize_length, pattern_opts
         );
+        charr::altrep::Utf8Input str_input(
+            context, str, vectorize_length, true,
+            charr::altrep::Utf8BomPolicy::preserve
+        );
 
-        for (R_len_t i = pattern_cont.vectorize_init();
-                i != pattern_cont.vectorize_end();
-                i = pattern_cont.vectorize_next(i))
-        {
-            if (max_count_1 == 0) {
-                ret_tab[i] = NA_LOGICAL;
-                continue;
+        if (pattern_n == 1) {
+            const bool pattern_unusable = pattern_cont.isNA(0) ||
+                pattern_cont.get(0).length() <= 0;
+            RegexMatcher* matcher = nullptr;
+            for (R_len_t i = 0; i < vectorize_length; ++i) {
+                if (max_count_1 == 0) {
+                    ret_tab[i] = NA_LOGICAL;
+                    continue;
+                }
+
+                if (str_input.is_na(i) || pattern_unusable) {
+                    ret_tab[i] = NA_LOGICAL;
+                    continue;
+                }
+
+                if (!matcher)
+                    matcher = pattern_cont.getMatcher(0);
+                matcher->reset(str_text.set(str_input.text(i)));
+                UErrorCode status = U_ZERO_ERROR;
+                ret_tab[i] = static_cast<int>(matcher->find(status));
+                STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+
+                if (negate_1) ret_tab[i] = !ret_tab[i];
+                if (max_count_1 > 0 && ret_tab[i]) --max_count_1;
             }
+        }
+        else {
+            for (R_len_t i = pattern_cont.vectorize_init();
+                    i != pattern_cont.vectorize_end();
+                    i = pattern_cont.vectorize_next(i)) {
+                if (max_count_1 == 0) {
+                    ret_tab[i] = NA_LOGICAL;
+                    continue;
+                }
 
-            STRI__CONTINUE_ON_EMPTY_OR_NA_PATTERN(str_cont,
-                                                  pattern_cont, ret_tab[i] = NA_LOGICAL)
+                if (str_input.is_na(i) || pattern_cont.isNA(i) ||
+                        pattern_cont.get(i).length() <= 0) {
+                    ret_tab[i] = NA_LOGICAL;
+                    continue;
+                }
 
-            RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
-            matcher->reset(str_cont.get(i));
+                RegexMatcher* matcher = pattern_cont.getMatcher(i);
+                matcher->reset(str_text.set(str_input.text(i)));
+                UErrorCode status = U_ZERO_ERROR;
+                ret_tab[i] = static_cast<int>(matcher->find(status));
+                STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
 
-            UErrorCode status = U_ZERO_ERROR;
-            ret_tab[i] = (int)matcher->find(status); // returns UBool
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-            if (negate_1) ret_tab[i] = !ret_tab[i];
-            if (max_count_1 > 0 && ret_tab[i]) --max_count_1;
-
-//          // mbmark-regex-detect1.R: UTF16 0.07171792 s; UText 0.10531605 s
-//          UText* str_text = NULL;
-//          UErrorCode status = U_ZERO_ERROR;
-//          RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
-//          str_text = utext_openUTF8(str_text, str_cont.get(i).data(), str_cont.get(i).length(), &status);
-//          STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-//          matcher->reset(str_text);
-//          ret_tab[i] = (int)matcher->find(status); // returns UBool
-//          utext_close(str_text);
+                if (negate_1) ret_tab[i] = !ret_tab[i];
+                if (max_count_1 > 0 && ret_tab[i]) --max_count_1;
+            }
         }
     }
 

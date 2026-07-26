@@ -31,8 +31,51 @@
  */
 
 #include "ci_stringi.h"
-#include "ci_ucnv.h"
-#include "ci_container_utf8.h"
+#include "ci_reader.h"
+#include "altrep/native_to_utf8.h"
+
+#include <clocale>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+
+
+namespace {
+
+bool ci__length_utf8_fast(const char* str, int n, int& length) noexcept
+{
+    std::int32_t i = 0;
+    length = 0;
+    while (i < n) {
+        UChar32 code_point;
+        U8_NEXT(str, i, n, code_point);
+        if (code_point < 0)
+            return false;
+        ++length;
+    }
+    return true;
+}
+
+
+
+
+inline int ci__ascii_char_width(unsigned char value) noexcept
+{
+    return value >= 0x20 && value != 0x7f ? 1 : 0;
+}
+
+
+int ci__ascii_string_width(const char* data, int length) noexcept
+{
+    int width = 0;
+    for (int i = 0; i < length; ++i)
+        width += ci__ascii_char_width(
+            static_cast<unsigned char>(data[i])
+        );
+    return width;
+}
+
+} // namespace
 
 
 /**
@@ -105,65 +148,64 @@ SEXP ci_length(SEXP str)
 
     STRI__ERROR_HANDLER_BEGIN(1)
 
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    R_len_t str_n = ci::checked_r_len(
-        context.size(str), "character vectors"
-    );
+    R_len_t str_n = ci::checked_r_len(XLENGTH(str), "character vectors");
     SEXP ret;
     STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(INTSXP, str_n);
     }));
     int* retint = INTEGER(ret);
 
-    StriUcnv ucnvNative(NULL);
+    charr::altrep::NativeToUtf8 native_to_utf8;
 
     if (str_n > 0) {
         // The copied stringi loop counts a leading UTF-8 BOM as a code point.
-        // Read the source records directly because StriContainerUTF8 removes it.
-        std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(str);
-        const charport::StrViews& views = borrow->views();
+        // Read the source records directly because Utf8Input's default policy
+        // strips that prefix.
+        charport::Reader reader(str);
+        if (reader.size() != str_n)
+            throw std::runtime_error(
+                "character vector length changed during an operation"
+            );
+        charport::StrViews views(str_n);
+        reader.views(
+            0, str_n, views.ptrs(), views.lengths(), views.encodings()
+        );
+        const char* const* ptrs = views.ptrs();
+        const int* lengths = views.lengths();
+        const cetype_ext_t* encodings = views.encodings();
 
         for (R_len_t k = 0; k < str_n; k++) {
-            const charport::StrView curs = views[k];
-            if (curs.is_na()) {
+            const cetype_ext_t encoding = encodings[k];
+            if (encoding == cetype_ext_t::CE_NA) {
                 retint[k] = NA_INTEGER;
                 continue;
             }
 
-            R_len_t curs_n = curs.len;
-            if (curs.enc == cetype_ext_t::CE_ASCII ||
-                    curs.enc == cetype_ext_t::CE_LATIN1) {
+            const char* curs_s = ptrs[k];
+            const int curs_n = lengths[k];
+            if (encoding == cetype_ext_t::CE_ASCII ||
+                    encoding == cetype_ext_t::CE_LATIN1) {
                 retint[k] = curs_n;
             }
-            else if (curs.enc == cetype_ext_t::CE_BYTES) {
+            else if (encoding == cetype_ext_t::CE_BYTES) {
                 throw StriException(MSG__BYTESENC);
             }
-            else if (curs.enc == cetype_ext_t::CE_UTF8 ||
-                    curs.enc == cetype_ext_t::CE_ASCII_OR_UTF8 ||
-                    (curs.enc == cetype_ext_t::CE_NATIVE &&
-                     ucnvNative.isUTF8())) { // UTF-8 or native is UTF-8
-                const char* curs_s = curs.ptr;
-                retint[k] = ci__length_string(curs_s, curs_n);
+            else if (encoding == cetype_ext_t::CE_UTF8 ||
+                    encoding == cetype_ext_t::CE_ASCII_OR_UTF8 ||
+                    // Queried lazily: an all-ASCII or all-UTF-8 vector never
+                    // opens a converter.
+                    (encoding == cetype_ext_t::CE_NATIVE &&
+                     native_to_utf8.native_is_utf8())) {
+                if (!ci__length_utf8_fast(curs_s, curs_n, retint[k]))
+                    throw StriException(MSG__INVALID_UTF8);
             }
-            else if (curs.enc == cetype_ext_t::CE_NATIVE &&
-                    ucnvNative.is8bit()) { // native-8bit
-                retint[k] = curs_n;
-            }
-            else if (curs.enc == cetype_ext_t::CE_NATIVE) { // native encoding, not 8 bit
-
-                UConverter* uconv = ucnvNative.getConverter();
-
-                // native encoding which is neither 8-bit nor UTF-8 (e.g., 'Big5')
-                // this is weird, but we're prepared
-                UErrorCode status = U_ZERO_ERROR;
-                const char* source = curs.ptr;
-                const char* sourceLimit = source + curs_n;
-                R_len_t j;
-                for (j = 0; source != sourceLimit; j++) {
-                    /*ignore_retval=*/ucnv_getNextUChar(uconv, &source, sourceLimit, &status);
-                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                }
-                retint[k] = j; // all right, we got it!
+            else if (encoding == cetype_ext_t::CE_NATIVE) {
+                const charport::ByteView converted = native_to_utf8.native(
+                    curs_s, curs_n
+                );
+                if (!ci__length_utf8_fast(
+                        converted.ptr, converted.len, retint[k]))
+                    throw StriException(MSG__INVALID_UTF8);
             }
             else {
                 throw StriException("unknown charport string encoding");
@@ -171,7 +213,6 @@ SEXP ci_length(SEXP str)
         }
     }
 
-    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
 
@@ -298,6 +339,11 @@ SEXP ci_isempty(SEXP str)
  */
 int ci__width_char(UChar32 c)
 {
+    if (c >= 0 && c <= 0x7f)
+        return ci__ascii_char_width(static_cast<unsigned char>(c));
+
+    const std::uint32_t gc_mask = U_GET_GC_MASK(c);
+
     /* Characters with the \code{UCHAR_EAST_ASIAN_WIDTH} enumerable property
        equal to \code{U_EA_FULLWIDTH} or \code{U_EA_WIDE} are of width 2. */
     int width = (int)u_getIntPropertyValue(c, UCHAR_EAST_ASIAN_WIDTH);
@@ -306,12 +352,12 @@ int ci__width_char(UChar32 c)
 //     Rscript -e 'ci_width("\u005E\u0060\u2081\u03C9\u0425\u00DF")'
     Rprintf(
         "c=%08x MN=%d ME=%d CF=%d CC=%d SO=%d SK=%d EMOJI_MOD=%d EMOJI_PRES=%d h1=%d h2=%d w=%d\n", (int)c,
-        0!=(U_GET_GC_MASK(c) & U_GC_MN_MASK),
-        0!=(U_GET_GC_MASK(c) & U_GC_ME_MASK),
-        0!=(U_GET_GC_MASK(c) & U_GC_CF_MASK),
-        0!=(U_GET_GC_MASK(c) & U_GC_CC_MASK),
-        0!=(U_GET_GC_MASK(c) & U_GC_SO_MASK),
-        0!=(U_GET_GC_MASK(c) & U_GC_SK_MASK),
+        0!=(gc_mask & U_GC_MN_MASK),
+        0!=(gc_mask & U_GC_ME_MASK),
+        0!=(gc_mask & U_GC_CF_MASK),
+        0!=(gc_mask & U_GC_CC_MASK),
+        0!=(gc_mask & U_GC_SO_MASK),
+        0!=(gc_mask & U_GC_SK_MASK),
         0!=u_hasBinaryProperty(c, UCHAR_EMOJI_MODIFIER),
         0!=u_hasBinaryProperty(c, UCHAR_EMOJI_PRESENTATION),
         u_getIntPropertyValue(c, UCHAR_HANGUL_SYLLABLE_TYPE) == U_HST_VOWEL_JAMO,
@@ -330,7 +376,7 @@ int ci__width_char(UChar32 c)
     if (c == (UChar32)0x200B) return 0; /* ZERO WIDTH SPACE */
 
     /* GC: Me, Mn, Cf, Cc -> width = 0 */
-    if (U_GET_GC_MASK(c) &
+    if (gc_mask &
             (U_GC_MN_MASK | U_GC_ME_MASK | U_GC_CF_MASK | U_GC_CC_MASK))
         return 0;
 
@@ -364,7 +410,7 @@ int ci__width_char(UChar32 c)
     */
 
     /* v1.6.1 GC=So -> width = 2 */
-    if (U_GET_GC_MASK(c) & (U_GC_SO_MASK))
+    if (gc_mask & U_GC_SO_MASK)
         return 2;
 
     /*
@@ -513,6 +559,20 @@ int ci__width_string(const char* str_cur_s, int str_cur_n, int max_width)
     while (j < str_cur_n) {
         R_len_t prevj = j;
         p = c;
+
+        const unsigned char byte =
+            static_cast<unsigned char>(str_cur_s[j]);
+        if (byte < 0x80) {
+            c = static_cast<UChar32>(byte);
+            ++j;
+            if (reset)
+                reset = false;
+            cur_width += ci__ascii_char_width(byte);
+            if (max_width != NA_INTEGER && cur_width > max_width)
+                return prevj;
+            continue;
+        }
+
         U8_NEXT(str_cur_s, j, str_cur_n, c);
         if (c < 0)
             throw StriException(MSG__INVALID_UTF8);
@@ -544,34 +604,64 @@ SEXP ci_width(SEXP str)
     PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
 
     STRI__ERROR_HANDLER_BEGIN(1)
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    R_len_t str_n = ci::checked_r_len(
-        context.size(str), "character vectors"
-    );
+    R_len_t str_n = ci::checked_r_len(XLENGTH(str), "character vectors");
     SEXP ret;
     STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(INTSXP, str_n);
     }));
     int* retint = INTEGER(ret);
 
-    {
-        StriContainerUTF8 str_cont(context, str, str_n);
-        for (R_len_t i = str_cont.vectorize_init();
-                i != str_cont.vectorize_end();
-                i = str_cont.vectorize_next(i))
-        {
-            if (str_cont.isNA(i)) {
+    if (str_n > 0) {
+        charport::Reader reader(str);
+        if (reader.size() != str_n)
+            throw std::runtime_error(
+                "character vector length changed during an operation"
+            );
+        charport::StrViews views(str_n);
+        reader.views(
+            0, str_n, views.ptrs(), views.lengths(), views.encodings()
+        );
+        const char* const* ptrs = views.ptrs();
+        const int* lengths = views.lengths();
+        const cetype_ext_t* encodings = views.encodings();
+        charr::altrep::NativeToUtf8 native_to_utf8;
+
+        for (R_len_t i = 0; i < str_n; ++i) {
+            const cetype_ext_t encoding = encodings[i];
+            if (encoding == cetype_ext_t::CE_NA) {
                 retint[i] = NA_INTEGER;
                 continue;
             }
 
-            const char* str_cur_s = str_cont.get(i).data();
-            R_len_t     str_cur_n = str_cont.get(i).length();
-            retint[i] = ci__width_string(str_cur_s, str_cur_n);
+            const char* data = ptrs[i];
+            const int length = lengths[i];
+            if (encoding == cetype_ext_t::CE_ASCII) {
+                retint[i] = ci__ascii_string_width(data, length);
+                continue;
+            }
+            if (encoding == cetype_ext_t::CE_BYTES)
+                throw StriException(MSG__BYTESENC);
+
+            if (encoding == cetype_ext_t::CE_UTF8 ||
+                    encoding == cetype_ext_t::CE_ASCII_OR_UTF8) {
+                retint[i] = ci__width_string(data, length);
+                continue;
+            }
+
+            charport::ByteView converted;
+            if (encoding == cetype_ext_t::CE_LATIN1) {
+                converted = native_to_utf8.latin1(data, length);
+            }
+            else if (encoding == cetype_ext_t::CE_NATIVE) {
+                converted = native_to_utf8.native(data, length);
+            }
+            else {
+                throw StriException("unknown charport string encoding");
+            }
+            retint[i] = ci__width_string(converted.ptr, converted.len);
         }
     }
 
-    context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END({ /* no special action on error */ })

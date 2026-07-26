@@ -34,7 +34,8 @@
 #ifndef __ci_container_listutf8_h
 #define __ci_container_listutf8_h
 
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
+#include "ci_container_base.h"
 
 
 /**
@@ -49,7 +50,7 @@ class StriContainerListUTF8 : public StriContainerBase {
 
 private:
 
-    StriContainerUTF8 **data;
+    Utf8Input **data;
 
 
 public:
@@ -81,7 +82,7 @@ public:
      * @param i index
      * @return string, read only
      */
-    const StriContainerUTF8& get(R_len_t i) const {
+    const Utf8Input& get(R_len_t i) const {
 #ifndef NDEBUG
         if (i < 0 || i >= nrecycle)
             throw StriException("StriContainerListUTF8::get(): INDEX OUT OF BOUNDS");

@@ -33,14 +33,391 @@
 
 #include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
 #include "ci_container_bytesearch.h"
 #include "ci_string8buf.h"
+#include "altrep/utf8_output.h"
 //#include "ci_interval.h"
+#include <cstdint>
+#include <cstring>
 #include <deque>
+#include <memory>
 //#include <queue>
 //#include <algorithm>
 using namespace std;
+
+
+namespace {
+
+struct CiDirectView {
+    const char* data;
+    R_len_t length;
+    bool is_na;
+    cetype_ext_t encoding;
+};
+
+
+bool ci__direct_view(
+    const charport::StrView& value, CiDirectView& output
+)
+{
+    if (value.is_na()) {
+        output = {NULL, NA_INTEGER, true, cetype_ext_t::CE_NA};
+        return true;
+    }
+    if (value.enc != cetype_ext_t::CE_ASCII &&
+            value.enc != cetype_ext_t::CE_UTF8 &&
+            value.enc != cetype_ext_t::CE_ASCII_OR_UTF8) {
+        return false;
+    }
+
+    output.data = value.ptr;
+    output.length = value.len;
+    output.is_na = false;
+    output.encoding = value.enc;
+    const bool has_bom = value.enc != cetype_ext_t::CE_ASCII &&
+        STRI__ENC_HAS_BOM_UTF8(output.data, output.length);
+    if (has_bom) {
+        output.data += 3;
+        output.length -= 3;
+    }
+    return true;
+}
+
+
+R_len_t ci__find_byte_first(
+    const char* data, R_len_t length, unsigned char pattern
+)
+{
+    const void* found = std::memchr(
+        data, pattern, static_cast<size_t>(length)
+    );
+    return found == NULL
+        ? USEARCH_DONE
+        : static_cast<R_len_t>(static_cast<const char*>(found)-data);
+}
+
+
+R_len_t ci__find_byte_last(
+    const char* data, R_len_t length, unsigned char pattern
+)
+{
+    for (R_len_t i = length; i > 0; --i) {
+        if (static_cast<unsigned char>(data[i-1]) == pattern)
+            return i-1;
+    }
+    return USEARCH_DONE;
+}
+
+
+size_t ci__replacement_size(
+    R_len_t source_length, R_len_t replacement_length,
+    size_t count, size_t matched_bytes
+)
+{
+    const size_t source_size = static_cast<size_t>(source_length);
+    if (matched_bytes > source_size)
+        throw std::length_error(MSG__CHARSXP_2147483647);
+    const size_t unmatched = source_size-matched_bytes;
+    const size_t maximum = static_cast<size_t>(R_LEN_T_MAX);
+    if (replacement_length > 0 &&
+            count > (maximum-unmatched) /
+                static_cast<size_t>(replacement_length)) {
+        throw std::length_error(MSG__CHARSXP_2147483647);
+    }
+    return unmatched+count*static_cast<size_t>(replacement_length);
+}
+
+
+struct CiAllByteScan {
+    size_t count;
+    bool output_is_ascii;
+};
+
+
+CiAllByteScan ci__scan_all_byte_replacements(
+    const CiDirectView& source, unsigned char pattern,
+    bool replacement_is_ascii
+)
+{
+    CiAllByteScan result{0, replacement_is_ascii};
+    for (R_len_t i = 0; i < source.length; ++i) {
+        const unsigned char value = static_cast<unsigned char>(
+            source.data[i]
+        );
+        if (value == pattern)
+            ++result.count;
+        else if (value > 0x7fU)
+            result.output_is_ascii = false;
+    }
+    return result;
+}
+
+
+bool ci__one_byte_output_is_ascii(
+    const CiDirectView& source, R_len_t match,
+    bool replacement_is_ascii
+)
+{
+    if (!replacement_is_ascii)
+        return false;
+    for (R_len_t i = 0; i < source.length; ++i) {
+        if (i != match &&
+                static_cast<unsigned char>(source.data[i]) > 0x7fU) {
+            return false;
+        }
+    }
+    return true;
+}
+
+
+void ci__write_one_byte_replacement(
+    char* output, const CiDirectView& source, R_len_t match,
+    const CiDirectView& replacement
+)
+{
+    if (match > 0)
+        std::memcpy(output, source.data, static_cast<size_t>(match));
+    if (replacement.length > 0) {
+        std::memcpy(
+            output+match, replacement.data,
+            static_cast<size_t>(replacement.length)
+        );
+    }
+    const R_len_t suffix = source.length-match-1;
+    if (suffix > 0) {
+        std::memcpy(
+            output+match+replacement.length, source.data+match+1,
+            static_cast<size_t>(suffix)
+        );
+    }
+}
+
+
+void ci__write_all_byte_replacements(
+    char* output, const CiDirectView& source, unsigned char pattern,
+    const CiDirectView& replacement
+)
+{
+    if (replacement.length == 1) {
+        if (source.length > 0) {
+            std::memcpy(
+                output, source.data, static_cast<size_t>(source.length)
+            );
+        }
+        for (R_len_t i = 0; i < source.length; ++i) {
+            if (static_cast<unsigned char>(output[i]) == pattern)
+                output[i] = replacement.data[0];
+        }
+        return;
+    }
+
+    size_t used = 0;
+    R_len_t previous = 0;
+    for (R_len_t i = 0; i < source.length; ++i) {
+        if (static_cast<unsigned char>(source.data[i]) != pattern)
+            continue;
+        const size_t prefix = static_cast<size_t>(i-previous);
+        if (prefix > 0) {
+            std::memcpy(output+used, source.data+previous, prefix);
+            used += prefix;
+        }
+        if (replacement.length > 0) {
+            std::memcpy(
+                output+used, replacement.data,
+                static_cast<size_t>(replacement.length)
+            );
+            used += static_cast<size_t>(replacement.length);
+        }
+        previous = i+1;
+    }
+    const size_t suffix = static_cast<size_t>(source.length-previous);
+    if (suffix > 0)
+        std::memcpy(output+used, source.data+previous, suffix);
+}
+
+
+struct CiReplacementLayout {
+    size_t size;
+    bool is_ascii;
+};
+
+
+CiReplacementLayout ci__replacement_layout(
+    const char* source, R_len_t source_length,
+    const Utf8Record& replacement,
+    const deque<pair<R_len_t, R_len_t> >& occurrences,
+    size_t matched_bytes
+)
+{
+    CiReplacementLayout layout{
+        ci__replacement_size(
+            source_length, replacement.length(),
+            occurrences.size(), matched_bytes
+        ),
+        replacement.isASCII()
+    };
+    if (!layout.is_ascii)
+        return layout;
+
+    R_len_t previous = 0;
+    for (const pair<R_len_t, R_len_t>& occurrence : occurrences) {
+        if (!ci::is_ascii(
+                source+previous,
+                static_cast<size_t>(occurrence.first-previous))) {
+            layout.is_ascii = false;
+            return layout;
+        }
+        previous = occurrence.second;
+    }
+    layout.is_ascii = ci::is_ascii(
+        source+previous,
+        static_cast<size_t>(source_length-previous)
+    );
+    return layout;
+}
+
+
+void ci__write_replacements(
+    char* output, const char* source, R_len_t source_length,
+    const Utf8Record& replacement,
+    const deque<pair<R_len_t, R_len_t> >& occurrences
+)
+{
+    size_t used = 0;
+    R_len_t previous = 0;
+    for (const pair<R_len_t, R_len_t>& occurrence : occurrences) {
+        const size_t prefix = static_cast<size_t>(
+            occurrence.first-previous
+        );
+        if (prefix > 0) {
+            std::memcpy(output+used, source+previous, prefix);
+            used += prefix;
+        }
+        if (replacement.length() > 0) {
+            std::memcpy(
+                output+used, replacement.data(),
+                static_cast<size_t>(replacement.length())
+            );
+            used += static_cast<size_t>(replacement.length());
+        }
+        previous = occurrence.second;
+    }
+    const size_t suffix = static_cast<size_t>(source_length-previous);
+    if (suffix > 0)
+        std::memcpy(output+used, source+previous, suffix);
+}
+
+
+bool ci__replace_scalar_byte_direct(
+    const charport::StrViews& strings,
+    const charport::StrView& pattern,
+    const charport::StrView& replacement,
+    R_len_t vectorize_length, uint32_t pattern_flags, int type,
+    charr::altrep::OutputBuilder& builder,
+    R_len_t& general_start
+)
+{
+    if (vectorize_length == 0)
+        return true;
+    if (pattern_flags != 0 || strings.size() != vectorize_length)
+        return false;
+
+    CiDirectView pattern_value;
+    CiDirectView replacement_value;
+    if (!ci__direct_view(pattern, pattern_value) ||
+            pattern_value.is_na || pattern_value.length != 1 ||
+            !ci__direct_view(replacement, replacement_value)) {
+        return false;
+    }
+
+    const unsigned char pattern_byte = static_cast<unsigned char>(
+        pattern_value.data[0]
+    );
+    const bool replacement_is_ascii = !replacement_value.is_na &&
+        ci::is_ascii(
+            replacement_value.data,
+            static_cast<size_t>(replacement_value.length)
+        );
+
+    for (R_len_t i = 0; i < vectorize_length; ++i) {
+        CiDirectView source;
+        if (!ci__direct_view(strings[i], source)) {
+            general_start = i;
+            return false;
+        }
+        if (source.is_na) {
+            builder.set_na(i);
+            continue;
+        }
+
+        R_len_t match = USEARCH_DONE;
+        size_t count = 0;
+        bool output_is_ascii = false;
+        if (type == 0) {
+            const CiAllByteScan scan = ci__scan_all_byte_replacements(
+                source, pattern_byte, replacement_is_ascii
+            );
+            count = scan.count;
+            output_is_ascii = scan.output_is_ascii;
+            if (count > 0)
+                match = 0;
+        }
+        else if (type > 0) {
+            match = ci__find_byte_first(
+                source.data, source.length, pattern_byte
+            );
+        }
+        else {
+            match = ci__find_byte_last(
+                source.data, source.length, pattern_byte
+            );
+        }
+
+        if (match == USEARCH_DONE) {
+            builder.set(
+                i, source.data, static_cast<size_t>(source.length),
+                source.encoding
+            );
+            continue;
+        }
+        if (replacement_value.is_na) {
+            builder.set_na(i);
+            continue;
+        }
+
+        if (type != 0) {
+            output_is_ascii = ci__one_byte_output_is_ascii(
+                source, match, replacement_is_ascii
+            );
+        }
+        const size_t output_length = ci__replacement_size(
+            source.length, replacement_value.length,
+            type == 0 ? count : 1,
+            type == 0 ? count : 1
+        );
+        char* output = builder.reserve(
+            i, output_length,
+            output_is_ascii
+                ? cetype_ext_t::CE_ASCII
+                : cetype_ext_t::CE_UTF8
+        );
+        if (type == 0) {
+            ci__write_all_byte_replacements(
+                output, source, pattern_byte, replacement_value
+            );
+        }
+        else {
+            ci__write_one_byte_replacement(
+                output, source, match, replacement_value
+            );
+        }
+    }
+
+    return true;
+}
+
+} // namespace
 
 
 /**
@@ -103,26 +480,44 @@ SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, SE
         return R_NilValue;
     });
 
-    charport::charvec::Builder builder(vectorize_length);
-    {
-        StriContainerUTF8 str_cont(context, str, vectorize_length);
-        StriContainerUTF8 replacement_cont(
+    charr::altrep::OutputBuilder builder(vectorize_length);
+    bool direct = vectorize_length == 0;
+    R_len_t general_start = 0;
+    std::shared_ptr<ci::ReaderBorrow> str_borrow;
+    std::shared_ptr<ci::ReaderBorrow> pattern_borrow;
+    std::shared_ptr<ci::ReaderBorrow> replacement_borrow;
+    if (!direct && pattern_flags == 0 && pattern_n == 1 &&
+            replacement_n == 1) {
+        str_borrow = context.acquire(str);
+        pattern_borrow = context.acquire(pattern);
+        replacement_borrow = context.acquire(replacement);
+        direct = ci__replace_scalar_byte_direct(
+            str_borrow->views(), pattern_borrow->views()[0],
+            replacement_borrow->views()[0], vectorize_length,
+            pattern_flags, type, builder, general_start
+        );
+    }
+
+    if (!direct) {
+        {
+        Utf8Input str_cont(context, str, vectorize_length);
+        Utf8Input replacement_cont(
             context, replacement, vectorize_length
         );
         StriContainerByteSearch pattern_cont(
             context, pattern, vectorize_length, pattern_flags
         );
 
-        String8buf buf(0);
-
-        for (R_len_t i = pattern_cont.vectorize_init();
+        for (R_len_t i = general_start > 0
+                    ? general_start
+                    : pattern_cont.vectorize_init();
                 i != pattern_cont.vectorize_end();
                 i = pattern_cont.vectorize_next(i))
         {
             STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
                     builder.set_na(i);,
-                    ci::builder_set(
-                        builder, i, "", 0, cetype_ext_t::CE_ASCII
+                    builder.set(
+                        i, "", 0, cetype_ext_t::CE_ASCII
                     );)
 
             StriByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
@@ -135,7 +530,13 @@ SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, SE
             }
 
             if (start == USEARCH_DONE) {
-                ci::builder_set(builder, i, str_cont.get(i));
+                const Utf8Record& source = str_cont.get(i);
+                builder.set(
+                    i, source.data(), source.length(),
+                    source.isASCII()
+                        ? cetype_ext_t::CE_ASCII
+                        : cetype_ext_t::CE_UTF8
+                );
                 continue;
             }
 
@@ -145,7 +546,7 @@ SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, SE
             }
 
             R_len_t len = matcher->getMatchedLength();
-            R_len_t sumbytes = len;
+            size_t matched_bytes = static_cast<size_t>(len);
             deque< pair<R_len_t, R_len_t> > occurrences;
             occurrences.push_back(pair<R_len_t, R_len_t>(start, start+len));
 
@@ -154,34 +555,33 @@ SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, SE
                     start = matcher->getMatchedStart();
                     len = matcher->getMatchedLength();
                     occurrences.push_back(pair<R_len_t, R_len_t>(start, start+len));
-                    sumbytes += len;
+                    matched_bytes += static_cast<size_t>(len);
                 }
             }
 
-            R_len_t str_cur_n         = str_cont.get(i).length();
-            R_len_t replacement_cur_n = replacement_cont.get(i).length();
-            R_len_t buf_need =
-                str_cur_n+replacement_cur_n*(R_len_t)occurrences.size()-sumbytes;
-            buf.resize(buf_need, false/*destroy contents*/);
-
-            R_len_t buf_used = buf.replaceAllAtPos(
-                str_cont.get(i).data(), str_cur_n,
-                replacement_cont.get(i).data(), replacement_cur_n,
-                occurrences
+            const Utf8Record& source = str_cont.get(i);
+            const Utf8Record& replacement_current = replacement_cont.get(i);
+            const CiReplacementLayout layout = ci__replacement_layout(
+                source.data(), source.length(), replacement_current,
+                occurrences, matched_bytes
             );
-
-#ifndef NDEBUG
-            if (buf_need != buf_used)
-                throw StriException("!NDEBUG: ci__replace_allfirstlast_fixed: (buf_need != buf_used)");
-#endif
-
-            ci::builder_set(
-                builder, i, buf.data(), buf_used,
-                cetype_ext_t::CE_ASCII_OR_UTF8
+            char* output = builder.reserve(
+                i, layout.size,
+                layout.is_ascii
+                    ? cetype_ext_t::CE_ASCII
+                    : cetype_ext_t::CE_UTF8
             );
+            ci__write_replacements(
+                output, source.data(), source.length(),
+                replacement_current, occurrences
+            );
+        }
         }
     }
 
+    replacement_borrow.reset();
+    pattern_borrow.reset();
+    str_borrow.reset();
     STRI__PROTECT(ret = builder.to_sexp());
     }
     STRI__DEFERRED_WARNINGS.emit();
@@ -191,7 +591,7 @@ SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, SE
 }
 
 
-// Version 2, 2014-11-02, using String8::replaceAllAtPos, slower
+// Version 2, 2014-11-02, using Utf8Record::replaceAllAtPos, slower
 //SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, int type)
 //{
 //   str          = ci__prepare_arg_string(str, "str");
@@ -200,8 +600,8 @@ SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, SE
 //   R_len_t vectorize_length = ci__recycling_rule(true, 3, LENGTH(str), LENGTH(pattern), LENGTH(replacement));
 //
 //   STRI__ERROR_HANDLER_BEGIN
-//   StriContainerUTF8 str_cont(str, vectorize_length, false); // writable);
-//   StriContainerUTF8 replacement_cont(replacement, vectorize_length);
+//   Utf8Input str_cont(str, vectorize_length, false); // writable);
+//   Utf8Input replacement_cont(replacement, vectorize_length);
 //   StriContainerByteSearch pattern_cont(pattern, vectorize_length);
 //
 //   for (R_len_t i = pattern_cont.vectorize_init();
@@ -296,7 +696,7 @@ SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
     );
 
     if (str_n <= 0) {
-        charport::charvec::Builder builder(0);
+        charr::altrep::OutputBuilder builder(0);
         STRI__PROTECT(ret = builder.to_sexp());
         STRI__UNPROTECT_ALL
         return ret;
@@ -352,11 +752,11 @@ SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
         );
         return R_NilValue;
     });
-    charport::charvec::Builder builder(str_n);
+    charr::altrep::OutputBuilder builder(str_n);
 
     {
-        StriContainerUTF8 str_cont(context, str, str_n, false); // writable
-        StriContainerUTF8 replacement_cont(
+        Utf8Workspace str_cont(context, str, str_n);
+        Utf8Input replacement_cont(
             context, replacement, pattern_n
         );
         StriContainerByteSearch pattern_cont(
@@ -389,7 +789,7 @@ SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
                 }
 
                 R_len_t len = matcher->getMatchedLength();
-                R_len_t sumbytes = len;
+                size_t matched_bytes = static_cast<size_t>(len);
                 deque< pair<R_len_t, R_len_t> > occurrences;
                 occurrences.push_back(pair<R_len_t, R_len_t>(start, start+len));
 
@@ -397,16 +797,19 @@ SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
                     start = matcher->getMatchedStart();
                     len = matcher->getMatchedLength();
                     occurrences.push_back(pair<R_len_t, R_len_t>(start, start+len));
-                    sumbytes += len;
+                    matched_bytes += static_cast<size_t>(len);
                 }
 
                 R_len_t str_cur_n         = str_cont.get(j).length();
                 R_len_t replacement_cur_n = replacement_cont.get(i).length();
-                R_len_t buf_need =
-                    str_cur_n+replacement_cur_n*(R_len_t)occurrences.size()-sumbytes;
+                const size_t output_size = ci__replacement_size(
+                    str_cur_n, replacement_cur_n,
+                    occurrences.size(), matched_bytes
+                );
 
-                str_cont.getWritable(j).replaceAllAtPos(
-                    buf_need, replacement_cont.get(i).data(),
+                str_cont.replaceAllAtPos(
+                    j, static_cast<R_len_t>(output_size),
+                    replacement_cont.get(i).data(),
                     replacement_cur_n, occurrences
                 );
             }
@@ -415,8 +818,20 @@ SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
         for (R_len_t j=0; j<str_n; ++j) {
             if (return_all_na)
                 builder.set_na(j);
-            else
-                ci::builder_set(builder, j, str_cont.getNAble(j));
+            else {
+                const Utf8Record& value = str_cont.getNAble(j);
+                if (value.isNA()) {
+                    builder.set_na(j);
+                }
+                else {
+                    builder.set(
+                        j, value.data(), value.length(),
+                        value.isASCII()
+                            ? cetype_ext_t::CE_ASCII
+                            : cetype_ext_t::CE_UTF8
+                    );
+                }
+            }
         }
     }
 
@@ -479,8 +894,8 @@ SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
 //      return ci__vector_empty_strings(0);
 //
 //   STRI__ERROR_HANDLER_BEGIN
-//   StriContainerUTF8 str_cont(str, str_n);
-//   StriContainerUTF8 replacement_cont(replacement, pattern_n);
+//   Utf8Input str_cont(str, str_n);
+//   Utf8Input replacement_cont(replacement, pattern_n);
 //   StriContainerByteSearch pattern_cont(pattern, pattern_n);
 //
 //   // if any of the patterns is missing, then return an NA vector

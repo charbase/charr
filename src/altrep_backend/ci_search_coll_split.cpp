@@ -186,10 +186,13 @@ SEXP ci_split_coll(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
                     );
             })
 
+            // getMatcher() has just installed this record's text, which
+            // restarts iteration on its own. A usearch_reset() here would only
+            // re-derive collator state that has not changed since the matcher
+            // was opened.
             UStringSearch *matcher = pattern_cont.getMatcher(
                 i, str_cont.get(i)
             );
-            usearch_reset(matcher);
 
             if (n_cur >= INT_MAX-1)
                 throw StriException(

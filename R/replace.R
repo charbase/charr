@@ -80,19 +80,19 @@ str_replace <- function(string, pattern, replacement) {
     type(pattern),
     empty = no_empty(),
     bound = no_boundary(),
-    fixed = ci_replace_first_fixed(
+    fixed = stri_replace_first_fixed(
       string,
       pattern,
       replacement,
       opts_fixed = opts(pattern)
     ),
-    coll = ci_replace_first_coll(
+    coll = stri_replace_first_coll(
       string,
       pattern,
       replacement,
       opts_collator = opts(pattern)
     ),
-    regex = ci_replace_first_regex(
+    regex = stri_replace_first_regex(
       string,
       pattern,
       fix_replacement(replacement),
@@ -123,21 +123,21 @@ str_replace_all <- function(string, pattern, replacement) {
     type(pattern),
     empty = no_empty(),
     bound = no_boundary(),
-    fixed = ci_replace_all_fixed(
+    fixed = stri_replace_all_fixed(
       string,
       pattern,
       replacement,
       vectorize_all = vec,
       opts_fixed = opts(pattern)
     ),
-    coll = ci_replace_all_coll(
+    coll = stri_replace_all_coll(
       string,
       pattern,
       replacement,
       vectorize_all = vec,
       opts_collator = opts(pattern)
     ),
-    regex = ci_replace_all_regex(
+    regex = stri_replace_all_regex(
       string,
       pattern,
       fix_replacement(replacement),
@@ -207,7 +207,7 @@ fix_replacement_one <- function(x) {
 #' str_replace_na(c(NA, "abc", "def"))
 str_replace_na <- function(string, replacement = "NA") {
   check_string(replacement)
-  copy_names(string, ci_replace_na(string, replacement))
+  copy_names(string, stri_replace_na(string, replacement))
 }
 
 str_transform <- function(string, pattern, replacement) {
@@ -270,7 +270,7 @@ str_transform_all <- function(
   idx <- chop_index(old)
   new <- vctrs::vec_chop(new_flat, idx)
 
-  ci_sub_all(string, locs) <- new
+  stri_sub_all(string, locs) <- new
   string
 }
 

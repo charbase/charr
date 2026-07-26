@@ -32,7 +32,7 @@
 
 
 #include "ci_stringi.h"
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
 #include "ci_container_utf16.h"
 #include <unicode/ucol.h>
 #include <vector>
@@ -139,25 +139,31 @@ SEXP ci_cmp_codepoints(SEXP e1, SEXP e2, int _negate)
     int* ret_tab = LOGICAL(ret);
 
     {
-        StriContainerUTF8 e1_cont(context, e1, vectorize_length);
-        StriContainerUTF8 e2_cont(context, e2, vectorize_length);
+        Utf8Input e1_cont(context, e1, vectorize_length);
+        Utf8Input e2_cont(context, e2, vectorize_length);
+        const Utf8Record* e1_records = e1_cont.source_data();
+        const Utf8Record* e2_records = e2_cont.source_data();
+        R_len_t e1_index = 0;
+        R_len_t e2_index = 0;
 
         for (R_len_t i = 0; i < vectorize_length; ++i)
         {
-            if (e1_cont.isNA(i) || e2_cont.isNA(i)) {
+            const charport::StrView cur1 = e1_records[e1_index].view();
+            const charport::StrView cur2 = e2_records[e2_index].view();
+            if (++e1_index == e1_n)
+                e1_index = 0;
+            if (++e2_index == e2_n)
+                e2_index = 0;
+
+            if (cur1.is_na() || cur2.is_na()) {
                 ret_tab[i] = NA_LOGICAL;
                 continue;
             }
 
-            R_len_t     cur1_n = e1_cont.get(i).length();
-            const char* cur1_s = e1_cont.get(i).data();
-            R_len_t     cur2_n = e2_cont.get(i).length();
-            const char* cur2_s = e2_cont.get(i).data();
-
-            if (cur1_n != cur2_n) // different number of bytes => not equal
+            if (cur1.len != cur2.len) // different number of bytes => not equal
                 ret_tab[i] = FALSE;
             else
-                ret_tab[i] = (memcmp(cur1_s, cur2_s, cur1_n) == 0);
+                ret_tab[i] = (memcmp(cur1.ptr, cur2.ptr, cur1.len) == 0);
 
             if (_negate)
                 ret_tab[i] = !ret_tab[i];
@@ -272,25 +278,31 @@ SEXP ci__cmp_logical(SEXP e1, SEXP e2, SEXP opts_collator, int _type, int _negat
     int* ret_tab = LOGICAL(ret);
 
     {
-        StriContainerUTF8 e1_cont(context, e1, vectorize_length);
-        StriContainerUTF8 e2_cont(context, e2, vectorize_length);
+        Utf8Input e1_cont(context, e1, vectorize_length);
+        Utf8Input e2_cont(context, e2, vectorize_length);
+        const Utf8Record* e1_records = e1_cont.source_data();
+        const Utf8Record* e2_records = e2_cont.source_data();
+        R_len_t e1_index = 0;
+        R_len_t e2_index = 0;
 
         for (R_len_t i = 0; i < vectorize_length; ++i)
         {
-            if (e1_cont.isNA(i) || e2_cont.isNA(i)) {
+            const charport::StrView cur1 = e1_records[e1_index].view();
+            const charport::StrView cur2 = e2_records[e2_index].view();
+            if (++e1_index == e1_n)
+                e1_index = 0;
+            if (++e2_index == e2_n)
+                e2_index = 0;
+
+            if (cur1.is_na() || cur2.is_na()) {
                 ret_tab[i] = NA_LOGICAL;
                 continue;
             }
 
-            R_len_t     cur1_n = e1_cont.get(i).length();
-            const char* cur1_s = e1_cont.get(i).data();
-            R_len_t     cur2_n = e2_cont.get(i).length();
-            const char* cur2_s = e2_cont.get(i).data();
-
             // with collation
             UErrorCode status = U_ZERO_ERROR;
             ret_tab[i] = (_type == (int)ucol_strcollUTF8(col,
-                          cur1_s, cur1_n, cur2_s, cur2_n, &status
+                          cur1.ptr, cur1.len, cur2.ptr, cur2.len, &status
                                                         ));
             STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
 
@@ -491,25 +503,32 @@ SEXP ci_cmp(SEXP e1, SEXP e2, SEXP opts_collator)
     int* ret_int = INTEGER(ret);
 
     {
-        StriContainerUTF8 e1_cont(context, e1, vectorize_length);
-        StriContainerUTF8 e2_cont(context, e2, vectorize_length);
+        Utf8Input e1_cont(context, e1, vectorize_length);
+        Utf8Input e2_cont(context, e2, vectorize_length);
+        const Utf8Record* e1_records = e1_cont.source_data();
+        const Utf8Record* e2_records = e2_cont.source_data();
+        R_len_t e1_index = 0;
+        R_len_t e2_index = 0;
 
         for (R_len_t i = 0; i < vectorize_length; ++i)
         {
-            if (e1_cont.isNA(i) || e2_cont.isNA(i)) {
+            const charport::StrView cur1 = e1_records[e1_index].view();
+            const charport::StrView cur2 = e2_records[e2_index].view();
+            if (++e1_index == e1_n)
+                e1_index = 0;
+            if (++e2_index == e2_n)
+                e2_index = 0;
+
+            if (cur1.is_na() || cur2.is_na()) {
                 ret_int[i] = NA_INTEGER;
                 continue;
             }
 
-            R_len_t     cur1_n = e1_cont.get(i).length();
-            const char* cur1_s = e1_cont.get(i).data();
-            R_len_t     cur2_n = e2_cont.get(i).length();
-            const char* cur2_s = e2_cont.get(i).data();
-
             // cmp with collation
             UErrorCode status = U_ZERO_ERROR;
             ret_int[i] = (int)ucol_strcollUTF8(col,
-                                               cur1_s, cur1_n, cur2_s, cur2_n, &status
+                                               cur1.ptr, cur1.len,
+                                               cur2.ptr, cur2.len, &status
                                               );
             STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
         }

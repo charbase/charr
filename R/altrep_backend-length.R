@@ -72,9 +72,6 @@
 #
 # @export
 # @family length
-ci_numbytes <- function(str) {
-    .Call(C_ci_numbytes, str)
-}
 
 
 # @title
@@ -140,10 +137,6 @@ ci_length <- function(str)
 #
 # @export
 # @family length
-ci_isempty <- function(str)
-{
-    .Call(C_ci_isempty, str)
-}
 
 
 # @title

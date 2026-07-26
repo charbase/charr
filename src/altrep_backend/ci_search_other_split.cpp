@@ -33,17 +33,148 @@
 
 #include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
 #include "ci_container_utf16.h"
 #include "ci_container_usearch.h"
 #include "ci_container_bytesearch.h"
 #include "ci_container_integer.h"
 #include "ci_container_logical.h"
-#include <deque>
+#include "../read_lines_common.h"
+#include <string>
 #include <utility>
+#include <vector>
 #include <unicode/brkiter.h>
 #include <unicode/rbbi.h>
 using namespace std;
+
+
+SEXP ci_read_lines(SEXP path, SEXP encoding)
+{
+    PROTECT(path = ci__prepare_arg_string_1(path, "con"));
+    PROTECT(encoding = ci__prepare_arg_string_1(encoding, "encoding"));
+
+    STRI__ERROR_HANDLER_BEGIN(2)
+    SEXP ret;
+    charport::charvec::Store output(0, 0);
+    {
+        SEXP path_string = STRING_ELT(path, 0);
+        if (path_string == NA_STRING)
+            throw StriException("invalid 'description' argument");
+        if (STRING_ELT(encoding, 0) == NA_STRING)
+            throw StriException("invalid 'encoding' value");
+
+        const char* original_path = Rf_translateChar(path_string);
+        const char* expanded = R_ExpandFileName(original_path);
+        const string expanded_path(expanded);
+        int file_length = 0;
+        try {
+            // Read into Store-owned bytes so the final records can refer to
+            // the file payload directly. Only malformed input needs a second
+            // owned slice for repaired UTF-8.
+            file_length = charr::read_lines::read_file_into(
+                expanded_path.c_str(),
+                [&output](size_t size) -> char* {
+                    output = charport::charvec::Store(0, size);
+                    return output.slices.front_data();
+                }
+            );
+        }
+        catch (const charr::read_lines::FileConditionError& error) {
+            char warning[4096];
+            if (error.condition() ==
+                    charr::read_lines::FileCondition::directory) {
+                std::snprintf(
+                    warning, sizeof(warning),
+                    "'raw = FALSE' but '%s' is not a regular file",
+                    expanded_path.c_str()
+                );
+                STRI__DEFERRED_WARNINGS.push(warning);
+                std::snprintf(
+                    warning, sizeof(warning),
+                    "cannot open file '%s': it is a directory",
+                    expanded_path.c_str()
+                );
+                STRI__DEFERRED_WARNINGS.push(warning);
+            }
+            else {
+                std::snprintf(
+                    warning, sizeof(warning),
+                    "cannot open file '%s': %s", expanded_path.c_str(),
+                    std::strerror(error.error())
+                );
+                STRI__DEFERRED_WARNINGS.push(warning);
+            }
+            throw StriException("cannot open the connection");
+        }
+
+        const char* utf8 = output.slices.empty()
+            ? ""
+            : output.slices.front_data();
+        int utf8_length = file_length;
+        if (charr::read_lines::has_utf8_bom(utf8, utf8_length)) {
+            utf8 += 3;
+            utf8_length -= 3;
+        }
+
+        charr::read_lines::ScanResult scan =
+            charr::read_lines::scan_utf8(utf8, utf8_length, false);
+        if (scan.embedded_nul)
+            throw StriException("embedded nul in string");
+
+        vector<char> repaired;
+        if (!scan.invalid.empty()) {
+            for (size_t i=0; i<scan.invalid.size(); ++i) {
+                const string warning = charr::read_lines::invalid_warning(
+                    utf8, scan.invalid[i]
+                );
+                STRI__DEFERRED_WARNINGS.push(warning.c_str());
+            }
+            repaired = charr::read_lines::repair_utf8(
+                utf8, utf8_length, scan.invalid
+            );
+            utf8_length = static_cast<int>(repaired.size());
+            output = charport::charvec::Store(
+                0, static_cast<size_t>(utf8_length)
+            );
+            if (utf8_length > 0) {
+                std::memcpy(
+                    output.slices.front_data(), repaired.data(),
+                    static_cast<size_t>(utf8_length)
+                );
+                utf8 = output.slices.front_data();
+            }
+            else {
+                utf8 = "";
+            }
+            scan = charr::read_lines::scan_utf8(
+                utf8, utf8_length, false
+            );
+        }
+
+        output.records = charport::charvec::components::RecordTable(
+            static_cast<R_xlen_t>(scan.lines.size())
+        );
+        for (size_t i=0; i<scan.lines.size(); ++i) {
+            const charr::read_lines::LineSlice& line = scan.lines[i];
+            output.records.set(
+                i,
+                line.length == 0
+                    ? charport::charvec::components::empty_data()
+                    : utf8+line.begin,
+                line.length,
+                line.ascii
+                    ? cetype_ext_t::CE_ASCII
+                    : cetype_ext_t::CE_UTF8
+            );
+        }
+    }
+
+    STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+    STRI__DEFERRED_WARNINGS.emit();
+    STRI__UNPROTECT_ALL
+    return ret;
+    STRI__ERROR_HANDLER_END(;)
+}
 
 
 /**
@@ -72,7 +203,7 @@ SEXP ci_split_lines1(SEXP str)
     // remains lazy, then release that owner before warnings.
     charport::charvec::Store output(0, 0);
     {
-        StriContainerUTF8 str_cont(context, str, vectorize_length);
+        Utf8Input str_cont(context, str, vectorize_length);
 
         if (str_cont.isNA(0)) {
             source_is_na = true;
@@ -81,77 +212,36 @@ SEXP ci_split_lines1(SEXP str)
             const char* str_cur_s = str_cont.get(0).data();
             R_len_t str_cur_n = str_cont.get(0).length();
 
-            UChar32 c;
-            R_len_t jlast;
-            deque< pair<R_len_t, R_len_t> > occurrences;
-            occurrences.push_back(pair<R_len_t, R_len_t>(0, 0));
-            for (R_len_t j=0; j < str_cur_n; /* null */) {
-                jlast = j;
-                U8_NEXT(str_cur_s, j, str_cur_n, c);
-
-                switch (c) {
-                case ASCII_CR: /* CR */
-                    /* check if next is LF */
-                    // Deviation from stringi: the borrowed record has no
-                    // sentinel byte after its length.
-                    if (j < str_cur_n && str_cur_s[j] == ASCII_LF) { // look ahead one byte
-                        j++; // just one byte
-                    }
-                    break;
-
-                case ASCII_LF: /* LF */
-                    break;
-
-                case UCHAR_NEL: /* NEL */
-                    break;
-
-                case ASCII_VT: /* VT */
-                    break;
-
-                case ASCII_FF: /* FF */
-                    break;
-
-                case UCHAR_LS: /* LS */
-                    break;
-
-                case UCHAR_PS: /* PS */
-                    break;
-
-                default:
-                    /* not a newline character */
-                    occurrences.back().second = j;
-                    continue;
-                }
-
-                occurrences.back().second = jlast;
-                if (j < str_cur_n)
-                    occurrences.push_back(pair<R_len_t, R_len_t>(j, j));
-            }
-
-            if (occurrences.size() == 1) {
-                const pair<R_len_t, R_len_t>& curoccur =
-                    occurrences.front();
-                const char* value = str_cur_s+curoccur.first;
-                size_t value_length = static_cast<size_t>(
-                    curoccur.second-curoccur.first
+            charr::read_lines::ScanResult scan =
+                charr::read_lines::scan_utf8(
+                    str_cur_s, str_cur_n, false
                 );
+
+            if (scan.lines.size() == 1) {
+                const charr::read_lines::LineSlice& line = scan.lines[0];
+                const char* value = str_cur_s+line.begin;
+                size_t value_length = static_cast<size_t>(line.length);
                 output = ci::scalar_store(
                     value, value_length,
-                    cetype_ext_t::CE_ASCII_OR_UTF8
+                    line.ascii
+                        ? cetype_ext_t::CE_ASCII
+                        : cetype_ext_t::CE_UTF8
                 );
             }
-            else if (!occurrences.empty()) {
+            else if (!scan.lines.empty()) {
                 charport::charvec::Builder builder(
-                    static_cast<R_xlen_t>(occurrences.size())
+                    static_cast<R_xlen_t>(scan.lines.size())
                 );
-                deque< pair<R_len_t, R_len_t> >::iterator iter =
-                    occurrences.begin();
-                for (R_len_t i=0; iter != occurrences.end(); ++iter, ++i) {
-                    pair<R_len_t, R_len_t> curoccur = *iter;
-                    ci::builder_set(
-                        builder, i, str_cur_s+curoccur.first,
-                        curoccur.second-curoccur.first,
-                        cetype_ext_t::CE_ASCII_OR_UTF8
+                for (size_t i=0; i<scan.lines.size(); ++i) {
+                    const charr::read_lines::LineSlice& line =
+                        scan.lines[i];
+                    builder.set(
+                        static_cast<R_xlen_t>(i),
+                        str_cur_s+line.begin,
+                        static_cast<size_t>(line.length),
+                        line.ascii
+                            ? cetype_ext_t::CE_ASCII
+                            : cetype_ext_t::CE_UTF8
                     );
                 }
                 output = builder.release_store();
@@ -229,7 +319,7 @@ SEXP ci_split_lines(SEXP str, SEXP omit_empty)
 //   StriContainerInteger   n_max_cont(n_max, vectorize_length);
     StriContainerLogical   omit_empty_cont(omit_empty, vectorize_length);
     {
-        StriContainerUTF8 str_cont(context, str, vectorize_length);
+        Utf8Input str_cont(context, str, vectorize_length);
         charport::charvec::Builder output(0);
 
         for (R_len_t i = str_cont.vectorize_init();
@@ -269,94 +359,34 @@ SEXP ci_split_lines(SEXP str, SEXP omit_empty)
             // for (R_len_t j=0; j<STRI_INDEX_NEWLINE_LAST; ++j)
             //    counts[j] = 0;
 
-            UChar32 c;
-            R_len_t jlast, k=1;
-            deque< pair<R_len_t, R_len_t> > occurrences;
-            occurrences.push_back(pair<R_len_t, R_len_t>(0, 0));
-            for (R_len_t j=0; j < str_cur_n /*&& k < n_max_cur*/; /* null */) {
-                jlast = j;
-                U8_NEXT(str_cur_s, j, str_cur_n, c);
-
-                switch (c) {
-                case ASCII_CR: /* CR */
-                    // counts[STRI_INDEX_NEWLINE_CR]++;
-                    /* check if next is LF */
-                    // Deviation from stringi: the borrowed record has no
-                    // sentinel byte after its length.
-                    if (j < str_cur_n && str_cur_s[j] == ASCII_LF) { // look ahead one byte
-                        // counts[STRI_INDEX_NEWLINE_LF]++;
-                        // counts[STRI_INDEX_NEWLINE_CRLF]++;
-                        j++; // just one byte
-                    }
-                    break;
-
-                case ASCII_LF: /* LF */
-                    // counts[STRI_INDEX_NEWLINE_LF]++;
-                    break;
-
-                case UCHAR_NEL: /* NEL */
-                    // counts[STRI_INDEX_NEWLINE_NEL]++;
-                    break;
-
-                case ASCII_VT: /* VT */
-                    // counts[STRI_INDEX_NEWLINE_VT]++;
-                    break;
-
-                case ASCII_FF: /* FF */
-                    // counts[STRI_INDEX_NEWLINE_FF]++;
-                    break;
-
-                case UCHAR_LS: /* LS */
-                    // counts[STRI_INDEX_NEWLINE_LS]++;
-                    break;
-
-                case UCHAR_PS: /* PS */
-                    // counts[STRI_INDEX_NEWLINE_PS]++;
-                    break;
-
-                default:
-                    /* not a newline character */
-                    occurrences.back().second = j;
-                    continue;
-                }
-
-                // if here, then at newline
-                if (omit_empty_cur && occurrences.back().second == occurrences.back().first)
-                    occurrences.back().first = occurrences.back().second = j; // don't start any new field
-                else {
-                    occurrences.back().second = jlast;
-                    occurrences.push_back(pair<R_len_t, R_len_t>(j, j));
-                    ++k; // another field
-                }
-            }
-
-            // if (k == n_max_cur)
-            //    occurrences.back().second = str_cur_n;
-            if (omit_empty_cur && occurrences.back().first == occurrences.back().second)
-                occurrences.pop_back();
-
-            if (occurrences.size() == 1) {
-                const pair<R_len_t, R_len_t>& curoccur =
-                    occurrences.front();
-                const char* value = str_cur_s+curoccur.first;
-                size_t value_length = static_cast<size_t>(
-                    curoccur.second-curoccur.first
+            charr::read_lines::ScanResult scan =
+                charr::read_lines::scan_utf8(
+                    str_cur_s, str_cur_n, omit_empty_cur != 0,
+                    true
                 );
+
+            if (scan.lines.size() == 1) {
+                const charr::read_lines::LineSlice& line = scan.lines[0];
+                const char* value = str_cur_s+line.begin;
+                size_t value_length = static_cast<size_t>(line.length);
                 stores[i] = ci::scalar_store(
                     value, value_length,
-                    cetype_ext_t::CE_ASCII_OR_UTF8
+                    line.ascii
+                        ? cetype_ext_t::CE_ASCII
+                        : cetype_ext_t::CE_UTF8
                 );
             }
-            else if (!occurrences.empty()) {
-                output.reset(static_cast<R_xlen_t>(occurrences.size()));
-                deque< pair<R_len_t, R_len_t> >::iterator iter =
-                    occurrences.begin();
-                for (R_len_t j=0; iter != occurrences.end(); ++iter, ++j) {
-                    pair<R_len_t, R_len_t> curoccur = *iter;
-                    ci::builder_set(
-                        output, j, str_cur_s+curoccur.first,
-                        curoccur.second-curoccur.first,
-                        cetype_ext_t::CE_ASCII_OR_UTF8
+            else if (!scan.lines.empty()) {
+                output.reset(static_cast<R_xlen_t>(scan.lines.size()));
+                for (size_t j=0; j<scan.lines.size(); ++j) {
+                    const charr::read_lines::LineSlice& line = scan.lines[j];
+                    output.set(
+                        static_cast<R_xlen_t>(j),
+                        str_cur_s+line.begin,
+                        static_cast<size_t>(line.length),
+                        line.ascii
+                            ? cetype_ext_t::CE_ASCII
+                            : cetype_ext_t::CE_UTF8
                     );
                 }
                 stores[i] = output.release_store();

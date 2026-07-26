@@ -33,7 +33,7 @@
 #include "ci_stringi.h"
 #include "ci_builder.h"
 #include "ci_container_utf16.h"
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
 #include "ci_container_regex.h"
 
 
@@ -241,8 +241,8 @@ SEXP ci_subset_regex_replacement(SEXP str, SEXP pattern, SEXP negate, SEXP opts_
     charport::charvec::Builder output(vectorize_length);
     std::vector<int> detected(vectorize_length, 0);
     {
-        StriContainerUTF8 value_cont(context, value, value_length);
-        StriContainerUTF8 str_cont(context, str, vectorize_length);
+        Utf8Input value_cont(context, value, value_length);
+        Utf8Input str_cont(context, str, vectorize_length);
         StriContainerRegexPattern pattern_cont(
             context, pattern, vectorize_length, pattern_opts
         );

@@ -32,10 +32,64 @@
 
 
 #include "ci_stringi.h"
-#include "ci_container_utf8_indexable.h"
+#include "ci_utf8.h"
 #include "ci_container_bytesearch.h"
 #include "ci_container_integer.h"
 
+#include <cstring>
+
+
+namespace {
+
+// Default starts/ends checks can compare borrowed UTF-8 bytes directly.
+// The general container path handles conversion, indexing, and search options.
+inline bool ci__direct_utf8_view(
+    charport::StrView value, const char*& data, int& length
+)
+{
+    if (value.enc == cetype_ext_t::CE_ASCII) {
+        data = value.ptr;
+        length = value.len;
+        return true;
+    }
+    if (value.enc == cetype_ext_t::CE_UTF8 ||
+            value.enc == cetype_ext_t::CE_ASCII_OR_UTF8) {
+        data = value.ptr;
+        length = value.len;
+        if (STRI__ENC_HAS_BOM_UTF8(data, length)) {
+            data += 3;
+            length -= 3;
+        }
+        return true;
+    }
+    return false;
+}
+
+inline bool ci__fixed_at_start(
+    const char* data, int length, const char* pattern, int pattern_length
+)
+{
+    if (pattern_length == 1)
+        return length > 0 && data[0] == pattern[0];
+    return pattern_length <= length &&
+        std::memcmp(data, pattern, static_cast<size_t>(pattern_length)) == 0;
+}
+
+inline bool ci__fixed_at_end(
+    const char* data, int length, const char* pattern, int pattern_length
+)
+{
+    if (pattern_length == 1)
+        return length > 0 && data[length - 1] == pattern[0];
+    return pattern_length <= length &&
+        std::memcmp(
+            data + length - pattern_length,
+            pattern,
+            static_cast<size_t>(pattern_length)
+        ) == 0;
+}
+
+}
 
 /**
  * Detect if a string starts with a pattern match
@@ -55,7 +109,7 @@
  *    use StriContainerByteSearch::startsWith() and endsWith()
  *
  * @version 0.5-1 (Marek Gagolewski, 2015-02-14)
- *    use String8::startsWith() and endsWith()
+ *    use Utf8Record::startsWith() and endsWith()
  *
  * @version 1.4.7 (Marek Gagolewski, 2020-08-24)
  *    #345: `negate` arg added
@@ -94,16 +148,67 @@ SEXP ci_startswith_fixed(SEXP str, SEXP pattern, SEXP from, SEXP negate, SEXP op
     }));
     int* ret_tab = LOGICAL(ret);
     StriContainerInteger from_cont(from, vectorize_length);
+    R_len_t general_start = 0;
+    std::shared_ptr<ci::ReaderBorrow> str_borrow;
+    std::shared_ptr<ci::ReaderBorrow> pattern_borrow;
+
+    if (vectorize_length > 0 && str_n == vectorize_length &&
+            pattern_n == 1 && from_n == 1 &&
+            from_cont.getNAble(0) == 1 &&
+            pattern_flags == 0) {
+        bool complete = false;
+        {
+            str_borrow = context.acquire(str);
+            const charport::StrViews& str_views = str_borrow->views();
+            pattern_borrow = context.acquire(pattern);
+            const charport::StrView pattern_value =
+                pattern_borrow->views()[0];
+            const char* pattern_data = NULL;
+            int pattern_length = 0;
+            if (!pattern_value.is_na() &&
+                    ci__direct_utf8_view(
+                        pattern_value, pattern_data, pattern_length
+                    ) && pattern_length > 0) {
+                complete = true;
+                for (R_len_t i = 0; i < vectorize_length; ++i) {
+                    const charport::StrView value = str_views[i];
+                    if (value.is_na()) {
+                        ret_tab[i] = NA_LOGICAL;
+                        continue;
+                    }
+                    const char* data = NULL;
+                    int length = 0;
+                    if (!ci__direct_utf8_view(value, data, length)) {
+                        complete = false;
+                        general_start = i;
+                        break;
+                    }
+                    const bool matched = ci__fixed_at_start(
+                        data, length, pattern_data, pattern_length
+                    );
+                    ret_tab[i] = static_cast<int>(matched != negate_1);
+                }
+            }
+        }
+        if (complete) {
+            pattern_borrow.reset();
+            str_borrow.reset();
+            context.emitWarnings();
+            STRI__UNPROTECT_ALL
+            return ret;
+        }
+    }
 
     {
-        StriContainerUTF8_indexable str_cont(
+        IndexedUtf8Input str_cont(
             context, str, vectorize_length
         );
         StriContainerByteSearch pattern_cont(
             context, pattern, vectorize_length, pattern_flags
         );
 
-        for (R_len_t i = pattern_cont.vectorize_init();
+        for (R_len_t i = general_start > 0 ?
+                    general_start : pattern_cont.vectorize_init();
                 i != pattern_cont.vectorize_end();
                 i = pattern_cont.vectorize_next(i))
         {
@@ -159,7 +264,7 @@ SEXP ci_startswith_fixed(SEXP str, SEXP pattern, SEXP from, SEXP negate, SEXP op
  *    FR #110, #23: opts_fixed arg added
  *
  * @version 0.5-1 (Marek Gagolewski, 2015-02-14)
- *    use String8::startsWith() and endsWith()
+ *    use Utf8Record::startsWith() and endsWith()
  *
  * @version 1.4.7 (Marek Gagolewski, 2020-08-24)
  *    #345: `negate` arg added
@@ -198,16 +303,67 @@ SEXP ci_endswith_fixed(SEXP str, SEXP pattern, SEXP to, SEXP negate, SEXP opts_f
     }));
     int* ret_tab = LOGICAL(ret);
     StriContainerInteger to_cont(to, vectorize_length);
+    R_len_t general_start = 0;
+    std::shared_ptr<ci::ReaderBorrow> str_borrow;
+    std::shared_ptr<ci::ReaderBorrow> pattern_borrow;
+
+    if (vectorize_length > 0 && str_n == vectorize_length &&
+            pattern_n == 1 && to_n == 1 &&
+            to_cont.getNAble(0) == -1 &&
+            pattern_flags == 0) {
+        bool complete = false;
+        {
+            str_borrow = context.acquire(str);
+            const charport::StrViews& str_views = str_borrow->views();
+            pattern_borrow = context.acquire(pattern);
+            const charport::StrView pattern_value =
+                pattern_borrow->views()[0];
+            const char* pattern_data = NULL;
+            int pattern_length = 0;
+            if (!pattern_value.is_na() &&
+                    ci__direct_utf8_view(
+                        pattern_value, pattern_data, pattern_length
+                    ) && pattern_length > 0) {
+                complete = true;
+                for (R_len_t i = 0; i < vectorize_length; ++i) {
+                    const charport::StrView value = str_views[i];
+                    if (value.is_na()) {
+                        ret_tab[i] = NA_LOGICAL;
+                        continue;
+                    }
+                    const char* data = NULL;
+                    int length = 0;
+                    if (!ci__direct_utf8_view(value, data, length)) {
+                        complete = false;
+                        general_start = i;
+                        break;
+                    }
+                    const bool matched = ci__fixed_at_end(
+                        data, length, pattern_data, pattern_length
+                    );
+                    ret_tab[i] = static_cast<int>(matched != negate_1);
+                }
+            }
+        }
+        if (complete) {
+            pattern_borrow.reset();
+            str_borrow.reset();
+            context.emitWarnings();
+            STRI__UNPROTECT_ALL
+            return ret;
+        }
+    }
 
     {
-        StriContainerUTF8_indexable str_cont(
+        IndexedUtf8Input str_cont(
             context, str, vectorize_length
         );
         StriContainerByteSearch pattern_cont(
             context, pattern, vectorize_length, pattern_flags
         );
 
-        for (R_len_t i = pattern_cont.vectorize_init();
+        for (R_len_t i = general_start > 0 ?
+                    general_start : pattern_cont.vectorize_init();
                 i != pattern_cont.vectorize_end();
                 i = pattern_cont.vectorize_next(i))
         {

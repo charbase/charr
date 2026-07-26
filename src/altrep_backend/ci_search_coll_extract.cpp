@@ -35,6 +35,7 @@
 #include "ci_builder.h"
 #include "ci_container_utf16.h"
 #include "ci_container_usearch.h"
+#include "ci_utf16_cursor.h"
 #include <deque>
 #include <stdexcept>
 #include <utility>
@@ -105,9 +106,7 @@ SEXP ci__extract_firstlast_coll(SEXP str, SEXP pattern, SEXP opts_collator, bool
 
     charport::charvec::Builder builder(vectorize_length);
     {
-        StriContainerUTF16 str_cont(
-            context, str, vectorize_length, false
-        ); // writable
+        ci::Utf16Cursor str_cont(context, str, vectorize_length);
         StriContainerUStringSearch pattern_cont(
             context, pattern, vectorize_length, collator
         );  // collator is not owned by pattern_cont
@@ -143,12 +142,13 @@ SEXP ci__extract_firstlast_coll(SEXP str, SEXP pattern, SEXP opts_collator, bool
                 continue;
             }
 
-            str_cont.getWritable(i).setTo(
-                str_cont.get(i), (int32_t)start,
-                (int32_t)usearch_getMatchedLength(matcher)
-            ); // str[i] is a writable deep copy
             ci::builder_set(
-                builder, i, str_cont.get(i), utf8_buffer
+                builder, i,
+                str_cont.substring(
+                    i, static_cast<int32_t>(start),
+                    static_cast<int32_t>(usearch_getMatchedLength(matcher))
+                ),
+                utf8_buffer
             );
         }
     }

@@ -124,33 +124,11 @@ ci_extract_first_boundaries <- function(str, ..., opts_brkiter = NULL)
 
 # @export
 # @rdname ci_extract_boundaries
-ci_extract_all_words <- function(str, simplify = FALSE, omit_no_match = FALSE,
-    locale = NULL)
-{
-    ci_extract_all_boundaries(
-        str, simplify, omit_no_match,
-        opts_brkiter = ci_opts_brkiter(
-            type = "word", skip_word_none = TRUE, locale = locale
-        )
-    )
-}
 
 
 # @export
 # @rdname ci_extract_boundaries
-ci_extract_first_words <- function(str, locale = NULL)
-{
-    ci_extract_first_boundaries(str,
-        opts_brkiter = ci_opts_brkiter(type = "word",
-        skip_word_none = TRUE, locale = locale))
-}
 
 
 # @export
 # @rdname ci_extract_boundaries
-ci_extract_last_words <- function(str, locale = NULL)
-{
-    ci_extract_last_boundaries(str,
-        opts_brkiter = ci_opts_brkiter(type = "word",
-        skip_word_none = TRUE, locale = locale))
-}

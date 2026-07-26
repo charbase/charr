@@ -34,6 +34,7 @@
 #include "ci_stringi.h"
 #include "ci_container_utf16.h"
 #include "ci_ucnv.h"
+#include "altrep/native_to_utf8.h"
 
 #include <memory>
 #include <utility>
@@ -112,7 +113,7 @@ StriContainerUTF16::StriContainerUTF16(
 #else
     StriUcnv ucnvLatin1("ISO-8859-1");
 #endif
-    StriUcnv ucnvNative(NULL);
+    charr::altrep::NativeToUtf8 native_to_utf8;
 
     for (R_len_t i=0; i<nrstr; ++i) {
         const charport::StrView curs = views[i];
@@ -173,21 +174,14 @@ StriContainerUTF16::StriContainerUTF16(
             throw StriException(MSG__BYTESENC);
         }
         else if (curs.enc == cetype_ext_t::CE_NATIVE) {
-            // an "unknown" (native) encoding may be set to UTF-8 (speedup)
-            if (ucnvNative.isUTF8()) {
-                // UTF-8
-                this->str[i].setTo(
-                    UnicodeString::fromUTF8(StringPiece(curs.ptr, curs.len))
-                );
-            }
-            else {
-                UConverter* ucnv = ucnvNative.getConverter();
-                UErrorCode status = U_ZERO_ERROR;
-                this->str[i].setTo(
-                    UnicodeString(curs.ptr, curs.len, ucnv, status)
-                );
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-            }
+            const charport::ByteView converted = native_to_utf8.native(
+                curs.ptr, curs.len
+            );
+            this->str[i].setTo(
+                UnicodeString::fromUTF8(
+                    StringPiece(converted.ptr, converted.len)
+                )
+            );
         }
         else {
             throw StriException("unknown charport string encoding");

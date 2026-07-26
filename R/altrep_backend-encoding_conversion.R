@@ -271,10 +271,6 @@ ci_enc_toutf8 <- function(str, is_unknown_8bit = FALSE, validate = FALSE)
 #
 # @family encoding_conversion
 # @export
-ci_enc_tonative <- function(str)
-{
-    ci_encode(str, NULL, NULL)
-}
 
 
 # @title

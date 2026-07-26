@@ -33,15 +33,68 @@
 
 #include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_container_utf8.h"
+#include "ci_utf8.h"
 #include "ci_container_integer.h"
 #include "ci_container_logical.h"
 #include "ci_container_regex.h"
-#include <deque>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 using namespace std;
+
+
+namespace {
+
+typedef pair<R_len_t, R_len_t> CiRegexSplitField;
+
+
+inline void ci__collect_regex_split_fields(
+    RegexMatcher* matcher, R_len_t string_length, int n_cur,
+    bool omit_empty, bool tokens_only, UErrorCode& status,
+    vector<CiRegexSplitField>& fields
+)
+{
+    fields.clear();
+    fields.emplace_back(0, 0);
+
+    int field_count = 1;
+    while (field_count < n_cur) {
+        const int found = static_cast<int>(matcher->find(status));
+        STRI__CHECKICUSTATUS_THROW(status, {})
+        if (!found)
+            break;
+
+        const R_len_t match_start = static_cast<R_len_t>(
+            matcher->start(status)
+        );
+        STRI__CHECKICUSTATUS_THROW(status, {})
+        const R_len_t match_end = static_cast<R_len_t>(
+            matcher->end(status)
+        );
+        STRI__CHECKICUSTATUS_THROW(status, {})
+
+        if (omit_empty && fields.back().first == match_start) {
+            fields.back().first = match_end;
+        }
+        else {
+            fields.back().second = match_start;
+            fields.emplace_back(match_end, match_end);
+            ++field_count;
+        }
+    }
+
+    fields.back().second = string_length;
+    if (omit_empty && fields.back().first == fields.back().second)
+        fields.pop_back();
+
+    if (tokens_only && n_cur < INT_MAX) {
+        --n_cur;
+        if (fields.size() > static_cast<size_t>(n_cur))
+            fields.resize(static_cast<size_t>(n_cur));
+    }
+}
+
+} // namespace
 
 
 /**
@@ -145,11 +198,13 @@ SEXP ci_split_regex(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
     {
         StriContainerInteger n_cont(n, vectorize_length);
         StriContainerLogical omit_empty_cont(omit_empty, vectorize_length);
-        StriContainerUTF8 str_cont(context, str, vectorize_length);
+        Utf8Input str_cont(context, str, vectorize_length);
         StriContainerRegexPattern pattern_cont(
             context, pattern, vectorize_length, pattern_opts
         );
         charport::charvec::Builder output(0);
+        vector<CiRegexSplitField> fields;
+        fields.reserve(16);
 
         for (R_len_t i = pattern_cont.vectorize_init();
                 i != pattern_cont.vectorize_end();
@@ -162,15 +217,17 @@ SEXP ci_split_regex(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
                 continue;
             }
 
-            int  n_cur        = n_cont.get(i);
-            int  omit_empty_cur   = !omit_empty_cont.isNA(i) && omit_empty_cont.get(i);
+            int n_cur = n_cont.get(i);
+            const bool omit_empty_isna = omit_empty_cont.isNA(i);
+            const bool omit_empty_cur =
+                !omit_empty_isna && omit_empty_cont.get(i);
 
             STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(
                 str_cont, pattern_cont,
                 stores[i] = charport::charvec::Store::scalar(
                     nullptr, 0, cetype_ext_t::CE_NA
                 );,
-            {   if (omit_empty_cont.isNA(i))
+            {   if (omit_empty_isna)
                     stores[i] = charport::charvec::Store::scalar(
                         nullptr, 0, cetype_ext_t::CE_NA
                     );
@@ -180,8 +237,12 @@ SEXP ci_split_regex(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
                     );
             })
 
-            R_len_t     str_cur_n = str_cont.get(i).length();
-            const char* str_cur_s = str_cont.get(i).data();
+            const Utf8Record& str_cur = str_cont.get(i);
+            const R_len_t str_cur_n = str_cur.length();
+            const char* str_cur_s = str_cur.data();
+            const cetype_ext_t field_encoding = str_cur.isASCII()
+                ? cetype_ext_t::CE_ASCII
+                : cetype_ext_t::CE_ASCII_OR_UTF8;
 
             if (n_cur >= INT_MAX-1)
                 throw StriException(MSG__INCORRECT_NAMED_ARG "; " MSG__EXPECTED_SMALLER, "n");
@@ -196,50 +257,20 @@ SEXP ci_split_regex(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
             UErrorCode status = U_ZERO_ERROR;
             RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
             str_text = utext_openUTF8(
-                str_text, str_cont.get(i).data(),
-                str_cont.get(i).length(), &status
+                str_text, str_cur_s, str_cur_n, &status
             );
             STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
 
             matcher->reset(str_text);
-
-
-            R_len_t k;
-            deque< pair<R_len_t, R_len_t> > fields; // byte based-indices
-            fields.push_back(pair<R_len_t, R_len_t>(0,0));
-
-            for (k=1; k < n_cur; ) {
-                int m_res = (int)matcher->find(status);
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                if (!m_res) break;
-
-                R_len_t s1 = (R_len_t)matcher->start(status);
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                R_len_t s2 = (R_len_t)matcher->end(status);
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-                if (omit_empty_cur && fields.back().first == s1)
-                    fields.back().first = s2; // don't start any new field
-                else {
-                    fields.back().second = s1;
-                    fields.push_back(pair<R_len_t, R_len_t>(s2, s2)); // start a new field here
-                    ++k; // another field
-                }
-            }
-            fields.back().second = str_cur_n;
-            if (omit_empty_cur && fields.back().first == fields.back().second)
-                fields.pop_back();
-
-            if (tokens_only1 && n_cur < INT_MAX) {
-                n_cur--; // one split ahead could have been made, see above
-                while (fields.size() > (size_t)n_cur)
-                    fields.pop_back(); // get rid of the remainder
-            }
+            ci__collect_regex_split_fields(
+                matcher, str_cur_n, n_cur, omit_empty_cur, tokens_only1,
+                status, fields
+            );
 
             if (fields.size() == 1) {
-                const pair<R_len_t, R_len_t>& curoccur = fields.front();
+                const CiRegexSplitField& curoccur = fields.front();
                 if (curoccur.second == curoccur.first &&
-                        omit_empty_cont.isNA(i)) {
+                        omit_empty_isna) {
                     stores[i] = charport::charvec::Store::scalar(
                         nullptr, 0, cetype_ext_t::CE_NA
                     );
@@ -250,26 +281,26 @@ SEXP ci_split_regex(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
                         curoccur.second-curoccur.first
                     );
                     stores[i] = ci::scalar_store(
-                        value, value_length,
-                        cetype_ext_t::CE_ASCII_OR_UTF8
+                        value, value_length, field_encoding
                     );
                 }
             }
             else if (!fields.empty()) {
                 output.reset(static_cast<R_xlen_t>(fields.size()));
-                deque< pair<R_len_t, R_len_t> >::iterator iter =
-                    fields.begin();
-                for (k = 0; iter != fields.end(); ++iter, ++k) {
-                    pair<R_len_t, R_len_t> curoccur = *iter;
+                for (R_len_t k = 0;
+                        k < static_cast<R_len_t>(fields.size()); ++k) {
+                    const CiRegexSplitField& curoccur = fields[
+                        static_cast<size_t>(k)
+                    ];
                     if (curoccur.second == curoccur.first &&
-                            omit_empty_cont.isNA(i)) {
+                            omit_empty_isna) {
                         output.set_na(k);
                     }
                     else {
                         ci::builder_set(
                             output, k, str_cur_s+curoccur.first,
                             curoccur.second-curoccur.first,
-                            cetype_ext_t::CE_ASCII_OR_UTF8
+                            field_encoding
                         );
                     }
                 }

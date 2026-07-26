@@ -414,7 +414,7 @@ protected:
             return USEARCH_DONE;
         }
 
-        // Deviation from stringi: String8 is length-delimited, so bounded
+        // Deviation from stringi: Utf8Record is length-delimited, so bounded
         // search replaces the sentinel-dependent C string operation.
         const char* res = static_cast<const char*>(memchr(
             m_searchStr+startPos,

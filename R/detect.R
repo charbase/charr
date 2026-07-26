@@ -46,19 +46,19 @@ str_detect <- function(string, pattern, negate = FALSE) {
     type(pattern),
     empty = no_empty(),
     bound = no_boundary(),
-    fixed = ci_detect_fixed(
+    fixed = stri_detect_fixed(
       string,
       pattern,
       negate = negate,
       opts_fixed = opts(pattern)
     ),
-    coll = ci_detect_coll(
+    coll = stri_detect_coll(
       string,
       pattern,
       negate = negate,
       opts_collator = opts(pattern)
     ),
-    regex = ci_detect_regex(
+    regex = stri_detect_regex(
       string,
       pattern,
       negate = negate,
@@ -100,13 +100,13 @@ str_starts <- function(string, pattern, negate = FALSE) {
     type(pattern),
     empty = no_empty(),
     bound = no_boundary(),
-    fixed = ci_startswith_fixed(
+    fixed = stri_startswith_fixed(
       string,
       pattern,
       negate = negate,
       opts_fixed = opts(pattern)
     ),
-    coll = ci_startswith_coll(
+    coll = stri_startswith_coll(
       string,
       pattern,
       negate = negate,
@@ -114,7 +114,7 @@ str_starts <- function(string, pattern, negate = FALSE) {
     ),
     regex = {
       pattern2 <- paste0("^(", pattern, ")")
-      ci_detect_regex(
+      stri_detect_regex(
         string,
         pattern2,
         negate = negate,
@@ -135,13 +135,13 @@ str_ends <- function(string, pattern, negate = FALSE) {
     type(pattern),
     empty = no_empty(),
     bound = no_boundary(),
-    fixed = ci_endswith_fixed(
+    fixed = stri_endswith_fixed(
       string,
       pattern,
       negate = negate,
       opts_fixed = opts(pattern)
     ),
-    coll = ci_endswith_coll(
+    coll = stri_endswith_coll(
       string,
       pattern,
       negate = negate,
@@ -149,7 +149,7 @@ str_ends <- function(string, pattern, negate = FALSE) {
     ),
     regex = {
       pattern2 <- paste0("(", pattern, ")$")
-      ci_detect_regex(
+      stri_detect_regex(
         string,
         pattern2,
         negate = negate,
@@ -220,7 +220,7 @@ str_like <- function(string, pattern, ignore_case = deprecated()) {
   }
 
   pattern <- regex(like_to_regex(pattern), ignore_case = FALSE)
-  out <- ci_detect_regex(string, pattern, opts_regex = opts(pattern))
+  out <- stri_detect_regex(string, pattern, opts_regex = opts(pattern))
   preserve_names_if_possible(string, pattern, out)
 }
 
@@ -236,16 +236,16 @@ str_ilike <- function(string, pattern) {
   }
 
   pattern <- regex(like_to_regex(pattern), ignore_case = TRUE)
-  out <- ci_detect_regex(string, pattern, opts_regex = opts(pattern))
+  out <- stri_detect_regex(string, pattern, opts_regex = opts(pattern))
   preserve_names_if_possible(string, pattern, out)
 }
 
 like_to_regex <- function(pattern) {
-  converted <- ci_replace_all_regex(
+  converted <- stri_replace_all_regex(
     pattern,
     "(?<!\\\\|\\[)%(?!\\])",
     "\\.\\*"
   )
-  converted <- ci_replace_all_regex(converted, "(?<!\\\\|\\[)_(?!\\])", "\\.")
+  converted <- stri_replace_all_regex(converted, "(?<!\\\\|\\[)_(?!\\])", "\\.")
   paste0("^", converted, "$")
 }
