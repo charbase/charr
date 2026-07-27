@@ -45,6 +45,21 @@ namespace charr { namespace base {
 
 namespace {
 
+bool has_direct_utf8_values(const SEXP* values, R_len_t length)
+{
+    for (R_len_t i = 0; i < length; ++i) {
+        const SEXP value = values[i];
+        if (value == NA_STRING)
+            continue;
+        if (IS_BYTES(value))
+            throw StriException(MSG__BYTESENC);
+        if (!IS_ASCII(value) && !IS_UTF8(value))
+            return false;
+    }
+    return true;
+}
+
+
 class BoundaryCounter : public StriBrkIterOptions {
 private:
     BreakIterator* iterator_;
@@ -181,18 +196,42 @@ SEXP ci_count_boundaries(SEXP str, SEXP opts_brkiter)
         int* ret_tab = INTEGER(ret);
         bool default_locale_warning = false;
 
-        Utf8Input input(str, str_length);
         BoundaryCounter counter(opts_brkiter2);
-        for (R_len_t i = 0; i < str_length; ++i) {
-            ret_tab[i] = input.isNA(i)
-                ? NA_INTEGER
-                : counter.count(
-                    input.get(i).data(), input.get(i).length()
-                );
+        const bool direct_source = str_length == 0 || !ALTREP(str);
+        const SEXP* values = direct_source && str_length > 0
+            ? STRING_PTR_RO(str)
+            : nullptr;
+        if (direct_source &&
+                has_direct_utf8_values(values, str_length)) {
+            for (R_len_t i = 0; i < str_length; ++i) {
+                const SEXP value = values[i];
+                if (value == NA_STRING) {
+                    ret_tab[i] = NA_INTEGER;
+                    continue;
+                }
+                const char* data = CHAR(value);
+                R_len_t length = LENGTH(value);
+                if (IS_UTF8(value) &&
+                        STRI__ENC_HAS_BOM_UTF8(data, length)) {
+                    data += 3;
+                    length -= 3;
+                }
+                ret_tab[i] = counter.count(data, length);
+            }
+        }
+        else {
+            Utf8Input input(str, str_length);
+            for (R_len_t i = 0; i < str_length; ++i) {
+                ret_tab[i] = input.isNA(i)
+                    ? NA_INTEGER
+                    : counter.count(
+                        input.get(i).data(), input.get(i).length()
+                    );
+            }
         }
         default_locale_warning = counter.used_default_locale();
         if (default_locale_warning)
-            Rf_warning("%s", ICUError::getICUerrorName(
+            r_warning("%s", ICUError::getICUerrorName(
                 U_USING_DEFAULT_WARNING
             ));
     }

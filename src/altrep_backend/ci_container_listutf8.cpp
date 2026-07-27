@@ -103,6 +103,7 @@ StriContainerListUTF8::StriContainerListUTF8(
                     _nrecycle % element_length != 0) {
                 context.warn(MSG__WARN_RECYCLING_RULE);
                 recycling_warning = true;
+                break;
             }
         }
 

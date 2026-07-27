@@ -46,7 +46,6 @@
 namespace charr { namespace base {
 
 // common.cpp
-void    ci__set_names(SEXP object, R_len_t numnames, ...);
 SEXP    ci__make_character_vector_char_ptr(R_len_t numnames, ...);
 SEXP    ci__make_character_vector_UnicodeString_ptr(R_len_t numnames, ...);
 R_len_t ci__recycling_rule(bool enableWarning, int n, ...);
@@ -75,12 +74,10 @@ SEXP ci__prepare_arg_integer_1(SEXP x, const char* argname, bool factors_as_stri
 SEXP ci__prepare_arg_logical_1(SEXP x, const char* argname);
 
 const char* ci__copy_string_Ralloc(SEXP, const char* argname);
-const char* ci__prepare_arg_string_1_notNA(SEXP x,  const char* argname);
 double      ci__prepare_arg_double_1_notNA(SEXP x,  const char* argname);
 int         ci__prepare_arg_integer_1_notNA(SEXP x, const char* argname);
 bool        ci__prepare_arg_logical_1_notNA(SEXP x, const char* argname);
 
-const char* ci__prepare_arg_string_1_NA(SEXP x,  const char* argname);
 double      ci__prepare_arg_double_1_NA(SEXP x, const char* argname);
 int ci__prepare_arg_logical_1_NA(SEXP x, const char* argname);
 int ci__prepare_arg_integer_1_NA(SEXP x, const char* argname);

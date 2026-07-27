@@ -1,6 +1,8 @@
 #ifndef CHARR_BASE_STRING_OUTPUT_H
 #define CHARR_BASE_STRING_OUTPUT_H
 
+#include "ci_exception.h"
+
 #include <Rinternals.h>
 
 #include <algorithm>
@@ -136,16 +138,27 @@ inline SEXP finalize(
     R_xlen_t size
 )
 {
-    SEXP output = PROTECT(Rf_allocVector(STRSXP, size));
-    for (R_xlen_t i = 0; i < size; ++i) {
-        SET_STRING_ELT(
-            output,
-            i,
-            make_charsxp(payload, records[static_cast<std::size_t>(i)])
-        );
-    }
-    UNPROTECT(1);
-    return output;
+    return unwind_protect([&]() -> SEXP {
+        SEXP output = PROTECT(Rf_allocVector(STRSXP, size));
+        try {
+            for (R_xlen_t i = 0; i < size; ++i) {
+                SET_STRING_ELT(
+                    output,
+                    i,
+                    make_charsxp(
+                        payload,
+                        records[static_cast<std::size_t>(i)]
+                    )
+                );
+            }
+        }
+        catch (...) {
+            UNPROTECT(1);
+            throw;
+        }
+        UNPROTECT(1);
+        return output;
+    });
 }
 
 } // namespace output_detail

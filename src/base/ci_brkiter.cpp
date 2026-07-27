@@ -79,11 +79,11 @@ void StriBrkIterOptions::setType(SEXP opts_brkiter, const char* _default) {
                                                   Rf_ScalarLogical(FALSE),
                                                   Rf_ScalarLogical(FALSE)));
                 PROTECT(curval = ci__prepare_arg_string_1(curval2, "type"));
-                if (STRING_ELT(curval, i) == NA_STRING) {
+                if (STRING_ELT(curval, 0) == NA_STRING) {
                     UNPROTECT(1);
                     Rf_error(MSG__INCORRECT_MATCH_OPTION, "type");
                 }
-                const char* curval3 = CHAR(STRING_ELT(curval, i));
+                const char* curval3 = CHAR(STRING_ELT(curval, 0));
                 this->rules = UnicodeString::fromUTF8(curval3);
                 brkiter_cur = ci__match_arg(curval3, type_opts);
                 UNPROTECT(2);

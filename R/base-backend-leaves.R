@@ -120,11 +120,17 @@ if (length(.charr_missing_base_wrappers) > 0L) {
 .charr_base_references <- unique(unlist(lapply(
   .charr_base_wrapper_graph,
   function(name) {
-    all.names(
-      body(get(name, envir = .charr_base_namespace, inherits = FALSE)),
+    fn <- get(name, envir = .charr_base_namespace, inherits = FALSE)
+    formal_references <- unlist(lapply(
+      as.list(formals(fn)),
+      all.names,
       functions = TRUE,
       unique = TRUE
-    )
+    ), use.names = FALSE)
+    unique(c(
+      all.names(body(fn), functions = TRUE, unique = TRUE),
+      formal_references
+    ))
   }
 )))
 .charr_unbound_base_wrappers <- setdiff(

@@ -35,6 +35,7 @@
 #include "ci_container_utf16.h"
 #include "ci_container_usearch.h"
 #include <deque>
+#include <string>
 #include <utility>
 namespace charr { namespace base {
 
@@ -235,6 +236,26 @@ SEXP ci_extract_all_coll(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_mat
         }
 
         R_len_t noccurrences = (R_len_t)occurrences.size();
+        if (noccurrences == 1) {
+            const pair<R_len_t, R_len_t>& match = occurrences.front();
+            UnicodeString match_text(
+                str_cont.get(i), match.first, match.second
+            );
+            string utf8;
+            match_text.toUTF8String(utf8);
+            SEXP output;
+            STRI__PROTECT(output = Rf_allocVector(STRSXP, 1));
+            SET_STRING_ELT(
+                output, 0,
+                Rf_mkCharLenCE(
+                    utf8.data(), static_cast<int>(utf8.size()), CE_UTF8
+                )
+            );
+            SET_VECTOR_ELT(ret, i, output);
+            STRI__UNPROTECT(1);
+            continue;
+        }
+
         StriContainerUTF16 out_cont(noccurrences);
         deque< pair<R_len_t, R_len_t> >::iterator iter = occurrences.begin();
         for (R_len_t j = 0; iter != occurrences.end(); ++iter, ++j) {

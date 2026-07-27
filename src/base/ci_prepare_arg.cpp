@@ -343,7 +343,7 @@ SEXP ci__prepare_arg_string(SEXP x, const char* argname, bool allow_error)
     if (Rf_isVectorList(x) || Rf_isObject(x))  // factor is an object too
     {
         if (Rf_isVectorList(x) && !ci__check_list_of_scalars(x))
-            Rf_warning(MSG__WARN_LIST_COERCION);
+            r_warning(MSG__WARN_LIST_COERCION);
 
 #if defined(R_VERSION) && R_VERSION >= R_Version(3, 5, 0)
         if (allow_error)
@@ -436,7 +436,7 @@ SEXP ci__prepare_arg_double(SEXP x, const char* argname, bool factors_as_strings
     else if (Rf_isVectorList(x) || Rf_isObject(x))  // factor is an object too
     {
         if (Rf_isVectorList(x) && !ci__check_list_of_scalars(x))
-            Rf_warning(MSG__WARN_LIST_COERCION);
+            r_warning(MSG__WARN_LIST_COERCION);
 
 #if defined(R_VERSION) && R_VERSION >= R_Version(3, 5, 0)
         if (allow_error)
@@ -528,7 +528,7 @@ SEXP ci__prepare_arg_integer(SEXP x, const char* argname, bool factors_as_string
     else if (Rf_isVectorList(x) || Rf_isObject(x))  // factor is an object too
     {
         if (Rf_isVectorList(x) && !ci__check_list_of_scalars(x))
-            Rf_warning(MSG__WARN_LIST_COERCION);
+            r_warning(MSG__WARN_LIST_COERCION);
 
 #if defined(R_VERSION) && R_VERSION >= R_Version(3, 5, 0)
         if (allow_error)
@@ -612,7 +612,7 @@ SEXP ci__prepare_arg_logical(SEXP x, const char* argname, bool allow_error)
     else if (Rf_isVectorList(x) || Rf_isObject(x))
     {
         if (Rf_isVectorList(x) && !ci__check_list_of_scalars(x))
-            Rf_warning(MSG__WARN_LIST_COERCION);
+            r_warning(MSG__WARN_LIST_COERCION);
 
 #if defined(R_VERSION) && R_VERSION >= R_Version(3, 5, 0)
         if (allow_error)
@@ -697,7 +697,7 @@ SEXP ci__prepare_arg_raw(SEXP x, const char* argname, bool factors_as_strings, b
     else if (Rf_isVectorList(x) || Rf_isObject(x))
     {
         if (Rf_isVectorList(x) && !ci__check_list_of_scalars(x))
-            Rf_warning(MSG__WARN_LIST_COERCION);
+            r_warning(MSG__WARN_LIST_COERCION);
 
 #if defined(R_VERSION) && R_VERSION >= R_Version(3, 5, 0)
         if (allow_error)
@@ -853,7 +853,7 @@ SEXP ci__prepare_arg_string_1(SEXP x, const char* argname)
         return x; // avoid compiler warning
     }
     else if (nx > 1) {
-        Rf_warning(MSG__ARG_EXPECTED_1_STRING, argname);
+        r_warning(MSG__ARG_EXPECTED_1_STRING, argname);
         SEXP xold = x;
         PROTECT(x = Rf_allocVector(STRSXP, 1));
         nprotect++;
@@ -950,7 +950,7 @@ SEXP ci__prepare_arg_double_1(SEXP x, const char* argname, bool factors_as_strin
         return x; // avoid compiler warning
     }
     else if (nx > 1) {
-        Rf_warning(MSG__ARG_EXPECTED_1_NUMERIC, argname);
+        r_warning(MSG__ARG_EXPECTED_1_NUMERIC, argname);
         double x0 = REAL(x)[0];
         PROTECT(x = Rf_allocVector(REALSXP, 1));
         nprotect++;
@@ -1047,7 +1047,7 @@ SEXP ci__prepare_arg_integer_1(SEXP x, const char* argname, bool factors_as_stri
         return x; // avoid compiler warning
     }
     else if (nx > 1) {
-        Rf_warning(MSG__ARG_EXPECTED_1_INTEGER, argname);
+        r_warning(MSG__ARG_EXPECTED_1_INTEGER, argname);
         int x0 = INTEGER(x)[0];
         PROTECT(x = Rf_allocVector(INTSXP, 1));
         nprotect++;
@@ -1152,7 +1152,7 @@ SEXP ci__prepare_arg_logical_1(SEXP x, const char* argname)
         return x; // avoid compiler warning
     }
     else if (nx > 1) {
-        Rf_warning(MSG__ARG_EXPECTED_1_LOGICAL, argname);
+        r_warning(MSG__ARG_EXPECTED_1_LOGICAL, argname);
         int x0 = LOGICAL(x)[0];
         PROTECT(x = Rf_allocVector(LGLSXP, 1));
         nprotect++;
@@ -1358,68 +1358,6 @@ const char* ci__copy_string_Ralloc(SEXP x, const char* argname)
     return ret;
 }
 
-
-
-/** Prepare string argument - one value, can be NA [no re-encoding done!!!]
- *
- * If there are 0 elements -> error
- * If there are >1 elements -> warning
- *
- * WARNING: this function is allowed to call the error() function.
- * Use before STRI__ERROR_HANDLER_BEGIN (with other prepareargs).
- *
- *
- * @param x R object to be checked/coerced
- * @param argname argument name (message formatting)
- * @return a character string or NULL
- *
- * @version 1.6.3 (Marek Gagolewski, 2021-05-21)
- */
-const char* ci__prepare_arg_string_1_NA(SEXP x, const char* argname)
-{
-    PROTECT(x = ci__prepare_arg_string_1(x, argname));
-    if (STRING_ELT(x, 0) == NA_STRING) {
-        UNPROTECT(1);
-        return nullptr;
-    }
-    const char* ret_tmp = (const char*)CHAR(STRING_ELT(x, 0)); // ret may be gc'ed
-    size_t ret_n = strlen(ret_tmp);
-    /* R_alloc ==  Here R will reclaim the memory at the end of the call to .Call */
-    char* ret = R_alloc(ret_n+1, (int)sizeof(char));
-    STRI_ASSERT(ret);
-    if (!ret) {
-        UNPROTECT(1);
-        Rf_error(MSG__MEM_ALLOC_ERROR);
-    }
-    memcpy(ret, ret_tmp, ret_n+1);
-    UNPROTECT(1);
-    return ret;
-}
-
-
-
-/** Prepare string argument - one value, not NA [no re-encoding done!!!]
- *
- * If there are 0 elements -> error
- * If there are >1 elements -> warning
- *
- * WARNING: this function is allowed to call the error() function.
- * Use before STRI__ERROR_HANDLER_BEGIN (with other prepareargs).
- *
- *
- * @param x R object to be checked/coerced
- * @param argname argument name (message formatting)
- * @return a character string
- *
- * @version 0.5-1 (Marek Gagolewski, 2014-12-25)
- */
-const char* ci__prepare_arg_string_1_notNA(SEXP x, const char* argname)
-{
-    const char* ret = ci__prepare_arg_string_1_NA(x, argname);
-    if (ret == nullptr)
-        Rf_error(MSG__ARG_EXPECTED_NOT_NA, argname); // allowed here
-    return ret;
-}
 
 
 /**
@@ -1689,157 +1627,5 @@ const char* ci__prepare_arg_enc(SEXP enc, const char* argname, bool allowdefault
 }
 
 
-
-/* Wrapper for ci__prepare_arg_*, mainly for testing purposes
- *
- * Can call error()
- *
- * @param x R object
- * @param argname single string
- * @return R object of desired type
- *
- * @version 1.6.3 (Marek Gagolewski, 2021-05-21)
- */
-SEXP ci_prepare_arg_string_1(SEXP x, SEXP argname)
-{
-    const char* argname_s = ci__prepare_arg_string_1_notNA(argname, "argname");
-    return ci__prepare_arg_string_1(x, argname_s);
-}
-
-
-/* Wrapper for ci__prepare_arg_*, mainly for testing purposes
- *
- * Can call error()
- *
- * @param x R object
- * @param argname single string
- * @return R object of desired type
- *
- * @version 1.6.3 (Marek Gagolewski, 2021-05-21)
- */
-SEXP ci_prepare_arg_double_1(SEXP x, SEXP argname) // TODO: factors_as_strings
-{
-    const char* argname_s = ci__prepare_arg_string_1_notNA(argname, "argname");
-    return ci__prepare_arg_double_1(x, argname_s);
-}
-
-
-/* Wrapper for ci__prepare_arg_*, mainly for testing purposes
- *
- * Can call error()
- *
- * @param x R object
- * @param argname single string
- * @return R object of desired type
- *
- * @version 1.6.3 (Marek Gagolewski, 2021-05-21)
- */
-SEXP ci_prepare_arg_integer_1(SEXP x, SEXP argname) // TODO: factors_as_strings
-{
-    const char* argname_s = ci__prepare_arg_string_1_notNA(argname, "argname");
-    return ci__prepare_arg_integer_1(x, argname_s);
-}
-
-
-/* Wrapper for ci__prepare_arg_*, mainly for testing purposes
- *
- * Can call error()
- *
- * @param x R object
- * @param argname single string
- * @return R object of desired type
- *
- * @version 1.6.3 (Marek Gagolewski, 2021-05-21)
- */
-SEXP ci_prepare_arg_logical_1(SEXP x, SEXP argname)
-{
-    const char* argname_s = ci__prepare_arg_string_1_notNA(argname, "argname");
-    return ci__prepare_arg_logical_1(x, argname_s);
-}
-
-
-/* Wrapper for ci__prepare_arg_*, mainly for testing purposes
- *
- * Can call error()
- *
- * @param x R object
- * @param argname single string
- * @return R object of desired type
- *
- * @version 1.6.3 (Marek Gagolewski, 2021-05-21)
- */
-SEXP ci_prepare_arg_string(SEXP x, SEXP argname)
-{
-    const char* argname_s = ci__prepare_arg_string_1_notNA(argname, "argname");
-    return ci__prepare_arg_string(x, argname_s);
-}
-
-
-/* Wrapper for ci__prepare_arg_*, mainly for testing purposes
- *
- * Can call error()
- *
- * @param x R object
- * @param argname single string
- * @return R object of desired type
- *
- * @version 1.6.3 (Marek Gagolewski, 2021-05-21)
- */
-SEXP ci_prepare_arg_double(SEXP x, SEXP argname) // TODO: factors_as_strings
-{
-    const char* argname_s = ci__prepare_arg_string_1_notNA(argname, "argname");
-    return ci__prepare_arg_double(x, argname_s);
-}
-
-
-/* Wrapper for ci__prepare_arg_*, mainly for testing purposes
- *
- * Can call error()
- *
- * @param x R object
- * @param argname single string
- * @return R object of desired type
- *
- * @version 1.6.3 (Marek Gagolewski, 2021-05-21)
- */
-SEXP ci_prepare_arg_integer(SEXP x, SEXP argname) // TODO: factors_as_strings
-{
-    const char* argname_s = ci__prepare_arg_string_1_notNA(argname, "argname");
-    return ci__prepare_arg_integer(x, argname_s);
-}
-
-
-/* Wrapper for ci__prepare_arg_*, mainly for testing purposes
- *
- * Can call error()
- *
- * @param x R object
- * @param argname single string
- * @return R object of desired type
- *
- * @version 1.6.3 (Marek Gagolewski, 2021-05-21)
- */
-SEXP ci_prepare_arg_logical(SEXP x, SEXP argname)
-{
-    const char* argname_s = ci__prepare_arg_string_1_notNA(argname, "argname");
-    return ci__prepare_arg_logical(x, argname_s);
-}
-
-
-/* Wrapper for ci__prepare_arg_*, mainly for testing purposes
- *
- * Can call error()
- *
- * @param x R object
- * @param argname single string
- * @return R object of desired type
- *
- * @version 1.6.3 (Marek Gagolewski, 2021-05-21)
- */
-SEXP ci_prepare_arg_raw(SEXP x, SEXP argname)  // TODO: factors_as_strings
-{
-    const char* argname_s = ci__prepare_arg_string_1_notNA(argname, "argname");
-    return ci__prepare_arg_raw(x, argname_s);
-}
 
 } } // namespace charr::base

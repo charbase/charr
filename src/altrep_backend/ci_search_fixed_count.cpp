@@ -181,6 +181,8 @@ SEXP ci_count_fixed(SEXP str, SEXP pattern, SEXP opts_fixed)
             context, pattern, vectorize_length, pattern_flags
         );
 
+        // general_start is set only by the scalar-pattern path, so the
+        // pattern container advances with a unit stride from that index.
         for (R_len_t i = general_start > 0 ?
                     general_start : pattern_cont.vectorize_init();
                 i != pattern_cont.vectorize_end();

@@ -357,7 +357,7 @@ SEXP ci_split_boundaries(SEXP str, SEXP n, SEXP tokens_only, SEXP simplify, SEXP
     }
 
     if (default_locale_warning)
-        Rf_warning("%s", ICUError::getICUerrorName(
+        r_warning("%s", ICUError::getICUerrorName(
             U_USING_DEFAULT_WARNING
         ));
     if (deferred_error)

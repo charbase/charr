@@ -268,3 +268,131 @@ test_that("str_read_lines resolves its default encoding per operation", {
     c(utf8_locale, single_byte_locale, utf8_locale)
   )
 })
+
+
+test_that("ci_encode resolves a UTF-8 default target through LC_CTYPE", {
+  original_locale <- Sys.getlocale("LC_CTYPE")
+  on.exit(Sys.setlocale("LC_CTYPE", original_locale), add = TRUE)
+
+  utf8_locale <- native_locale_find(
+    native_locale_utf8_candidates(original_locale),
+    function() isTRUE(l10n_info()[["UTF-8"]])
+  )
+  skip_if(
+    is.null(utf8_locale),
+    "No usable UTF-8 LC_CTYPE locale is available"
+  )
+
+  Sys.setlocale("LC_CTYPE", utf8_locale)
+  value <- "\u00e9"
+  Encoding(value) <- "UTF-8"
+  utf8_bytes <- charToRaw(enc2utf8(value))
+
+  for (backend in c("base", "altrep")) {
+    for (target in list(NULL, "")) {
+      character_output <- with_backend(
+        backend,
+        charr:::ci_encode(value, "UTF-8", target, FALSE)
+      )
+      raw_output <- with_backend(
+        backend,
+        charr:::ci_encode(utf8_bytes, "UTF-8", target, TRUE)
+      )
+      expect_identical(charToRaw(character_output), utf8_bytes)
+      expect_identical(raw_output, list(utf8_bytes))
+    }
+  }
+})
+
+
+test_that("ci_encode writes a representable single-byte default target", {
+  original_locale <- Sys.getlocale("LC_CTYPE")
+  on.exit(Sys.setlocale("LC_CTYPE", original_locale), add = TRUE)
+
+  value <- "\u00e9"
+  Encoding(value) <- "UTF-8"
+  single_byte_locale <- native_locale_find(
+    native_locale_single_byte_candidates(original_locale),
+    function() {
+      if (isTRUE(l10n_info()[["UTF-8"]])) {
+        return(FALSE)
+      }
+
+      !is.na(suppressWarnings(
+        iconv(value, from = "UTF-8", to = "", sub = NA_character_)
+      ))
+    }
+  )
+  skip_if(
+    is.null(single_byte_locale),
+    "No usable non-UTF-8 single-byte LC_CTYPE locale is available"
+  )
+
+  Sys.setlocale("LC_CTYPE", single_byte_locale)
+  expected <- suppressWarnings(
+    iconv(value, from = "UTF-8", to = "", sub = NA_character_)
+  )
+  expected_bytes <- charToRaw(expected)
+  utf8_bytes <- charToRaw(enc2utf8(value))
+
+  for (backend in c("base", "altrep")) {
+    for (target in list(NULL, "")) {
+      character_output <- with_backend(
+        backend,
+        charr:::ci_encode(value, "UTF-8", target, FALSE)
+      )
+      raw_output <- with_backend(
+        backend,
+        charr:::ci_encode(utf8_bytes, "UTF-8", target, TRUE)
+      )
+      expect_identical(charToRaw(character_output), expected_bytes)
+      expect_identical(Encoding(character_output), "unknown")
+      expect_identical(raw_output, list(expected_bytes))
+    }
+  }
+})
+
+
+test_that("ci_encode rejects an unrepresentable default target", {
+  original_locale <- Sys.getlocale("LC_CTYPE")
+  on.exit(Sys.setlocale("LC_CTYPE", original_locale), add = TRUE)
+
+  value <- "\U0001f642"
+  Encoding(value) <- "UTF-8"
+  utf8_bytes <- charToRaw(enc2utf8(value))
+  invalid_locale <- native_locale_find(
+    c(
+      "C", "POSIX",
+      native_locale_single_byte_candidates(original_locale)
+    ),
+    function() {
+      !isTRUE(l10n_info()[["UTF-8"]]) && is.na(suppressWarnings(
+        iconv(value, from = "UTF-8", to = "", sub = NA_character_)
+      ))
+    }
+  )
+  skip_if(
+    is.null(invalid_locale),
+    "No non-UTF-8 LC_CTYPE locale rejects the UTF-8 test value"
+  )
+
+  Sys.setlocale("LC_CTYPE", invalid_locale)
+  for (backend in c("base", "altrep")) {
+    for (target in list(NULL, "")) {
+      expect_error(
+        with_backend(
+          backend,
+          charr:::ci_encode(value, "UTF-8", target, FALSE)
+        ),
+        "failed to convert UTF-8 to R native encoding"
+      )
+      expect_error(
+        with_backend(
+          backend,
+          charr:::ci_encode(utf8_bytes, "UTF-8", target, TRUE)
+        ),
+        "failed to convert UTF-8 to R native encoding"
+      )
+    }
+  }
+})

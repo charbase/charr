@@ -285,7 +285,7 @@ SEXP ci_unescape_unicode(SEXP str)
         str_cont.getWritable(i).setTo(str_cont.get(i).unescape());
 
         if (str_cont.get(i).length() == 0) {
-            Rf_warning(MSG__INVALID_ESCAPE);
+            r_warning(MSG__INVALID_ESCAPE);
             str_cont.setNA(i); // something went wrong
         }
     }

@@ -148,7 +148,7 @@ private:
             UErrorCode status2 = U_ZERO_ERROR;
             const char* valid_locale = ubrk_getLocaleByType(uiterator, ULOC_VALID_LOCALE, &status2);
             if (valid_locale && !strcmp(valid_locale, "root"))
-                Rf_warning("%s", ICUError::getICUerrorName(status));
+                r_warning("%s", ICUError::getICUerrorName(status));
         }
     }
 
@@ -166,9 +166,13 @@ public:
     }
 
     StriUBreakIterator& operator=(const StriBrkIterOptions& bropt) {
-        this->~StriUBreakIterator();
+        if (static_cast<const StriBrkIterOptions*>(this) == &bropt)
+            return *this;
+        if (uiterator) {
+            ubrk_close(uiterator);
+            uiterator = NULL;
+        }
         (StriBrkIterOptions&) (*this) = (StriBrkIterOptions&)bropt;
-        uiterator = NULL;
         return *this;
     }
 
@@ -263,7 +267,7 @@ private:
             UErrorCode status2 = U_ZERO_ERROR;
             const char* valid_locale = rbiterator->getLocaleID(ULOC_VALID_LOCALE, status2);
             if (valid_locale && !strcmp(valid_locale, "root"))
-                Rf_warning("%s", ICUError::getICUerrorName(status));
+                r_warning("%s", ICUError::getICUerrorName(status));
         }
     }
 
@@ -282,7 +286,16 @@ public:
     }
 
     StriRuleBasedBreakIterator& operator=(const StriBrkIterOptions& bropt) {
-        this->~StriRuleBasedBreakIterator();
+        if (static_cast<const StriBrkIterOptions*>(this) == &bropt)
+            return *this;
+        if (rbiterator) {
+            delete rbiterator;
+            rbiterator = NULL;
+        }
+        if (searchText) {
+            utext_close(searchText);
+            searchText = NULL;
+        }
         (StriBrkIterOptions&) (*this) = (StriBrkIterOptions&)bropt;
         setEmptyOpts();
         return *this;

@@ -851,14 +851,30 @@ SEXP ci_encode_from_marked(SEXP str, SEXP to, SEXP to_raw)
                 StriContainerUTF16 str_cont(context, str, str_n);
 
                 // Open converters
-                StriUcnv ucnv(selected_to, STRI__DEFERRED_WARNINGS);
+                StriUcnv ucnv(
+                    selected_to ? selected_to : "UTF-8",
+                    STRI__DEFERRED_WARNINGS
+                );
                 UConverter* uconv_to = ucnv.getConverter();
+                // Staging is only needed where the native encoding differs
+                // from the UTF-8 side ICU sees. When it is UTF-8 the pass is
+                // an identity transcode.
+                std::unique_ptr<charr::altrep::NativeToUtf8>
+                    native_output;
+                if (!selected_to) {
+                    native_output.reset(
+                        new charr::altrep::NativeToUtf8()
+                    );
+                    if (native_output->native_is_utf8())
+                        native_output.reset();
+                }
                 // Deviation from stringi: converter callbacks queue their warnings
                 // until the converter and Reader-backed inputs have been released.
 
                 // Get target encoding mark
-                cetype_t encmark_to =
-                    to_raw_logical ? CE_BYTES : ucnv.getCE();
+                cetype_t encmark_to = to_raw_logical
+                    ? CE_BYTES
+                    : (selected_to ? ucnv.getCE() : CE_NATIVE);
                 cetype_ext_t encmark_to2 =
                     ci__extended_encoding(encmark_to);
                 if (encmark_to2 == cetype_ext_t::CE_UTF8)
@@ -913,21 +929,41 @@ SEXP ci_encode_from_marked(SEXP str, SEXP to, SEXP to_raw)
                         STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
                     }
 
+                    const char* output_data = buf.data();
+                    size_t output_length = bufneed;
+                    if (native_output) {
+                        const charport::ByteView converted =
+                            native_output->utf8_to_native(
+                                output_data,
+                                static_cast<int>(output_length)
+                            );
+                        output_data = converted.ptr;
+                        output_length =
+                            static_cast<size_t>(converted.len);
+                    }
+
                     if (to_raw_logical) {
                         CiRawResult& output =
                             raw_outputs[static_cast<size_t>(i)];
                         output.is_na = false;
                         output.data.assign(
-                            reinterpret_cast<unsigned char*>(buf.data()),
-                            reinterpret_cast<unsigned char*>(buf.data())+bufneed
+                            reinterpret_cast<const unsigned char*>(
+                                output_data
+                            ),
+                            reinterpret_cast<const unsigned char*>(
+                                output_data
+                            )+output_length
                         );
                     }
                     else {
                         // Deviation from stringi: Builder accepts zero bytes, so
                         // preserve the copied character-output rejection locally.
-                        ci__reject_embedded_nul(buf.data(), bufneed);
+                        ci__reject_embedded_nul(
+                            output_data, output_length
+                        );
                         ci::builder_set(
-                            *builder, i, buf.data(), bufneed, encmark_to2
+                            *builder, i, output_data, output_length,
+                            encmark_to2
                         );
                     }
                 }
@@ -1063,9 +1099,20 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
                 // default converter may be fixed to UTF-8 at build time.
                 // Decode default raw input with Riconv; explicit source
                 // encodings continue through ICU below.
+                //
+                // A UTF-8 native encoding needs no staging pass, because the
+                // input bytes already are the target encoding. Falling
+                // through to ICU is both cheaper and closer to stringi:
+                // Riconv rejects malformed input and fails the whole vector,
+                // while ICU's callbacks substitute per record and warn.
+                std::unique_ptr<charr::altrep::NativeToUtf8> raw_native;
                 if (!selected_from && !to_raw_logical && selected_to &&
                         ucnv_compareNames(selected_to, "UTF-8") == 0) {
-                    charr::altrep::NativeToUtf8 native_to_utf8;
+                    raw_native.reset(new charr::altrep::NativeToUtf8());
+                    if (raw_native->native_is_utf8())
+                        raw_native.reset();
+                }
+                if (raw_native) {
                     for (R_len_t i=0; i<str_n; ++i) {
                         if (str_cont.isNA(i)) {
                             builder->set_na(i);
@@ -1074,7 +1121,7 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
 
                         const charr::altrep::ByteView& input = str_cont.get(i);
                         const charport::ByteView output =
-                            native_to_utf8.native(
+                            raw_native->native(
                                 input.data(), input.length()
                             );
                         ci__reject_embedded_nul(output.ptr, output.len);
@@ -1086,16 +1133,44 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
                 }
                 else {
                     // Open converters
-                    StriUcnv ucnv1(selected_from, STRI__DEFERRED_WARNINGS);
-                    StriUcnv ucnv2(selected_to, STRI__DEFERRED_WARNINGS);
+                    StriUcnv ucnv1(
+                        selected_from ? selected_from : "UTF-8",
+                        STRI__DEFERRED_WARNINGS
+                    );
+                    StriUcnv ucnv2(
+                        selected_to ? selected_to : "UTF-8",
+                        STRI__DEFERRED_WARNINGS
+                    );
                     UConverter* uconv_from = ucnv1.getConverter();
                     UConverter* uconv_to   = ucnv2.getConverter();
+                    // Staging is only needed where the native encoding
+                    // differs from the UTF-8 side ICU sees. When it is UTF-8
+                    // the pass is an identity transcode.
+                    std::unique_ptr<charr::altrep::NativeToUtf8>
+                        native_input;
+                    if (!selected_from) {
+                        native_input.reset(
+                            new charr::altrep::NativeToUtf8()
+                        );
+                        if (native_input->native_is_utf8())
+                            native_input.reset();
+                    }
+                    std::unique_ptr<charr::altrep::NativeToUtf8>
+                        native_output;
+                    if (!selected_to) {
+                        native_output.reset(
+                            new charr::altrep::NativeToUtf8()
+                        );
+                        if (native_output->native_is_utf8())
+                            native_output.reset();
+                    }
                     // Deviation from stringi: converter callbacks queue their warnings
                     // until the converters and Reader-backed input have been released.
 
                     // Get target encoding mark
-                    cetype_t encmark_to =
-                        to_raw_logical ? CE_BYTES : ucnv2.getCE();
+                    cetype_t encmark_to = to_raw_logical
+                        ? CE_BYTES
+                        : (selected_to ? ucnv2.getCE() : CE_NATIVE);
                     cetype_ext_t encmark_to2 =
                         ci__extended_encoding(encmark_to);
                     if (encmark_to2 == cetype_ext_t::CE_UTF8)
@@ -1121,26 +1196,51 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
                         const charr::altrep::ByteView& input = str_cont.get(i);
                         const char* curs = input.data();
                         R_len_t curn     = input.length();
+                        if (native_input) {
+                            const charport::ByteView converted =
+                                native_input->native(curs, curn);
+                            curs = converted.ptr;
+                            curn = converted.len;
+                        }
 
                         const size_t bufneed = ci__transcode_direct(
                             uconv_from, uconv_to, curs, curn, buf
                         );
+                        const char* output_data = buf.data();
+                        size_t output_length = bufneed;
+                        if (native_output) {
+                            const charport::ByteView converted =
+                                native_output->utf8_to_native(
+                                    output_data,
+                                    static_cast<int>(output_length)
+                                );
+                            output_data = converted.ptr;
+                            output_length =
+                                static_cast<size_t>(converted.len);
+                        }
 
                         if (to_raw_logical) {
                             CiRawResult& output =
                                 raw_outputs[static_cast<size_t>(i)];
                             output.is_na = false;
                             output.data.assign(
-                                reinterpret_cast<unsigned char*>(buf.data()),
-                                reinterpret_cast<unsigned char*>(buf.data())+bufneed
+                                reinterpret_cast<const unsigned char*>(
+                                    output_data
+                                ),
+                                reinterpret_cast<const unsigned char*>(
+                                    output_data
+                                )+output_length
                             );
                         }
                         else {
                             // Deviation from stringi: Builder accepts zero bytes, so
                             // preserve the copied character-output rejection locally.
-                            ci__reject_embedded_nul(buf.data(), bufneed);
+                            ci__reject_embedded_nul(
+                                output_data, output_length
+                            );
                             ci::builder_set(
-                                *builder, i, buf.data(), bufneed, encmark_to2
+                                *builder, i, output_data, output_length,
+                                encmark_to2
                             );
                         }
                     }

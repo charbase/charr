@@ -538,13 +538,28 @@ SEXP ci_join2(SEXP e1, SEXP e2) // a.k.a. ci_join2_nocollapse
         const charport::StrViews& second = second_borrow->views();
         if (ci__direct_string_views(first) &&
                 ci__direct_string_views(second)) {
+            const bool first_scalar = e1_length == 1;
+            const bool second_scalar = e2_length == 1;
+            const bool first_aligned = e1_length == vectorize_length;
+            const bool second_aligned = e2_length == vectorize_length;
+            const DirectStringView first_scalar_view = first_scalar
+                ? ci__direct_string_view(first[0])
+                : DirectStringView{NULL, 0, false, false, false};
+            const DirectStringView second_scalar_view = second_scalar
+                ? ci__direct_string_view(second[0])
+                : DirectStringView{NULL, 0, false, false, false};
+
             for (R_len_t i=0; i<vectorize_length; ++i) {
-                const DirectStringView a = ci__direct_string_view(
-                    first[i%e1_length]
-                );
-                const DirectStringView b = ci__direct_string_view(
-                    second[i%e2_length]
-                );
+                const DirectStringView a = first_scalar
+                    ? first_scalar_view
+                    : ci__direct_string_view(
+                        first[first_aligned ? i : i%e1_length]
+                    );
+                const DirectStringView b = second_scalar
+                    ? second_scalar_view
+                    : ci__direct_string_view(
+                        second[second_aligned ? i : i%e2_length]
+                    );
                 if (a.is_na || b.is_na) {
                     builder.set_na(i);
                     continue;

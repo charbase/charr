@@ -9,10 +9,17 @@
 
 libs <- Sys.glob(paste0("*", SHLIB_EXT))
 libs_dir <- file.path(R_PACKAGE_DIR, paste0("libs", R_ARCH))
-dir.create(libs_dir, recursive = TRUE, showWarnings = FALSE)
-file.copy(libs, libs_dir, overwrite = TRUE)
+if (!dir.exists(libs_dir) &&
+    !dir.create(libs_dir, recursive = TRUE, showWarnings = FALSE)) {
+  stop("failed to create shared-library installation directory")
+}
+if (!length(libs) || !all(file.copy(libs, libs_dir, overwrite = TRUE))) {
+  stop("failed to install charr shared library")
+}
 if (file.exists("symbols.rds")) {
-  file.copy("symbols.rds", libs_dir, overwrite = TRUE)
+  if (!file.copy("symbols.rds", libs_dir, overwrite = TRUE)) {
+    stop("failed to install native registration metadata")
+  }
 }
 
 # configure writes src/icu_mode ("system" or "bundle"); Windows has no
@@ -42,7 +49,10 @@ if (!identical(icu_mode, "system")) {
   # architecture-independent, so a verified existing copy is kept.
   if (!(file.exists(dat_path) &&
         identical(unname(tools::md5sum(dat_path)), md5_expected))) {
-    dir.create(icu_dir, recursive = TRUE, showWarnings = FALSE)
+    if (!dir.exists(icu_dir) &&
+        !dir.create(icu_dir, recursive = TRUE, showWarnings = FALSE)) {
+      stop("failed to create ICU data installation directory")
+    }
     fin <- xzfile(xz_path, "rb")
     fout <- file(dat_path, "wb")
     repeat {

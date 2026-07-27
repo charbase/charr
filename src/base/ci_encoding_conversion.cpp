@@ -41,6 +41,7 @@
 #include "native_to_utf8.h"
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <vector>
 
 
@@ -226,7 +227,7 @@ SEXP ci_enc_fromutf32(SEXP vec)
         }
 
         if (err) {
-            Rf_warning(MSG__INVALID_CODE_POINT, (int)c);
+            r_warning(MSG__INVALID_CODE_POINT, (int)c);
             SET_STRING_ELT(ret, i, NA_STRING);
         }
         else
@@ -435,7 +436,7 @@ SEXP ci_enc_toutf8(SEXP str, SEXP is_unknown_8bit, SEXP validate)
             if (c >= 0) continue; // valid, nothing to do
 
             if (LOGICAL(validate)[0] == NA_LOGICAL) {
-                Rf_warning(MSG__INVALID_CODE_POINT_REPLNA);
+                r_warning(MSG__INVALID_CODE_POINT_REPLNA);
                 SET_STRING_ELT(ret, i, NA_STRING);
             }
             else {
@@ -451,7 +452,7 @@ SEXP ci_enc_toutf8(SEXP str, SEXP is_unknown_8bit, SEXP validate)
                     if (c >= 0) {
                         U8_APPEND((uint8_t*)bufdata, k, bufsize, c, err);
                     } else {
-                        Rf_warning(MSG__INVALID_CODE_POINT_FIXING);
+                        r_warning(MSG__INVALID_CODE_POINT_FIXING);
                         bufdata[k++] = (char)UCHAR_REPLACEMENT_UTF8_BYTE1;
                         bufdata[k++] = (char)UCHAR_REPLACEMENT_UTF8_BYTE2;
                         bufdata[k++] = (char)UCHAR_REPLACEMENT_UTF8_BYTE3;
@@ -528,7 +529,7 @@ SEXP ci_enc_toascii(SEXP str)
             while (j<curn) {
                 U8_NEXT(curs_tab, j, curn, c);
                 if (c < 0) {
-                    Rf_warning(MSG__INVALID_CODE_POINT_FIXING);
+                    r_warning(MSG__INVALID_CODE_POINT_FIXING);
                     bufdata[k++] = ASCII_SUBSTITUTE;
                 }
                 else if (c > ASCII_MAXCHARCODE)
@@ -607,20 +608,30 @@ SEXP ci_encode_from_marked(SEXP str, SEXP to, SEXP to_raw)
         return ret;
     }
 
+    SEXP ret;
+    {
     StriContainerUTF16 str_cont(str, str_n);
 
     // get the number of strings to convert; if == 0, then you know what's the result
 
     // Open converters
-    StriUcnv ucnv(selected_to);
+    StriUcnv ucnv(
+        selected_to ? selected_to : "UTF-8", STRI__DEFERRED_WARNINGS
+    );
     UConverter* uconv_to = ucnv.getConverter(true /*register_callbacks*/);
+    // Staging is only needed where the native encoding differs from the UTF-8
+    // side ICU sees. When it is UTF-8 the pass is an identity transcode.
+    std::unique_ptr<NativeToUtf8> native_output;
+    if (!selected_to) {
+        native_output.reset(new NativeToUtf8());
+        if (native_output->native_is_utf8())
+            native_output.reset();
+    }
 
     // Get target encoding mark
-    cetype_t encmark_to = to_raw_logical?CE_BYTES:ucnv.getCE();
-
-    // Prepare out val
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(to_raw_logical?VECSXP:STRSXP, str_n));
+    cetype_t encmark_to = to_raw_logical
+        ? CE_BYTES
+        : (selected_to ? ucnv.getCE() : CE_NATIVE);
 
     // calculate required buf size
     size_t bufsize = 0;
@@ -634,48 +645,94 @@ SEXP ci_encode_from_marked(SEXP str, SEXP to, SEXP to_raw)
         bufsize = BUF_MAX_LENGTH;
     String8buf buf(bufsize);
 
-    for (R_len_t i=0; i<str_n; ++i) {
-        if (str_cont.isNA(i)) {
-            if (to_raw_logical) SET_VECTOR_ELT(ret, i, R_NilValue);
-            else                SET_STRING_ELT(ret, i, NA_STRING);
-            continue;
-        }
+    STRI__PROTECT(ret = unwind_protect([&]() -> SEXP {
+        SEXP output = PROTECT(Rf_allocVector(
+            to_raw_logical ? VECSXP : STRSXP, str_n
+        ));
+        try {
+            for (R_len_t i=0; i<str_n; ++i) {
+                if (str_cont.isNA(i)) {
+                    if (to_raw_logical)
+                        SET_VECTOR_ELT(output, i, R_NilValue);
+                    else
+                        SET_STRING_ELT(output, i, NA_STRING);
+                    continue;
+                }
 
-        R_len_t curn_tmp = str_cont.get(i).length();
-        const UChar* curs_tmp = str_cont.get(i).getBuffer(); // The buffer content is (probably) not NUL-terminated.
-        if (!curs_tmp)
-            throw StriException(MSG__INTERNAL_ERROR);
+                R_len_t curn_tmp = str_cont.get(i).length();
+                const UChar* curs_tmp = str_cont.get(i).getBuffer();
+                if (!curs_tmp)
+                    throw StriException(MSG__INTERNAL_ERROR);
 
-        UErrorCode status = U_ZERO_ERROR;
-        ucnv_resetFromUnicode(uconv_to);
-        size_t bufneed = ucnv_fromUChars(uconv_to, buf.data(), buf.size(),
-                                         curs_tmp, curn_tmp, &status);
-        if (bufneed <= buf.size()) {
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-        }
-        else {// larger buffer needed
-            if (bufneed > BUF_MAX_LENGTH)
-                throw StriException(MSG__BUF_SIZE_EXCEEDED);
-            buf.resize(bufneed, false/*destroy contents*/);
-            status = U_ZERO_ERROR;
-            ucnv_resetFromUnicode(uconv_to);
-            bufneed = ucnv_fromUChars(uconv_to, buf.data(), buf.size(),
-                                      curs_tmp, curn_tmp, &status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-        }
+                UErrorCode status = U_ZERO_ERROR;
+                ucnv_resetFromUnicode(uconv_to);
+                size_t bufneed = ucnv_fromUChars(
+                    uconv_to, buf.data(), buf.size(),
+                    curs_tmp, curn_tmp, &status
+                );
+                if (bufneed <= buf.size()) {
+                    STRI__CHECKICUSTATUS_THROW(
+                        status, {/* do nothing special on err */}
+                    )
+                }
+                else {
+                    if (bufneed > BUF_MAX_LENGTH)
+                        throw StriException(MSG__BUF_SIZE_EXCEEDED);
+                    buf.resize(bufneed, false/*destroy contents*/);
+                    status = U_ZERO_ERROR;
+                    ucnv_resetFromUnicode(uconv_to);
+                    bufneed = ucnv_fromUChars(
+                        uconv_to, buf.data(), buf.size(),
+                        curs_tmp, curn_tmp, &status
+                    );
+                    STRI__CHECKICUSTATUS_THROW(
+                        status, {/* do nothing special on err */}
+                    )
+                }
 
-        if (to_raw_logical) {
-            SEXP outobj;
-            STRI__PROTECT(outobj = Rf_allocVector(RAWSXP, bufneed));
-            memcpy(RAW(outobj), buf.data(), (size_t)bufneed);
-            SET_VECTOR_ELT(ret, i, outobj);
-            STRI__UNPROTECT(1);
+                const char* output_data = buf.data();
+                size_t output_length = bufneed;
+                if (native_output) {
+                    const ByteView converted =
+                        native_output->utf8_to_native(
+                            output_data,
+                            static_cast<int>(output_length)
+                        );
+                    output_data = converted.ptr;
+                    output_length =
+                        static_cast<size_t>(converted.len);
+                }
+
+                if (to_raw_logical) {
+                    SEXP outobj = PROTECT(
+                        Rf_allocVector(RAWSXP, output_length)
+                    );
+                    memcpy(RAW(outobj), output_data, output_length);
+                    SET_VECTOR_ELT(output, i, outobj);
+                    UNPROTECT(1);
+                }
+                else {
+                    SET_STRING_ELT(
+                        output, i,
+                        Rf_mkCharLenCE(
+                            output_data,
+                            static_cast<int>(output_length),
+                            encmark_to
+                        )
+                    );
+                }
+            }
         }
-        else {
-            SET_STRING_ELT(ret, i,
-                           Rf_mkCharLenCE(buf.data(), bufneed, encmark_to));
+        catch (...) {
+            UNPROTECT(1);
+            throw;
         }
+        UNPROTECT(1);
+        return output;
+    }));
     }
+
+    STRI__DEFERRED_WARNINGS.emit();
 
     STRI__UNPROTECT_ALL
     return ret;
@@ -790,49 +847,97 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
     // the current LC_CTYPE, whereas ICU's default converter may be fixed to
     // UTF-8 at build time. Decode default raw input with Riconv; explicit
     // source encodings continue through ICU below.
+    //
+    // A UTF-8 native encoding needs no staging pass, because the input bytes
+    // already are the target encoding. Falling through to ICU is both cheaper
+    // and closer to stringi: Riconv rejects malformed input and fails the
+    // whole vector, while ICU's callbacks substitute per record and warn.
+    std::unique_ptr<NativeToUtf8> raw_native;
     if (!selected_from && !to_raw_logical && selected_to &&
             ucnv_compareNames(selected_to, "UTF-8") == 0) {
-        NativeToUtf8 native_to_utf8;
+        raw_native.reset(new NativeToUtf8());
+        if (raw_native->native_is_utf8())
+            raw_native.reset();
+    }
+    if (raw_native) {
         SEXP ret;
-        STRI__PROTECT(ret = Rf_allocVector(STRSXP, str_n));
-        for (R_len_t i=0; i<str_n; ++i) {
-            if (str_cont.isNA(i)) {
-                SET_STRING_ELT(ret, i, NA_STRING);
-                continue;
-            }
-
+        STRI__PROTECT(ret = unwind_protect([&]() -> SEXP {
+            SEXP output = PROTECT(Rf_allocVector(STRSXP, str_n));
             try {
-                const ByteView input = str_cont.get(i);
-                const ByteView output = native_to_utf8.native(
-                    input.data(), input.length()
-                );
-                if (output.len > 0 && std::memchr(output.ptr, 0, output.len))
-                    throw StriException("embedded nul in string");
-                SET_STRING_ELT(
-                    ret, i, Rf_mkCharLenCE(output.ptr, output.len, CE_UTF8)
-                );
+                for (R_len_t i=0; i<str_n; ++i) {
+                    if (str_cont.isNA(i)) {
+                        SET_STRING_ELT(output, i, NA_STRING);
+                        continue;
+                    }
+
+                    try {
+                        const ByteView input = str_cont.get(i);
+                        const ByteView converted = raw_native->native(
+                            input.data(), input.length()
+                        );
+                        if (converted.len > 0 && std::memchr(
+                                converted.ptr, 0, converted.len)) {
+                            throw StriException(
+                                "embedded nul in string"
+                            );
+                        }
+                        SET_STRING_ELT(
+                            output, i,
+                            Rf_mkCharLenCE(
+                                converted.ptr, converted.len, CE_UTF8
+                            )
+                        );
+                    }
+                    catch (const std::exception& error) {
+                        throw StriException("%s", error.what());
+                    }
+                }
             }
-            catch (const std::exception& error) {
-                throw StriException("%s", error.what());
+            catch (...) {
+                UNPROTECT(1);
+                throw;
             }
-        }
+            UNPROTECT(1);
+            return output;
+        }));
 
         STRI__UNPROTECT_ALL
         return ret;
     }
 
-    // Open converters
-    StriUcnv ucnv1(selected_from);
-    StriUcnv ucnv2(selected_to);
+    SEXP ret;
+    {
+    // Default source and target names are resolved by Riconv. ICU only sees
+    // the UTF-8 staging side of those conversions.
+    StriUcnv ucnv1(
+        selected_from ? selected_from : "UTF-8",
+        STRI__DEFERRED_WARNINGS
+    );
+    StriUcnv ucnv2(
+        selected_to ? selected_to : "UTF-8",
+        STRI__DEFERRED_WARNINGS
+    );
     UConverter* uconv_from = ucnv1.getConverter(true /*register_callbacks*/);
     UConverter* uconv_to   = ucnv2.getConverter(true /*register_callbacks*/);
+    // Staging is only needed where the native encoding differs from the UTF-8
+    // side ICU sees. When it is UTF-8 the pass is an identity transcode.
+    std::unique_ptr<NativeToUtf8> native_input;
+    if (!selected_from) {
+        native_input.reset(new NativeToUtf8());
+        if (native_input->native_is_utf8())
+            native_input.reset();
+    }
+    std::unique_ptr<NativeToUtf8> native_output;
+    if (!selected_to) {
+        native_output.reset(new NativeToUtf8());
+        if (native_output->native_is_utf8())
+            native_output.reset();
+    }
 
     // Get target encoding mark
-    cetype_t encmark_to = to_raw_logical?CE_BYTES:ucnv2.getCE();
-
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(to_raw_logical?VECSXP:STRSXP, str_n));
-
+    cetype_t encmark_to = to_raw_logical
+        ? CE_BYTES
+        : (selected_to ? ucnv2.getCE() : CE_NATIVE);
 
 //   // estimate required buf size
 //    size_t bufsize = 0;
@@ -844,33 +949,76 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
 //    String8buf buf(bufsize);
     String8buf buf(0);
 
+    STRI__PROTECT(ret = unwind_protect([&]() -> SEXP {
+        SEXP output = PROTECT(Rf_allocVector(
+            to_raw_logical ? VECSXP : STRSXP, str_n
+        ));
+        try {
+            for (R_len_t i=0; i<str_n; ++i) {
+                if (str_cont.isNA(i)) {
+                    if (to_raw_logical)
+                        SET_VECTOR_ELT(output, i, R_NilValue);
+                    else
+                        SET_STRING_ELT(output, i, NA_STRING);
+                    continue;
+                }
 
-    for (R_len_t i=0; i<str_n; ++i) {
-        if (str_cont.isNA(i)) {
-            if (to_raw_logical) SET_VECTOR_ELT(ret, i, R_NilValue);
-            else                SET_STRING_ELT(ret, i, NA_STRING);
-            continue;
+                const ByteView input = str_cont.get(i);
+                const char* curs = input.data();
+                R_len_t curn = input.length();
+                if (native_input) {
+                    const ByteView converted =
+                        native_input->native(curs, curn);
+                    curs = converted.ptr;
+                    curn = converted.len;
+                }
+
+                const size_t bufneed = ci__transcode_direct(
+                    uconv_from, uconv_to, curs, curn, buf
+                );
+                const char* output_data = buf.data();
+                size_t output_length = bufneed;
+                if (native_output) {
+                    const ByteView converted =
+                        native_output->utf8_to_native(
+                            output_data,
+                            static_cast<int>(output_length)
+                        );
+                    output_data = converted.ptr;
+                    output_length =
+                        static_cast<size_t>(converted.len);
+                }
+
+                if (to_raw_logical) {
+                    SEXP outobj = PROTECT(
+                        Rf_allocVector(RAWSXP, output_length)
+                    );
+                    memcpy(RAW(outobj), output_data, output_length);
+                    SET_VECTOR_ELT(output, i, outobj);
+                    UNPROTECT(1);
+                }
+                else {
+                    SET_STRING_ELT(
+                        output, i,
+                        Rf_mkCharLenCE(
+                            output_data,
+                            static_cast<int>(output_length),
+                            encmark_to
+                        )
+                    );
+                }
+            }
         }
-
-        const ByteView input = str_cont.get(i);
-        const char* curs = input.data();
-        R_len_t curn     = input.length();
-
-        const size_t bufneed = ci__transcode_direct(
-            uconv_from, uconv_to, curs, curn, buf
-        );
-
-        if (to_raw_logical) {
-            SEXP outobj;
-            STRI__PROTECT(outobj = Rf_allocVector(RAWSXP, bufneed));
-            memcpy(RAW(outobj), buf.data(), (size_t)bufneed);
-            SET_VECTOR_ELT(ret, i, outobj);
-            STRI__UNPROTECT(1);
+        catch (...) {
+            UNPROTECT(1);
+            throw;
         }
-        else {
-            SET_STRING_ELT(ret, i, Rf_mkCharLenCE(buf.data(), bufneed, encmark_to));
-        }
+        UNPROTECT(1);
+        return output;
+    }));
     }
+
+    STRI__DEFERRED_WARNINGS.emit();
 
     STRI__UNPROTECT_ALL
     return ret;

@@ -450,37 +450,6 @@ SEXP ci_locate_first_fixed(SEXP str, SEXP pattern, SEXP opts_fixed, SEXP get_len
 }
 
 
-/**
- * Locate last occurrences of pattern in a string [fixed pattern]
- *
- * @param str character vector
- * @param pattern character vector
- * @return integer matrix (2 columns)
- *
- * @version 0.1-?? (Bartlomiej Tartanus)
- *
- * @version 0.1-?? (Bartlomiej Tartanus, 2013-06-09)
- *          StriContainerUTF16 & collator
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-23)
- *          use ci_locate_firstlast_fixed
- *
- * @version 0.2-3 (Marek Gagolewski, 2014-05-08)
- *          ci_locate_fixed now uses byte search only
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-12-07)
- *    FR #110, #23: opts_fixed arg added
- *
- * @version 1.7.1 (Marek Gagolewski, 2021-06-29)
- *     get_length
- */
-SEXP ci_locate_last_fixed(SEXP str, SEXP pattern, SEXP opts_fixed, SEXP get_length)
-{
-    bool get_length1 = ci__prepare_arg_logical_1_notNA(get_length, "get_length");
-    return ci__locate_firstlast_fixed(str, pattern, opts_fixed, false, get_length1);
-}
-
-
 /** Locate all occurrences of fixed-byte pattern
  *
  * @param str character vector

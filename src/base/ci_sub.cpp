@@ -77,12 +77,81 @@ R_len_t ci__sub_positive_utf8_boundary(
     R_len_t byte = 0;
     R_len_t current = 0;
     while (current < codepoints && byte < length) {
-        // This matches the copied all-replacement kernel, including its
-        // lenient treatment of explicitly marked malformed UTF-8.
-        U8_FWD_1_UNSAFE(data, byte);
+        // Keep malformed marked UTF-8 bounded by the current record.
+        U8_FWD_1(reinterpret_cast<const uint8_t*>(data), byte, length);
         ++current;
     }
     return byte;
+}
+
+
+size_t ci__sub_checked_output_size(size_t current, size_t additional)
+{
+    if (additional > std::numeric_limits<size_t>::max()-current)
+        throw std::length_error("character output size overflow");
+    const size_t output = current+additional;
+    if (output > static_cast<size_t>(R_LEN_T_MAX))
+        throw std::length_error("character output is too large");
+    return output;
+}
+
+
+R_len_t ci__sub_nonnegative_index(std::int64_t value)
+{
+    if (value <= 0)
+        return 0;
+    if (value >= static_cast<std::int64_t>(R_LEN_T_MAX))
+        return R_LEN_T_MAX;
+    return static_cast<R_len_t>(value);
+}
+
+
+R_len_t ci__sub_length_endpoint(R_len_t from, R_len_t length)
+{
+    const std::int64_t endpoint = static_cast<std::int64_t>(from)+
+        static_cast<std::int64_t>(length)-1;
+    if (from < 0 && endpoint >= 0)
+        return -1;
+    if (endpoint >= static_cast<std::int64_t>(R_LEN_T_MAX))
+        return R_LEN_T_MAX;
+    if (endpoint <= -static_cast<std::int64_t>(R_LEN_T_MAX))
+        return -R_LEN_T_MAX;
+    return static_cast<R_len_t>(endpoint);
+}
+
+
+R_len_t ci__sub_replacement_all_from(R_len_t from, R_len_t codepoints)
+{
+    std::int64_t position = from;
+    if (position < 0)
+        position = static_cast<std::int64_t>(codepoints)+position+1;
+    if (position <= 0)
+        position = 1;
+    --position;
+    if (position >= codepoints)
+        return codepoints;
+    return static_cast<R_len_t>(position);
+}
+
+
+R_len_t ci__sub_replacement_all_to(
+    R_len_t to, bool is_length, R_len_t from, R_len_t codepoints
+)
+{
+    std::int64_t position;
+    if (is_length) {
+        position = static_cast<std::int64_t>(from)+std::max(to, 0);
+    }
+    else {
+        position = to;
+        if (position < 0)
+            position = static_cast<std::int64_t>(codepoints)+position+1;
+        if (position < from)
+            position = from;
+    }
+    if (position >= codepoints)
+        return codepoints;
+    return static_cast<R_len_t>(position);
 }
 
 
@@ -281,12 +350,16 @@ inline void ci__sub_get_indices(IndexedUtf8Input& str_cont, R_len_t& i,
                                   R_len_t& cur_from2, R_len_t& cur_to2)
 {
     if (cur_from >= 0) {
-        cur_from--; /* 1-based -> 0-based index */
-        cur_from2 = str_cont.UChar32_to_UTF8_index_fwd(i, cur_from);
+        const R_len_t position = ci__sub_nonnegative_index(
+            static_cast<std::int64_t>(cur_from)-1
+        );
+        cur_from2 = str_cont.UChar32_to_UTF8_index_fwd(i, position);
     }
     else {
-        cur_from  = -cur_from;
-        cur_from2 = str_cont.UChar32_to_UTF8_index_back(i, cur_from);
+        const R_len_t position = ci__sub_nonnegative_index(
+            -static_cast<std::int64_t>(cur_from)
+        );
+        cur_from2 = str_cont.UChar32_to_UTF8_index_back(i, position);
     }
     if (cur_to >= 0) {
         ; /* do nothing with cur_to ; 1-based -> 0-based index */
@@ -294,8 +367,10 @@ inline void ci__sub_get_indices(IndexedUtf8Input& str_cont, R_len_t& i,
         cur_to2 = str_cont.UChar32_to_UTF8_index_fwd(i, cur_to);
     }
     else {
-        cur_to  = -cur_to - 1;
-        cur_to2 = str_cont.UChar32_to_UTF8_index_back(i, cur_to);
+        const R_len_t position = ci__sub_nonnegative_index(
+            -static_cast<std::int64_t>(cur_to)-1
+        );
+        cur_to2 = str_cont.UChar32_to_UTF8_index_back(i, position);
     }
 }
 
@@ -437,8 +512,7 @@ SEXP ci_sub(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix, SEXP ign
                 continue;
             }
 
-            cur_to = cur_from + cur_to - 1;
-            if (cur_from < 0 && cur_to >= 0) cur_to = -1;
+            cur_to = ci__sub_length_endpoint(cur_from, cur_to);
         }
 
         const char* str_cur_s = str_cont.get(i).data();
@@ -709,8 +783,7 @@ SEXP ci_sub_replacement(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit_na,
                 cur_to = 0;
             }
             else {
-                cur_to = cur_from + cur_to - 1;
-                if (cur_from < 0 && cur_to >= 0) cur_to = -1;
+                cur_to = ci__sub_length_endpoint(cur_from, cur_to);
             }
         }
 
@@ -725,15 +798,24 @@ SEXP ci_sub_replacement(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit_na,
         ci__sub_get_indices(str_cont, i, cur_from, cur_to, cur_from2, cur_to2);
         if (cur_to2 < cur_from2) cur_to2 = cur_from2;
 
-        R_len_t buflen = str_cur_n-(cur_to2-cur_from2)+value_cur_n;
-        buf.resize(buflen, false/*destroy contents*/);
-        if (cur_from2 > 0)
-            memcpy(buf.data(), str_cur_s, (size_t)cur_from2);
-        if (value_cur_n > 0)
-            memcpy(buf.data()+cur_from2, value_cur_s, (size_t)value_cur_n);
-        if (str_cur_n-cur_to2 > 0)
-            memcpy(buf.data()+cur_from2+value_cur_n, str_cur_s+cur_to2, (size_t)str_cur_n-cur_to2);
-        SET_STRING_ELT(ret, i, Rf_mkCharLenCE(buf.data(), buflen, CE_UTF8));
+        const size_t prefix = static_cast<size_t>(cur_from2);
+        const size_t replacement = static_cast<size_t>(value_cur_n);
+        const size_t suffix = static_cast<size_t>(str_cur_n-cur_to2);
+        size_t output_size = ci__sub_checked_output_size(prefix, replacement);
+        output_size = ci__sub_checked_output_size(output_size, suffix);
+        buf.resize(output_size, false/*destroy contents*/);
+        if (prefix > 0)
+            memcpy(buf.data(), str_cur_s, prefix);
+        if (replacement > 0)
+            memcpy(buf.data()+prefix, value_cur_s, replacement);
+        if (suffix > 0) {
+            memcpy(
+                buf.data()+prefix+replacement, str_cur_s+cur_to2, suffix
+            );
+        }
+        SET_STRING_ELT(ret, i, Rf_mkCharLenCE(
+            buf.data(), static_cast<R_len_t>(output_size), CE_UTF8
+        ));
     }
 
     STRI__UNPROTECT_ALL
@@ -935,7 +1017,7 @@ SEXP ci__sub_replacement_all_single(
     }
     if (value_len <= 0) { // things are supposed to be replaced with "nothing"...
         UNPROTECT(sub_protected);
-        Rf_warning(MSG__REPLACEMENT_ZERO);
+        r_warning(MSG__REPLACEMENT_ZERO);
         return NA_STRING;
     }
 
@@ -971,7 +1053,9 @@ SEXP ci__sub_replacement_all_single(
         curs_m = 0;    // code points count
         R_len_t j = 0; // byte pos
         while (j < curs_n) {
-            U8_FWD_1_UNSAFE(curs_s, j);
+            U8_FWD_1(
+                reinterpret_cast<const uint8_t*>(curs_s), j, curs_n
+            );
             ++curs_m;
         }
     }
@@ -998,22 +1082,13 @@ SEXP ci__sub_replacement_all_single(
 
         num_replaced++;
 
-        if (cur_from < 0) cur_from = curs_m+cur_from+1;
-        if (cur_from <= 0) cur_from = 1;
-        cur_from--; // 1-based -> 0-based index
-        if (cur_from >= curs_m) cur_from = curs_m;
+        cur_from = ci__sub_replacement_all_from(cur_from, curs_m);
 
         // cur_from is in [0, curs_m]
 
-        if (length_tab) {
-            if (cur_to < 0) cur_to = 0;
-            cur_to = cur_from+cur_to;
-        }
-        else {
-            if (cur_to < 0)  cur_to = curs_m+cur_to+1;
-            if (cur_to < cur_from) cur_to = cur_from; // insertion
-        }
-        if (cur_to >= curs_m) cur_to = curs_m;
+        cur_to = ci__sub_replacement_all_to(
+            cur_to, length_tab != NULL, cur_from, curs_m
+        );
 
         // the chunk to replace is at code points [cur_from, cur_to)
 
@@ -1025,25 +1100,33 @@ SEXP ci__sub_replacement_all_single(
         // first, copy [last_pos, cur_from)
         R_len_t byte_pos_last = byte_pos;
         while (last_pos < cur_from) {
-            U8_FWD_1_UNSAFE(curs_s, byte_pos);
+            U8_FWD_1(
+                reinterpret_cast<const uint8_t*>(curs_s), byte_pos,
+                curs_n
+            );
             ++last_pos;
         }
 
         if (byte_pos-byte_pos_last > 0) {
-            R_len_t buf_size = buf.size();
-            buf.resize(buf_size+byte_pos-byte_pos_last);
+            const size_t buf_size = buf.size();
+            const size_t copy_length = static_cast<size_t>(
+                byte_pos-byte_pos_last
+            );
+            buf.resize(ci__sub_checked_output_size(buf_size, copy_length));
             if (!buf.data() || !curs_s)
                 throw StriException(MSG__MEM_ALLOC_ERROR);
-            memcpy(buf.data()+buf_size, curs_s+byte_pos_last, byte_pos-byte_pos_last);
+            memcpy(
+                buf.data()+buf_size, curs_s+byte_pos_last, copy_length
+            );
         }
 
         // then, copy the corresponding replacement string
         SEXP value_cur = STRING_ELT(value, i%value_len);
         const char* value_s = CHAR(value_cur);  // TODO: ALTREP will be problematic?
-        R_len_t value_n = LENGTH(value_cur);
+        const size_t value_n = static_cast<size_t>(LENGTH(value_cur));
         if (value_n > 0) {
-            R_len_t buf_size = buf.size();
-            buf.resize(buf_size+value_n);
+            const size_t buf_size = buf.size();
+            buf.resize(ci__sub_checked_output_size(buf_size, value_n));
             if (!buf.data() || !value_s)
                 throw StriException(MSG__MEM_ALLOC_ERROR);
             memcpy(buf.data()+buf_size, value_s, value_n);
@@ -1053,26 +1136,32 @@ SEXP ci__sub_replacement_all_single(
         // lastly, update last_pos
         // ---> last_pos = cur_to;
         while (last_pos < cur_to) {
-            U8_FWD_1_UNSAFE(curs_s, byte_pos);
+            U8_FWD_1(
+                reinterpret_cast<const uint8_t*>(curs_s), byte_pos,
+                curs_n
+            );
             ++last_pos;
         }
     }
 
     // finally, copy [last_pos, curs_m)
     if (curs_n-byte_pos > 0) {
-        R_len_t buf_size = buf.size();
-        buf.resize(buf_size+curs_n-byte_pos);
+        const size_t buf_size = buf.size();
+        const size_t copy_length = static_cast<size_t>(curs_n-byte_pos);
+        buf.resize(ci__sub_checked_output_size(buf_size, copy_length));
         if (!buf.data() || !curs_s)
             throw StriException(MSG__MEM_ALLOC_ERROR);
-        memcpy(buf.data()+buf_size, curs_s+byte_pos, curs_n-byte_pos);
+        memcpy(buf.data()+buf_size, curs_s+byte_pos, copy_length);
     }
 
     // only warn if not NA
     if (num_replaced > 0 && vectorize_len % value_len != 0)
-        Rf_warning(MSG__WARN_RECYCLING_RULE2);
+        r_warning(MSG__WARN_RECYCLING_RULE2);
 
     SEXP ret;
-    STRI__PROTECT(ret = Rf_mkCharLenCE(buf.data(), buf.size(), CE_UTF8));
+    STRI__PROTECT(ret = Rf_mkCharLenCE(
+        buf.data(), static_cast<R_len_t>(buf.size()), CE_UTF8
+    ));
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -1190,22 +1279,34 @@ SEXP ci_sub_replacement_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit
                 to_byte = from_byte;
 
             const char* replacement_data = CHAR(replacement_charsxp);
-            const R_len_t replacement_length = LENGTH(replacement_charsxp);
-            const R_len_t output_length = source_length-
-                (to_byte-from_byte)+replacement_length;
+            const size_t prefix = static_cast<size_t>(from_byte);
+            const size_t replacement_length = static_cast<size_t>(
+                LENGTH(replacement_charsxp)
+            );
+            const size_t suffix = static_cast<size_t>(source_length-to_byte);
+            if (prefix > std::numeric_limits<size_t>::max()-
+                    replacement_length ||
+                    prefix+replacement_length >
+                        std::numeric_limits<size_t>::max()-suffix) {
+                throw std::length_error("character output size overflow");
+            }
+            const size_t output_size = prefix+replacement_length+suffix;
+            if (output_size > static_cast<size_t>(R_LEN_T_MAX))
+                throw std::length_error("character output is too large");
+            const R_len_t output_length = static_cast<R_len_t>(output_size);
             buf.resize(output_length, false);
             if (from_byte > 0)
-                memcpy(buf.data(), source_data, from_byte);
+                memcpy(buf.data(), source_data, prefix);
             if (replacement_length > 0) {
                 memcpy(
-                    buf.data()+from_byte, replacement_data,
+                    buf.data()+prefix, replacement_data,
                     replacement_length
                 );
             }
-            if (source_length-to_byte > 0) {
+            if (suffix > 0) {
                 memcpy(
-                    buf.data()+from_byte+replacement_length,
-                    source_data+to_byte, source_length-to_byte
+                    buf.data()+prefix+replacement_length,
+                    source_data+to_byte, suffix
                 );
             }
             SET_STRING_ELT(

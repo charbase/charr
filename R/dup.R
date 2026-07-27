@@ -21,7 +21,11 @@ str_dup <- function(string, times, sep = NULL) {
   if (is.null(sep)) {
     out <- stri_dup(input$string, input$times)
   } else {
-    out <- map_chr(seq_along(input$string), function(i) {
+    string <- stri_dup(input$string, 1L)
+    out <- stri_dup(rep("", length(input$times)), input$times)
+    out[is.na(string)] <- NA_character_
+    present <- which(!is.na(out))
+    out[present] <- map_chr(present, function(i) {
       paste(rep(string[[i]], input$times[[i]]), collapse = sep)
     })
   }

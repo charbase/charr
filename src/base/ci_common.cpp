@@ -38,34 +38,6 @@
 namespace charr { namespace base {
 
 /**
- *  Set names attribute for an R object
- *
- * @param object an R object
- * @param numnames number of names to set
- * @param ... variable number of C strings
- *
- * @version 0.1-?? (Marek Gagolewski)
- *
- * @version 0.5-1 (Marek Gagolewski, 2015-03-01)
- *    assume UTF-8
-*/
-void ci__set_names(SEXP object, R_len_t numnames, ...)
-{
-    va_list arguments;
-    SEXP names;
-    PROTECT(names = Rf_allocVector(STRSXP, numnames));
-
-    va_start(arguments, numnames);
-    for (R_len_t i = 0; i < numnames; ++i)
-        SET_STRING_ELT(names, i, Rf_mkCharCE(va_arg(arguments, char*), CE_UTF8));
-    va_end(arguments);
-
-    Rf_setAttrib(object, R_NamesSymbol, names);
-    UNPROTECT(1);
-}
-
-
-/**
  * Create a character vector with given C strings
  *
  * @param numnames number of strings
@@ -146,23 +118,28 @@ R_len_t ci__recycling_rule(bool enableWarning, int n, ...)
     va_start(arguments, n);
     for (R_len_t i = 0; i < n; ++i) {
         R_len_t curlen = va_arg(arguments, R_len_t);
-        if (curlen <= 0)
+        if (curlen <= 0) {
+            va_end(arguments);
             return 0;
+        }
         if (curlen > nsm)
             nsm = curlen;
     }
     va_end(arguments);
 
     if (enableWarning) {
+        bool warn = false;
         va_start(arguments, n);
         for (R_len_t i = 0; i < n; ++i) {
             R_len_t curlen = va_arg(arguments, R_len_t);
             if (nsm % curlen != 0) {
-                Rf_warning(MSG__WARN_RECYCLING_RULE);
+                warn = true;
                 break;
             }
         }
         va_end(arguments);
+        if (warn)
+            r_warning(MSG__WARN_RECYCLING_RULE);
     }
 
     return nsm;
@@ -180,7 +157,7 @@ R_len_t ci__recycling_rule(bool enableWarning, int n, ...)
 SEXP ci__vector_NA_strings(R_len_t howmany)
 {
     if (howmany < 0) {
-        Rf_warning(MSG__EXPECTED_NONNEGATIVE);
+        r_warning(MSG__EXPECTED_NONNEGATIVE);
         howmany = 0;
     }
 
@@ -205,7 +182,7 @@ SEXP ci__vector_NA_strings(R_len_t howmany)
 SEXP ci__vector_NA_integers(R_len_t howmany)
 {
     if (howmany < 0) {
-        Rf_warning(MSG__EXPECTED_NONNEGATIVE);
+        r_warning(MSG__EXPECTED_NONNEGATIVE);
         howmany = 0;
     }
 
@@ -230,7 +207,7 @@ SEXP ci__vector_NA_integers(R_len_t howmany)
 SEXP ci__vector_empty_strings(R_len_t howmany)
 {
     if (howmany < 0) {
-        Rf_warning(MSG__EXPECTED_NONNEGATIVE);
+        r_warning(MSG__EXPECTED_NONNEGATIVE);
         howmany = 0;
     }
 
@@ -268,7 +245,8 @@ SEXP ci__matrix_NA_INTEGER(R_len_t nrow, R_len_t ncol, int filler)
     SEXP x;
     PROTECT(x = Rf_allocMatrix(INTSXP, nrow, ncol));
     int* ians = INTEGER(x);
-    for (R_len_t i=0; i<nrow*ncol; ++i)
+    const R_xlen_t size = XLENGTH(x);
+    for (R_xlen_t i=0; i<size; ++i)
         ians[i] = filler;
     UNPROTECT(1);
     return x;
@@ -286,7 +264,8 @@ SEXP ci__matrix_NA_STRING(R_len_t nrow, R_len_t ncol)
 {
     SEXP x;
     PROTECT(x = Rf_allocMatrix(STRSXP, nrow, ncol));
-    for (R_len_t i=0; i<nrow*ncol; ++i)
+    const R_xlen_t size = XLENGTH(x);
+    for (R_xlen_t i=0; i<size; ++i)
         SET_STRING_ELT(x, i, NA_STRING);
     UNPROTECT(1);
     return x;

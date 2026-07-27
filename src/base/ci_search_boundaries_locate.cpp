@@ -440,7 +440,7 @@ SEXP ci__locate_firstlast_boundaries(
     }
 
     if (locale_warning != U_ZERO_ERROR)
-        Rf_warning("%s", ICUError::getICUerrorName(locale_warning));
+        r_warning("%s", ICUError::getICUerrorName(locale_warning));
     if (staged_error[0])
         throw StriException("%s", staged_error);
 

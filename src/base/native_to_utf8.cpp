@@ -15,10 +15,10 @@ namespace {
 
 constexpr std::size_t initial_capacity = 64;
 
-std::string conversion_error_message(const char* source, int error)
+std::string conversion_error_message(const char* conversion, int error)
 {
     std::ostringstream message;
-    message << "failed to convert " << source << " to UTF-8";
+    message << "failed to convert " << conversion;
     if (error != 0)
         message << ": " << std::strerror(error);
     return message.str();
@@ -28,14 +28,18 @@ std::string conversion_error_message(const char* source, int error)
 
 class NativeToUtf8::Descriptor {
 public:
-    Descriptor(const char* source_name, const char* source_label)
-        : handle_(Riconv_open("UTF-8", source_name)), label_(source_label)
+    Descriptor(
+        const char* target_name, const char* source_name,
+        const char* conversion
+    )
+        : handle_(Riconv_open(target_name, source_name)),
+          label_(conversion)
     {
         if (handle_ == reinterpret_cast<void*>(-1)) {
             const int error = errno;
             handle_ = nullptr;
             throw EncodingConversionError(
-                conversion_error_message(source_label, error)
+                conversion_error_message(conversion, error)
             );
         }
     }
@@ -70,7 +74,7 @@ private:
 };
 
 NativeToUtf8::NativeToUtf8()
-    : native_(), latin1_(), scratch_(),
+    : native_(), latin1_(), utf8_to_native_(), scratch_(),
       native_is_utf8_(Tristate::unresolved)
 {
 }
@@ -82,7 +86,9 @@ NativeToUtf8::Descriptor& NativeToUtf8::native_descriptor()
     // An empty source name asks R to resolve the active LC_CTYPE. ICU's
     // process default is not necessarily the same encoding.
     if (!native_)
-        native_ = std::make_unique<Descriptor>("", "R native encoding");
+        native_ = std::make_unique<Descriptor>(
+            "UTF-8", "", "R native encoding to UTF-8"
+        );
     return *native_;
 }
 
@@ -91,15 +97,25 @@ NativeToUtf8::Descriptor& NativeToUtf8::latin1_descriptor()
     if (!latin1_) {
 #if defined(_WIN32) || defined(_WIN64)
         latin1_ = std::make_unique<Descriptor>(
-            "WINDOWS-1252", "Windows-1252"
+            "UTF-8", "WINDOWS-1252", "Windows-1252 to UTF-8"
         );
 #else
         latin1_ = std::make_unique<Descriptor>(
-            "ISO-8859-1", "ISO-8859-1"
+            "UTF-8", "ISO-8859-1", "ISO-8859-1 to UTF-8"
         );
 #endif
     }
     return *latin1_;
+}
+
+NativeToUtf8::Descriptor& NativeToUtf8::utf8_to_native_descriptor()
+{
+    if (!utf8_to_native_) {
+        utf8_to_native_ = std::make_unique<Descriptor>(
+            "", "UTF-8", "UTF-8 to R native encoding"
+        );
+    }
+    return *utf8_to_native_;
 }
 
 ByteView NativeToUtf8::native(const char* data, int length)
@@ -110,6 +126,13 @@ ByteView NativeToUtf8::native(const char* data, int length)
 ByteView NativeToUtf8::latin1(const char* data, int length)
 {
     return convert(latin1_descriptor(), data, length);
+}
+
+ByteView NativeToUtf8::utf8_to_native(
+    const char* data, int length
+)
+{
+    return convert(utf8_to_native_descriptor(), data, length);
 }
 
 bool NativeToUtf8::native_is_utf8()
@@ -126,7 +149,9 @@ bool NativeToUtf8::native_is_utf8()
 
     bool resolved = false;
     try {
-        const ByteView converted = convert(native_descriptor(), probe, 2);
+        const ByteView converted = convert(
+            native_descriptor(), probe, 2
+        );
         resolved = converted.len == 2 &&
             converted.ptr[0] == probe[0] &&
             converted.ptr[1] == probe[1];
@@ -143,7 +168,7 @@ void NativeToUtf8::ensure_capacity(std::size_t required)
 {
     const std::size_t maximum = static_cast<std::size_t>(R_LEN_T_MAX);
     if (required > maximum)
-        throw std::length_error("converted UTF-8 string exceeds R string size");
+        throw std::length_error("converted string exceeds R string size");
     if (scratch_.size() >= required)
         return;
 
@@ -191,16 +216,14 @@ ByteView NativeToUtf8::convert(
             used = scratch_.size() - output_left;
             if (result != static_cast<std::size_t>(-1))
                 continue;
-            if (errno != E2BIG) {
+            if (errno != E2BIG)
                 throw EncodingConversionError(
                     conversion_error_message(descriptor.label(), errno)
                 );
-            }
-            if (scratch_.size() == static_cast<std::size_t>(R_LEN_T_MAX)) {
+            if (scratch_.size() == static_cast<std::size_t>(R_LEN_T_MAX))
                 throw std::length_error(
-                    "converted UTF-8 string exceeds R string size"
+                    "converted string exceeds R string size"
                 );
-            }
             ensure_capacity(scratch_.size() + 1);
         }
 
@@ -215,16 +238,14 @@ ByteView NativeToUtf8::convert(
             used = scratch_.size() - output_left;
             if (result != static_cast<std::size_t>(-1))
                 break;
-            if (errno != E2BIG) {
+            if (errno != E2BIG)
                 throw EncodingConversionError(
                     conversion_error_message(descriptor.label(), errno)
                 );
-            }
-            if (scratch_.size() == static_cast<std::size_t>(R_LEN_T_MAX)) {
+            if (scratch_.size() == static_cast<std::size_t>(R_LEN_T_MAX))
                 throw std::length_error(
-                    "converted UTF-8 string exceeds R string size"
+                    "converted string exceeds R string size"
                 );
-            }
             ensure_capacity(scratch_.size() + 1);
         }
     }

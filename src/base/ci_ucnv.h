@@ -59,6 +59,7 @@ private:
 
     UConverter* m_ucnv; // converter
     const char* m_name; // encoding, owned by caller
+    DeferredWarnings* m_warnings; // optional queue, owned by caller
     int m_isutf8;
     int m_is8bit;
 
@@ -87,6 +88,16 @@ public:
     StriUcnv(const char* name=NULL) {
         m_name = name;
         m_ucnv = NULL; // lazy
+        m_warnings = NULL;
+        m_isutf8 = NA_LOGICAL;
+        m_is8bit = NA_LOGICAL;
+    }
+
+    /** The warning queue must outlive this converter. */
+    StriUcnv(const char* name, DeferredWarnings& warnings) {
+        m_name = name;
+        m_ucnv = NULL; // lazy
+        m_warnings = &warnings;
         m_isutf8 = NA_LOGICAL;
         m_is8bit = NA_LOGICAL;
     }
@@ -102,15 +113,21 @@ public:
     StriUcnv(const StriUcnv& obj) {
         m_name = obj.m_name;
         m_ucnv = NULL;
+        m_warnings = obj.m_warnings;
         m_isutf8 = NA_LOGICAL;
         m_is8bit = NA_LOGICAL;
     }
 
 
     StriUcnv& operator=(const StriUcnv& obj) {
-        this->~StriUcnv();
+        if (this == &obj)
+            return *this;
+        if (m_ucnv) {
+            ucnv_close(m_ucnv);
+            m_ucnv = NULL;
+        }
         m_name = obj.m_name;
-        m_ucnv = NULL;
+        m_warnings = obj.m_warnings;
         m_isutf8 = NA_LOGICAL;
         m_is8bit = NA_LOGICAL;
         return *this;
@@ -201,9 +218,6 @@ public:
             m_isutf8 = false;
             return CE_LATIN1;
         }
-        else if (!strcmp(ucnv_name, ucnv_getDefaultName()))
-            return CE_NATIVE;
-
         return CE_BYTES;
     }
 };

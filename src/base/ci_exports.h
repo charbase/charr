@@ -82,9 +82,7 @@ SEXP ci_join2(SEXP e1, SEXP e2);
 SEXP ci_dup(SEXP str, SEXP times);
 
 // length.cpp
-SEXP ci_numbytes(SEXP str);
 SEXP ci_length(SEXP str);
-SEXP ci_isempty(SEXP str);
 SEXP ci_width(SEXP str);
 
 // reverse.cpp
@@ -97,7 +95,6 @@ SEXP ci_sub_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix=Rf_Sc
 SEXP ci_sub_replacement_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit_na, SEXP value, SEXP use_matrix=Rf_ScalarLogical(TRUE));
 
 // encoding_management.cpp:
-SEXP ci_enc_list();
 SEXP ci_enc_info(SEXP enc=R_NilValue);
 SEXP ci_enc_mark(SEXP str);
 
@@ -180,15 +177,6 @@ SEXP ci_trans_casefold(SEXP str);
 
 // trans_normalization.cpp:
 SEXP ci_trans_nfc(SEXP s);
-SEXP ci_trans_nfd(SEXP s);
-SEXP ci_trans_nfkc(SEXP s);
-SEXP ci_trans_nfkd(SEXP s);
-SEXP ci_trans_nfkc_casefold(SEXP s);
-SEXP ci_trans_isnfc(SEXP s);
-SEXP ci_trans_isnfd(SEXP s);
-SEXP ci_trans_isnfkc(SEXP s);
-SEXP ci_trans_isnfkd(SEXP s);
-SEXP ci_trans_isnfkc_casefold(SEXP s);
 
 // search
 SEXP ci_read_lines(SEXP path, SEXP encoding);
@@ -196,8 +184,6 @@ SEXP ci_split_lines(SEXP str, SEXP omit_empty=Rf_ScalarLogical(FALSE));
 SEXP ci_split_lines1(SEXP str);
 
 SEXP ci_replace_na(SEXP str, SEXP replacement=Rf_mkString("NA"));
-
-SEXP ci_replace_rstr(SEXP x);
 
 SEXP ci_detect_coll(SEXP str, SEXP pattern,
     SEXP negate=Rf_ScalarLogical(FALSE), SEXP max_count=Rf_ScalarInteger(-1),
@@ -250,10 +236,6 @@ SEXP ci_locate_all_fixed(
     SEXP get_length=Rf_ScalarLogical(FALSE)
 );
 SEXP ci_locate_first_fixed(
-    SEXP str, SEXP pattern, SEXP opts_fixed=R_NilValue,
-    SEXP get_length=Rf_ScalarLogical(FALSE)
-);
-SEXP ci_locate_last_fixed(
     SEXP str, SEXP pattern, SEXP opts_fixed=R_NilValue,
     SEXP get_length=Rf_ScalarLogical(FALSE)
 );
@@ -366,8 +348,6 @@ SEXP ci_locate_all_charclass(
     SEXP omit_no_match=Rf_ScalarLogical(FALSE),
     SEXP get_length=Rf_ScalarLogical(FALSE)
 );
-SEXP ci_replace_last_charclass(SEXP str, SEXP pattern, SEXP replacement);
-SEXP ci_replace_first_charclass(SEXP str, SEXP pattern, SEXP replacement);
 SEXP ci_replace_all_charclass(SEXP str, SEXP pattern, SEXP replacement,
     SEXP merge=Rf_ScalarLogical(FALSE), SEXP vectorize_all=Rf_ScalarLogical(TRUE));
 SEXP ci_split_charclass(SEXP str, SEXP pattern, SEXP n=Rf_ScalarInteger(-1),
@@ -429,19 +409,6 @@ SEXP ci_datetime_parse(SEXP str, SEXP format=Rf_mkString("uuuu-MM-dd HH:mm:ss"),
     SEXP lenient=Rf_ScalarLogical(FALSE), SEXP tz=R_NilValue, SEXP locale=R_NilValue);
 SEXP ci_datetime_fstr(SEXP x);
 // SEXP ci_c_posixst(SEXP x);   // internal
-
-
-// prepare_arg.cpp:
-SEXP ci_prepare_arg_string_1(SEXP x, SEXP argname);
-SEXP ci_prepare_arg_double_1(SEXP x, SEXP argname);  // TODO: factors_as_strings
-SEXP ci_prepare_arg_integer_1(SEXP x, SEXP argname); // TODO: factors_as_strings
-SEXP ci_prepare_arg_logical_1(SEXP x, SEXP argname);
-SEXP ci_prepare_arg_string(SEXP x, SEXP argname);
-SEXP ci_prepare_arg_double(SEXP x, SEXP argname);  // TODO: factors_as_strings
-SEXP ci_prepare_arg_integer(SEXP x, SEXP argname); // TODO: factors_as_strings
-SEXP ci_prepare_arg_logical(SEXP x, SEXP argname);
-SEXP ci_prepare_arg_raw(SEXP x, SEXP argname);     // TODO: factors_as_strings
-// TODO: other prepare args
 
 
 // encoding_conversion.cpp:

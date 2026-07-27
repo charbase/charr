@@ -138,16 +138,16 @@ SEXP ci_read_lines(SEXP path, SEXP encoding)
             const char* description = Rf_translateChar(path_string);
             if (file_condition ==
                     charr::read_lines::FileCondition::directory) {
-                Rf_warning(
+                r_warning(
                     "'raw = FALSE' but '%s' is not a regular file",
                     description
                 );
-                Rf_warning(
+                r_warning(
                     "cannot open file '%s': it is a directory", description
                 );
             }
             else {
-                Rf_warning(
+                r_warning(
                     "cannot open file '%s': %s", description,
                     std::strerror(file_errno)
                 );
@@ -156,7 +156,7 @@ SEXP ci_read_lines(SEXP path, SEXP encoding)
         }
 
         for (size_t i=0; i<invalid_warning_count; ++i)
-            Rf_warning("%s", invalid_warning);
+            r_warning("%s", invalid_warning);
     }
     catch (const StriException&) {
         throw;

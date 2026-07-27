@@ -47,7 +47,6 @@ class ReaderContext;
 
 
 // common.cpp
-void    ci__set_names(SEXP object, R_len_t numnames, ...);
 SEXP    ci__make_character_vector_char_ptr(R_len_t numnames, ...);
 SEXP    ci__make_character_vector_UnicodeString_ptr(R_len_t numnames, ...);
 R_len_t ci__recycling_rule(bool enableWarning, int n, ...);

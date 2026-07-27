@@ -137,7 +137,10 @@ charport::charvec::Store ci__subset_by_logical(
     }
 
     charport::charvec::Builder output(result_counter);
-    for (R_len_t j=0, i=0; i<result_counter; ++j) {
+    R_len_t j = 0;
+    R_len_t i = 0;
+    for (; i < result_counter &&
+            j < static_cast<R_len_t>(which.size()); ++j) {
         if (which[j] == NA_LOGICAL) {
             output.set_na(i);
             i++;
@@ -147,6 +150,8 @@ charport::charvec::Store ci__subset_by_logical(
             i++;
         }
     }
+    if (i != result_counter)
+        throw std::logic_error("subset result count mismatch");
     return output.release_store();
 }
 
@@ -180,11 +185,11 @@ charport::charvec::Store ci__subset_by_logical(
                     NULL, 0, cetype_ext_t::CE_NA
                 );
             if (which[j]) {
-                const UnicodeString& value = str_cont.get(j);
-                if (value.isBogus())
+                if (str_cont.isNA(j))
                     return charport::charvec::Store::scalar(
                         NULL, 0, cetype_ext_t::CE_NA
                     );
+                const UnicodeString& value = str_cont.get(j);
                 return ci::scalar_store(value, utf8_buffer);
             }
         }
@@ -192,15 +197,23 @@ charport::charvec::Store ci__subset_by_logical(
     }
 
     charport::charvec::Builder output(result_counter);
-    for (R_len_t j=0, i=0; i<result_counter; ++j) {
+    R_len_t j = 0;
+    R_len_t i = 0;
+    for (; i < result_counter &&
+            j < static_cast<R_len_t>(which.size()); ++j) {
         if (which[j] == NA_LOGICAL) {
             output.set_na(i);
             i++;
         }
         else if (which[j]) {
-            ci::builder_set(output, i, str_cont.get(j), utf8_buffer);
+            if (str_cont.isNA(j))
+                output.set_na(i);
+            else
+                ci::builder_set(output, i, str_cont.get(j), utf8_buffer);
             i++;
         }
     }
+    if (i != result_counter)
+        throw std::logic_error("subset result count mismatch");
     return output.release_store();
 }

@@ -118,9 +118,13 @@ public:
 
 
     StriUcnv& operator=(const StriUcnv& obj) {
-        this->~StriUcnv();
+        if (this == &obj)
+            return *this;
+        if (m_ucnv) {
+            ucnv_close(m_ucnv);
+            m_ucnv = NULL;
+        }
         m_name = obj.m_name;
-        m_ucnv = NULL;
         m_warnings = obj.m_warnings;
         m_isutf8 = NA_LOGICAL;
         m_is8bit = NA_LOGICAL;
@@ -212,9 +216,6 @@ public:
             m_isutf8 = false;
             return CE_LATIN1;
         }
-        else if (!strcmp(ucnv_name, ucnv_getDefaultName()))
-            return CE_NATIVE;
-
         return CE_BYTES;
     }
 };

@@ -36,6 +36,7 @@
 
 #include "ci_container_base.h"
 #include "ci_utf8.h"
+#include <memory>
 #include <unicode/uniset.h>
 
 
@@ -121,15 +122,19 @@ public:
 
     StriContainerCharClass& operator=(StriContainerCharClass& container)
     {
-        this->~StriContainerCharClass();
-        (StriContainerBase&) (*this) = (StriContainerBase&)container;
+        if (this == &container)
+            return *this;
+
+        std::unique_ptr<UnicodeSet[]> new_data;
         if (container.data) {
-            this->data = new UnicodeSet[container.n];
+            new_data.reset(new UnicodeSet[container.n]);
             for (int i=0; i<container.n; ++i)
-                this->data[i] = container.data[i];
+                new_data[i] = container.data[i];
         }
-        else
-            this->data = NULL;
+
+        delete [] this->data;
+        (StriContainerBase&) (*this) = (StriContainerBase&)container;
+        this->data = new_data.release();
         return *this;
     }
 

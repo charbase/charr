@@ -99,14 +99,21 @@ Utf8Input::Utf8Input(
 ) : source_(checked_source(source)), source_size_(XLENGTH(source_)),
     recycle_size_(checked_recycle_size(source_size_, recycle_size)),
     bom_policy_(bom_policy),
-    elements_(acquire_elements(source_, source_size_)),
-    records_(checked_vector_size(source_size_)),
-    source_borrowed_(checked_vector_size(source_size_), 1),
+    elements_(recycle_size_ == 0
+        ? nullptr
+        : acquire_elements(source_, source_size_)),
+    records_(checked_vector_size(
+        recycle_size_ == 0 ? 0 : source_size_
+    )),
+    source_borrowed_(checked_vector_size(
+        recycle_size_ == 0 ? 0 : source_size_
+    ), 1),
     converted_(), converter_()
 {
     checked_short_size(source_size_);
     checked_short_size(recycle_size_);
-    initialize_records();
+    if (recycle_size_ > 0)
+        initialize_records();
     assert_invariants();
 }
 
@@ -127,7 +134,7 @@ const Utf8Record* Utf8Input::source_data() const noexcept
 
 R_len_t Utf8Input::get_n() const noexcept
 {
-    return static_cast<R_len_t>(source_size_);
+    return static_cast<R_len_t>(records_.size());
 }
 
 R_len_t Utf8Input::get_nrecycle() const noexcept
@@ -352,10 +359,12 @@ void Utf8Input::assert_invariants() const
     assert(TYPEOF(source_) == STRSXP);
     assert(source_size_ >= 0);
     assert(recycle_size_ >= 0);
-    assert(records_.size() == checked_vector_size(source_size_));
+    assert(records_.size() == checked_vector_size(
+        recycle_size_ == 0 ? 0 : source_size_
+    ));
     assert(source_borrowed_.size() == records_.size());
     assert(converted_.valid());
-    assert((source_size_ == 0) == (elements_ == nullptr));
+    assert((get_n() == 0) == (elements_ == nullptr));
     for (const Utf8Record& value : records_) {
         if (value.is_na()) {
             assert(value.ptr == nullptr);
@@ -497,16 +506,27 @@ void Utf8Workspace::replace_all_at_pos(
     R_len_t used = 0;
     R_len_t previous = 0;
     for (const auto& occurrence : occurrences) {
+        if (occurrence.first < previous ||
+                occurrence.second <= occurrence.first ||
+                occurrence.second > original.len) {
+            throw StriException("fixed replacement match is out of bounds");
+        }
         const R_len_t prefix = occurrence.first-previous;
+        if (used > output_size || prefix > output_size-used)
+            throw StriException("fixed replacement output exceeds its buffer");
         if (prefix > 0)
             std::memcpy(output+used, original.ptr+previous, prefix);
         used += prefix;
+        if (used > output_size || replacement_size > output_size-used)
+            throw StriException("fixed replacement output exceeds its buffer");
         if (replacement_size > 0)
             std::memcpy(output+used, replacement, replacement_size);
         used += replacement_size;
         previous = occurrence.second;
     }
     const R_len_t suffix = original.len-previous;
+    if (used > output_size || suffix > output_size-used)
+        throw StriException("fixed replacement output exceeds its buffer");
     if (suffix > 0)
         std::memcpy(output+used, original.ptr+previous, suffix);
     used += suffix;

@@ -44,9 +44,9 @@
 #' charr_backend()
 #' charr_backend(old)
 charr_backend <- function(value = NULL) {
-  old <- .charr_backend_value()
+  old <- getOption("charr_backend", "altrep")
   if (is.null(value)) {
-    return(old)
+    return(.charr_backend_value(old))
   }
 
   value <- .charr_backend_value(value)

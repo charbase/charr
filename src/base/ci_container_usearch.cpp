@@ -45,7 +45,8 @@ StriContainerUStringSearch::StriContainerUStringSearch()
     : StriContainerUTF16()
 {
     this->lastMatcherIndex = -1;
-    this->str = NULL;
+    // Initialize the owned matcher so destruction is safe.
+    this->lastMatcher = NULL;
     this->col = NULL;
 }
 
@@ -66,7 +67,7 @@ StriContainerUStringSearch::StriContainerUStringSearch(SEXP rstr, R_len_t _nrecy
     R_len_t n = get_n();
     for (R_len_t i=0; i<n; ++i) {
         if (!isNA(i) && get(i).length() <= 0) {
-            Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+            r_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
         }
     }
 }
@@ -86,10 +87,15 @@ StriContainerUStringSearch::StriContainerUStringSearch(StriContainerUStringSearc
 
 StriContainerUStringSearch& StriContainerUStringSearch::operator=(StriContainerUStringSearch& container)
 {
-    this->~StriContainerUStringSearch();
+    if (this == &container)
+        return *this;
+
+    // Close owned state without ending and reusing this object's lifetime.
+    if (lastMatcher)
+        usearch_close(lastMatcher);
+    lastMatcher = NULL;
     (StriContainerUTF16&) (*this) = (StriContainerUTF16&)container;
     this->lastMatcherIndex = -1;
-    this->lastMatcher = NULL;
     this->col = container.col;
     return *this;
 }

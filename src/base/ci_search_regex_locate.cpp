@@ -357,7 +357,7 @@ SEXP ci_locate_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_r
     {
         if ((pattern_cont).isNA(i) || (pattern_cont).get(i).length() <= 0) {
             if (!(pattern_cont).isNA(i))
-                Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+                r_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
             SEXP ans;
             STRI__PROTECT(ans = ci__matrix_NA_INTEGER(1, 2));
             if (capture_groups1) {
@@ -583,7 +583,7 @@ SEXP ci__locate_firstlast_regex(
 
         if ((pattern_cont).isNA(i) || (pattern_cont).get(i).length() <= 0) {
             if (!(pattern_cont).isNA(i))
-                Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+                r_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
             continue;
         }
 

@@ -917,6 +917,8 @@ SEXP ci_extract_all_fixed(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_ma
             }
         }
 
+        // general_start is set only by the scalar-pattern path, so the
+        // pattern container advances with a unit stride from that index.
         for (R_len_t i = general_start > 0
                     ? general_start
                     : pattern_cont.vectorize_init();

@@ -49,7 +49,7 @@ class StriContainerLogical : public StriContainerBase {
 
 private:
 
-    int* data;
+    const int* data;
 
 public:
 
@@ -67,7 +67,7 @@ public:
 #endif
         R_len_t ndata = LENGTH(rvec);
         this->init_Base(ndata, _nrecycle, true);
-        this->data = LOGICAL(rvec);  // TODO: ALTREP will be problematic?
+        this->data = LOGICAL_RO(rvec);
     }
 
     //  StriContainerLogical(StriContainerLogical& container); // default-shallow

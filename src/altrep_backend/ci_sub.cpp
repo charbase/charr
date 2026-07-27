@@ -51,6 +51,65 @@ struct CiSubDirectInput {
 };
 
 
+R_len_t ci__sub_nonnegative_index(std::int64_t value)
+{
+    if (value <= 0)
+        return 0;
+    if (value >= static_cast<std::int64_t>(R_LEN_T_MAX))
+        return R_LEN_T_MAX;
+    return static_cast<R_len_t>(value);
+}
+
+
+R_len_t ci__sub_length_endpoint(R_len_t from, R_len_t length)
+{
+    const std::int64_t endpoint = static_cast<std::int64_t>(from)+
+        static_cast<std::int64_t>(length)-1;
+    if (from < 0 && endpoint >= 0)
+        return -1;
+    if (endpoint >= static_cast<std::int64_t>(R_LEN_T_MAX))
+        return R_LEN_T_MAX;
+    if (endpoint <= -static_cast<std::int64_t>(R_LEN_T_MAX))
+        return -R_LEN_T_MAX;
+    return static_cast<R_len_t>(endpoint);
+}
+
+
+R_len_t ci__sub_replacement_all_from(R_len_t from, R_len_t codepoints)
+{
+    std::int64_t position = from;
+    if (position < 0)
+        position = static_cast<std::int64_t>(codepoints)+position+1;
+    if (position <= 0)
+        position = 1;
+    --position;
+    if (position >= codepoints)
+        return codepoints;
+    return static_cast<R_len_t>(position);
+}
+
+
+R_len_t ci__sub_replacement_all_to(
+    R_len_t to, bool is_length, R_len_t from, R_len_t codepoints
+)
+{
+    std::int64_t position;
+    if (is_length) {
+        position = static_cast<std::int64_t>(from)+std::max(to, 0);
+    }
+    else {
+        position = to;
+        if (position < 0)
+            position = static_cast<std::int64_t>(codepoints)+position+1;
+        if (position < from)
+            position = from;
+    }
+    if (position >= codepoints)
+        return codepoints;
+    return static_cast<R_len_t>(position);
+}
+
+
 class CiSubDirectNormalizer {
 private:
     charr::altrep::NativeToUtf8 converter_;
@@ -423,12 +482,16 @@ inline void ci__sub_get_indices(IndexedUtf8Input& str_cont, R_len_t& i,
                                   R_len_t& cur_from2, R_len_t& cur_to2)
 {
     if (cur_from >= 0) {
-        cur_from--; /* 1-based -> 0-based index */
-        cur_from2 = str_cont.UChar32_to_UTF8_index_fwd(i, cur_from);
+        const R_len_t position = ci__sub_nonnegative_index(
+            static_cast<std::int64_t>(cur_from)-1
+        );
+        cur_from2 = str_cont.UChar32_to_UTF8_index_fwd(i, position);
     }
     else {
-        cur_from  = -cur_from;
-        cur_from2 = str_cont.UChar32_to_UTF8_index_back(i, cur_from);
+        const R_len_t position = ci__sub_nonnegative_index(
+            -static_cast<std::int64_t>(cur_from)
+        );
+        cur_from2 = str_cont.UChar32_to_UTF8_index_back(i, position);
     }
     if (cur_to >= 0) {
         ; /* do nothing with cur_to ; 1-based -> 0-based index */
@@ -436,8 +499,10 @@ inline void ci__sub_get_indices(IndexedUtf8Input& str_cont, R_len_t& i,
         cur_to2 = str_cont.UChar32_to_UTF8_index_fwd(i, cur_to);
     }
     else {
-        cur_to  = -cur_to - 1;
-        cur_to2 = str_cont.UChar32_to_UTF8_index_back(i, cur_to);
+        const R_len_t position = ci__sub_nonnegative_index(
+            -static_cast<std::int64_t>(cur_to)-1
+        );
+        cur_to2 = str_cont.UChar32_to_UTF8_index_back(i, position);
     }
 }
 
@@ -481,9 +546,7 @@ charport::charvec::Store ci__sub_build(
                 );
             }
 
-            cur_to = cur_from + cur_to - 1;
-            if (cur_from < 0 && cur_to >= 0)
-                cur_to = -1;
+            cur_to = ci__sub_length_endpoint(cur_from, cur_to);
         }
 
         const char* str_cur_s = str_cont.get(i).data();
@@ -534,9 +597,7 @@ charport::charvec::Store ci__sub_build(
                 continue;
             }
 
-            cur_to = cur_from + cur_to - 1;
-            if (cur_from < 0 && cur_to >= 0)
-                cur_to = -1;
+            cur_to = ci__sub_length_endpoint(cur_from, cur_to);
         }
 
         const char* str_cur_s = str_cont.get(i).data();
@@ -706,7 +767,7 @@ R_len_t ci__sub_owned_positive_boundary(
     R_len_t byte = 0;
     R_len_t current = 0;
     while (current < codepoints && byte < length) {
-        U8_FWD_1_UNSAFE(data, byte);
+        U8_FWD_1(reinterpret_cast<const uint8_t*>(data), byte, length);
         ++current;
     }
     return byte;
@@ -1002,9 +1063,7 @@ SEXP ci_sub_replacement(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit_na,
                         cur_to = 0;
                     }
                     else {
-                        cur_to = cur_from + cur_to - 1;
-                        if (cur_from < 0 && cur_to >= 0)
-                            cur_to = -1;
+                        cur_to = ci__sub_length_endpoint(cur_from, cur_to);
                     }
                 }
 
@@ -1023,8 +1082,17 @@ SEXP ci_sub_replacement(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit_na,
                 if (cur_to2 < cur_from2)
                     cur_to2 = cur_from2;
 
-                R_len_t buflen =
-                    str_cur_n-(cur_to2-cur_from2)+value_cur_n;
+                const size_t prefix = static_cast<size_t>(cur_from2);
+                const size_t replacement = static_cast<size_t>(value_cur_n);
+                const size_t suffix = static_cast<size_t>(
+                    str_cur_n-cur_to2
+                );
+                size_t output_size = ci__sub_checked_output_size(
+                    prefix, replacement
+                );
+                output_size = ci__sub_checked_output_size(
+                    output_size, suffix
+                );
                 const bool source_ascii = str_cur.isASCII();
                 const bool output_ascii =
                     (source_ascii ||
@@ -1038,23 +1106,22 @@ SEXP ci_sub_replacement(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit_na,
                 // The final byte count is known, so fill Builder storage
                 // directly instead of staging through String8buf.
                 char* output = builder.reserve(
-                    i, static_cast<size_t>(buflen),
+                    i, output_size,
                     output_ascii
                         ? cetype_ext_t::CE_ASCII
                         : cetype_ext_t::CE_UTF8
                 );
-                if (cur_from2 > 0)
-                    memcpy(output, str_cur_s, (size_t)cur_from2);
-                if (value_cur_n > 0) {
+                if (prefix > 0)
+                    memcpy(output, str_cur_s, prefix);
+                if (replacement > 0) {
                     memcpy(
-                        output+cur_from2, value_cur_s,
-                        (size_t)value_cur_n
+                        output+prefix, value_cur_s, replacement
                     );
                 }
-                if (str_cur_n-cur_to2 > 0) {
+                if (suffix > 0) {
                     memcpy(
-                        output+cur_from2+value_cur_n,
-                        str_cur_s+cur_to2, (size_t)str_cur_n-cur_to2
+                        output+prefix+replacement,
+                        str_cur_s+cur_to2, suffix
                     );
                 }
             }
@@ -1556,7 +1623,10 @@ void ci__sub_replacement_all_single(
         source_codepoints = 0;
         R_len_t j = 0;
         while (j < source_length) {
-            U8_FWD_1_UNSAFE(source_data, j);
+            U8_FWD_1(
+                reinterpret_cast<const uint8_t*>(source_data), j,
+                source_length
+            );
             ++source_codepoints;
         }
     }
@@ -1580,34 +1650,23 @@ void ci__sub_replacement_all_single(
 
         num_replaced++;
 
-        if (cur_from < 0)
-            cur_from = source_codepoints+cur_from+1;
-        if (cur_from <= 0)
-            cur_from = 1;
-        cur_from--;
-        if (cur_from >= source_codepoints)
-            cur_from = source_codepoints;
+        cur_from = ci__sub_replacement_all_from(
+            cur_from, source_codepoints
+        );
 
-        if (length_tab) {
-            if (cur_to < 0)
-                cur_to = 0;
-            cur_to = cur_from+cur_to;
-        }
-        else {
-            if (cur_to < 0)
-                cur_to = source_codepoints+cur_to+1;
-            if (cur_to < cur_from)
-                cur_to = cur_from;
-        }
-        if (cur_to >= source_codepoints)
-            cur_to = source_codepoints;
+        cur_to = ci__sub_replacement_all_to(
+            cur_to, length_tab != NULL, cur_from, source_codepoints
+        );
 
         if (last_pos > cur_from)
             throw StriException(MSG__OVERLAPPING_OR_UNSORTED_INDEXES);
 
         const R_len_t byte_pos_last = byte_pos;
         while (last_pos < cur_from) {
-            U8_FWD_1_UNSAFE(source_data, byte_pos);
+            U8_FWD_1(
+                reinterpret_cast<const uint8_t*>(source_data), byte_pos,
+                source_length
+            );
             ++last_pos;
         }
 
@@ -1642,7 +1701,10 @@ void ci__sub_replacement_all_single(
         }
 
         while (last_pos < cur_to) {
-            U8_FWD_1_UNSAFE(source_data, byte_pos);
+            U8_FWD_1(
+                reinterpret_cast<const uint8_t*>(source_data), byte_pos,
+                source_length
+            );
             ++last_pos;
         }
     }

@@ -115,12 +115,11 @@ public:
      */
     inline R_len_t getMatchedStart()
     {
-#ifndef NDEBUG
         if (!this->m_searchStr || !this->m_patternStr)
-            throw StriException("DEBUG: StriByteSearchMatcher: reset() hasn't been called yet");
-        if (m_searchPos < 0 || m_searchEnd-m_searchPos <= 0 || m_searchPos >= m_searchLen)
+            throw StriException("StriByteSearchMatcher: reset() hasn't been called yet");
+        if (m_searchPos < 0 || m_searchEnd <= m_searchPos ||
+                m_searchPos >= m_searchLen || m_searchEnd > m_searchLen)
             throw StriException("StriByteSearchMatcher: no match at current position! This is a BUG.");
-#endif
 
         return m_searchPos;
     }
@@ -132,12 +131,11 @@ public:
      */
     inline R_len_t getMatchedLength()
     {
-#ifndef NDEBUG
         if (!this->m_searchStr || !this->m_patternStr)
-            throw StriException("DEBUG: StriByteSearchMatcher: reset() hasn't been called yet");
-        if (m_searchPos < 0 || m_searchEnd-m_searchPos <= 0 || m_searchEnd > m_searchLen)
+            throw StriException("StriByteSearchMatcher: reset() hasn't been called yet");
+        if (m_searchPos < 0 || m_searchEnd <= m_searchPos ||
+                m_searchPos >= m_searchLen || m_searchEnd > m_searchLen)
             throw StriException("StriByteSearchMatcher: no match at current position! This is a BUG.");
-#endif
 
         return m_searchEnd-m_searchPos;
     }
@@ -194,7 +192,7 @@ public:
     StriByteSearchMatcherKMP(const char* patternStr, R_len_t patternLen, bool optOverlap)
         : StriByteSearchMatcher(patternStr, patternLen, optOverlap)
     {
-        int kmpMaxSize = patternLen+1; // that's sufficient
+        const size_t kmpMaxSize = static_cast<size_t>(patternLen)+1;
         this->m_kmpNext = new int[kmpMaxSize];
         if (!this->m_kmpNext) throw StriException(MSG__MEM_ALLOC_ERROR);
         this->m_kmpNext[0] = -100; // magic constant for an uninitialized KMP table
@@ -308,7 +306,7 @@ public:
           m_kmpNext(NULL), m_patternPos(0),
           m_patternLenCaseInsensitive(0), m_patternStrCaseInsensitive(NULL)
     {
-        int kmpMaxSize = patternLen+1; // that's sufficient
+        const size_t kmpMaxSize = static_cast<size_t>(patternLen)+1;
         // Deviation from stringi: stage both allocations under RAII. If the
         // second allocation or UTF-8 decoding fails, the first cannot leak.
         std::unique_ptr<int[]> new_kmp_next(new int[kmpMaxSize]);
@@ -520,7 +518,7 @@ protected:
             if (!candidate)
                 break;
 
-            if (m_patternLen == 1 || 0 == memcmp(
+            if (0 == memcmp(
                     candidate+1,
                     m_patternStr+1,
                     static_cast<size_t>(m_patternLen-1))) {

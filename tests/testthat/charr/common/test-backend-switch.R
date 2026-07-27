@@ -31,6 +31,8 @@ test_that("setter and direct option writes are validated", {
 
   options(charr_backend = "unknown")
   expect_error(str_length("abc"), "charr_backend")
+  expect_identical(charr:::charr_backend("base"), "unknown")
+  expect_identical(charr:::charr_backend(), "base")
 })
 
 test_that("the public backend registry is complete and exact-formal", {

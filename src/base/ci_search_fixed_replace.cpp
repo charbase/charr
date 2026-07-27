@@ -134,6 +134,19 @@ R_len_t ci__replacement_size(
 }
 
 
+R_len_t ci__checked_replacement_match_end(
+    R_len_t start, R_len_t length, R_len_t source_length,
+    R_len_t previous_end
+)
+{
+    if (source_length < 0 || start < previous_end || length <= 0 ||
+            start > source_length || length > source_length-start) {
+        throw StriException("fixed replacement match is out of bounds");
+    }
+    return start+length;
+}
+
+
 void ci__write_one_byte_replacement(
     char* output, const CiDirectString& source, R_len_t match,
     const CiDirectString& replacement
@@ -407,21 +420,29 @@ SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, SE
             continue;
         }
 
+        R_len_t str_cur_n = str_cont.get(i).length();
         R_len_t len = matcher->getMatchedLength();
+        R_len_t end = ci__checked_replacement_match_end(
+            start, len, str_cur_n, 0
+        );
         size_t matched_bytes = static_cast<size_t>(len);
         deque< pair<R_len_t, R_len_t> > occurrences;
-        occurrences.push_back(pair<R_len_t, R_len_t>(start, start+len));
+        occurrences.push_back(pair<R_len_t, R_len_t>(start, end));
+        R_len_t previous_end = end;
 
         if (type == 0) {
             while (USEARCH_DONE != matcher->findNext()) { // all
                 start = matcher->getMatchedStart();
                 len = matcher->getMatchedLength();
-                occurrences.push_back(pair<R_len_t, R_len_t>(start, start+len));
+                end = ci__checked_replacement_match_end(
+                    start, len, str_cur_n, previous_end
+                );
+                occurrences.push_back(pair<R_len_t, R_len_t>(start, end));
                 matched_bytes += static_cast<size_t>(len);
+                previous_end = end;
             }
         }
 
-        R_len_t str_cur_n         = str_cont.get(i).length();
         R_len_t replacement_cur_n = replacement_cont.get(i).length();
         R_len_t buf_need = ci__replacement_size(
             str_cur_n, replacement_cur_n,
@@ -429,16 +450,16 @@ SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, SE
         );
         buf.resize(buf_need, false/*destroy contents*/);
 
-        R_len_t buf_used = buf.replaceAllAtPos(str_cont.get(i).data(), str_cur_n,
-                                               replacement_cont.get(i).data(), replacement_cur_n,
-                                               occurrences);
+        size_t buf_used = buf.replaceAllAtPos(
+            str_cont.get(i).data(), str_cur_n,
+            replacement_cont.get(i).data(), replacement_cur_n,
+            occurrences
+        );
 
-#ifndef NDEBUG
-        if (buf_need != buf_used)
-            throw StriException("!NDEBUG: ci__replace_allfirstlast_fixed: (buf_need != buf_used)");
-#endif
+        if (static_cast<size_t>(buf_need) != buf_used)
+            throw StriException("fixed replacement size mismatch");
 
-        SET_STRING_ELT(ret, i, Rf_mkCharLenCE(buf.data(), buf_used, CE_UTF8));
+        SET_STRING_ELT(ret, i, Rf_mkCharLenCE(buf.data(), buf_need, CE_UTF8));
     }
 
     STRI__UNPROTECT_ALL
@@ -560,7 +581,7 @@ SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
         Rf_error(MSG__WARN_RECYCLING_RULE2);
     }
     if (pattern_n % replacement_n != 0)
-        Rf_warning(MSG__WARN_RECYCLING_RULE);
+        r_warning(MSG__WARN_RECYCLING_RULE);
 
     if (pattern_n == 1) { // this will be much faster:
         SEXP ret;
@@ -583,7 +604,7 @@ SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
             return ci__vector_NA_strings(str_n);
         }
         else if (pattern_cont.get(i).length() <= 0) {
-            Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+            r_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
             STRI__UNPROTECT_ALL
             return ci__vector_NA_strings(str_n);
         }
@@ -600,19 +621,27 @@ SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
                 continue;
             }
 
+            R_len_t str_cur_n = str_cont.get(j).length();
             R_len_t len = matcher->getMatchedLength();
+            R_len_t end = ci__checked_replacement_match_end(
+                start, len, str_cur_n, 0
+            );
             size_t matched_bytes = static_cast<size_t>(len);
             deque< pair<R_len_t, R_len_t> > occurrences;
-            occurrences.push_back(pair<R_len_t, R_len_t>(start, start+len));
+            occurrences.push_back(pair<R_len_t, R_len_t>(start, end));
+            R_len_t previous_end = end;
 
             while (USEARCH_DONE != matcher->findNext()) { // all
                 start = matcher->getMatchedStart();
                 len = matcher->getMatchedLength();
-                occurrences.push_back(pair<R_len_t, R_len_t>(start, start+len));
+                end = ci__checked_replacement_match_end(
+                    start, len, str_cur_n, previous_end
+                );
+                occurrences.push_back(pair<R_len_t, R_len_t>(start, end));
                 matched_bytes += static_cast<size_t>(len);
+                previous_end = end;
             }
 
-            R_len_t str_cur_n         = str_cont.get(j).length();
             R_len_t replacement_cur_n = replacement_cont.get(i).length();
             R_len_t buf_need = ci__replacement_size(
                 str_cur_n, replacement_cur_n,

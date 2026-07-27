@@ -984,7 +984,7 @@ SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent,
     }
     }
     if (locale_warning != U_ZERO_ERROR)
-        Rf_warning("%s", ICUError::getICUerrorName(locale_warning));
+        r_warning("%s", ICUError::getICUerrorName(locale_warning));
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END({

@@ -70,7 +70,7 @@ StriContainerRegexPattern::StriContainerRegexPattern(SEXP rstr, R_len_t _nrecycl
     R_len_t n = get_n();
     for (R_len_t i=0; i<n; ++i) {
         if (!isNA(i) && get(i).length() <= 0) {
-            Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+            r_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
         }
     }
 }
@@ -92,12 +92,15 @@ StriContainerRegexPattern::StriContainerRegexPattern(StriContainerRegexPattern& 
 
 StriContainerRegexPattern& StriContainerRegexPattern::operator=(StriContainerRegexPattern& container)
 {
-    this->~StriContainerRegexPattern();
+    if (this == &container)
+        return *this;
+
+    delete lastMatcher;
+    lastMatcher = NULL;
     (StriContainerUTF16&) (*this) = (StriContainerUTF16&)container;
     this->lastMatcherIndex = -1;
-    this->lastMatcher = NULL;
+    this->lastCaptureGroupNames.clear();
     this->lastCaptureGroupNamesIndex = -1;
-    //this->lastCaptureGroupNames = ...
     this->opts = container.opts;
     return *this;
 }
@@ -465,7 +468,7 @@ StriRegexMatcherOptions StriContainerRegexPattern::getRegexOptions(SEXP opts_reg
             } else if  (!strcmp(curname, "time_limit")) {
                 time_limit = ci__prepare_arg_integer_1_notNA(tmp_arg, "time_limit");
             } else {
-                Rf_warning(MSG__INCORRECT_REGEX_OPTION, curname);
+                r_warning(MSG__INCORRECT_REGEX_OPTION, curname);
             }
             UNPROTECT(1);
         }

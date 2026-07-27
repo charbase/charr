@@ -40,12 +40,179 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
+#include <unicode/utf8.h>
 using namespace std;
 
 
 namespace {
 
 typedef pair<R_len_t, R_len_t> CiRegexSplitField;
+
+
+class CiRegexSplitSubject {
+private:
+    UnicodeString text_;
+    vector<int32_t> byte_offsets_;
+    bool ascii_;
+
+public:
+    CiRegexSplitSubject() : text_(), byte_offsets_(), ascii_(true)
+    {
+    }
+
+    UnicodeString& set(const char* data, int32_t length, bool ascii)
+    {
+        ascii_ = ascii;
+        if (length <= 0) {
+            text_.remove();
+            byte_offsets_.clear();
+            return text_;
+        }
+
+        UChar* output = text_.getBuffer(length);
+        if (!output)
+            throw StriException(MSG__MEM_ALLOC_ERROR);
+
+        int32_t source_i = 0;
+        int32_t output_i = 0;
+        if (ascii_) {
+            for (; source_i < length; ++source_i)
+                output[output_i++] = static_cast<unsigned char>(data[source_i]);
+        }
+        else {
+            byte_offsets_.resize(static_cast<size_t>(length) + 1);
+            byte_offsets_[0] = 0;
+            while (source_i < length) {
+                const int32_t source_begin = source_i;
+                UChar32 code_point;
+                U8_NEXT_OR_FFFD(data, source_i, length, code_point);
+                if (code_point <= 0xffff) {
+                    output[output_i++] = static_cast<UChar>(code_point);
+                    byte_offsets_[static_cast<size_t>(output_i)] = source_i;
+                }
+                else {
+                    output[output_i++] = U16_LEAD(code_point);
+                    byte_offsets_[static_cast<size_t>(output_i)] = source_begin;
+                    output[output_i++] = U16_TRAIL(code_point);
+                    byte_offsets_[static_cast<size_t>(output_i)] = source_i;
+                }
+            }
+            byte_offsets_.resize(static_cast<size_t>(output_i) + 1);
+        }
+
+        text_.releaseBuffer(output_i);
+        return text_;
+    }
+
+    R_len_t byte_offset(int32_t utf16_offset) const
+    {
+        return ascii_
+            ? static_cast<R_len_t>(utf16_offset)
+            : static_cast<R_len_t>(
+                byte_offsets_[static_cast<size_t>(utf16_offset)]
+            );
+    }
+};
+
+
+inline void ci__collect_scalar_default_fields(
+    RegexMatcher* matcher, const CiRegexSplitSubject& subject,
+    R_len_t string_length, UErrorCode& status,
+    vector<CiRegexSplitField>& fields
+)
+{
+    fields.clear();
+    R_len_t field_start = 0;
+    while (matcher->find(status)) {
+        STRI__CHECKICUSTATUS_THROW(status, {})
+        const int32_t match_start_utf16 = matcher->start(status);
+        STRI__CHECKICUSTATUS_THROW(status, {})
+        const int32_t match_end_utf16 = matcher->end(status);
+        STRI__CHECKICUSTATUS_THROW(status, {})
+        const R_len_t match_start = subject.byte_offset(match_start_utf16);
+        const R_len_t match_end = subject.byte_offset(match_end_utf16);
+        fields.emplace_back(field_start, match_start);
+        field_start = match_end;
+    }
+    STRI__CHECKICUSTATUS_THROW(status, {})
+    fields.emplace_back(field_start, string_length);
+}
+
+
+void ci__split_regex_scalar_default(
+    ci::ReaderContext& context, const Utf8Input& input, SEXP pattern,
+    R_len_t vectorize_length,
+    const StriRegexMatcherOptions& pattern_opts,
+    vector<charport::charvec::Store>& stores
+)
+{
+    StriContainerRegexPattern pattern_cont(
+        context, pattern, vectorize_length, pattern_opts
+    );
+    if (vectorize_length <= 0)
+        return;
+
+    const bool pattern_unusable = pattern_cont.isNA(0) ||
+        pattern_cont.get(0).length() <= 0;
+    RegexMatcher* matcher = NULL;
+    CiRegexSplitSubject subject;
+    vector<CiRegexSplitField> fields;
+    fields.reserve(16);
+    charport::charvec::Builder output(0);
+
+    for (R_len_t i = 0; i < vectorize_length; ++i) {
+        if (input.isNA(i) || pattern_unusable) {
+            stores[static_cast<size_t>(i)] =
+                charport::charvec::Store::scalar(
+                    nullptr, 0, cetype_ext_t::CE_NA
+                );
+            continue;
+        }
+
+        const Utf8Record& value = input.get(i);
+        const bool ascii = value.isASCII();
+        const char* data = value.data();
+        const R_len_t length = value.length();
+        const cetype_ext_t field_encoding = ascii
+            ? cetype_ext_t::CE_ASCII
+            : cetype_ext_t::CE_ASCII_OR_UTF8;
+        if (length <= 0) {
+            stores[static_cast<size_t>(i)] = ci::scalar_store(
+                "", 0, cetype_ext_t::CE_ASCII
+            );
+            continue;
+        }
+
+        if (!matcher)
+            matcher = pattern_cont.getMatcher(0);
+        matcher->reset(subject.set(data, length, ascii));
+        UErrorCode status = U_ZERO_ERROR;
+        ci__collect_scalar_default_fields(
+            matcher, subject, length, status, fields
+        );
+
+        if (fields.size() == 1) {
+            const CiRegexSplitField& field = fields.front();
+            stores[static_cast<size_t>(i)] = ci::scalar_store(
+                data+field.first,
+                static_cast<size_t>(field.second-field.first),
+                field_encoding
+            );
+            continue;
+        }
+
+        output.reset(static_cast<R_xlen_t>(fields.size()));
+        for (R_len_t j=0; j<static_cast<R_len_t>(fields.size()); ++j) {
+            const CiRegexSplitField& field =
+                fields[static_cast<size_t>(j)];
+            ci::builder_set(
+                output, j, data+field.first, field.second-field.first,
+                field_encoding
+            );
+        }
+        stores[static_cast<size_t>(i)] = output.release_store();
+    }
+}
 
 
 inline void ci__collect_regex_split_fields(
@@ -195,7 +362,19 @@ SEXP ci_split_regex(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
     stores.reserve(static_cast<size_t>(vectorize_length));
     for (R_len_t i=0; i<vectorize_length; ++i)
         stores.emplace_back(0, 0);
-    {
+    const bool scalar_default =
+        pattern_n == 1 && n_n == 1 && omit_empty_n == 1 &&
+        INTEGER_RO(n)[0] != NA_INTEGER && INTEGER_RO(n)[0] < 0 &&
+        LOGICAL_RO(omit_empty)[0] == FALSE &&
+        !tokens_only1 && simplify_1 == FALSE;
+    if (scalar_default) {
+        Utf8Input scalar_input(context, str, vectorize_length);
+        ci__split_regex_scalar_default(
+            context, scalar_input, pattern, vectorize_length,
+            pattern_opts, stores
+        );
+    }
+    else {
         StriContainerInteger n_cont(n, vectorize_length);
         StriContainerLogical omit_empty_cont(omit_empty, vectorize_length);
         Utf8Input str_cont(context, str, vectorize_length);

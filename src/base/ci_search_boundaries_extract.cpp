@@ -334,7 +334,7 @@ SEXP ci__extract_firstlast_boundaries(SEXP str, SEXP opts_brkiter)
             default_locale_warning = brkiter.used_default_locale();
         }
         if (default_locale_warning)
-            Rf_warning("%s", ICUError::getICUerrorName(
+            r_warning("%s", ICUError::getICUerrorName(
                 U_USING_DEFAULT_WARNING
             ));
     }
@@ -453,7 +453,7 @@ SEXP ci_extract_all_boundaries(SEXP str, SEXP simplify, SEXP omit_no_match, SEXP
             default_locale_warning = brkiter.used_default_locale();
         }
         if (default_locale_warning)
-            Rf_warning("%s", ICUError::getICUerrorName(
+            r_warning("%s", ICUError::getICUerrorName(
                 U_USING_DEFAULT_WARNING
             ));
 

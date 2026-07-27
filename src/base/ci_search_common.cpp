@@ -98,27 +98,13 @@ void ci__locate_set_dimnames_list(
 }
 
 
-// I really love macros /MG/ :)
-#define ci__subset_by_logical__MACRO \
-   SEXP ret; \
-   PROTECT(ret = Rf_allocVector(STRSXP, result_counter)); \
-   for (R_len_t j=0, i=0; i<result_counter; ++j) { \
-      if (which[j] == NA_LOGICAL) \
-         SET_STRING_ELT(ret, i++, NA_STRING); \
-      else if (which[j]) \
-         SET_STRING_ELT(ret, i++, str_cont.toR(j)); \
-   } \
-   UNPROTECT(1); \
-   return ret;
-
-
 /**
- * Subset str_cont to SEXP by logical table ret_tab
+ * Copy a logical subset of str_cont to an exact-size R character vector
  *
  * @param str_cont
  * @param which logical
  * @param result_counter
- * @return character vector
+ * @return exact-size character vector
  *
  * @version 0.3-1 (Bartlomiej Tartanus, 2014-07-25)
  * @version 0.3-1 (Marek Gagolewski, 2014-10-17)
@@ -128,36 +114,52 @@ void ci__locate_set_dimnames_list(
 SEXP ci__subset_by_logical(const Utf8Input& str_cont,
                              const std::vector<int>& which, int result_counter)
 {
-    SEXP ret;
-    PROTECT(ret = Rf_allocVector(STRSXP, result_counter));
-    for (R_len_t j = 0, i = 0; i < result_counter; ++j) {
+    if (result_counter <= 0)
+        return Rf_allocVector(STRSXP, 0);
+
+    SEXP output;
+    PROTECT(output = Rf_allocVector(STRSXP, result_counter));
+    R_len_t j = 0;
+    R_len_t i = 0;
+    for (; i < result_counter &&
+            j < static_cast<R_len_t>(which.size()); ++j) {
         if (which[j] == NA_LOGICAL) {
-            SET_STRING_ELT(ret, i++, NA_STRING);
+            SET_STRING_ELT(output, i, NA_STRING);
+            i++;
         }
         else if (which[j]) {
             const Utf8Record value = str_cont.record(j);
-            SET_STRING_ELT(
-                ret, i++, value.is_na()
-                    ? NA_STRING
-                    : Rf_mkCharLenCE(
+            if (value.is_na()) {
+                SET_STRING_ELT(output, i, NA_STRING);
+            }
+            else {
+                SET_STRING_ELT(
+                    output, i,
+                    Rf_mkCharLenCE(
                         value.data(), value.length(),
                         value.isASCII() ? CE_NATIVE : CE_UTF8
                     )
-            );
+                );
+            }
+            i++;
         }
     }
+    if (i != result_counter) {
+        UNPROTECT(1);
+        throw std::logic_error("subset result count mismatch");
+    }
     UNPROTECT(1);
-    return ret;
+    return output;
 }
 
 
 /**
- * Subset str_cont to SEXP by logical table ret_tab
+ * Copy a logical subset of str_cont to an exact-size R character vector
  *
  * @param str_cont
  * @param which logical
  * @param result_counter
- * @return character vector
+ * @return exact-size character vector
  *
  * @version 0.3-1 (Bartlomiej Tartanus, 2014-07-25)
  * @version 0.3-1 (Marek Gagolewski, 2014-10-17)
@@ -167,7 +169,34 @@ SEXP ci__subset_by_logical(const Utf8Input& str_cont,
 SEXP ci__subset_by_logical(const StriContainerUTF16& str_cont,
                              const std::vector<int>& which, int result_counter)
 {
-    ci__subset_by_logical__MACRO
+    if (result_counter <= 0)
+        return Rf_allocVector(STRSXP, 0);
+
+    SEXP output;
+    PROTECT(output = Rf_allocVector(STRSXP, result_counter));
+    R_len_t j = 0;
+    R_len_t i = 0;
+    for (; i < result_counter &&
+            j < static_cast<R_len_t>(which.size()); ++j) {
+        if (which[j] == NA_LOGICAL) {
+            SET_STRING_ELT(output, i, NA_STRING);
+            i++;
+        }
+        else if (which[j]) {
+            if (str_cont.isNA(j)) {
+                SET_STRING_ELT(output, i, NA_STRING);
+            }
+            else
+                SET_STRING_ELT(output, i, str_cont.toR(j));
+            i++;
+        }
+    }
+    if (i != result_counter) {
+        UNPROTECT(1);
+        throw std::logic_error("subset result count mismatch");
+    }
+    UNPROTECT(1);
+    return output;
 }
 
 } } // namespace charr::base

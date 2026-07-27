@@ -52,7 +52,7 @@ StriContainerByteSearch::StriContainerByteSearch(SEXP rstr, R_len_t _nrecycle, u
     R_len_t n = get_n();
     for (R_len_t i=0; i<n; ++i) {
         if (!isNA(i) && get(i).length() <= 0) {
-            Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+            r_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
         }
     }
 }
@@ -395,7 +395,7 @@ uint32_t StriContainerByteSearch::getByteSearchFlags(SEXP opts_fixed, bool allow
                 bool val = ci__prepare_arg_logical_1_notNA(tmp_arg, "overlap");
                 if (val) flags |= BYTESEARCH_OVERLAP;
             } else {
-                Rf_warning(MSG__INCORRECT_FIXED_OPTION, curname);
+                r_warning(MSG__INCORRECT_FIXED_OPTION, curname);
             }
             UNPROTECT(1);
         }

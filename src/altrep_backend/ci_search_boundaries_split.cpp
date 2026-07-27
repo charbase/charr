@@ -269,11 +269,15 @@ SEXP ci_split_boundaries(SEXP str, SEXP n, SEXP tokens_only, SEXP simplify, SEXP
     );
     R_len_t n_n = 0;
     R_len_t vectorize_length = 0;
+    bool scalar_unlimited_n = false;
     charport::unwind_protect([&]() -> SEXP {
         n_n = LENGTH(n);
         vectorize_length = ci__recycling_rule(
             false, 2, str_n, n_n
         );
+        const int* n_values = INTEGER_RO(n);
+        scalar_unlimited_n = n_n == 1 &&
+            n_values[0] != NA_INTEGER && n_values[0] < 0;
         return R_NilValue;
     });
     // Deviation from stringi: queue the controllable recycling warning until
@@ -298,13 +302,15 @@ SEXP ci_split_boundaries(SEXP str, SEXP n, SEXP tokens_only, SEXP simplify, SEXP
 
         for (R_len_t i = 0; i < vectorize_length; ++i)
         {
-            if (n_cont.isNA(i)) {
+            if (!scalar_unlimited_n && n_cont.isNA(i)) {
                 stores[i] = charport::charvec::Store::scalar(
                     nullptr, 0, cetype_ext_t::CE_NA
                 );
                 continue;
             }
-            int  n_cur = n_cont.get(i);
+            int n_cur = scalar_unlimited_n
+                ? INT_MAX
+                : n_cont.get(i);
 
             if (str_cont.isNA(i)) {
                 stores[i] = charport::charvec::Store::scalar(
@@ -313,7 +319,7 @@ SEXP ci_split_boundaries(SEXP str, SEXP n, SEXP tokens_only, SEXP simplify, SEXP
                 continue;
             }
 
-            if (n_cur >= INT_MAX-1)
+            if (!scalar_unlimited_n && n_cur >= INT_MAX-1)
                 throw StriException(MSG__INCORRECT_NAMED_ARG "; " MSG__EXPECTED_SMALLER, "n");
             else if (n_cur < 0)
                 n_cur = INT_MAX;

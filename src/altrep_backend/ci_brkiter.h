@@ -185,9 +185,13 @@ public:
     }
 
     StriUBreakIterator& operator=(const StriBrkIterOptions& bropt) {
-        this->~StriUBreakIterator();
+        if (static_cast<const StriBrkIterOptions*>(this) == &bropt)
+            return *this;
+        if (uiterator) {
+            ubrk_close(uiterator);
+            uiterator = NULL;
+        }
         (StriBrkIterOptions&) (*this) = (StriBrkIterOptions&)bropt;
-        uiterator = NULL;
         return *this;
     }
 
@@ -304,7 +308,16 @@ public:
     }
 
     StriRuleBasedBreakIterator& operator=(const StriBrkIterOptions& bropt) {
-        this->~StriRuleBasedBreakIterator();
+        if (static_cast<const StriBrkIterOptions*>(this) == &bropt)
+            return *this;
+        if (rbiterator) {
+            delete rbiterator;
+            rbiterator = NULL;
+        }
+        if (searchText) {
+            utext_close(searchText);
+            searchText = NULL;
+        }
         (StriBrkIterOptions&) (*this) = (StriBrkIterOptions&)bropt;
         setEmptyOpts();
         return *this;

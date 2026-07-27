@@ -1,4 +1,5 @@
 #include "charr_base.h"
+#include "ci_exception.h"
 #include "ci_exports.h"
 
 #define CHARR_BASE_ARGS_1 a1
@@ -18,7 +19,9 @@
 #define CHARR_BASE_DEFINE(name, arity) \
     extern "C" SEXP C_charr_base_##name(CHARR_BASE_FORMALS_##arity) \
     { \
-        return charr::base::name(CHARR_BASE_ARGS_##arity); \
+        return charr::base::r_boundary([&]() -> SEXP { \
+            return charr::base::name(CHARR_BASE_ARGS_##arity); \
+        }); \
     }
 CHARR_BASE_NATIVE_METHODS(CHARR_BASE_DEFINE)
 #undef CHARR_BASE_DEFINE

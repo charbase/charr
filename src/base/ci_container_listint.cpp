@@ -33,6 +33,7 @@
 
 #include "ci_stringi.h"
 #include "ci_container_listint.h"
+#include <memory>
 
 
 namespace charr { namespace base {
@@ -67,7 +68,7 @@ StriContainerListInt::StriContainerListInt(SEXP rstr)
         this->init_Base(1, 1, true);
         this->data = new IntVec[this->n];
         if (!this->data) throw StriException(MSG__MEM_ALLOC_ERROR);
-        this->data[0].initialize((const int*)INTEGER(rstr), LENGTH(rstr)); // shallow copy // TODO: ALTREP will be problematic?
+        this->data[0].initialize(INTEGER_RO(rstr), LENGTH(rstr)); // shallow copy
     }
     else // if (Rf_isVectorList(rstr)) -- args already checked
     {
@@ -78,7 +79,7 @@ StriContainerListInt::StriContainerListInt(SEXP rstr)
         for (R_len_t i=0; i<this->n; ++i) {
             SEXP cur = VECTOR_ELT(rstr, i);
             if (!Rf_isNull(cur))
-                this->data[i].initialize((const int*)INTEGER(cur), LENGTH(cur)); // shallow copy // TODO: ALTREP will be problematic?
+                this->data[i].initialize(INTEGER_RO(cur), LENGTH(cur)); // shallow copy
             // else leave as-is, i.e., NULL/NA
         }
     }
@@ -103,19 +104,20 @@ StriContainerListInt::StriContainerListInt(StriContainerListInt& container)
 
 StriContainerListInt& StriContainerListInt::operator=(StriContainerListInt& container)
 {
-    this->~StriContainerListInt();
-    (StriContainerBase&) (*this) = (StriContainerBase&)container;
+    if (this == &container)
+        return *this;
 
+    std::unique_ptr<IntVec[]> new_data;
     if (container.data) {
-        this->data = new IntVec[this->n];
-        if (!this->data) throw StriException(MSG__MEM_ALLOC_ERROR);
-        for (int i=0; i<this->n; ++i) {
-            this->data[i] = container.data[i];
+        new_data.reset(new IntVec[container.n]);
+        for (int i=0; i<container.n; ++i) {
+            new_data[i] = container.data[i];
         }
     }
-    else {
-        this->data = NULL;
-    }
+
+    delete [] this->data;
+    (StriContainerBase&) (*this) = (StriContainerBase&)container;
+    this->data = new_data.release();
     return *this;
 }
 

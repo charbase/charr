@@ -224,21 +224,27 @@ StriContainerUTF16::StriContainerUTF16(StriContainerUTF16& container)
  */
 StriContainerUTF16& StriContainerUTF16::operator=(StriContainerUTF16& container)
 {
-    this->~StriContainerUTF16();
-    (StriContainerBase&) (*this) = (StriContainerBase&)container;
+    if (this == &container)
+        return *this;
 
+    std::unique_ptr<UnicodeString[]> new_str;
     if (container.str) {
-        this->str = new UnicodeString[this->n];
-        STRI_ASSERT(this->str);
-        if (!this->str) throw StriException(MSG__MEM_ALLOC_ERROR_WITH_SIZE,
-                                                this->n*sizeof(UnicodeString));
-        for (int i=0; i<this->n; ++i) {
-            this->str[i].setTo(container.str[i]);
+        new_str.reset(new UnicodeString[container.n]);
+        STRI_ASSERT(new_str);
+        if (!new_str) throw StriException(
+            MSG__MEM_ALLOC_ERROR_WITH_SIZE,
+            container.n*sizeof(UnicodeString)
+        );
+        for (int i=0; i<container.n; ++i) {
+            new_str[i].setTo(container.str[i]);
         }
     }
-    else {
-        this->str = NULL;
-    }
+
+    // Replace the old array without ending and reusing this object's lifetime.
+    delete [] this->str;
+    this->str = NULL;
+    (StriContainerBase&) (*this) = (StriContainerBase&)container;
+    this->str = new_str.release();
     return *this;
 }
 

@@ -22,7 +22,7 @@ StriContainerListUTF8::StriContainerListUTF8(
         // Empty children recycle to an empty result. They cannot participate
         // in the divisibility check and must not reach the modulo operation.
         if (current_size > 0 && recycle_size % current_size != 0) {
-            Rf_warning(MSG__WARN_RECYCLING_RULE);
+            r_warning(MSG__WARN_RECYCLING_RULE);
             break;
         }
     }

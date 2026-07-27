@@ -306,7 +306,8 @@ SEXP ci_split_regex(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
     STRI__ERROR_HANDLER_BEGIN(5)
     if (XLENGTH(pattern) == 1 && XLENGTH(n) == 1 &&
             XLENGTH(omit_empty) == 1 &&
-            INTEGER_RO(n)[0] < 0 && LOGICAL_RO(omit_empty)[0] == FALSE &&
+            INTEGER_RO(n)[0] != NA_INTEGER && INTEGER_RO(n)[0] < 0 &&
+            LOGICAL_RO(omit_empty)[0] == FALSE &&
             !tokens_only1 && simplify_1 == FALSE) {
         Utf8Input scalar_input(str, vectorize_length);
         SEXP ret;

@@ -205,7 +205,7 @@ SEXP ci__replace_all_coll_no_vectorize_all(SEXP str, SEXP pattern, SEXP replacem
         Rf_error(MSG__WARN_RECYCLING_RULE2);
     }
     if (pattern_n % replacement_n != 0) {
-        Rf_warning(MSG__WARN_RECYCLING_RULE);
+        r_warning(MSG__WARN_RECYCLING_RULE);
     }
 
     if (pattern_n == 1) {// this will be much faster:
@@ -240,7 +240,7 @@ SEXP ci__replace_all_coll_no_vectorize_all(SEXP str, SEXP pattern, SEXP replacem
                 ucol_close(collator);
                 collator=NULL;
             }
-            Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+            r_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
             STRI__UNPROTECT_ALL
             return ci__vector_NA_strings(str_n);
         }

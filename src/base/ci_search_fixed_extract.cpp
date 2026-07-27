@@ -34,13 +34,13 @@
 #include "ci_stringi.h"
 #include "ci_utf8.h"
 #include "ci_container_bytesearch.h"
-#include "string_output.h"
 #include "utf8_input.h"
 
 #include <cstddef>
 #include <cstring>
 #include <exception>
 #include <memory>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 namespace charr { namespace base {
@@ -214,7 +214,7 @@ struct FixedExtractAllPlan {
 bool ci__plan_extract_all_fixed_plain(
     SEXP str, SEXP pattern, uint32_t pattern_flags,
     R_len_t vectorize_length, bool omit_no_match,
-    FixedExtractAllPlan& plan
+    FixedExtractAllPlan& plan, R_len_t& general_start
 )
 {
     if (pattern_flags != 0 || vectorize_length <= 0)
@@ -249,6 +249,8 @@ bool ci__plan_extract_all_fixed_plain(
         if (!ci__direct_extract_string(
                 str_values[direct_str_length ? i : i % str_n], value
         )) {
+            if (pattern_n == 1 && i > 0)
+                general_start = i;
             return false;
         }
 
@@ -292,16 +294,15 @@ struct FixedExtractChildHash {
 };
 
 
-void ci__build_extract_all_fixed_plain(
+SEXP ci__build_extract_all_fixed_plain(
     const FixedExtractAllPlan& plan, R_len_t vectorize_length,
-    int simplify, bool omit_no_match, SEXP& result
+    int simplify, bool omit_no_match
 )
 {
     const vector<R_len_t>& counts = plan.counts;
     const R_len_t max_columns = plan.max_columns;
 
     if (simplify != NA_LOGICAL && !simplify) {
-        PROTECT(result = Rf_allocVector(VECSXP, vectorize_length));
         // Exact fixed matches reproduce the direct pattern bytes. Equal
         // (pattern, count) signatures therefore produce byte-for-byte
         // identical immutable children, which may be shared safely under R's
@@ -311,68 +312,86 @@ void ci__build_extract_all_fixed_plain(
         children.reserve(static_cast<size_t>(
             vectorize_length < 1024 ? vectorize_length : 1024
         ));
-        SEXP missing_child = R_NilValue;
-        SEXP empty_child = R_NilValue;
+        return unwind_protect([&]() -> SEXP {
+            SEXP result = PROTECT(
+                Rf_allocVector(VECSXP, vectorize_length)
+            );
+            try {
+                SEXP missing_child = R_NilValue;
+                SEXP empty_child = R_NilValue;
+                for (R_len_t i = 0; i < vectorize_length; ++i) {
+                    const R_len_t count = counts[static_cast<size_t>(i)];
+                    const bool forced_na = count == NA_INTEGER ||
+                        (count == 0 && !omit_no_match);
+                    if (forced_na) {
+                        if (missing_child == R_NilValue) {
+                            missing_child = Rf_allocVector(STRSXP, 1);
+                            SET_STRING_ELT(
+                                missing_child, 0, NA_STRING
+                            );
+                        }
+                        SET_VECTOR_ELT(result, i, missing_child);
+                    }
+                    else if (count == 0) {
+                        if (empty_child == R_NilValue)
+                            empty_child = Rf_allocVector(STRSXP, 0);
+                        SET_VECTOR_ELT(result, i, empty_child);
+                    }
+                    else {
+                        const FixedExtractChildKey key{
+                            plan.patterns[static_cast<size_t>(i)], count
+                        };
+                        const auto found = children.find(key);
+                        SEXP child;
+                        if (found == children.end()) {
+                            child = Rf_allocVector(STRSXP, count);
+                            for (R_len_t j = 0; j < count; ++j)
+                                SET_STRING_ELT(child, j, key.pattern);
+                            SET_VECTOR_ELT(result, i, child);
+                            children.emplace(key, child);
+                            continue;
+                        }
+                        SET_VECTOR_ELT(result, i, found->second);
+                    }
+                }
+            }
+            catch (...) {
+                UNPROTECT(1);
+                throw;
+            }
+            UNPROTECT(1);
+            return result;
+        });
+    }
+
+    return unwind_protect([&]() -> SEXP {
+        SEXP result = Rf_allocMatrix(
+            STRSXP, vectorize_length, max_columns
+        );
         for (R_len_t i = 0; i < vectorize_length; ++i) {
             const R_len_t count = counts[static_cast<size_t>(i)];
             const bool forced_na = count == NA_INTEGER ||
                 (count == 0 && !omit_no_match);
-            if (forced_na) {
-                if (missing_child == R_NilValue) {
-                    missing_child = Rf_allocVector(STRSXP, 1);
-                    SET_STRING_ELT(missing_child, 0, NA_STRING);
+            R_len_t j = 0;
+            if (count > 0) {
+                for (; j < count; ++j) {
+                    SET_STRING_ELT(
+                        result, i + j * vectorize_length,
+                        plan.patterns[static_cast<size_t>(i)]
+                    );
                 }
-                SET_VECTOR_ELT(result, i, missing_child);
             }
-            else if (count == 0) {
-                if (empty_child == R_NilValue)
-                    empty_child = Rf_allocVector(STRSXP, 0);
-                SET_VECTOR_ELT(result, i, empty_child);
-            }
-            else {
-                const FixedExtractChildKey key{
-                    plan.patterns[static_cast<size_t>(i)], count
-                };
-                const auto found = children.find(key);
-                SEXP child;
-                if (found == children.end()) {
-                    child = Rf_allocVector(STRSXP, count);
-                    for (R_len_t j = 0; j < count; ++j)
-                        SET_STRING_ELT(child, j, key.pattern);
-                    SET_VECTOR_ELT(result, i, child);
-                    children.emplace(key, child);
-                    continue;
-                }
-                SET_VECTOR_ELT(result, i, found->second);
-            }
-        }
-        UNPROTECT(1);
-        return;
-    }
-
-    result = Rf_allocMatrix(STRSXP, vectorize_length, max_columns);
-    for (R_len_t i = 0; i < vectorize_length; ++i) {
-        const R_len_t count = counts[static_cast<size_t>(i)];
-        const bool forced_na = count == NA_INTEGER ||
-            (count == 0 && !omit_no_match);
-        R_len_t j = 0;
-        if (count > 0) {
-            for (; j < count; ++j) {
-                SET_STRING_ELT(
-                    result, i + j * vectorize_length,
-                    plan.patterns[static_cast<size_t>(i)]
-                );
-            }
-        }
-        for (; j < max_columns; ++j) {
+            for (; j < max_columns; ++j) {
                 SET_STRING_ELT(
                     result, i + j * vectorize_length,
                     simplify == NA_LOGICAL || (forced_na && j == 0)
                         ? NA_STRING
                         : R_BlankString
                 );
+            }
         }
-    }
+        return result;
+    });
 }
 
 } // namespace
@@ -407,6 +426,9 @@ SEXP ci__extract_firstlast_fixed(SEXP str, SEXP pattern, SEXP opts_fixed, bool f
     int vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
 
     SEXP ret;
+    // The direct path installs the existing pattern CHARSXP. Allocate the
+    // final R vector before either path so fallback matches are interned as
+    // soon as they are ready too.
     STRI__PROTECT(ret = Rf_allocVector(STRSXP, vectorize_length));
 
     if (!ci__extract_firstlast_fixed_plain(
@@ -416,30 +438,40 @@ SEXP ci__extract_firstlast_fixed(SEXP str, SEXP pattern, SEXP opts_fixed, bool f
         StriContainerByteSearch pattern_cont(
             pattern, vectorize_length, pattern_flags
         );
-        for (R_len_t i = pattern_cont.vectorize_init();
-                i != pattern_cont.vectorize_end();
-                i = pattern_cont.vectorize_next(i))
-        {
-            STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-                    SET_STRING_ELT(ret, i, NA_STRING);, SET_STRING_ELT(ret, i, NA_STRING);)
+        unwind_protect([&]() -> SEXP {
+            for (R_len_t i = pattern_cont.vectorize_init();
+                    i != pattern_cont.vectorize_end();
+                    i = pattern_cont.vectorize_next(i))
+            {
+                STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(
+                    str_cont, pattern_cont,
+                    SET_STRING_ELT(ret, i, NA_STRING);,
+                    SET_STRING_ELT(ret, i, NA_STRING);
+                )
 
-            StriByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
-            matcher->reset(str_cont.get(i).data(), str_cont.get(i).length());
-            int start, len;
-            if (first) {
-                start = matcher->findFirst();
-            } else {
-                start = matcher->findLast();
+                StriByteSearchMatcher* matcher =
+                    pattern_cont.getMatcher(i);
+                matcher->reset(
+                    str_cont.get(i).data(), str_cont.get(i).length()
+                );
+                const int start = first
+                    ? matcher->findFirst()
+                    : matcher->findLast();
+                if (start == USEARCH_DONE) {
+                    SET_STRING_ELT(ret, i, NA_STRING);
+                    continue;
+                }
+
+                const int length = matcher->getMatchedLength();
+                SET_STRING_ELT(
+                    ret, i,
+                    Rf_mkCharLenCE(
+                        str_cont.get(i).data()+start, length, CE_UTF8
+                    )
+                );
             }
-            if (start == USEARCH_DONE) {
-                SET_STRING_ELT(ret, i, NA_STRING);
-                continue;
-            }
-
-            len = matcher->getMatchedLength();
-
-            SET_STRING_ELT(ret, i, Rf_mkCharLenCE(str_cont.get(i).data()+start, len, CE_UTF8));
-        }
+            return R_NilValue;
+        });
     }
 
     STRI__UNPROTECT_ALL
@@ -525,22 +557,24 @@ SEXP ci_extract_all_fixed(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_ma
         );
 
         FixedExtractAllPlan direct_plan;
+        R_len_t general_start = 0;
         if (ci__plan_extract_all_fixed_plain(
                 str, pattern, pattern_flags, vectorize_length,
-                omit_no_match1, direct_plan
+                omit_no_match1, direct_plan, general_start
         )) {
-            ci__build_extract_all_fixed_plain(
-                direct_plan, vectorize_length, simplify1,
-                omit_no_match1, ret
+            STRI__PROTECT(
+                ret = ci__build_extract_all_fixed_plain(
+                    direct_plan, vectorize_length, simplify1,
+                    omit_no_match1
+                )
             );
-            STRI__PROTECT(ret);
             STRI__UNPROTECT_ALL
             return ret;
         }
 
         struct MatchSlice {
             const char* data;
-            size_t length;
+            R_len_t length;
         };
         struct RowResult {
             size_t begin;
@@ -561,7 +595,41 @@ SEXP ci_extract_all_fixed(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_ma
                 pattern, vectorize_length, pattern_flags
             );
 
-            for (R_len_t i = pattern_cont.vectorize_init();
+            for (R_len_t i = 0; i < general_start; ++i) {
+                RowResult& row = rows[static_cast<size_t>(i)];
+                row.begin = matches.size();
+                const R_len_t count = direct_plan.counts[
+                    static_cast<size_t>(i)
+                ];
+                row.forced_na = count == NA_INTEGER ||
+                    (count == 0 && !omit_no_match1);
+                if (count > 0) {
+                    // The planner already extracted this pattern to reach a
+                    // positive count, so the repeat cannot fail; the result
+                    // is a view into the pattern CHARSXP, which `pattern`
+                    // keeps protected for the whole call.
+                    DirectExtractString pattern_value;
+                    const bool extracted = ci__direct_extract_string(
+                        direct_plan.patterns[static_cast<size_t>(i)],
+                        pattern_value
+                    );
+                    if (!extracted)
+                        throw logic_error("extract plan pattern is unusable");
+                    for (R_len_t j = 0; j < count; ++j) {
+                        matches.push_back(MatchSlice{
+                            pattern_value.data,
+                            pattern_value.length
+                        });
+                    }
+                }
+                row.count = matches.size() - row.begin;
+            }
+
+            // general_start is set only for a scalar pattern, so the pattern
+            // container advances with a unit stride from that index.
+            for (R_len_t i = general_start > 0
+                        ? general_start
+                        : pattern_cont.vectorize_init();
                     i != pattern_cont.vectorize_end();
                     i = pattern_cont.vectorize_next(i))
             {
@@ -586,7 +654,7 @@ SEXP ci_extract_all_fixed(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_ma
                         start = matcher->findNext()) {
                     matches.push_back(MatchSlice{
                         subject.ptr + start,
-                        static_cast<size_t>(matcher->getMatchedLength())
+                        matcher->getMatchedLength()
                     });
                 }
                 row.count = matches.size() - row.begin;
@@ -596,42 +664,38 @@ SEXP ci_extract_all_fixed(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_ma
         }
 
         if (simplify1 != NA_LOGICAL && !simplify1) {
-            STRI__PROTECT(ret = Rf_allocVector(VECSXP, vectorize_length));
-            FixedStringBuilder fixed;
-            ScalarStringBuilder scalar;
-
-            for (R_len_t i = 0; i < vectorize_length; ++i) {
-                const RowResult& row = rows[static_cast<size_t>(i)];
-                SEXP current;
-                if (row.forced_na) {
-                    scalar.reset();
-                    STRI__PROTECT(current = scalar.to_sexp());
-                }
-                else if (row.count == 1) {
-                    const MatchSlice& match = matches[row.begin];
-                    scalar.reset();
-                    scalar.set(
-                        match.data, match.length, OutputEncoding::utf8
+            STRI__PROTECT(ret = unwind_protect([&]() -> SEXP {
+                SEXP output = PROTECT(
+                    Rf_allocVector(VECSXP, vectorize_length)
+                );
+                for (R_len_t i = 0; i < vectorize_length; ++i) {
+                    const RowResult& row = rows[static_cast<size_t>(i)];
+                    const R_xlen_t current_size = row.forced_na
+                        ? 1
+                        : static_cast<R_xlen_t>(row.count);
+                    SEXP current = PROTECT(
+                        Rf_allocVector(STRSXP, current_size)
                     );
-                    STRI__PROTECT(current = scalar.to_sexp());
-                }
-                else {
-                    // The scan above has already established this child's
-                    // exact cardinality, so fixed output avoids introduced
-                    // record-table growth during finalization.
-                    fixed.reset(static_cast<R_xlen_t>(row.count));
-                    for (size_t j = 0; j < row.count; ++j) {
-                        const MatchSlice& match = matches[row.begin + j];
-                        fixed.set(
-                            static_cast<R_xlen_t>(j), match.data,
-                            match.length, OutputEncoding::utf8
-                        );
+                    if (row.forced_na)
+                        SET_STRING_ELT(current, 0, NA_STRING);
+                    else {
+                        for (size_t j = 0; j < row.count; ++j) {
+                            const MatchSlice& match =
+                                matches[row.begin + j];
+                            SET_STRING_ELT(
+                                current, static_cast<R_xlen_t>(j),
+                                Rf_mkCharLenCE(
+                                    match.data, match.length, CE_UTF8
+                                )
+                            );
+                        }
                     }
-                    STRI__PROTECT(current = fixed.to_sexp());
+                    SET_VECTOR_ELT(output, i, current);
+                    UNPROTECT(1);
                 }
-                SET_VECTOR_ELT(ret, i, current);
-                STRI__UNPROTECT(1);
-            }
+                UNPROTECT(1);
+                return output;
+            }));
         }
         else {
             size_t max_columns = 0;
@@ -652,46 +716,48 @@ SEXP ci_extract_all_fixed(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_ma
                 throw length_error("matrix length exceeds R's vector limit");
             }
 
-            FixedStringBuilder builder(matrix_rows * matrix_columns);
-            for (R_xlen_t i = 0; i < matrix_rows; ++i) {
-                const RowResult& row = rows[static_cast<size_t>(i)];
-                R_xlen_t j = 0;
-                if (row.forced_na) {
-                    builder.set_na(i);
-                    j = 1;
-                }
-                else {
-                    for (; j < static_cast<R_xlen_t>(row.count); ++j) {
-                        const MatchSlice& match = matches[
-                            row.begin + static_cast<size_t>(j)
-                        ];
-                        builder.set(
-                            i + j * matrix_rows,
-                            match.data, match.length,
-                            OutputEncoding::utf8
-                        );
-                    }
-                }
-                for (; j < matrix_columns; ++j) {
-                    if (simplify1 == NA_LOGICAL) {
-                        builder.set_na(i + j * matrix_rows);
+            STRI__PROTECT(ret = unwind_protect([&]() -> SEXP {
+                SEXP output = PROTECT(Rf_allocVector(
+                    STRSXP, matrix_rows * matrix_columns
+                ));
+                for (R_xlen_t i = 0; i < matrix_rows; ++i) {
+                    const RowResult& row = rows[static_cast<size_t>(i)];
+                    R_xlen_t j = 0;
+                    if (row.forced_na) {
+                        SET_STRING_ELT(output, i, NA_STRING);
+                        j = 1;
                     }
                     else {
-                        builder.set(
-                            i + j * matrix_rows,
-                            "", 0, OutputEncoding::ascii
+                        for (; j < static_cast<R_xlen_t>(row.count); ++j) {
+                            const MatchSlice& match = matches[
+                                row.begin + static_cast<size_t>(j)
+                            ];
+                            SET_STRING_ELT(
+                                output, i + j * matrix_rows,
+                                Rf_mkCharLenCE(
+                                    match.data, match.length, CE_UTF8
+                                )
+                            );
+                        }
+                    }
+                    for (; j < matrix_columns; ++j) {
+                        SET_STRING_ELT(
+                            output, i + j * matrix_rows,
+                            simplify1 == NA_LOGICAL
+                                ? NA_STRING
+                                : R_BlankString
                         );
                     }
                 }
-            }
 
-            STRI__PROTECT(ret = builder.to_sexp());
-            SEXP dim;
-            STRI__PROTECT(dim = Rf_allocVector(INTSXP, 2));
-            INTEGER(dim)[0] = vectorize_length;
-            INTEGER(dim)[1] = static_cast<R_len_t>(max_columns);
-            Rf_setAttrib(ret, R_DimSymbol, dim);
-            STRI__UNPROTECT(1);
+                SEXP dim = PROTECT(Rf_allocVector(INTSXP, 2));
+                INTEGER(dim)[0] = vectorize_length;
+                INTEGER(dim)[1] =
+                    static_cast<R_len_t>(max_columns);
+                Rf_setAttrib(output, R_DimSymbol, dim);
+                UNPROTECT(2);
+                return output;
+            }));
         }
     }
     catch (const StriException&) {

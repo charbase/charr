@@ -184,7 +184,7 @@ SEXP ci__match_firstlast_regex_scalar(
             const R_len_t warnings = vectorize_length > 0
                 ? vectorize_length : LENGTH(pattern);
             for (R_len_t i=0; i<warnings; ++i)
-                Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+                r_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
         }
         else if (!pattern_na) {
             const SEXP missing = STRING_ELT(cg_missing, 0);
@@ -287,7 +287,7 @@ SEXP ci__match_all_regex_scalar(
         if (pattern_na || pattern_empty) {
             for (R_len_t i=0; i<vectorize_length; ++i) {
                 if (pattern_empty)
-                    Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+                    r_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
                 SET_VECTOR_ELT(ret, i, ci__matrix_NA_STRING(1, 1));
             }
             UNPROTECT(protected_n);
@@ -495,7 +495,7 @@ SEXP ci__match_firstlast_regex(SEXP str, SEXP pattern, SEXP cg_missing, SEXP opt
         {
             if ((pattern_cont).isNA(i) || (pattern_cont).get(i).length() <= 0) {
                 if (!(pattern_cont).isNA(i))
-                    Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+                    r_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
                 continue;
             }
 
@@ -512,7 +512,7 @@ SEXP ci__match_firstlast_regex(SEXP str, SEXP pattern, SEXP cg_missing, SEXP opt
         {
             if ((pattern_cont).isNA(i) || (pattern_cont).get(i).length() <= 0) {
                 if (!(pattern_cont).isNA(i))
-                    Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+                    r_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
                 continue;
             }
 
@@ -699,7 +699,7 @@ SEXP ci_match_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP cg_miss
     {
         if ((pattern_cont).isNA(i) || (pattern_cont).get(i).length() <= 0) {
             if (!(pattern_cont).isNA(i))
-                Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+                r_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
             SET_VECTOR_ELT(ret, i, ci__matrix_NA_STRING(1, 1));
             continue;
         }

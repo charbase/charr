@@ -32,6 +32,7 @@ public:
 
     ByteView native(const char* data, int length);
     ByteView latin1(const char* data, int length);
+    ByteView utf8_to_native(const char* data, int length);
 
     // Whether R's native encoding is UTF-8, decided by probing the same
     // converter the native() path uses. This is the only such predicate:
@@ -48,11 +49,13 @@ private:
 
     std::unique_ptr<Descriptor> native_;
     std::unique_ptr<Descriptor> latin1_;
+    std::unique_ptr<Descriptor> utf8_to_native_;
     std::vector<char> scratch_;
     Tristate native_is_utf8_;
 
     Descriptor& native_descriptor();
     Descriptor& latin1_descriptor();
+    Descriptor& utf8_to_native_descriptor();
     ByteView convert(Descriptor& descriptor, const char* data, int length);
     void ensure_capacity(std::size_t required);
 };

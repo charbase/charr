@@ -42,67 +42,6 @@ namespace charr { namespace base {
 // changing process-global ICU state that may be shared with other packages.
 
 
-/**
- * Get all available ICU charsets and their aliases (elems 2,3,...)
- *
- * @return R list object; element name == ICU charset canonical name;
- * elements are character vectors (aliases)
- *
- * @version 0.1-?? (Marek Gagolewski)
- *
- * @version 0.2-1 (Marek Gagolewski)
- *          use StriUcnv; make StriException-friendly
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- */
-SEXP ci_enc_list()
-{
-    R_len_t c = (R_len_t)ucnv_countAvailable();
-
-    STRI__ERROR_HANDLER_BEGIN(0)
-    SEXP ret;
-    SEXP names;
-    STRI__PROTECT(ret = Rf_allocVector(VECSXP, c));
-    STRI__PROTECT(names = Rf_allocVector(STRSXP, c));
-
-    for (R_len_t i=0; i<c; ++i) {
-        const char* canonical_name = ucnv_getAvailableName(i);
-        if (!canonical_name) {
-            SET_STRING_ELT(names, i, NA_STRING);
-            continue;
-        }
-
-        SET_STRING_ELT(names, i, Rf_mkChar(canonical_name));
-
-        UErrorCode status = U_ZERO_ERROR;
-        R_len_t ci = (R_len_t)ucnv_countAliases(canonical_name, &status);
-        if (U_FAILURE(status) || ci <= 0)
-            SET_VECTOR_ELT(ret, i, Rf_ScalarString(NA_STRING));
-        else {
-            SEXP aliases;
-            STRI__PROTECT(aliases = Rf_allocVector(STRSXP, ci));
-            for (R_len_t j=0; j<ci; ++j) {
-                status = U_ZERO_ERROR;
-                const char* alias = ucnv_getAlias(canonical_name, j, &status);
-                if (U_FAILURE(status) || !alias)
-                    SET_STRING_ELT(aliases, j, NA_STRING);
-                else
-                    SET_STRING_ELT(aliases, j, Rf_mkChar(alias));
-            }
-            SET_VECTOR_ELT(ret, i, aliases);
-            STRI__UNPROTECT(1);
-        }
-    }
-
-    Rf_setAttrib(ret, R_NamesSymbol, names);
-    STRI__UNPROTECT_ALL
-    return ret;
-
-    STRI__ERROR_HANDLER_END({/* no special action on error */})
-}
-
-
 /** Fetch information on an encoding
  *
  * @param enc either NULL or "" for default encoding,
@@ -156,7 +95,7 @@ SEXP ci_enc_info(SEXP enc)
     const char* canname = ucnv_getName(uconv, &status);
     if (U_FAILURE(status) || !canname) {
         SET_VECTOR_ELT(vals, 1, Rf_ScalarString(NA_STRING));
-        Rf_warning(MSG__ENC_ERROR_GETNAME);
+        r_warning(MSG__ENC_ERROR_GETNAME);
     }
     else {
         SET_VECTOR_ELT(vals, 1, ci__make_character_vector_char_ptr(1, canname));

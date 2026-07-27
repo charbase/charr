@@ -35,6 +35,8 @@
 #include <unicode/ucol.h>
 #include <unicode/usearch.h>
 
+#include <memory>
+
 
 namespace charr { namespace base {
 
@@ -74,6 +76,8 @@ namespace charr { namespace base {
  */
 UCollator* ci__ucol_open(SEXP opts_collator)
 {
+    typedef std::unique_ptr<UCollator, decltype(&ucol_close)> CollatorOwner;
+
     if (!Rf_isNull(opts_collator) && !Rf_isVectorList(opts_collator))
         Rf_error(MSG__INCORRECT_COLLATOR_OPTION_SPEC); // error() allowed here
 
@@ -83,9 +87,11 @@ UCollator* ci__ucol_open(SEXP opts_collator)
 
     if (narg <= 0) { // no custom settings - use default Collator
         UErrorCode status = U_ZERO_ERROR;
-        UCollator* col = ucol_open(default_locale, &status);
-        STRI__CHECKICUSTATUS_RFERROR(status, {/* do nothing special on err */}) // error() allowed here
-        return col;
+        CollatorOwner col_owner(
+            ucol_open(default_locale, &status), &ucol_close
+        );
+        STRI__CHECKICUSTATUS_THROW(status, { col_owner.reset(); })
+        return col_owner.release();
     }
 
     SEXP names = PROTECT(Rf_getAttrib(opts_collator, R_NamesSymbol));
@@ -146,7 +152,7 @@ UCollator* ci__ucol_open(SEXP opts_collator)
             bool val_bool = ci__prepare_arg_logical_1_notNA(tmp_arg, "numeric");
             opt_NUMERIC_COLLATION = (val_bool?UCOL_ON:UCOL_OFF);
         } else {
-            Rf_warning(MSG__INCORRECT_COLLATOR_OPTION, curname);
+            r_warning(MSG__INCORRECT_COLLATOR_OPTION, curname);
         }
         UNPROTECT(1);
     }
@@ -154,14 +160,15 @@ UCollator* ci__ucol_open(SEXP opts_collator)
 
     // create collator
     UErrorCode status = U_ZERO_ERROR;
-    UCollator* col = ucol_open(opt_LOCALE, &status);
-    STRI__CHECKICUSTATUS_RFERROR(status, { /* nothing special on err */ }) // error() allowed here
+    CollatorOwner col_owner(ucol_open(opt_LOCALE, &status), &ucol_close);
+    STRI__CHECKICUSTATUS_THROW(status, { col_owner.reset(); })
+    UCollator* col = col_owner.get();
 
     if (status == U_USING_DEFAULT_WARNING && opt_LOCALE) {
         UErrorCode status2 = U_ZERO_ERROR;
         const char* valid_locale = ucol_getLocaleByType(col, ULOC_VALID_LOCALE, &status2);
         if (valid_locale && !strcmp(valid_locale, "root"))
-            Rf_warning("%s", ICUError::getICUerrorName(status));
+            r_warning("%s", ICUError::getICUerrorName(status));
     }
     // else if (status == U_USING_FALLBACK_WARNING)  // warning on this would be too invasive
     //    Rf_warning("%s", ICUError::getICUerrorName(status));
@@ -177,46 +184,46 @@ UCollator* ci__ucol_open(SEXP opts_collator)
     if (opt_STRENGTH != UCOL_DEFAULT_STRENGTH) {
         status = U_ZERO_ERROR;
         ucol_setAttribute(col, UCOL_STRENGTH, opt_STRENGTH, &status);
-        STRI__CHECKICUSTATUS_RFERROR(status, { ucol_close(col); }) // error() allowed here
+        STRI__CHECKICUSTATUS_THROW(status, { col_owner.reset(); })
     }
 
     if (opt_FRENCH_COLLATION != UCOL_DEFAULT) {
         status = U_ZERO_ERROR;
         ucol_setAttribute(col, UCOL_FRENCH_COLLATION, opt_FRENCH_COLLATION, &status);
-        STRI__CHECKICUSTATUS_RFERROR(status, { ucol_close(col); }) // error() allowed here
+        STRI__CHECKICUSTATUS_THROW(status, { col_owner.reset(); })
     }
 
     if (opt_ALTERNATE_HANDLING != UCOL_DEFAULT) {
         status = U_ZERO_ERROR;
         ucol_setAttribute(col, UCOL_ALTERNATE_HANDLING, opt_ALTERNATE_HANDLING, &status);
-        STRI__CHECKICUSTATUS_RFERROR(status, { ucol_close(col); }) // error() allowed here
+        STRI__CHECKICUSTATUS_THROW(status, { col_owner.reset(); })
     }
 
     if (opt_CASE_FIRST != UCOL_DEFAULT) {
         status = U_ZERO_ERROR;
         ucol_setAttribute(col, UCOL_CASE_FIRST, opt_CASE_FIRST, &status);
-        STRI__CHECKICUSTATUS_RFERROR(status, { ucol_close(col); }) // error() allowed here
+        STRI__CHECKICUSTATUS_THROW(status, { col_owner.reset(); })
     }
 
     if (opt_CASE_LEVEL != UCOL_DEFAULT) {
         status = U_ZERO_ERROR;
         ucol_setAttribute(col, UCOL_CASE_LEVEL, opt_CASE_LEVEL, &status);
-        STRI__CHECKICUSTATUS_RFERROR(status, { ucol_close(col); }) // error() allowed here
+        STRI__CHECKICUSTATUS_THROW(status, { col_owner.reset(); })
     }
 
     if (opt_NORMALIZATION_MODE != UCOL_DEFAULT) {
         status = U_ZERO_ERROR;
         ucol_setAttribute(col, UCOL_NORMALIZATION_MODE, opt_NORMALIZATION_MODE, &status);
-        STRI__CHECKICUSTATUS_RFERROR(status, { ucol_close(col); }) // error() allowed here
+        STRI__CHECKICUSTATUS_THROW(status, { col_owner.reset(); })
     }
 
     if (opt_NUMERIC_COLLATION != UCOL_DEFAULT) {
         status = U_ZERO_ERROR;
         ucol_setAttribute(col, UCOL_NUMERIC_COLLATION, opt_NUMERIC_COLLATION, &status);
-        STRI__CHECKICUSTATUS_RFERROR(status, { ucol_close(col); }) // error() allowed here
+        STRI__CHECKICUSTATUS_THROW(status, { col_owner.reset(); })
     }
 
-    return col;
+    return col_owner.release();
 }
 
 } } // namespace charr::base
