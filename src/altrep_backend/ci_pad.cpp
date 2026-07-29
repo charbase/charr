@@ -34,13 +34,15 @@
 #include "ci_stringi.h"
 #include "ci_builder.h"
 #include "ci_utf8.h"
-#include "ci_container_integer.h"
+#include "io/integer_input.h"
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
 
+namespace charr { namespace altrep_backend {
 
-namespace {
+
+namespace pad {
 
 // ASCII width is exact without an ICU property lookup, including C0 and DEL.
 // Non-ASCII code points retain stringi's context-sensitive width rules.
@@ -101,7 +103,9 @@ char* ci__pad_repeat(
     return output+total;
 }
 
-} // namespace
+} // namespace pad
+
+using namespace pad;
 
 
 /**
@@ -167,11 +171,11 @@ SEXP ci_pad(SEXP str, SEXP width, SEXP side, SEXP pad, SEXP use_length)
         );
 
         charport::charvec::Builder builder(vectorize_length);
-        StriContainerInteger  width_cont(width, vectorize_length);
+        io::IntegerInput  width_cont(width, vectorize_length);
         {
-            Utf8Input str_cont(context, str, vectorize_length);
-//   Utf8Input      side_cont(side, vectorize_length);
-            Utf8Input pad_cont(context, pad, vectorize_length);
+            io::Utf8Input str_cont(context, str, vectorize_length);
+//   io::Utf8Input      side_cont(side, vectorize_length);
+            io::Utf8Input pad_cont(context, pad, vectorize_length);
 
             const bool scalar_pad = pad_length == 1;
             bool scalar_pad_validated = false;
@@ -187,13 +191,13 @@ SEXP ci_pad(SEXP str, SEXP width, SEXP side, SEXP pad, SEXP use_length)
                 }
 
                 // get the current string
-                const Utf8Record& str_cur = str_cont.get(i);
+                const io::Utf8Record& str_cur = str_cont.get(i);
                 R_len_t str_cur_n = str_cur.length();
                 const char* str_cur_s = str_cur.data();
                 R_len_t str_cur_width;
 
                 // get the width/length of padding code point(s)
-                const Utf8Record& pad_cur = pad_cont.get(i);
+                const io::Utf8Record& pad_cur = pad_cont.get(i);
                 R_len_t pad_cur_n = pad_cur.length();
                 const char* pad_cur_s = pad_cur.data();
                 if (scalar_pad && scalar_pad_validated) {
@@ -291,7 +295,9 @@ SEXP ci_pad(SEXP str, SEXP width, SEXP side, SEXP pad, SEXP use_length)
             }
         }
 
-        STRI__PROTECT(ret = builder.to_sexp());
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return builder.to_sexp();
+        }));
     }
 
     STRI__DEFERRED_WARNINGS.emit();
@@ -301,7 +307,7 @@ SEXP ci_pad(SEXP str, SEXP width, SEXP side, SEXP pad, SEXP use_length)
 }
 
 
-// // Second version by BT: uses StriContainerUTF16 & ICU's padLeading
+// // Second version by BT: uses io::Utf16Input & ICU's padLeading
 //{
 //   str    = ci__prepare_arg_string(str, "str"); // prepare string argument
 //   length = ci__prepare_arg_integer(length, "length");
@@ -313,9 +319,9 @@ SEXP ci_pad(SEXP str, SEXP width, SEXP side, SEXP pad, SEXP use_length)
 //   PROTECT(ret = allocVector(STRSXP, vectorize_length));
 //
 //   STRI__ERROR_HANDLER_BEGIN
-//   StriContainerUTF16 str_cont(str, vectorize_length, false);
-//   StriContainerUTF16 pad_cont(pad, vectorize_length);
-//   StriContainerInteger length_cont(length, vectorize_length);
+//   io::Utf16Input str_cont(str, vectorize_length, false);
+//   io::Utf16Input pad_cont(pad, vectorize_length);
+//   io::IntegerInput length_cont(length, vectorize_length);
 //
 //   for (R_len_t i = 0; i < vectorize_length; i++)
 //   {
@@ -336,3 +342,5 @@ SEXP ci_pad(SEXP str, SEXP width, SEXP side, SEXP pad, SEXP use_length)
 //   return ret;
 //   STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
 //}
+
+} } // namespace charr::altrep_backend

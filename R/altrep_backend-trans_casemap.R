@@ -115,10 +115,6 @@ ci_trans_toupper <- function(str, locale = NULL)
 
 # @export
 # @rdname ci_trans_casemap
-ci_trans_casefold <- function(str)
-{
-    .Call(C_ci_trans_casefold, str)
-}
 
 
 

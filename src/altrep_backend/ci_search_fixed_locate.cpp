@@ -33,14 +33,16 @@
 
 #include "ci_stringi.h"
 #include "ci_utf8.h"
-#include "ci_container_bytesearch.h"
+#include "fixed/pattern_set.h"
 #include <cstring>
 #include <deque>
 #include <utility>
+
+namespace charr { namespace altrep_backend {
 using namespace std;
 
 
-namespace {
+namespace search_fixed_locate {
 
 // A scalar ASCII byte can be searched in borrowed records without constructing
 // a matcher. UTF-8 positions are recovered only for matches.
@@ -316,7 +318,9 @@ bool ci__locate_all_fixed_byte(
     return true;
 }
 
-} // namespace
+} // namespace search_fixed_locate
+
+using namespace search_fixed_locate;
 
 
 /**
@@ -330,10 +334,10 @@ bool ci__locate_all_fixed_byte(
  * @version 0.1-?? (Bartlomiej Tartanus)
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-23)
- *          StriException friendly, use StriContainerByteSearch
+ *          StriException friendly, use fixed::PatternSet
  *
  * @version 0.2-1 (Marek Gagolewski, 2014-03-20)
- *          Use IndexedUtf8Input
+ *          Use io::IndexedUtf8Input
  *
  * @version 0.2-3 (Marek Gagolewski, 2014-05-08)
  *          ci_locate_fixed now uses byte search only
@@ -345,14 +349,14 @@ bool ci__locate_all_fixed_byte(
  *    FR #110, #23: opts_fixed arg added
  *
  * @version 0.5-1 (Marek Gagolewski, 2015-02-14)
- *    use StriByteSearchMatcher
+ *    use shared::ByteSearchMatcher
  *
  * @version 1.7.1 (Marek Gagolewski, 2021-06-29)
  *     get_length
  */
 SEXP ci__locate_firstlast_fixed(SEXP str, SEXP pattern, SEXP opts_fixed, bool first, bool get_length1)
 {
-    uint32_t pattern_flags = StriContainerByteSearch::getByteSearchFlags(opts_fixed);
+    uint32_t pattern_flags = fixed::PatternSet::getByteSearchFlags(opts_fixed);
     PROTECT(str = ci__prepare_arg_string(str, "str"));
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
 
@@ -367,14 +371,14 @@ SEXP ci__locate_firstlast_fixed(SEXP str, SEXP pattern, SEXP opts_fixed, bool fi
         context.size(pattern), "character vectors"
     );
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             STRI__DEFERRED_WARNINGS, 2, str_n, pattern_n
         );
         return R_NilValue;
     });
 
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocMatrix(INTSXP, vectorize_length, 2);
     }));
     int* ret_tab = INTEGER(ret);
@@ -395,10 +399,10 @@ SEXP ci__locate_firstlast_fixed(SEXP str, SEXP pattern, SEXP opts_fixed, bool fi
         }
 
         if (!direct) {
-            IndexedUtf8Input str_cont(
+            io::IndexedUtf8Input str_cont(
                 context, str, vectorize_length
             );
-            StriContainerByteSearch pattern_cont(
+            fixed::PatternSet pattern_cont(
                 context, pattern, vectorize_length, pattern_flags
             );
 
@@ -415,18 +419,18 @@ SEXP ci__locate_firstlast_fixed(SEXP str, SEXP pattern, SEXP opts_fixed, bool fi
                     { if (get_length1) ret_tab[i] = ret_tab[i+vectorize_length] = -1; }
                 )
 
-                StriByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
+                shared::ByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
                 matcher->reset(str_cont.get(i).data(), str_cont.get(i).length());
                 int start;
                 if (first) {
-                    start = matcher->findFirst();
+                    start = matcher->find_first();
                 } else {
-                    start = matcher->findLast();
+                    start = matcher->find_last();
                 }
 
-                if (start != USEARCH_DONE) {  // there is a match
+                if (start != shared::ByteSearchMatcher::not_found) {  // there is a match
                     ret_tab[i]                  = start;
-                    ret_tab[i+vectorize_length] = start+matcher->getMatchedLength();
+                    ret_tab[i+vectorize_length] = start+matcher->matched_length();
 
                     // Adjust UTF8 byte index -> UChar32 index
                     str_cont.UTF8_to_UChar32_index(i,
@@ -447,7 +451,7 @@ SEXP ci__locate_firstlast_fixed(SEXP str, SEXP pattern, SEXP opts_fixed, bool fi
     }
 
     }
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         ci__locate_set_dimnames_matrix(ret, get_length1);
         return R_NilValue;
     });
@@ -468,7 +472,7 @@ SEXP ci__locate_firstlast_fixed(SEXP str, SEXP pattern, SEXP opts_fixed, bool fi
  * @version 0.1-?? (Bartlomiej Tartanus)
  *
  * @version 0.1-?? (Bartlomiej Tartanus, 2013-06-09)
- *          StriContainerUTF16 & collator
+ *          io::Utf16Input & collator
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-23)
  *          use ci_locate_firstlast_fixed
@@ -498,10 +502,10 @@ SEXP ci_locate_first_fixed(SEXP str, SEXP pattern, SEXP opts_fixed, SEXP get_len
  * @version 0.1-?? (Bartek Tartanus)
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-23)
- *          StriException friendly, use StriContainerByteSearch
+ *          StriException friendly, use fixed::PatternSet
  *
  * @version 0.2-1 (Marek Gagolewski, 2014-03-20)
- *          Use IndexedUtf8Input
+ *          Use io::IndexedUtf8Input
  *
  * @version 0.2-3 (Marek Gagolewski, 2014-05-08)
  *          ci_locate_fixed now uses byte search only
@@ -516,14 +520,14 @@ SEXP ci_locate_first_fixed(SEXP str, SEXP pattern, SEXP opts_fixed, SEXP get_len
  *    #110, #23: opts_fixed arg added
  *
  * @version 0.5-1 (Marek Gagolewski, 2015-02-14)
- *    use StriByteSearchMatcher
+ *    use shared::ByteSearchMatcher
  *
  * @version 1.7.1 (Marek Gagolewski, 2021-06-29)
  *     get_length
  */
 SEXP ci_locate_all_fixed(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_fixed, SEXP get_length)
 {
-    uint32_t pattern_flags = StriContainerByteSearch::getByteSearchFlags(opts_fixed, /*allow_overlap*/true);
+    uint32_t pattern_flags = fixed::PatternSet::getByteSearchFlags(opts_fixed, /*allow_overlap*/true);
     bool omit_no_match1 = ci__prepare_arg_logical_1_notNA(omit_no_match, "omit_no_match");
     bool get_length1 = ci__prepare_arg_logical_1_notNA(get_length, "get_length");
     PROTECT(str = ci__prepare_arg_string(str, "str"));
@@ -540,14 +544,14 @@ SEXP ci_locate_all_fixed(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_f
         context.size(pattern), "character vectors"
     );
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             STRI__DEFERRED_WARNINGS, 2, str_n, pattern_n
         );
         return R_NilValue;
     });
 
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(VECSXP, vectorize_length);
     }));
 
@@ -559,7 +563,7 @@ SEXP ci_locate_all_fixed(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_f
         if (pattern_flags == 0 && pattern_n == 1) {
             str_borrow = context.acquire(str);
             pattern_borrow = context.acquire(pattern);
-            charport::unwind_protect([&]() -> SEXP {
+            ci::unwind_protect([&]() -> SEXP {
                 direct = ci__locate_all_fixed_byte(
                     str_borrow->views(), pattern_borrow->views()[0],
                     pattern_flags, vectorize_length,
@@ -570,10 +574,10 @@ SEXP ci_locate_all_fixed(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_f
         }
 
         if (!direct) {
-            IndexedUtf8Input str_cont(
+            io::IndexedUtf8Input str_cont(
                 context, str, vectorize_length
             );
-            StriContainerByteSearch pattern_cont(
+            fixed::PatternSet pattern_cont(
                 context, pattern, vectorize_length, pattern_flags
             );
             deque< pair<R_len_t, R_len_t> > occurrences;
@@ -582,7 +586,7 @@ SEXP ci_locate_all_fixed(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_f
             // child allocation and list write while the Reader and search owners
             // are live. The reusable scratch deque lives outside the callback, so
             // it is destroyed on an R error without paying one bridge per child.
-            charport::unwind_protect([&]() -> SEXP {
+            ci::unwind_protect([&]() -> SEXP {
               for (R_len_t i = general_start > 0 ?
                           general_start : pattern_cont.vectorize_init();
                       i != pattern_cont.vectorize_end();
@@ -607,11 +611,11 @@ SEXP ci_locate_all_fixed(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_f
                     }
                 )
 
-                StriByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
+                shared::ByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
                 matcher->reset(str_cont.get(i).data(), str_cont.get(i).length());
 
-                int start = matcher->findFirst();
-                if (start == USEARCH_DONE) { // no matches at all
+                int start = matcher->find_first();
+                if (start == shared::ByteSearchMatcher::not_found) { // no matches at all
                     SEXP ans;
                     ans = protector.hold(ci__matrix_NA_INTEGER(
                         omit_no_match1?0:1, 2,
@@ -621,11 +625,11 @@ SEXP ci_locate_all_fixed(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_f
                     continue;
                 }
 
-                while (start != USEARCH_DONE) {
+                while (start != shared::ByteSearchMatcher::not_found) {
                     occurrences.push_back(pair<R_len_t, R_len_t>(
-                        start, start+matcher->getMatchedLength()
+                        start, start+matcher->matched_length()
                     ));
-                    start = matcher->findNext();
+                    start = matcher->find_next();
                 }
 
                 R_len_t noccurrences = static_cast<R_len_t>(
@@ -661,7 +665,7 @@ SEXP ci_locate_all_fixed(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_f
         }
     }
     }
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         ci__locate_set_dimnames_list(ret, get_length1);
         return R_NilValue;
     });
@@ -670,3 +674,5 @@ SEXP ci_locate_all_fixed(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_f
     return ret;
     STRI__ERROR_HANDLER_END( ;/* do nothing special on error */ )
 }
+
+} } // namespace charr::altrep_backend

@@ -36,8 +36,10 @@
 #include <cstdarg>
 #include <cstdio>
 
+namespace charr { namespace altrep_backend {
 
-namespace {
+
+namespace ucnv {
 
 static void ci__queue_converter_warning(
     ci::DeferredWarnings* warnings, UErrorCode* status,
@@ -74,7 +76,9 @@ static void ci__queue_ucnv_diagnostic(
 }
 #endif
 
-} // namespace
+} // namespace ucnv
+
+using namespace ucnv;
 
 
 /**
@@ -521,3 +525,5 @@ bool StriUcnv::is1to1Unicode(ci::DeferredWarnings& warnings)
 
     return true;
 }
+
+} } // namespace charr::altrep_backend

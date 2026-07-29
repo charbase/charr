@@ -37,43 +37,27 @@
 #include <R.h>
 #include <Rdefines.h>
 
+namespace charr { namespace altrep_backend {
+
 // compare.cpp:
-SEXP ci_cmp(SEXP e1, SEXP e2, SEXP opts_collator=R_NilValue);
-SEXP ci_cmp_le(SEXP e1, SEXP e2, SEXP opts_collator=R_NilValue);
-SEXP ci_cmp_lt(SEXP e1, SEXP e2, SEXP opts_collator=R_NilValue);
-SEXP ci_cmp_ge(SEXP e1, SEXP e2, SEXP opts_collator=R_NilValue);
-SEXP ci_cmp_gt(SEXP e1, SEXP e2, SEXP opts_collator=R_NilValue);
 SEXP ci_cmp_equiv(SEXP e1, SEXP e2, SEXP opts_collator=R_NilValue);
-SEXP ci_cmp_nequiv(SEXP e1, SEXP e2, SEXP opts_collator=R_NilValue);
-SEXP ci_cmp_eq(SEXP e1, SEXP e2);
-SEXP ci_cmp_neq(SEXP e1, SEXP e2);
 
 // sort.cpp
-SEXP ci_sort(SEXP str, SEXP decreasing=Rf_ScalarLogical(FALSE),
-    SEXP na_last=Rf_ScalarLogical(NA_LOGICAL), SEXP opts_collator=R_NilValue);
 SEXP ci_rank(SEXP str, SEXP opts_collator=R_NilValue);
 SEXP ci_order(SEXP str, SEXP decreasing=Rf_ScalarLogical(FALSE),
     SEXP na_last=Rf_ScalarLogical(TRUE), SEXP opts_collator=R_NilValue);
-SEXP ci_sort_key(SEXP str, SEXP opts_collator=R_NilValue);
-
-SEXP ci_unique(SEXP str, SEXP opts_collator=R_NilValue);
 SEXP ci_duplicated(SEXP str, SEXP fromLast=Rf_ScalarLogical(FALSE),
-    SEXP opts_collator=R_NilValue);
-SEXP ci_duplicated_any(SEXP str, SEXP fromLast=Rf_ScalarLogical(FALSE),
     SEXP opts_collator=R_NilValue);
 
 
 // escape.cpp
 SEXP ci_escape_unicode(SEXP str);
-SEXP ci_unescape_unicode(SEXP str);
 
 // join.cpp:
 SEXP ci_flatten(SEXP str, SEXP collapse=Rf_mkString(""),
     SEXP na_empty=Rf_ScalarLogical(FALSE), SEXP omit_empty=Rf_ScalarLogical(FALSE));
 SEXP ci_join(SEXP strlist, SEXP sep=Rf_mkString(""),
     SEXP collapse=R_NilValue, SEXP ignore_null=Rf_ScalarLogical(FALSE));
-SEXP ci_join_list(SEXP x, SEXP sep=Rf_mkString(""),
-    SEXP collapse=R_NilValue);
 SEXP ci_join2(SEXP e1, SEXP e2);
 SEXP ci_dup(SEXP str, SEXP times);
 
@@ -92,7 +76,6 @@ SEXP ci_sub_replacement_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit
 
 // encoding_management.cpp:
 SEXP ci_enc_info(SEXP enc=R_NilValue);
-SEXP ci_enc_mark(SEXP str);
 
 
 // trim.cpp:
@@ -109,11 +92,6 @@ SEXP ci_list2matrix(SEXP x, SEXP byrow=Rf_ScalarLogical(FALSE),
 // encoding_conversion.cpp:
 SEXP ci_encode(SEXP str, SEXP from=R_NilValue, SEXP to=R_NilValue,
     SEXP to_raw=Rf_ScalarLogical(FALSE));
-SEXP ci_enc_fromutf32(SEXP str);
-SEXP ci_enc_toutf32(SEXP str);
-SEXP ci_enc_toutf8(SEXP str, SEXP is_unknown_8bit=Rf_ScalarLogical(FALSE),
-    SEXP validate=Rf_ScalarLogical(FALSE));
-SEXP ci_enc_toascii(SEXP str);
 
 
 // pad.cpp
@@ -135,7 +113,6 @@ SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent=Rf_ScalarInteger(2),
 SEXP ci_trans_totitle(SEXP str, SEXP opts_brkiter=R_NilValue);
 SEXP ci_trans_tolower(SEXP str, SEXP locale=R_NilValue);
 SEXP ci_trans_toupper(SEXP str, SEXP locale=R_NilValue);
-SEXP ci_trans_casefold(SEXP str);
 
 // trans_normalization.cpp:
 SEXP ci_trans_nfc(SEXP s);
@@ -160,20 +137,13 @@ SEXP ci_locate_first_coll(
     SEXP str, SEXP pattern, SEXP opts_collator=R_NilValue,
     SEXP get_length=Rf_ScalarLogical(FALSE)
 );
-SEXP ci_locate_last_coll(
-    SEXP str, SEXP pattern, SEXP opts_collator=R_NilValue,
-    SEXP get_length=Rf_ScalarLogical(FALSE)
-);
 SEXP ci_extract_first_coll(SEXP str, SEXP pattern, SEXP opts_collator=R_NilValue);
-SEXP ci_extract_last_coll(SEXP str, SEXP pattern, SEXP opts_collator=R_NilValue);
 SEXP ci_extract_all_coll(SEXP str, SEXP pattern,
     SEXP simplify=Rf_ScalarLogical(FALSE),
     SEXP omit_no_match=Rf_ScalarLogical(FALSE), SEXP opts_collator=R_NilValue);
 SEXP ci_replace_all_coll(SEXP str, SEXP pattern, SEXP replacement,
     SEXP vectorize_all=Rf_ScalarLogical(TRUE), SEXP opts_collator=R_NilValue);
 SEXP ci_replace_first_coll(SEXP str, SEXP pattern, SEXP replacement,
-    SEXP opts_collator=R_NilValue);
-SEXP ci_replace_last_coll(SEXP str, SEXP pattern, SEXP replacement,
     SEXP opts_collator=R_NilValue);
 SEXP ci_split_coll(SEXP str, SEXP split, SEXP n=Rf_ScalarInteger(-1),
     SEXP omit_empty=Rf_ScalarLogical(FALSE), SEXP tokens_only=Rf_ScalarLogical(FALSE),
@@ -184,9 +154,6 @@ SEXP ci_endswith_coll(SEXP str, SEXP pattern, SEXP to=Rf_ScalarInteger(-1),
 SEXP ci_startswith_coll(SEXP str, SEXP pattern, SEXP from=Rf_ScalarInteger(1),
     SEXP negate=Rf_ScalarLogical(FALSE),
     SEXP opts_collator=R_NilValue);
-SEXP ci_subset_coll(SEXP str, SEXP pattern,
-    SEXP omit_na=Rf_ScalarLogical(FALSE), SEXP negate=Rf_ScalarLogical(FALSE), SEXP opts_collator=R_NilValue);
-SEXP ci_subset_coll_replacement(SEXP str, SEXP pattern, SEXP negate, SEXP opts_collator, SEXP value);
 
 SEXP ci_detect_fixed(SEXP str, SEXP pattern,
     SEXP negate=Rf_ScalarLogical(FALSE), SEXP max_count=Rf_ScalarInteger(-1),
@@ -204,9 +171,6 @@ SEXP ci_locate_first_fixed(
 SEXP ci_extract_first_fixed(
     SEXP str, SEXP pattern, SEXP opts_fixed=R_NilValue
 );
-SEXP ci_extract_last_fixed(
-    SEXP str, SEXP pattern, SEXP opts_fixed=R_NilValue
-);
 SEXP ci_extract_all_fixed(
     SEXP str, SEXP pattern,
     SEXP simplify=Rf_ScalarLogical(FALSE),
@@ -215,8 +179,6 @@ SEXP ci_extract_all_fixed(
 SEXP ci_replace_all_fixed(SEXP str, SEXP pattern, SEXP replacement,
     SEXP vectorize_all=Rf_ScalarLogical(TRUE), SEXP opts_fixed=R_NilValue);
 SEXP ci_replace_first_fixed(SEXP str, SEXP pattern, SEXP replacement,
-    SEXP opts_fixed=R_NilValue);
-SEXP ci_replace_last_fixed(SEXP str, SEXP pattern, SEXP replacement,
     SEXP opts_fixed=R_NilValue);
 SEXP ci_split_fixed(SEXP str, SEXP split, SEXP n=Rf_ScalarInteger(-1),
     SEXP omit_empty=Rf_ScalarLogical(FALSE), SEXP tokens_only=Rf_ScalarLogical(FALSE),
@@ -247,11 +209,6 @@ SEXP ci_locate_first_regex(
     SEXP capture_groups=Rf_ScalarLogical(FALSE),
     SEXP get_length=Rf_ScalarLogical(FALSE)
 );
-SEXP ci_locate_last_regex(
-    SEXP str, SEXP pattern, SEXP opts_regex=R_NilValue,
-    SEXP capture_groups=Rf_ScalarLogical(FALSE),
-    SEXP get_length=Rf_ScalarLogical(FALSE)
-);
 SEXP ci_replace_all_regex(
     SEXP str, SEXP pattern, SEXP replacement,
     SEXP vectorize_all=Rf_ScalarLogical(FALSE), SEXP opts_regex=R_NilValue
@@ -260,51 +217,32 @@ SEXP ci_replace_first_regex(
     SEXP str, SEXP pattern, SEXP replacement,
     SEXP opts_regex=R_NilValue
 );
-SEXP ci_replace_last_regex(
-    SEXP str, SEXP pattern, SEXP replacement,
-    SEXP opts_regex=R_NilValue
-);
 SEXP ci_split_regex(
     SEXP str, SEXP pattern, SEXP n=Rf_ScalarInteger(-1),
     SEXP omit_empty=Rf_ScalarLogical(FALSE), SEXP tokens_only=Rf_ScalarLogical(FALSE),
     SEXP simplify=Rf_ScalarLogical(FALSE), SEXP opts_regex=R_NilValue
 );
-SEXP ci_subset_regex(
-    SEXP str, SEXP pattern, SEXP omit_na=Rf_ScalarLogical(FALSE),
-    SEXP negate=Rf_ScalarLogical(FALSE), SEXP opts_regex=R_NilValue
-);
 SEXP ci_extract_first_regex(SEXP str, SEXP pattern, SEXP opts_regex=R_NilValue);
-SEXP ci_extract_last_regex(SEXP str, SEXP pattern, SEXP opts_regex=R_NilValue);
 SEXP ci_extract_all_regex(SEXP str, SEXP pattern,
     SEXP simplify=Rf_ScalarLogical(FALSE), SEXP omit_no_match=Rf_ScalarLogical(FALSE),
     SEXP opts_regex=R_NilValue);
 SEXP ci_match_first_regex(SEXP str, SEXP pattern,
     SEXP cg_missing=Rf_ScalarString(NA_STRING), SEXP opts_regex=R_NilValue);
-SEXP ci_match_last_regex(SEXP str, SEXP pattern,
-    SEXP cg_missing=Rf_ScalarString(NA_STRING), SEXP opts_regex=R_NilValue);
 SEXP ci_match_all_regex(SEXP str, SEXP pattern,
     SEXP omit_no_match=Rf_ScalarLogical(FALSE),
     SEXP cg_missing=Rf_ScalarString(NA_STRING), SEXP opts_regex=R_NilValue);
-SEXP ci_subset_regex_replacement(SEXP str, SEXP pattern, SEXP negate, SEXP opts_regex, SEXP value);
-
 SEXP ci_replace_all_charclass(SEXP str, SEXP pattern, SEXP replacement,
     SEXP merge=Rf_ScalarLogical(FALSE), SEXP vectorize_all=Rf_ScalarLogical(TRUE));
 
 SEXP ci_extract_all_boundaries(SEXP str, SEXP simplify,
     SEXP omit_no_match=Rf_ScalarLogical(FALSE), SEXP opts_brkiter=R_NilValue);
 SEXP ci_extract_first_boundaries(SEXP str, SEXP opts_brkiter=R_NilValue);
-SEXP ci_extract_last_boundaries(SEXP str, SEXP opts_brkiter=R_NilValue);
 SEXP ci_locate_all_boundaries(
     SEXP str, SEXP omit_no_match=Rf_ScalarLogical(FALSE),
     SEXP opts_brkiter=R_NilValue,
     SEXP get_length=Rf_ScalarLogical(FALSE)
 );
 SEXP ci_locate_first_boundaries(
-    SEXP str,
-    SEXP opts_brkiter=R_NilValue,
-    SEXP get_length=Rf_ScalarLogical(FALSE)
-);
-SEXP ci_locate_last_boundaries(
     SEXP str,
     SEXP opts_brkiter=R_NilValue,
     SEXP get_length=Rf_ScalarLogical(FALSE)
@@ -322,22 +260,7 @@ SEXP ci_count_boundaries(SEXP str, SEXP opts_brkiter=R_NilValue);
 // SEXP ci_encode_from_marked(SEXP str, SEXP to, SEXP to_raw);  // internal
 
 
-// test.cpp /* internal, but in namespace: for testing */
-void ci_test_init_erroring_altrep(DllInfo* dll);
-SEXP ci_test_erroring_altrep(SEXP n);
-SEXP ci_test_Rmark(SEXP str);
-SEXP ci_test_UnicodeContainer16(SEXP str);
-SEXP ci_test_UnicodeContainer16b(SEXP str);
-SEXP ci_test_UnicodeContainer8(SEXP str);
-SEXP ci_test_UnicodeContainer8b(SEXP str);
-SEXP ci_test_UnicodeContainer8_alias(SEXP str);
-SEXP ci_test_UnicodeContainer8_independent(SEXP str);
-SEXP ci_test_ByteSearchContainer(SEXP pattern);
-SEXP ci_test_ByteSearchContainer_error(SEXP pattern);
-SEXP ci_test_ByteSearchMatcher(SEXP str, SEXP pattern, SEXP case_insensitive);
-SEXP ci_test_Utf8Record_views();
-SEXP ci_test_UTF8EncodingMarks();
-SEXP ci_test_ListUTF8(SEXP str, SEXP nrecycle);
-SEXP ci_test_returnasis(SEXP x);
+
+} } // namespace charr::altrep_backend
 
 #endif

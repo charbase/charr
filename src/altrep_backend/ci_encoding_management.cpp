@@ -42,8 +42,10 @@
 #include <utility>
 #include <vector>
 
+namespace charr { namespace altrep_backend {
 
-namespace {
+
+namespace encoding_management {
 
 static int ci__management_icu_c_string_length(const char* value)
 {
@@ -132,7 +134,9 @@ private:
     CiEncodingInfoValue& operator=(const CiEncodingInfoValue&);
 };
 
-} // namespace
+} // namespace encoding_management
+
+using namespace encoding_management;
 
 
 // The stringr surface does not expose stringi's mutable ICU-default converter.
@@ -265,61 +269,46 @@ SEXP ci_enc_info(SEXP enc)
             }
         }
 
-        STRI__PROTECT(vals = charport::unwind_protect([&]() -> SEXP {
-            int protected_count = 0;
-            try {
-                SEXP value = PROTECT(Rf_allocVector(VECSXP, nval));
-                ++protected_count;
-                SEXP value_names = PROTECT(Rf_allocVector(STRSXP, nval));
-                ++protected_count;
+        STRI__PROTECT(vals = ci::unwind_protect([&]() -> SEXP {
+            SEXP value = PROTECT(Rf_allocVector(VECSXP, nval));
+            SEXP value_names = PROTECT(Rf_allocVector(STRSXP, nval));
 
-                for (int i=0; i<nval; ++i) {
-                    if (has_name[static_cast<size_t>(i)]) {
-                        const std::string& name = names[static_cast<size_t>(i)];
-                        SET_STRING_ELT(
-                            value_names, i,
-                            Rf_mkCharLenCE(
-                                name.data(), static_cast<int>(name.size()),
-                                CE_UTF8
-                            )
-                        );
-                    }
-
-                    CiEncodingInfoValue& current =
-                        values[static_cast<size_t>(i)];
-                    if (current.type == CiEncodingInfoValue::UNSET)
-                        continue;
-
-                    SEXP child = R_NilValue;
-                    if (current.type == CiEncodingInfoValue::CHARACTER) {
-                        child = PROTECT(charport::charvec::wrap(
-                            std::move(current.character)
-                        ));
-                    }
-                    else if (current.type == CiEncodingInfoValue::LOGICAL) {
-                        child = PROTECT(Rf_ScalarLogical(current.scalar));
-                    }
-                    else {
-                        child = PROTECT(Rf_ScalarInteger(current.scalar));
-                    }
-                    ++protected_count;
-                    SET_VECTOR_ELT(value, i, child);
-                    UNPROTECT(1);
-                    --protected_count;
+            for (int i=0; i<nval; ++i) {
+                if (has_name[static_cast<size_t>(i)]) {
+                    const std::string& name = names[static_cast<size_t>(i)];
+                    SET_STRING_ELT(
+                        value_names, i,
+                        Rf_mkCharLenCE(
+                            name.data(), static_cast<int>(name.size()),
+                            CE_UTF8
+                        )
+                    );
                 }
 
-                Rf_setAttrib(value, R_NamesSymbol, value_names);
-                UNPROTECT(2);
-                protected_count -= 2;
-                return value;
+                CiEncodingInfoValue& current =
+                    values[static_cast<size_t>(i)];
+                if (current.type == CiEncodingInfoValue::UNSET)
+                    continue;
+
+                SEXP child = R_NilValue;
+                if (current.type == CiEncodingInfoValue::CHARACTER) {
+                    child = PROTECT(charport::charvec::wrap(
+                        std::move(current.character)
+                    ));
+                }
+                else if (current.type == CiEncodingInfoValue::LOGICAL) {
+                    child = PROTECT(Rf_ScalarLogical(current.scalar));
+                }
+                else {
+                    child = PROTECT(Rf_ScalarInteger(current.scalar));
+                }
+                SET_VECTOR_ELT(value, i, child);
+                UNPROTECT(1);
             }
-            catch (...) {
-                // Deviation from stringi: charvec wrapping can surface an R
-                // unwind as a C++ exception inside this raw-PROTECT assembly
-                // block, so balance the local stack before propagating it.
-                UNPROTECT(protected_count);
-                throw;
-            }
+
+            Rf_setAttrib(value, R_NamesSymbol, value_names);
+            UNPROTECT(2);
+            return value;
         }));
     }
 
@@ -330,92 +319,4 @@ SEXP ci_enc_info(SEXP enc)
     STRI__ERROR_HANDLER_END({/* no special action on error */})
 }
 
-
-/** Get Declared Encodings of Each String
- *
- * @param str a character vector or an object coercible to
- * @return a character vector
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-03-25)
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- */
-SEXP ci_enc_mark(SEXP str) {
-    PROTECT(str = ci__prepare_arg_string(str, "str"));    // prepare string argument
-
-    STRI__ERROR_HANDLER_BEGIN(1)
-    SEXP ret;
-    {
-        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-        R_len_t str_len = ci::checked_r_len(
-            context.size(str), "character vectors"
-        );
-        charport::charvec::Builder output(str_len);
-        {
-            // Deviation from stringi: encoding marks are source metadata, so
-            // inspect Reader views directly without materializing CHARSXPs.
-            std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(str);
-            const charport::StrViews& views = borrow->views();
-            for (R_len_t i=0; i<str_len; ++i) {
-                const charport::StrView current = views[i];
-                if (current.is_na()) {
-                    output.set_na(i);
-                    continue;
-                }
-
-                const char* mark = NULL;
-                int mark_length = 0;
-                switch (current.enc) {
-                case cetype_ext_t::CE_ASCII:
-                    mark = "ASCII";
-                    mark_length = 5;
-                    break;
-                case cetype_ext_t::CE_ASCII_OR_UTF8:
-                    // Only the ambiguous mark needs payload inspection.
-                    if (ci::is_ascii(current.ptr, current.len)) {
-                        mark = "ASCII";
-                        mark_length = 5;
-                    }
-                    else {
-                        mark = "UTF-8";
-                        mark_length = 5;
-                    }
-                    break;
-                case cetype_ext_t::CE_UTF8:
-                    mark = "UTF-8";
-                    mark_length = 5;
-                    break;
-                case cetype_ext_t::CE_BYTES:
-                    mark = "bytes";
-                    mark_length = 5;
-                    break;
-                case cetype_ext_t::CE_LATIN1:
-                    mark = "latin1";
-                    mark_length = 6;
-                    break;
-                case cetype_ext_t::CE_NATIVE:
-                    mark = "native";
-                    mark_length = 6;
-                    break;
-                case cetype_ext_t::CE_NA:
-                    output.set_na(i);
-                    continue;
-                default:
-                    throw StriException("unknown charport string encoding");
-                }
-
-                ci::builder_set(
-                    output, i, mark, mark_length, cetype_ext_t::CE_ASCII
-                );
-            }
-        }
-
-        STRI__PROTECT(ret = output.to_sexp());
-    }
-
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-}
+} } // namespace charr::altrep_backend

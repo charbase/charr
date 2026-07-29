@@ -1,7 +1,6 @@
 # charr-owned targeted equivalence tests for Reader-backed regex locate.
 
 locate_first_regex <- function(...) charr:::ci_locate_first_regex(...)
-locate_last_regex <- function(...) charr:::ci_locate_last_regex(...)
 locate_all_regex <- function(...) charr:::ci_locate_all_regex(...)
 
 regex_locate_charvec <- function(x) {
@@ -158,93 +157,8 @@ test_that("regex locate preserves named capture-group attributes", {
 })
 
 
-test_that("regex locate-last keeps the final match and its capture groups", {
-  strings <- regex_locate_charvec(c(
-    "😀a--😀", "😀--😀a", "\ufeffa--a", "a\ufeffa", NA_character_
-  ))
-  pattern <- regex_locate_charvec("(?<astral>😀)(?<conditional>a)?")
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-  expect_identical(charport::is_charvec(pattern), charr_altrep())
-
-  for (get_length in c(FALSE, TRUE)) {
-    expect_identical(
-      locate_last_regex(
-        strings, pattern, capture_groups = TRUE,
-        get_length = get_length
-      ),
-      stringi::stri_locate_last_regex(
-        as.character(strings), as.character(pattern),
-        capture_groups = TRUE, get_length = get_length
-      )
-    )
-  }
-
-  bom_patterns <- regex_locate_charvec(c("^a", "\ufeff", "a", "a", "a"))
-  expect_identical(charport::is_charvec(bom_patterns), charr_altrep())
-  expect_identical(
-    locate_last_regex(strings, bom_patterns, get_length = TRUE),
-    stringi::stri_locate_last_regex(
-      as.character(strings), as.character(bom_patterns), get_length = TRUE
-    )
-  )
-})
 
 
-test_that("regex locate-last matches stringi on 600 seeded cases", {
-  set.seed(20260717)
-  n <- 600L
-  pattern_bank <- c(
-    "(?<astral>😀)(?<conditional>a)?",
-    "(?<deseret>𐐷)(?<conditional>[xy])?",
-    "(?<letter>a)(?<conditional>\u0301)?",
-    "(?<stem>日本)(?<conditional>語)?",
-    "(?<stem>foo)(?<conditional>bar)?"
-  )
-  full_match <- c("😀a", "𐐷x", "a\u0301", "日本語", "foobar")
-  bare_match <- c("😀", "𐐷", "a", "日本", "foo")
-  kind <- sample(seq_along(pattern_bank), n, replace = TRUE)
-
-  raw <- vapply(seq_len(n), function(i) {
-    middle_n <- sample(0:3, 1L)
-    middle <- if (middle_n == 0L) character() else
-      sample(c(full_match[kind[i]], bare_match[kind[i]]), middle_n, TRUE)
-    paste0(
-      if (i %% 17L == 0L) "\ufeff" else "x",
-      full_match[kind[i]], "--", paste0(middle, collapse = "--"),
-      "--", bare_match[kind[i]], "z"
-    )
-  }, character(1L))
-  patterns <- pattern_bank[kind]
-
-  raw[seq(29L, n, 29L)] <- NA_character_
-  patterns[seq(31L, n, 31L)] <- NA_character_
-  patterns[seq(37L, n, 37L)] <- ""
-  raw[seq(41L, n, 41L)] <- ""
-  patterns[seq(43L, n, 43L)] <- "Q+"
-
-  strings <- regex_locate_charvec(raw)
-  patterns <- regex_locate_charvec(patterns)
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-  expect_identical(charport::is_charvec(patterns), charr_altrep())
-
-  for (get_length in c(FALSE, TRUE)) {
-    for (capture_groups in c(FALSE, TRUE)) {
-      got <- regex_locate_capture_result(function() {
-        locate_last_regex(
-          strings, patterns, capture_groups = capture_groups,
-          get_length = get_length
-        )
-      })
-      want <- regex_locate_capture_result(function() {
-        stringi::stri_locate_last_regex(
-          as.character(strings), as.character(patterns),
-          capture_groups = capture_groups, get_length = get_length
-        )
-      })
-      expect_identical(got, want)
-    }
-  }
-})
 
 
 test_that("regex locate compiles before NA subjects and honors inline modes", {

@@ -14,8 +14,27 @@
 #include <utility>
 #include <vector>
 
+namespace charr { namespace altrep_backend {
+
 
 namespace ci {
+
+
+/** Resolve a Reader lease through charr's R unwind adapter.
+ *
+ * charport::Reader(SEXP) follows ordinary R error semantics. Charr may already
+ * own other Reader leases and native containers when it opens another one, so
+ * it protects acquisition explicitly and adopts the resolved C reader.
+ */
+inline charport_reader protected_reader_resolve(SEXP source)
+{
+    charport_reader resolved = {};
+    ci::unwind_protect([&]() -> SEXP {
+        resolved = charport::resolve(source);
+        return R_NilValue;
+    });
+    return resolved;
+}
 
 
 /** Own one Reader borrow.
@@ -36,7 +55,8 @@ private:
 
 public:
     explicit ReaderBorrow(SEXP source)
-        : reader_(source), views_(), has_views_(false), view_(),
+        : reader_(protected_reader_resolve(source)), views_(),
+          has_views_(false), view_(),
           view_index_(-1), has_view_(false)
     {
     }
@@ -115,7 +135,7 @@ public:
             return found->second.size;
 
         R_xlen_t source_size = 0;
-        charport::unwind_protect([&]() -> SEXP {
+        ci::unwind_protect([&]() -> SEXP {
             source_size = XLENGTH(source);
             return R_NilValue;
         });
@@ -184,5 +204,8 @@ inline bool is_ascii(const char* data, size_t length) noexcept
 
 
 } // namespace ci
+
+
+} } // namespace charr::altrep_backend
 
 #endif

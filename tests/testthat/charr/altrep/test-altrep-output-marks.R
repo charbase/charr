@@ -1,26 +1,11 @@
-output_mark_read <- function(value) {
+expect_output_marks <- function(actual, expected) {
+  value <- actual
   expect_true(charport::is_charvec(value))
   expect_false(charport::charport_info(value)$is_materialized)
-
-  marks <- .Call(charr:::C_ci_enc_mark, value)
-
-  expect_false(charport::charport_info(value)$is_materialized)
-  expect_true(charport::is_charvec(marks))
-  expect_false(charport::charport_info(marks)$is_materialized)
-  marks
+  expect_identical(Encoding(as.character(value)), Encoding(expected))
 }
 
-expect_output_marks <- function(actual, expected) {
-  expect_identical(
-    output_mark_read(actual),
-    stringi::stri_enc_mark(expected)
-  )
-}
-
-test_that("whole, generated, and sliced output marks match stringi", {
-  owned <- .Call(charr:::C_ci_test_Utf8Record_views)
-  expect_output_marks(owned, c("owned", NA_character_, "borrowed"))
-
+test_that("generated and sliced output marks match stringi", {
   values <- c("abc", "caf\u00e9", "")
   normalized <- with_altrep(
     TRUE,

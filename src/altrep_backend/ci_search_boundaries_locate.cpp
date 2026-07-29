@@ -32,17 +32,19 @@
 
 
 #include "ci_stringi.h"
-#include "ci_container_integer.h"
-#include "ci_brkiter.h"
+#include "io/integer_input.h"
+#include "boundary/iterator.h"
 #include "ci_reader.h"
-#include "../altrep/utf8_input.h"
+#include "altrep_backend/io/utf8_input.h"
 
 #include <cstring>
 #include <utility>
 #include <vector>
 
+namespace charr { namespace altrep_backend {
 
-namespace {
+
+namespace search_boundaries_locate {
 
 class Utf8PositionCursor {
 public:
@@ -156,27 +158,32 @@ LocaleOptionState locale_option_state(SEXP options, const char* locale)
     return state;
 }
 
-class BoundaryLocateOptions : public StriBrkIterOptions {
+class BoundaryLocateOptions {
 public:
     template <std::size_t N>
     BoundaryLocateOptions(
         SEXP options, const char (&default_type)[N],
         ci::DeferredWarnings& warnings
-    ) : StriBrkIterOptions(options, default_type, warnings)
+    ) : options_(options, default_type, warnings)
     {
-        locale_state_ = locale_option_state(options, locale);
+        locale_state_ = locale_option_state(options, options_.getLocale());
     }
 
     bool can_use_first_ascii_word() const noexcept
     {
-        if (type != UBRK_WORD || !rules.isEmpty() || skip_size != 0 ||
-                (locale && std::strchr(locale, '@'))) {
+        if (options_.getType() != UBRK_WORD ||
+                !options_.getRules().isEmpty() ||
+                options_.getSkipSize() != 0 ||
+                (options_.getLocale() &&
+                 std::strchr(options_.getLocale(), '@'))) {
             return false;
         }
 
-        if (!locale && locale_state_.reject_fast)
+        if (!options_.getLocale() && locale_state_.reject_fast)
             return false;
-        const char* locale_id = locale ? locale : uloc_getDefault();
+        const char* locale_id = options_.getLocale()
+            ? options_.getLocale()
+            : uloc_getDefault();
         if (!locale_id)
             return false;
         if (ci__is_C_locale(locale_id))
@@ -198,7 +205,10 @@ public:
         return locale_state_.warn_default;
     }
 
+    const boundary::Options& options() const noexcept { return options_; }
+
 private:
+    boundary::Options options_;
     LocaleOptionState locale_state_;
 };
 
@@ -208,7 +218,9 @@ struct BoundaryLocateElement {
     R_len_t count = 0;
 };
 
-}
+} // namespace search_boundaries_locate
+
+using namespace search_boundaries_locate;
 
 
 /**
@@ -246,13 +258,13 @@ SEXP ci__locate_firstlast_boundaries(
         context.size(str), "character vectors"
     );
 
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocMatrix(INTSXP, str_length, 2);
     }));
     int* ret_tab = INTEGER(ret);
 
     auto process = [&](auto record) {
-        StriRuleBasedBreakIterator brkiter(opts_brkiter2);
+        boundary::Utf8Iterator brkiter(opts_brkiter2.options());
         for (R_len_t i = 0; i < str_length; ++i)
         {
             ret_tab[i]            = NA_INTEGER;
@@ -317,11 +329,11 @@ SEXP ci__locate_firstlast_boundaries(
     };
 
     {
-        charr::altrep::Utf8Input input(context, str, str_length);
+        charr::altrep_backend::io::Utf8Input input(context, str, str_length);
         process([&](R_len_t i) { return input.record(i).view(); });
     }
 
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         ci__locate_set_dimnames_matrix(ret, get_length1);
         return R_NilValue;
     });
@@ -353,25 +365,6 @@ SEXP ci_locate_first_boundaries(SEXP str, SEXP opts_brkiter, SEXP get_length)
 }
 
 
-/**
- * Locate last boundary
- *
- * @param str character vector
- * @param opts_brkiter list
- * @return integer matrix (2 columns)
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-12-05)
- *
- * @version 1.7.1 (Marek Gagolewski, 2021-06-29)
- *     get_length
- */
-SEXP ci_locate_last_boundaries(SEXP str, SEXP opts_brkiter, SEXP get_length)
-{
-    bool get_length1 = ci__prepare_arg_logical_1_notNA(get_length, "get_length");
-    return ci__locate_firstlast_boundaries(str, opts_brkiter, false, get_length1);
-}
-
-
 /** Locate all BreakIterator boundaries
  *
  * @param str character vector
@@ -395,7 +388,7 @@ SEXP ci_locate_last_boundaries(SEXP str, SEXP opts_brkiter, SEXP get_length)
  *          new args: omit_no_match
  *
  * @version 0.4-1 (Marek Gagolewski, 2014-12-02)
- *          use StriRuleBasedBreakIterator
+ *          use boundary::Utf8Iterator
  *
  * @version 1.7.1 (Marek Gagolewski, 2021-06-29)
  *     get_length
@@ -411,7 +404,7 @@ SEXP ci_locate_all_boundaries(SEXP str, SEXP omit_no_match, SEXP opts_brkiter, S
     {
     // Deviation from stringi: keep the option's ICU storage inside the
     // unwind-safe scope so it is released before warning replay.
-    StriBrkIterOptions opts_brkiter2(
+    boundary::Options opts_brkiter2(
         opts_brkiter, "line_break", STRI__DEFERRED_WARNINGS
     );
     ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
@@ -426,7 +419,7 @@ SEXP ci_locate_all_boundaries(SEXP str, SEXP omit_no_match, SEXP opts_brkiter, S
     occurrences.reserve(static_cast<std::size_t>(str_length));
 
     auto process = [&](auto record) {
-        StriRuleBasedBreakIterator brkiter(opts_brkiter2);
+        boundary::Utf8Iterator brkiter(opts_brkiter2);
         for (R_len_t i = 0; i < str_length; ++i)
         {
             BoundaryLocateElement& element = elements[
@@ -466,15 +459,15 @@ SEXP ci_locate_all_boundaries(SEXP str, SEXP omit_no_match, SEXP opts_brkiter, S
     };
 
     {
-        charr::altrep::Utf8Input input(context, str, str_length);
+        charr::altrep_backend::io::Utf8Input input(context, str, str_length);
         process([&](R_len_t i) { return input.record(i).view(); });
     }
 
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(VECSXP, str_length);
     }));
 
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         for (R_len_t i = 0; i < str_length; ++i)
         {
             ci::UnwindCallbackProtector protector;
@@ -516,3 +509,5 @@ SEXP ci_locate_all_boundaries(SEXP str, SEXP omit_no_match, SEXP opts_brkiter, S
     return ret;
     STRI__ERROR_HANDLER_END({ /* nothing special t.b.d. on error */ })
 }
+
+} } // namespace charr::altrep_backend

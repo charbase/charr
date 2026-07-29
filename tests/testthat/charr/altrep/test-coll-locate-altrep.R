@@ -1,7 +1,6 @@
 # charr-owned targeted equivalence tests for Reader-backed coll locate.
 
 locate_first_coll <- function(...) charr:::ci_locate_first_coll(...)
-locate_last_coll <- function(...) charr:::ci_locate_last_coll(...)
 locate_all_coll <- function(...) charr:::ci_locate_all_coll(...)
 
 locate_coll_charvec <- function(x) charr:::ci_trim_both(x)
@@ -21,15 +20,6 @@ test_that("coll locate converts UTF-16 offsets to code-point positions", {
     structure(
       c(2L, 1L, 3L, NA, NA, NA, 2L, 2L, 4L, NA, NA, NA),
       dim = c(6L, 2L), dimnames = list(NULL, c("start", "end"))
-    )
-  )
-  expect_identical(
-    locate_last_coll(
-      strings, patterns, opts_collator = opts, get_length = TRUE
-    ),
-    structure(
-      c(6L, 4L, 3L, -1L, -1L, NA, 1L, 1L, 2L, -1L, -1L, NA),
-      dim = c(6L, 2L), dimnames = list(NULL, c("start", "length"))
     )
   )
 })

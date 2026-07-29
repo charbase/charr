@@ -34,11 +34,13 @@
 #include "ci_stringi.h"
 #include "ci_builder.h"
 #include "ci_utf8.h"
-#include "ci_container_charclass.h"
-#include "ci_container_logical.h"
+#include "charclass/pattern_set.h"
+#include "io/logical_input.h"
 #include "ci_string8buf.h"
 #include <deque>
 #include <utility>
+
+namespace charr { namespace altrep_backend {
 using namespace std;
 
 
@@ -54,9 +56,6 @@ using namespace std;
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-07)
  *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-15)
- *          Use StrContainerCharClass
- *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
  *          make StriException-friendly
  *
@@ -65,10 +64,10 @@ using namespace std;
  *          merge arg added (replacement of old ci_trim_both/double by BT)
  *
  * @version 0.2-1 (Marek Gagolewski, 2014-04-05)
- *          StriContainerCharClass now relies on UnicodeSet
+ *          charclass::PatternSet now relies on UnicodeSet
  *
  * @version 0.3-1 (Marek Gagolewski, 2014-11-02)
- *          using String8buf::replaceAllAtPos and StriContainerCharClass::locateAll;
+ *          using String8buf::replaceAllAtPos and charclass::PatternSet::locateAll;
  *          no longer vectorized over merge
  *
  * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
@@ -98,7 +97,7 @@ SEXP ci__replace_all_charclass_yes_vectorize_all(SEXP str, SEXP pattern, SEXP re
         context.size(replacement), "character vectors"
     );
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             STRI__DEFERRED_WARNINGS, 3,
             str_n, pattern_n, replacement_n
@@ -108,11 +107,11 @@ SEXP ci__replace_all_charclass_yes_vectorize_all(SEXP str, SEXP pattern, SEXP re
 
     charport::charvec::Builder builder(vectorize_length);
     {
-        Utf8Input str_cont(context, str, vectorize_length);
-        Utf8Input replacement_cont(
+        io::Utf8Input str_cont(context, str, vectorize_length);
+        io::Utf8Input replacement_cont(
             context, replacement, vectorize_length
         );
-        StriContainerCharClass pattern_cont(
+        charclass::PatternSet pattern_cont(
             context, pattern, vectorize_length
         );
 
@@ -130,7 +129,7 @@ SEXP ci__replace_all_charclass_yes_vectorize_all(SEXP str, SEXP pattern, SEXP re
             R_len_t str_cur_n     = str_cont.get(i).length();
             const char* str_cur_s = str_cont.get(i).data();
             deque< pair<R_len_t, R_len_t> > occurrences;
-            R_len_t sumbytes = StriContainerCharClass::locateAll(
+            R_len_t sumbytes = charclass::PatternSet::locateAll(
                                    occurrences, &pattern_cont.get(i),
                                    str_cur_s, str_cur_n, merge_cur,
                                    false /* byte-based indices */
@@ -169,7 +168,9 @@ SEXP ci__replace_all_charclass_yes_vectorize_all(SEXP str, SEXP pattern, SEXP re
         }
     }
 
-    STRI__PROTECT(ret = builder.to_sexp());
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return builder.to_sexp();
+    }));
     }
     STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
@@ -208,19 +209,21 @@ SEXP ci__replace_all_charclass_no_vectorize_all(SEXP str, SEXP pattern, SEXP rep
 
     if (str_n <= 0) {
         charport::charvec::Builder builder(0);
-        STRI__PROTECT(ret = builder.to_sexp());
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return builder.to_sexp();
+        }));
         STRI__UNPROTECT_ALL
         return ret;
     }
 
     // Deviation from stringi: lazy preparation now runs inside the C++
     // boundary, so queue its controlled warnings with the operation.
-    STRI__PROTECT(pattern = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(pattern = ci::unwind_protect([&]() -> SEXP {
         return ci__prepare_arg_string(
             pattern, "pattern", true, &STRI__DEFERRED_WARNINGS
         );
     }));
-    STRI__PROTECT(replacement = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(replacement = ci::unwind_protect([&]() -> SEXP {
         return ci__prepare_arg_string(
             replacement, "replacement", true,
             &STRI__DEFERRED_WARNINGS
@@ -234,7 +237,7 @@ SEXP ci__replace_all_charclass_no_vectorize_all(SEXP str, SEXP pattern, SEXP rep
     );
     // Deviation from stringi: signal this controlled validation failure only
     // after the outer C++ boundary has released operation state.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         if (pattern_n < replacement_n || pattern_n <= 0 || replacement_n <= 0)
             throw StriException(MSG__WARN_RECYCLING_RULE2);
         return R_NilValue;
@@ -246,7 +249,7 @@ SEXP ci__replace_all_charclass_no_vectorize_all(SEXP str, SEXP pattern, SEXP rep
         // Deviation from stringi: replay outer preparation diagnostics before
         // delegation, while no Reader or output owner is active.
         context.emitWarnings();
-        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
             return ci__replace_all_charclass_yes_vectorize_all(
                 str, pattern, replacement, merge
             );
@@ -256,7 +259,7 @@ SEXP ci__replace_all_charclass_no_vectorize_all(SEXP str, SEXP pattern, SEXP rep
     }
 
     bool merge_cur = false;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         merge_cur = ci__prepare_arg_logical_1_notNA(
             merge, "merge", &STRI__DEFERRED_WARNINGS
         );
@@ -265,11 +268,11 @@ SEXP ci__replace_all_charclass_no_vectorize_all(SEXP str, SEXP pattern, SEXP rep
     charport::charvec::Builder builder(str_n);
 
     {
-        Utf8Workspace str_cont(context, str, str_n);
-        Utf8Input replacement_cont(
+        io::Utf8Workspace str_cont(context, str, str_n);
+        io::Utf8Input replacement_cont(
             context, replacement, pattern_n
         );
-        StriContainerCharClass pattern_cont(
+        charclass::PatternSet pattern_cont(
             context, pattern, pattern_n
         );
         bool return_all_na = false;
@@ -289,7 +292,7 @@ SEXP ci__replace_all_charclass_no_vectorize_all(SEXP str, SEXP pattern, SEXP rep
                 R_len_t str_cur_n     = str_cont.get(j).length();
                 const char* str_cur_s = str_cont.get(j).data();
                 deque< pair<R_len_t, R_len_t> > occurrences;
-                R_len_t sumbytes = StriContainerCharClass::locateAll(
+                R_len_t sumbytes = charclass::PatternSet::locateAll(
                                        occurrences, &pattern_cont.get(i),
                                        str_cur_s, str_cur_n, merge_cur,
                                        false /* byte-based indices */
@@ -323,7 +326,9 @@ SEXP ci__replace_all_charclass_no_vectorize_all(SEXP str, SEXP pattern, SEXP rep
         }
     }
 
-    STRI__PROTECT(ret = builder.to_sexp());
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return builder.to_sexp();
+    }));
     }
     STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
@@ -353,3 +358,5 @@ SEXP ci_replace_all_charclass(SEXP str, SEXP pattern, SEXP replacement, SEXP mer
     else
         return ci__replace_all_charclass_no_vectorize_all(str, pattern, replacement, merge);
 }
+
+} } // namespace charr::altrep_backend

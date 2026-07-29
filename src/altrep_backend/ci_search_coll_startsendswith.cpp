@@ -32,10 +32,12 @@
 
 
 #include "ci_stringi.h"
-#include "ci_container_utf16.h"
-#include "ci_container_usearch.h"
+#include "io/utf16_input.h"
+#include "collation/pattern_set.h"
 #include "ci_utf16_cursor.h"
-#include "ci_container_integer.h"
+#include "io/integer_input.h"
+
+namespace charr { namespace altrep_backend {
 
 
 /**
@@ -67,7 +69,7 @@ SEXP ci_startswith_coll(SEXP str, SEXP pattern, SEXP from, SEXP negate, SEXP opt
     STRI__ERROR_HANDLER_BEGIN(3)
     // Deviation from stringi: catch R errors from collator option parsing so
     // queued warnings and any opened collator are released before R resumes.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         collator = ci__ucol_open(
             STRI__DEFERRED_WARNINGS, opts_collator
         );
@@ -86,7 +88,7 @@ SEXP ci_startswith_coll(SEXP str, SEXP pattern, SEXP from, SEXP negate, SEXP opt
     R_len_t vectorize_length = 0;
     // Deviation from stringi: queue recycling warnings while the collator is
     // live and emit them after the collator closes.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             false, 3, str_n, pattern_n, from_n
         );
@@ -99,17 +101,17 @@ SEXP ci_startswith_coll(SEXP str, SEXP pattern, SEXP from, SEXP negate, SEXP opt
     });
 
     SEXP ret;
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(LGLSXP, vectorize_length);
     }));
     int* ret_tab = LOGICAL(ret);
 
     {
         ci::Utf16Cursor str_cont(context, str, vectorize_length);
-        StriContainerUStringSearch pattern_cont(
+        collation::PatternSet pattern_cont(
             context, pattern, vectorize_length, collator
         );  // collator is not owned by pattern_cont
-        StriContainerInteger from_cont(from, vectorize_length);
+        io::IntegerInput from_cont(from, vectorize_length);
 
         for (R_len_t i = pattern_cont.vectorize_init();
                 i != pattern_cont.vectorize_end();
@@ -198,7 +200,7 @@ SEXP ci_endswith_coll(SEXP str, SEXP pattern, SEXP to, SEXP negate, SEXP opts_co
     STRI__ERROR_HANDLER_BEGIN(3)
     // Deviation from stringi: catch R errors from collator option parsing so
     // queued warnings and any opened collator are released before R resumes.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         collator = ci__ucol_open(
             STRI__DEFERRED_WARNINGS, opts_collator
         );
@@ -217,7 +219,7 @@ SEXP ci_endswith_coll(SEXP str, SEXP pattern, SEXP to, SEXP negate, SEXP opts_co
     R_len_t vectorize_length = 0;
     // Deviation from stringi: queue recycling warnings while the collator is
     // live and emit them after the collator closes.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             false, 3, str_n, pattern_n, to_n
         );
@@ -230,17 +232,17 @@ SEXP ci_endswith_coll(SEXP str, SEXP pattern, SEXP to, SEXP negate, SEXP opts_co
     });
 
     SEXP ret;
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(LGLSXP, vectorize_length);
     }));
     int* ret_tab = LOGICAL(ret);
 
     {
         ci::Utf16Cursor str_cont(context, str, vectorize_length);
-        StriContainerUStringSearch pattern_cont(
+        collation::PatternSet pattern_cont(
             context, pattern, vectorize_length, collator
         );  // collator is not owned by pattern_cont
-        StriContainerInteger to_cont(to, vectorize_length);
+        io::IntegerInput to_cont(to, vectorize_length);
 
         for (R_len_t i = pattern_cont.vectorize_init();
                 i != pattern_cont.vectorize_end();
@@ -299,3 +301,5 @@ SEXP ci_endswith_coll(SEXP str, SEXP pattern, SEXP to, SEXP negate, SEXP opts_co
         if (collator) ucol_close(collator);
     )
     }
+
+} } // namespace charr::altrep_backend

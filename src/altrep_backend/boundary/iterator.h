@@ -1,0 +1,369 @@
+// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+/* This file is part of the 'stringi' project.
+ * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ * this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ * this list of conditions and the following disclaimer in the documentation
+ * and/or other materials provided with the distribution.
+ *
+ * 3. Neither the name of the copyright holder nor the names of its
+ * contributors may be used to endorse or promote products derived from
+ * this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING,
+ * BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+ * FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+ * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+ * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+ * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+ * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+
+#ifndef CHARR_ALTREP_BOUNDARY_ITERATOR_H
+#define CHARR_ALTREP_BOUNDARY_ITERATOR_H
+
+#include "../ci_stringi.h"
+#include <deque>
+#include <utility>
+#include <vector>
+#include <unicode/brkiter.h>
+#include <unicode/uloc.h>
+#include <unicode/locid.h>
+
+namespace charr { namespace altrep_backend { namespace boundary {
+
+/**
+ * A class to manage a break iterator's options
+ *
+ * @version 0.4-1 (Marek Gagolewski, 2014-12-02)
+ *
+ * @version 1.1.3 (Marek Gagolewski, 2017-01-07) UBRK_COUNT deprecated
+ *
+ * @version 1.1.6 (Marek Gagolewski, 2017-04-22) Add support for RBBI
+ */
+class Options {
+private:
+
+    const char* locale;      // R_alloc'd
+    UnicodeString rules;
+    UBreakIteratorType type;
+    int32_t* skip_rules;     // R_alloc'd
+    R_len_t  skip_size;      // number of elements in skip_rules
+
+
+    void setEmptyOpts()
+    {
+        locale = NULL;
+        type = UBRK_CHARACTER;
+        skip_rules = NULL;
+        skip_size = 0;
+    }
+
+    void setType(
+        SEXP opts_brkiter, const char* default_type,
+        R_len_t default_type_length,
+        ci::DeferredWarnings& warnings
+    );
+    void setLocale(
+        SEXP opts_brkiter, ci::DeferredWarnings& warnings
+    );
+    void setSkipRuleStatus(
+        SEXP opts_brkiter, ci::DeferredWarnings& warnings
+    );
+
+
+public:
+
+
+    Options() {
+        setEmptyOpts();
+    }
+
+    template <size_t N>
+    Options(
+        SEXP opts_brkiter, const char (&default_type)[N],
+        ci::DeferredWarnings& warnings
+    ) {
+        setEmptyOpts();
+        ci::unwind_protect([&]() -> SEXP {
+            setLocale(opts_brkiter, warnings);
+            setSkipRuleStatus(opts_brkiter, warnings);
+            setType(
+                opts_brkiter, default_type,
+                static_cast<R_len_t>(N-1), warnings
+            );
+            return R_NilValue;
+        });
+    }
+
+    const char* getLocale() const noexcept { return locale; }
+    const UnicodeString& getRules() const noexcept { return rules; }
+    UBreakIteratorType getType() const noexcept { return type; }
+    const int32_t* getSkipRules() const noexcept { return skip_rules; }
+    R_len_t getSkipSize() const noexcept { return skip_size; }
+};
+
+
+/**
+ * A class to manage a break iterator
+ *
+ * @version 0.3-1 (Marek Gagolewski, 2014-10-30)
+ *
+ * @version 0.4-1 (Marek Gagolewski, 2014-12-02) separate class
+ *
+ * @version 1.1.3 (Marek Gagolewski, 2017-01-07) UBRK_COUNT deprecated
+ *
+ * @version 1.1.6 (Marek Gagolewski, 2017-04-22) Add support for RBBI
+ *
+ * @version 1.8.1 (Marek Gagolewski, 2023-11-09)
+ *     warn if resource bundle for an explicitly set locale is unavailable
+ */
+class CapiIterator {
+private:
+
+    Options options_;
+    ::UBreakIterator* uiterator;
+
+    void open(ci::DeferredWarnings& warnings) {
+#ifndef NDEBUG
+        if (uiterator) throw StriException("!NDEBUG: CapiIterator::open()");
+#endif
+        UErrorCode status = U_ZERO_ERROR;
+        if (!options_.getRules().isEmpty()) {
+            UParseError parseErr;
+            uiterator = ubrk_openRules(
+                                       options_.getRules().getBuffer(),
+                                       options_.getRules().length(),
+                                       NULL, 0,
+                                       &parseErr, &status);
+        }
+        else {
+            switch (options_.getType()) {
+            case UBRK_CHARACTER: // character
+                uiterator = ubrk_open(UBRK_CHARACTER, options_.getLocale(), NULL, 0, &status);
+                break;
+            case UBRK_LINE: // line_break
+                uiterator = ubrk_open(UBRK_LINE, options_.getLocale(), NULL, 0, &status);
+                break;
+            case UBRK_SENTENCE: // sentence
+                uiterator = ubrk_open(UBRK_SENTENCE, options_.getLocale(), NULL, 0, &status);
+                break;
+            case UBRK_WORD: // word
+                uiterator = ubrk_open(UBRK_WORD, options_.getLocale(), NULL, 0, &status);
+                break;
+            default:
+                throw StriException(MSG__INTERNAL_ERROR);
+            }
+        }
+        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+
+        if (status == U_USING_DEFAULT_WARNING && uiterator && options_.getLocale()) {
+            UErrorCode status2 = U_ZERO_ERROR;
+            const char* valid_locale = ubrk_getLocaleByType(uiterator, ULOC_VALID_LOCALE, &status2);
+            if (valid_locale && !strcmp(valid_locale, "root")) {
+                // Deviation from stringi: queue the controllable warning so
+                // the iterator owner is released before R handles it.
+                warnings.push(ICUError::getICUerrorName(status));
+            }
+        }
+    }
+
+
+public:
+
+    CapiIterator()
+        : options_() {
+        uiterator = NULL;
+    }
+
+    CapiIterator(const Options& bropt)
+        : options_(bropt) {
+        uiterator = NULL;
+    }
+
+    CapiIterator& operator=(const Options& bropt) {
+        if (uiterator) {
+            ubrk_close(uiterator);
+            uiterator = NULL;
+        }
+        options_ = bropt;
+        return *this;
+    }
+
+    CapiIterator(const CapiIterator&) = delete;
+    CapiIterator& operator=(const CapiIterator&) = delete;
+
+    ~CapiIterator() {
+        if (uiterator) {
+            ubrk_close(uiterator);
+            uiterator = NULL;
+        }
+    }
+
+    void free(bool dealloc=true) {
+        if (uiterator && dealloc) {
+            ubrk_close(uiterator);
+        }
+        uiterator = NULL;
+    }
+
+
+    ::UBreakIterator* getIterator(ci::DeferredWarnings& warnings) {
+        if (!uiterator) open(warnings);
+        return uiterator;
+    }
+
+
+    const char* getLocale() {
+        return options_.getLocale();
+    }
+};
+
+
+/**
+ * A class to manage a break iterator
+ *
+ * @version 0.3-1 (Marek Gagolewski, 2014-10-30)
+ *
+ * @version 0.4-1 (Marek Gagolewski, 2014-12-02)
+ * separate class
+ *
+ * @version 1.1.6 (Marek Gagolewski, 2017-04-22) Add support for RBBI
+ *
+ * @version 1.8.1 (Marek Gagolewski, 2023-11-09)
+ *     warn if resource bundle for an explicitly set locale is unavailable
+ */
+class Utf8Iterator {
+private:
+
+    Options options_;
+    BreakIterator* rbiterator;
+    UText* searchText;
+    R_len_t searchPos; // may be BreakIterator::DONE
+    const char* searchStr; // owned by caller
+    R_len_t searchLen; // in bytes
+
+    void setEmptyOpts() {
+        rbiterator = NULL;
+        searchText = NULL;
+        searchPos = BreakIterator::DONE;
+        searchStr = NULL;
+        searchLen = 0;
+    }
+
+    void open(ci::DeferredWarnings& warnings) {
+        UErrorCode status = U_ZERO_ERROR;
+        Locale loc = Locale::createFromName(options_.getLocale());
+        if (!options_.getRules().isEmpty()) {
+            UParseError parseErr;
+            rbiterator = (BreakIterator*) new icu::RuleBasedBreakIterator(
+                             UnicodeString(options_.getRules()), parseErr, status
+                         );
+        }
+        else {
+            switch (options_.getType()) {
+            case UBRK_CHARACTER: // character
+                rbiterator = (BreakIterator*)BreakIterator::createCharacterInstance(loc, status);
+                break;
+            case UBRK_LINE: // line_break
+                rbiterator = (BreakIterator*)BreakIterator::createLineInstance(loc, status);
+                break;
+            case UBRK_SENTENCE: // sentence
+                rbiterator = (BreakIterator*)BreakIterator::createSentenceInstance(loc, status);
+                break;
+            case UBRK_WORD: // word
+                rbiterator = (BreakIterator*)BreakIterator::createWordInstance(loc, status);
+                break;
+            default:
+                throw StriException(MSG__INTERNAL_ERROR);
+            }
+
+        }
+        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+
+        if (status == U_USING_DEFAULT_WARNING && rbiterator && options_.getLocale()) {
+            UErrorCode status2 = U_ZERO_ERROR;
+            const char* valid_locale = rbiterator->getLocaleID(ULOC_VALID_LOCALE, status2);
+            if (valid_locale && !strcmp(valid_locale, "root")) {
+                // Deviation from stringi: queue the controllable warning so
+                // Reader and ICU resources are released before R handles it.
+                warnings.push(ICUError::getICUerrorName(status));
+            }
+        }
+    }
+
+    bool ignoreBoundary();
+
+public:
+
+    Utf8Iterator()
+        : options_() {
+        setEmptyOpts();
+    }
+
+    Utf8Iterator(const Options& bropt)
+        : options_(bropt) {
+        setEmptyOpts();
+    }
+
+    Utf8Iterator& operator=(const Options& bropt) {
+        if (rbiterator) {
+            delete rbiterator;
+            rbiterator = NULL;
+        }
+        if (searchText) {
+            utext_close(searchText);
+            searchText = NULL;
+        }
+        options_ = bropt;
+        setEmptyOpts();
+        return *this;
+    }
+
+    Utf8Iterator(const Utf8Iterator&) = delete;
+    Utf8Iterator& operator=(
+        const Utf8Iterator&
+    ) = delete;
+
+    ~Utf8Iterator() {
+        if (rbiterator) {
+            delete rbiterator;
+            rbiterator = NULL;
+        }
+
+        if (searchText) {
+            utext_close(searchText);
+            searchText = NULL;
+        }
+    }
+
+    void setupMatcher(
+        const char* searchStr,
+        R_len_t searchLen,
+        ci::DeferredWarnings& warnings
+    );
+
+    void first();
+    bool next();
+    bool next(std::pair<R_len_t, R_len_t>& bdr);
+
+    void last();
+    bool previous(std::pair<R_len_t, R_len_t>& bdr);
+};
+
+
+} } } // namespace charr::altrep_backend::boundary
+
+#endif

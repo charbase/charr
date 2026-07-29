@@ -33,9 +33,9 @@
 
 #include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_brkiter.h"
+#include "boundary/iterator.h"
 #include "ci_string8buf.h"
-#include "altrep/native_to_utf8.h"
+#include "../shared/native_to_utf8.h"
 
 #include <algorithm>
 #include <limits>
@@ -44,6 +44,8 @@
 
 #include <unicode/ucasemap.h>
 
+namespace charr { namespace altrep_backend {
+
 
 #define STRI_CASEMAP_TOLOWER   1
 #define STRI_CASEMAP_TOUPPER   2
@@ -51,7 +53,7 @@
 #define STRI_CASEMAP_TOTITLE   4
 
 
-namespace {
+namespace trans_casemap {
 
 struct CasemapInput {
     const char* data;
@@ -83,19 +85,26 @@ bool ci__casemap_title_locale(const char* locale) noexcept
 }
 
 
-class CasemapTitleOptions : public StriBrkIterOptions {
+class CasemapTitleOptions {
+private:
+    boundary::Options options_;
+
 public:
     CasemapTitleOptions(
         SEXP options, ci::DeferredWarnings& warnings
-    ) : StriBrkIterOptions(options, "word", warnings) {}
+    ) : options_(options, "word", warnings) {}
 
     bool ascii_fast_path(const char* locale) const noexcept
     {
         // Only the standard English/root word iterator has the simple
         // letter-run behavior used by the byte loop below.
-        return type == UBRK_WORD && rules.isEmpty() && skip_size == 0 &&
+        return options_.getType() == UBRK_WORD &&
+            options_.getRules().isEmpty() &&
+            options_.getSkipSize() == 0 &&
             ci__casemap_title_locale(locale);
     }
+
+    const boundary::Options& options() const noexcept { return options_; }
 };
 
 
@@ -325,7 +334,7 @@ void ci__casemap_icu(
 
 CasemapInput ci__casemap_input(
     const charport::StrView& value,
-    charr::altrep::NativeToUtf8& converter,
+    charr::shared::NativeToUtf8& converter,
     bool classify_ascii = true
 )
 {
@@ -355,14 +364,14 @@ CasemapInput ci__casemap_input(
     case cetype_ext_t::CE_BYTES:
         throw StriException(MSG__BYTESENC);
     case cetype_ext_t::CE_LATIN1: {
-        const charport::ByteView converted = converter.latin1(data, length);
+        const shared::ByteView converted = converter.latin1(data, length);
         data = converted.ptr;
         length = converted.len;
         break;
     }
     case cetype_ext_t::CE_NATIVE: {
         const bool native_bom = ci__casemap_has_bom(data, length);
-        const charport::ByteView converted = converter.native(data, length);
+        const shared::ByteView converted = converter.native(data, length);
         data = converted.ptr;
         length = converted.len;
         strip_bom = native_bom;
@@ -383,7 +392,9 @@ CasemapInput ci__casemap_input(
     return CasemapInput{data, length, ascii};
 }
 
-} // namespace
+} // namespace trans_casemap
+
+using namespace trans_casemap;
 
 
 /**
@@ -396,7 +407,7 @@ CasemapInput ci__casemap_input(
  *
  * @version 0.4-1 (Marek Gagolewski, 2014-12-03)
  *    separated from ci_trans_casemap;
- *    use StriUBreakIterator
+ *    use boundary::CapiIterator
  */
 SEXP ci_trans_totitle(SEXP str, SEXP opts_brkiter) {
 // version 0.2-1 - Does not work with ICU 4.8 (but we require ICU >= 50)
@@ -411,13 +422,13 @@ SEXP ci_trans_totitle(SEXP str, SEXP opts_brkiter) {
         CasemapTitleOptions opts_brkiter2(
             opts_brkiter, STRI__DEFERRED_WARNINGS
         );
-        STRI__PROTECT(str = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(str = ci::unwind_protect([&]() -> SEXP {
             return ci__prepare_arg_string(
                 str, "str", true, &STRI__DEFERRED_WARNINGS
             );
         }));
 
-        StriUBreakIterator brkiter(opts_brkiter2);
+        boundary::CapiIterator brkiter(opts_brkiter2.options());
 
         UErrorCode status = U_ZERO_ERROR;
         ucasemap = ucasemap_open(brkiter.getLocale(), U_FOLD_CASE_DEFAULT, &status);
@@ -440,7 +451,7 @@ SEXP ci_trans_totitle(SEXP str, SEXP opts_brkiter) {
         // Stage native storage first so ALTREP construction happens after the
         // foreign Reader and its views have been released.
         charport::charvec::Store output = [&]() {
-            charport::Reader reader(str);
+            charport::Reader reader(ci::protected_reader_resolve(str));
             R_len_t str_n = ci::checked_r_len(
                 reader.size(), "character vectors"
             );
@@ -448,7 +459,7 @@ SEXP ci_trans_totitle(SEXP str, SEXP opts_brkiter) {
             charport::StrViews values(str_n);
             if (str_n > 0)
                 reader.views(0, str_n, values);
-            charr::altrep::NativeToUtf8 converter;
+            charr::shared::NativeToUtf8 converter;
             std::unique_ptr<String8buf> buffer;
             for (R_len_t i = 0; i < str_n; ++i) {
                 const charport::StrView value = values[i];
@@ -481,7 +492,9 @@ SEXP ci_trans_totitle(SEXP str, SEXP opts_brkiter) {
             ucasemap = NULL;
         }
 
-        STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return charport::charvec::wrap(std::move(output));
+        }));
     }
     STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
@@ -509,18 +522,18 @@ SEXP ci_trans_totitle(SEXP str, SEXP opts_brkiter) {
  * @version 0.1-?? (Marek Gagolewski)
  *
  * @version 0.1-?? (Marek Gagolewski)
- *          use StriContainerUTF16
+ *          use io::Utf16Input
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
  *          make StriException-friendly
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-11-19)
- *          use UCaseMap + Utf8Input
+ *          use UCaseMap + io::Utf8Input
  *          **THIS DOES NOT WORK WITH ICU 4.8**, we have to revert the changes
  *          ** BTW, since stringi_0.1-25 we require ICU>=50 **
  *
  * @version 0.2-1 (Marek Gagolewski, 2014-03-18)
- *          use UCaseMap + Utf8Input
+ *          use UCaseMap + io::Utf8Input
  *          (this is much faster for UTF-8 and slightly faster for 8bit enc)
  *          Estimates minimal buffer size.
  *
@@ -531,7 +544,7 @@ SEXP ci_trans_totitle(SEXP str, SEXP opts_brkiter) {
  *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
  *
  * @version 0.4-1 (Marek Gagolewski, 2014-12-03)
- *    use StriUBreakIterator
+ *    use boundary::CapiIterator
  *
  * @version 0.6-1 (Marek Gagolewski, 2015-07-11)
  *    now this is an internal function
@@ -560,7 +573,7 @@ SEXP ci_trans_casemap(SEXP str, int _type, SEXP locale)
         {
             std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(str);
             const charport::StrViews& values = borrow->views();
-            charr::altrep::NativeToUtf8 converter;
+            charr::shared::NativeToUtf8 converter;
             const bool simple_ascii = ci__casemap_ascii_simple(
                 qloc, _type
             );
@@ -608,7 +621,9 @@ SEXP ci_trans_casemap(SEXP str, int _type, SEXP locale)
             ucasemap = NULL;
         }
 
-        STRI__PROTECT(ret = builder.to_sexp());
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return builder.to_sexp();
+        }));
     }
     STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
@@ -659,21 +674,6 @@ SEXP ci_trans_toupper(SEXP str, SEXP locale)
 }
 
 
-
-/**
- *  Case folding
- *
- *  @param str character vector
- *  @return character vector
- *
- * @version 1.6.1 (Marek Gagolewski, 2021-04-30)
- *    call ci_trans_casemap
-*/
-SEXP ci_trans_casefold(SEXP str) {
-    return ci_trans_casemap(str, STRI_CASEMAP_CASEFOLD, R_NilValue);
-}
-
-
 // v0.1-?? - UTF-16 - WORKS WITH ICU 4.8
 // (this is much slower for UTF-8 and slightly slower for 8bit enc)
 // Slower than v0.2-1
@@ -687,7 +687,7 @@ SEXP ci_trans_casefold(SEXP str) {
 //
 //
 //   Locale loc = Locale::createFromName(qloc); // this will be freed automatically
-//   StriContainerUTF16 str_cont(str, LENGTH(str), false); // writable, no recycle
+//   io::Utf16Input str_cont(str, LENGTH(str), false); // writable, no recycle
 //
 ////    if (_type == 6) {
 ////       UErrorCode status = U_ZERO_ERROR;
@@ -734,3 +734,5 @@ SEXP ci_trans_casefold(SEXP str) {
 //   STRI__ERROR_HANDLER_END(/*noop*/;
 ////       if (briter) delete briter;
 //   )
+
+} } // namespace charr::altrep_backend

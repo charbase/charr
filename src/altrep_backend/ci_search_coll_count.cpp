@@ -32,10 +32,11 @@
 
 
 #include "ci_stringi.h"
-#include "ci_container_base.h"
-#include "ci_container_utf16.h"
-#include "ci_container_usearch.h"
+#include "io/utf16_input.h"
+#include "collation/pattern_set.h"
 #include "ci_utf16_cursor.h"
+
+namespace charr { namespace altrep_backend {
 
 
 /**
@@ -53,7 +54,7 @@
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-23)
  *          make StriException-friendly,
- *          use StriContainerUStringSearch
+ *          use collation::PatternSet
  *
  * @version 0.2-3 (Marek Gagolewski, 2014-05-08)
  *          new fun: ci_count_coll (opts_collator == NA not allowed)
@@ -71,7 +72,7 @@ SEXP ci_count_coll(SEXP str, SEXP pattern, SEXP opts_collator)
     STRI__ERROR_HANDLER_BEGIN(2)
     // Deviation from stringi: catch R errors from collator option parsing so
     // queued warnings and any opened collator are released before R resumes.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         collator = ci__ucol_open(
             STRI__DEFERRED_WARNINGS, opts_collator
         );
@@ -87,7 +88,7 @@ SEXP ci_count_coll(SEXP str, SEXP pattern, SEXP opts_collator)
     R_len_t vectorize_length = 0;
     // Deviation from stringi: queue recycling warnings while the collator is
     // live and emit them after the collator closes.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             false, 2, str_n, pattern_n
         );
@@ -99,14 +100,14 @@ SEXP ci_count_coll(SEXP str, SEXP pattern, SEXP opts_collator)
     });
 
     SEXP ret;
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(INTSXP, vectorize_length);
     }));
     int* ret_tab = INTEGER(ret);
 
     {
         ci::Utf16Cursor str_cont(context, str, vectorize_length);
-        StriContainerUStringSearch pattern_cont(
+        collation::PatternSet pattern_cont(
             context, pattern, vectorize_length, collator
         );  // collator is not owned by pattern_cont
 
@@ -150,3 +151,5 @@ SEXP ci_count_coll(SEXP str, SEXP pattern, SEXP opts_collator)
         if (collator) ucol_close(collator);
     )
     }
+
+} } // namespace charr::altrep_backend

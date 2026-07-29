@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+namespace charr { namespace altrep_backend {
+
 
 namespace ci {
 
@@ -52,7 +54,7 @@ inline charport::charvec::Store scalar_store(
 }
 
 
-inline charport::charvec::Store scalar_store(const Utf8Record& value)
+inline charport::charvec::Store scalar_store(const io::Utf8Record& value)
 {
     if (value.isNA())
         return charport::charvec::Store::scalar(
@@ -106,7 +108,7 @@ inline void builder_set(
 
 inline void builder_set(
     charport::charvec::Builder& builder, R_xlen_t i,
-    const Utf8Record& value
+    const io::Utf8Record& value
 )
 {
     if (value.isNA()) {
@@ -207,7 +209,7 @@ inline void builder_set(
         return;
     }
 
-    // StriContainerUTF16::toR used one reusable conversion buffer. Keep that
+    // io::Utf16Output::toR used one reusable conversion buffer. Keep that
     // behavior while sending the length-delimited UTF-8 result to Builder.
     int32_t utf8_length = 0;
     cetype_ext_t utf8_mark = cetype_ext_t::CE_ASCII;
@@ -245,7 +247,7 @@ inline void builder_append(
 
 
 inline void builder_append(
-    charport::charvec::GrowableBuilder& builder, const Utf8Record& value
+    charport::charvec::GrowableBuilder& builder, const io::Utf8Record& value
 )
 {
     if (value.isNA()) {
@@ -281,5 +283,8 @@ inline void builder_append(
 
 
 } // namespace ci
+
+
+} } // namespace charr::altrep_backend
 
 #endif

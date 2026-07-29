@@ -34,17 +34,19 @@
 #include "ci_stringi.h"
 #include "ci_builder.h"
 #include "ci_utf8.h"
-#include "ci_container_integer.h"
-#include "ci_container_logical.h"
-#include "ci_container_regex.h"
+#include "io/integer_input.h"
+#include "io/logical_input.h"
+#include "regex/pattern_set.h"
 #include <stdexcept>
 #include <utility>
 #include <vector>
 #include <unicode/utf8.h>
+
+namespace charr { namespace altrep_backend {
 using namespace std;
 
 
-namespace {
+namespace search_regex_split {
 
 typedef pair<R_len_t, R_len_t> CiRegexSplitField;
 
@@ -140,13 +142,13 @@ inline void ci__collect_scalar_default_fields(
 
 
 void ci__split_regex_scalar_default(
-    ci::ReaderContext& context, const Utf8Input& input, SEXP pattern,
+    ci::ReaderContext& context, const io::Utf8Input& input, SEXP pattern,
     R_len_t vectorize_length,
-    const StriRegexMatcherOptions& pattern_opts,
+    const regex::Options& pattern_opts,
     vector<charport::charvec::Store>& stores
 )
 {
-    StriContainerRegexPattern pattern_cont(
+    regex::PatternSet pattern_cont(
         context, pattern, vectorize_length, pattern_opts
     );
     if (vectorize_length <= 0)
@@ -169,7 +171,7 @@ void ci__split_regex_scalar_default(
             continue;
         }
 
-        const Utf8Record& value = input.get(i);
+        const io::Utf8Record& value = input.get(i);
         const bool ascii = value.isASCII();
         const char* data = value.data();
         const R_len_t length = value.length();
@@ -261,7 +263,9 @@ inline void ci__collect_regex_split_fields(
     }
 }
 
-} // namespace
+} // namespace search_regex_split
+
+using namespace search_regex_split;
 
 
 /**
@@ -303,7 +307,7 @@ inline void ci__collect_regex_split_fields(
  *    allow `simplify=NA`; FR #126: pass n to ci_list2matrix
  *
  * @version 1.4.7 (Marek Gagolewski, 2020-08-24)
- *    Use StriContainerRegexPattern::getRegexOptions
+ *    Use regex::PatternSet::getRegexOptions
  */
 SEXP ci_split_regex(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
                       SEXP tokens_only, SEXP simplify, SEXP opts_regex)
@@ -330,7 +334,7 @@ SEXP ci_split_regex(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
     R_len_t n_n = LENGTH(n);
     R_len_t omit_empty_n = LENGTH(omit_empty);
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             false, 4, str_n, pattern_n, n_n, omit_empty_n
         );
@@ -345,11 +349,11 @@ SEXP ci_split_regex(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
              vectorize_length % omit_empty_n != 0))
         context.warn(MSG__WARN_RECYCLING_RULE);
 
-    StriRegexMatcherOptions pattern_opts;
+    regex::Options pattern_opts;
     // Deviation from stringi: preserve recycling-before-options order while
     // routing option-parser R unwinds through the common error boundary.
-    charport::unwind_protect([&]() -> SEXP {
-        pattern_opts = StriContainerRegexPattern::getRegexOptions(
+    ci::unwind_protect([&]() -> SEXP {
+        pattern_opts = regex::PatternSet::getRegexOptions(
             STRI__DEFERRED_WARNINGS, opts_regex
         );
         return R_NilValue;
@@ -368,17 +372,17 @@ SEXP ci_split_regex(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
         LOGICAL_RO(omit_empty)[0] == FALSE &&
         !tokens_only1 && simplify_1 == FALSE;
     if (scalar_default) {
-        Utf8Input scalar_input(context, str, vectorize_length);
+        io::Utf8Input scalar_input(context, str, vectorize_length);
         ci__split_regex_scalar_default(
             context, scalar_input, pattern, vectorize_length,
             pattern_opts, stores
         );
     }
     else {
-        StriContainerInteger n_cont(n, vectorize_length);
-        StriContainerLogical omit_empty_cont(omit_empty, vectorize_length);
-        Utf8Input str_cont(context, str, vectorize_length);
-        StriContainerRegexPattern pattern_cont(
+        io::IntegerInput n_cont(n, vectorize_length);
+        io::LogicalInput omit_empty_cont(omit_empty, vectorize_length);
+        io::Utf8Input str_cont(context, str, vectorize_length);
+        regex::PatternSet pattern_cont(
             context, pattern, vectorize_length, pattern_opts
         );
         charport::charvec::Builder output(0);
@@ -416,7 +420,7 @@ SEXP ci_split_regex(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
                     );
             })
 
-            const Utf8Record& str_cur = str_cont.get(i);
+            const io::Utf8Record& str_cur = str_cont.get(i);
             const R_len_t str_cur_n = str_cur.length();
             const char* str_cur_s = str_cur.data();
             const cetype_ext_t field_encoding = str_cur.isASCII()
@@ -494,21 +498,23 @@ SEXP ci_split_regex(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
     }
 
     if (simplify_1 != NA_LOGICAL && !simplify_1) {
-        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
             return Rf_allocVector(VECSXP, vectorize_length);
         }));
-        for (R_len_t i=0; i<vectorize_length; ++i) {
-            SEXP ans;
-            STRI__PROTECT(ans = charport::charvec::wrap(
-                std::move(stores[i])
-            ));
-            SET_VECTOR_ELT(ret, i, ans);
-            STRI__UNPROTECT(1);
-        }
+        ci::unwind_protect([&]() -> SEXP {
+            for (R_len_t i=0; i<vectorize_length; ++i) {
+                SEXP ans = PROTECT(charport::charvec::wrap(
+                    std::move(stores[i])
+                ));
+                SET_VECTOR_ELT(ret, i, ans);
+                UNPROTECT(1);
+            }
+            return R_NilValue;
+        });
     }
     else {
         R_len_t n_min = 0;
-        charport::unwind_protect([&]() -> SEXP {
+        ci::unwind_protect([&]() -> SEXP {
             R_len_t n_length = LENGTH(n);
             const int* n_tab = INTEGER_RO(n);
             for (R_len_t i=0; i<n_length; ++i) {
@@ -558,8 +564,10 @@ SEXP ci_split_regex(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
             }
         }
 
-        STRI__PROTECT(ret = matrix.to_sexp());
-        ret = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return matrix.to_sexp();
+        }));
+        ret = ci::unwind_protect([&]() -> SEXP {
             SEXP dim;
             PROTECT(dim = Rf_allocVector(INTSXP, 2));
             INTEGER(dim)[0] = vectorize_length;
@@ -581,3 +589,5 @@ SEXP ci_split_regex(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
         }
     })
 }
+
+} } // namespace charr::altrep_backend

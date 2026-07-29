@@ -2,7 +2,6 @@
 
 replace_all <- function(...) charr:::ci_replace_all_regex(...)
 replace_first <- function(...) charr:::ci_replace_first_regex(...)
-replace_last <- function(...) charr:::ci_replace_last_regex(...)
 
 
 test_that("regex replace applies $-substitution over UTF-16 subjects", {
@@ -15,12 +14,11 @@ test_that("regex replace applies $-substitution over UTF-16 subjects", {
   expect_identical(charport::is_charvec(got), charr_altrep())
   expect_identical(Encoding(got[1:3]), c("unknown", "unknown", "UTF-8"))
 })
-test_that("regex replace first/last differ and NA replacement blanks matches", {
+test_that("regex replace first and NA replacement preserve values", {
   strings <- charr:::ci_replace_all_fixed(c("ababab", "xyz", "aa"), "~", "~")
   expect_identical(charport::is_charvec(strings), charr_altrep())
 
   expect_identical(replace_first(strings, "a", "Z"), c("Zbabab", "xyz", "Za"))
-  expect_identical(replace_last(strings, "a", "Z"), c("ababZb", "xyz", "aZ"))
   # NA replacement -> whole element becomes NA iff it matched
   expect_identical(
     replace_all(strings, "a", NA_character_),

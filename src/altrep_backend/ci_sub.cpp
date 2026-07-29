@@ -34,14 +34,16 @@
 #include "ci_stringi.h"
 #include "ci_builder.h"
 #include "ci_utf8.h"
-#include "../altrep/native_to_utf8.h"
+#include "../shared/native_to_utf8.h"
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <stdexcept>
 
+namespace charr { namespace altrep_backend {
 
-namespace {
+
+namespace sub {
 
 struct CiSubDirectInput {
     const char* data;
@@ -112,7 +114,7 @@ R_len_t ci__sub_replacement_all_to(
 
 class CiSubDirectNormalizer {
 private:
-    charr::altrep::NativeToUtf8 converter_;
+    charr::shared::NativeToUtf8 converter_;
 
 public:
     CiSubDirectInput get(const charport::StrView& value)
@@ -141,7 +143,7 @@ public:
             return CiSubDirectInput{data, length, false, ascii};
         }
 
-        charport::ByteView converted;
+        shared::ByteView converted;
         if (value.enc == cetype_ext_t::CE_LATIN1) {
             converted = converter_.latin1(data, length);
         }
@@ -228,7 +230,7 @@ void ci__sub_direct_extract(
     charport::charvec::Store& output
 )
 {
-    charport::Reader reader(source);
+    charport::Reader reader(ci::protected_reader_resolve(source));
     charport::StrViews views;
     ci__sub_reader_views(reader, source_length, views);
 
@@ -269,8 +271,10 @@ void ci__sub_direct_replace(
     charport::charvec::Store& output
 )
 {
-    charport::Reader source_reader(source);
-    charport::Reader replacement_reader(replacement);
+    charport::Reader source_reader(ci::protected_reader_resolve(source));
+    charport::Reader replacement_reader(
+        ci::protected_reader_resolve(replacement)
+    );
     charport::StrViews source_views;
     charport::StrViews replacement_views;
     ci__sub_reader_views(source_reader, source_length, source_views);
@@ -352,7 +356,9 @@ void ci__sub_direct_replace(
     output = builder.release_store();
 }
 
-} // namespace
+} // namespace sub
+
+using namespace sub;
 
 
 /**
@@ -477,7 +483,7 @@ R_len_t ci__sub_prepare_from_to_length(SEXP& from, SEXP& to, SEXP& length,
 /**
  * used both in ci_sub and ci_sub_replacement
  */
-inline void ci__sub_get_indices(IndexedUtf8Input& str_cont, R_len_t& i,
+inline void ci__sub_get_indices(io::IndexedUtf8Input& str_cont, R_len_t& i,
                                   R_len_t& cur_from,  R_len_t& cur_to,
                                   R_len_t& cur_from2, R_len_t& cur_to2)
 {
@@ -510,7 +516,7 @@ inline void ci__sub_get_indices(IndexedUtf8Input& str_cont, R_len_t& i,
 // Deviation from stringi: share the Builder-producing core with `ci_sub_all`
 // so it does not create a scalar CHARSXP and call back through `ci_sub()`.
 charport::charvec::Store ci__sub_build(
-    IndexedUtf8Input& str_cont,
+    io::IndexedUtf8Input& str_cont,
     R_len_t from_len, R_len_t to_len, R_len_t length_len,
     int* from_tab, int* to_tab, int* length_tab,
     bool ignore_negative_length,
@@ -668,7 +674,7 @@ charport::charvec::Store ci__sub_build(
 
 
 charport::charvec::Store ci__sub_build(
-    IndexedUtf8Input& str_cont,
+    io::IndexedUtf8Input& str_cont,
     R_len_t from_len, R_len_t to_len, R_len_t length_len,
     int* from_tab, int* to_tab, int* length_tab,
     bool ignore_negative_length
@@ -684,6 +690,8 @@ charport::charvec::Store ci__sub_build(
 }
 
 
+namespace sub {
+
 struct CiOwnedUtf8 {
     bool is_na;
     bool is_ascii;
@@ -698,8 +706,10 @@ struct CiOwnedUtf8 {
 
 struct CiOwnedUtf8Set {
     std::vector<CiOwnedUtf8> records;
-    charr::altrep::StableSliceArena bytes;
+    charr::shared::SliceArena bytes;
 };
+
+} // namespace sub
 
 
 std::unique_ptr<CiOwnedUtf8Set> ci__sub_read_owned(
@@ -719,13 +729,13 @@ std::unique_ptr<CiOwnedUtf8Set> ci__sub_read_owned(
     // released first. One stable arena owns the copied bytes; records remain
     // small views instead of allocating a string object for every element.
     {
-        Utf8Input str_cont(context, str, str_len);
+        io::Utf8Input str_cont(context, str, str_len);
         for (R_len_t i=0; i<str_len; ++i) {
             CiOwnedUtf8& current = output->records[static_cast<size_t>(i)];
             current.is_na = str_cont.isNA(i);
             if (current.is_na)
                 continue;
-            const Utf8Record& value = str_cont.get(i);
+            const io::Utf8Record& value = str_cont.get(i);
             current.is_ascii = value.isASCII();
             current.length = value.length();
             if (value.length() > 0) {
@@ -815,16 +825,16 @@ void ci__sub_builder_set_owned(
  *    ci_sub
  *
  * @version 0.1-?? (Marek Gagolewski)
- *    Use Utf8Input and ci__UChar32_to_UTF8_index
+ *    Use io::Utf8Input and ci__UChar32_to_UTF8_index
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-01)
- *    Use Utf8Input's UChar32-to-UTF8 index
+ *    Use io::Utf8Input's UChar32-to-UTF8 index
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
  *    Make StriException-friendly
  *
  * @version 0.2-1 (Marek Gagolewski, 2014-03-20)
- *    Use IndexedUtf8Input
+ *    Use io::IndexedUtf8Input
  *
  * @version 0.2-1 (Marek Gagolewski, 2014-04-03)
  *    Use ci__sub_prepare_from_to_length()
@@ -856,7 +866,7 @@ SEXP ci_sub(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix, SEXP ign
 
     STRI__ERROR_HANDLER_BEGIN(1)
     R_len_t sub_protected = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         sub_protected = ci__sub_prepare_from_to_length(
             from, to, length,
             from_len, to_len, length_len,
@@ -870,7 +880,7 @@ SEXP ci_sub(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix, SEXP ign
         XLENGTH(str), "character vectors"
     );
     R_len_t vectorize_len = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_len = ci__recycling_rule(
             STRI__DEFERRED_WARNINGS, 3, str_len, from_len,
             (to_len>length_len)?to_len:length_len
@@ -895,7 +905,7 @@ SEXP ci_sub(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix, SEXP ign
         else {
             ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
             {
-                IndexedUtf8Input str_cont(
+                io::IndexedUtf8Input str_cont(
                     context, str, vectorize_len
                 );
                 output = ci__sub_build(
@@ -908,7 +918,9 @@ SEXP ci_sub(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix, SEXP ign
     }
 
     SEXP ret;
-    STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return charport::charvec::wrap(std::move(output));
+    }));
     // Install the Store finalizer before a deferred warning can unwind.
     STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
@@ -932,16 +944,16 @@ SEXP ci_sub(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix, SEXP ign
  * @version 0.1-?? (Bartek Tartanus)
  *
  * @version 0.1-?? (Marek Gagolewski)
- *          use Utf8Input and ci__UChar32_to_UTF8_index
+ *          use io::Utf8Input and ci__UChar32_to_UTF8_index
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-01)
- *          use Utf8Input's UChar32-to-UTF8 index
+ *          use io::Utf8Input's UChar32-to-UTF8 index
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
  *          make StriException-friendly
  *
  * @version 0.2-1 (Marek Gagolewski, 2014-03-20)
- *          Use IndexedUtf8Input
+ *          Use io::IndexedUtf8Input
  *
  * @version 0.2-1 (Marek Gagolewski, 2014-04-03)
  *          Use ci__sub_prepare_from_to_length()
@@ -982,7 +994,7 @@ SEXP ci_sub_replacement(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit_na,
 
     STRI__ERROR_HANDLER_BEGIN(2)
     R_len_t sub_protected = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         sub_protected = ci__sub_prepare_from_to_length(
             from, to, length,
             from_len, to_len, length_len,
@@ -999,7 +1011,7 @@ SEXP ci_sub_replacement(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit_na,
         XLENGTH(str), "character vectors"
     );
     R_len_t vectorize_len = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_len = ci__recycling_rule(
             STRI__DEFERRED_WARNINGS, 4,
             str_len, value_len, from_len,
@@ -1027,10 +1039,10 @@ SEXP ci_sub_replacement(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit_na,
         ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
         charport::charvec::Builder builder(vectorize_len);
         {
-            IndexedUtf8Input str_cont(
+            io::IndexedUtf8Input str_cont(
                 context, str, vectorize_len
             );
-            Utf8Input value_cont(context, value, vectorize_len);
+            io::Utf8Input value_cont(context, value, vectorize_len);
             for (R_len_t i = str_cont.vectorize_init();
                     i != str_cont.vectorize_end();
                     i = str_cont.vectorize_next(i)) {
@@ -1067,8 +1079,8 @@ SEXP ci_sub_replacement(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit_na,
                     }
                 }
 
-                const Utf8Record& str_cur = str_cont.get(i);
-                const Utf8Record& value_cur = value_cont.get(i);
+                const io::Utf8Record& str_cur = str_cont.get(i);
+                const io::Utf8Record& value_cur = value_cont.get(i);
                 const char* str_cur_s = str_cur.data();
                 R_len_t str_cur_n = str_cur.length();
                 const char* value_cur_s = value_cur.data();
@@ -1130,7 +1142,9 @@ SEXP ci_sub_replacement(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit_na,
     }
 
     SEXP ret;
-    STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return charport::charvec::wrap(std::move(output));
+    }));
     // Install the Store finalizer before a deferred warning can unwind.
     STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
@@ -1253,7 +1267,7 @@ SEXP ci_sub_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix, SEXP
     bool has_to = false;
     bool has_length = false;
     R_len_t vectorize_len = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         from_len = LENGTH(from);
         to_len = LENGTH(to);
         length_len = LENGTH(length);
@@ -1280,7 +1294,7 @@ SEXP ci_sub_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix, SEXP
     });
 
     SEXP ret;
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(VECSXP, vectorize_len);
     }));
 
@@ -1305,7 +1319,7 @@ SEXP ci_sub_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix, SEXP
         std::vector<charport::charvec::Store> outputs;
         outputs.reserve(static_cast<size_t>(vectorize_len));
         {
-            IndexedUtf8Input str_cont(
+            io::IndexedUtf8Input str_cont(
                 context, str, vectorize_len
             );
             for (R_len_t i = 0; i < vectorize_len; ++i) {
@@ -1325,7 +1339,7 @@ SEXP ci_sub_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix, SEXP
                     str_cont, source_index, cur_from, cur_to,
                     from_byte, to_byte
                 );
-                const Utf8Record& source = str_cont.get(i);
+                const io::Utf8Record& source = str_cont.get(i);
                 if (to_byte > from_byte) {
                     outputs.push_back(ci::scalar_store(
                         source.data()+from_byte,
@@ -1341,7 +1355,7 @@ SEXP ci_sub_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix, SEXP
             }
         }
 
-        charport::unwind_protect([&]() -> SEXP {
+        ci::unwind_protect([&]() -> SEXP {
             for (R_len_t i = 0; i < vectorize_len; ++i) {
                 SEXP inner = PROTECT(charport::charvec::wrap(
                     std::move(outputs[static_cast<size_t>(i)])
@@ -1377,12 +1391,12 @@ SEXP ci_sub_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix, SEXP
             LOGICAL_RO(ignore_negative_length)[0] != 0;
         std::shared_ptr<ci::ReaderBorrow> shared_source_borrow;
         const charport::StrViews* source_views = NULL;
-        std::unique_ptr<IndexedUtf8Input> str_cont;
+        std::unique_ptr<io::IndexedUtf8Input> str_cont;
         charport::charvec::Builder inner_builder(0);
         charport::charvec::Builder filtered_builder(0);
         charport::charvec::Store inner_output(0, 0);
 
-        charport::unwind_protect([&]() -> SEXP {
+        ci::unwind_protect([&]() -> SEXP {
             for (R_len_t i=0; i<vectorize_len; ++i) {
                 ci::UnwindCallbackProtector callback_protector;
                 SEXP inner_from = R_NilValue;
@@ -1423,7 +1437,7 @@ SEXP ci_sub_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix, SEXP
                         shared_source_borrow = context.acquire(str);
                         source_views = &shared_source_borrow->views();
                     }
-                    str_cont.reset(new IndexedUtf8Input(
+                    str_cont.reset(new io::IndexedUtf8Input(
                         shared_source_borrow,
                         (*source_views)[static_cast<R_xlen_t>(i%str_len)],
                         inner_vectorize_len, true
@@ -1463,7 +1477,7 @@ SEXP ci_sub_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix, SEXP
             bool use_matrix_1 = false;
             bool ignore_negative_length_1 = false;
 
-            charport::unwind_protect([&]() -> SEXP {
+            ci::unwind_protect([&]() -> SEXP {
                 use_matrix_1 = ci__prepare_arg_logical_1_notNA(
                     use_matrix, "use_matrix", &STRI__DEFERRED_WARNINGS
                 );
@@ -1510,7 +1524,7 @@ SEXP ci_sub_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix, SEXP
                     source_view = source_borrow->view(
                         static_cast<R_xlen_t>(i%str_len)
                     );
-                    IndexedUtf8Input str_cont(
+                    io::IndexedUtf8Input str_cont(
                         source_borrow, source_view,
                         inner_vectorize_len, true
                     );
@@ -1526,16 +1540,16 @@ SEXP ci_sub_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP use_matrix, SEXP
 
             STRI__UNPROTECT(inner_protected);
             SEXP tmp;
-            STRI__PROTECT(tmp = charport::charvec::wrap(
-                std::move(inner_output)
-            ));
+            STRI__PROTECT(tmp = ci::unwind_protect([&]() -> SEXP {
+                return charport::charvec::wrap(std::move(inner_output));
+            }));
             SET_VECTOR_ELT(ret, i, tmp);
             STRI__UNPROTECT(1);
         }
     }
 
     if (can_share_reader) {
-        charport::unwind_protect([&]() -> SEXP {
+        ci::unwind_protect([&]() -> SEXP {
             for (R_len_t i=0; i<vectorize_len; ++i) {
                 SEXP tmp = PROTECT(charport::charvec::wrap(
                     std::move(staged_outputs[static_cast<size_t>(i)])
@@ -1771,7 +1785,7 @@ SEXP ci_sub_replacement_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit
 
         const auto prepare_list = [&](SEXP& arg, const char* name) {
             SEXP prepared = R_NilValue;
-            charport::unwind_protect([&]() -> SEXP {
+            ci::unwind_protect([&]() -> SEXP {
                 prepared = ci__prepare_arg_list(
                     arg, name, &STRI__DEFERRED_WARNINGS
                 );
@@ -1796,7 +1810,7 @@ SEXP ci_sub_replacement_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit
         R_len_t vectorize_len = 0;
         bool has_to = false;
         bool has_length = false;
-        charport::unwind_protect([&]() -> SEXP {
+        ci::unwind_protect([&]() -> SEXP {
             omit_na_1 = ci__prepare_arg_logical_1_notNA(
                 omit_na, "omit_na", &STRI__DEFERRED_WARNINGS
             );
@@ -1926,7 +1940,9 @@ SEXP ci_sub_replacement_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit
                 }
             }
 
-            STRI__PROTECT(ret = builder.to_sexp());
+            STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+                return builder.to_sexp();
+            }));
             context.emitWarnings();
             STRI__UNPROTECT_ALL
             return ret;
@@ -1942,7 +1958,7 @@ SEXP ci_sub_replacement_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit
             }
 
             SEXP inner_value = R_NilValue;
-            charport::unwind_protect([&]() -> SEXP {
+            ci::unwind_protect([&]() -> SEXP {
                 inner_value = ci__prepare_arg_string(
                     VECTOR_ELT(value, i % value_len), "str", true,
                     &STRI__DEFERRED_WARNINGS
@@ -1969,7 +1985,7 @@ SEXP ci_sub_replacement_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit
             R_len_t inner_protected = 0;
             R_len_t inner_vectorize_len = 0;
 
-            charport::unwind_protect([&]() -> SEXP {
+            ci::unwind_protect([&]() -> SEXP {
                 inner_from = VECTOR_ELT(from, i % from_len);
                 if (has_to)
                     inner_to = VECTOR_ELT(to, i % to_len);
@@ -1999,7 +2015,9 @@ SEXP ci_sub_replacement_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit
             STRI__UNPROTECT(inner_protected);
         }
 
-        STRI__PROTECT(ret = builder.to_sexp());
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return builder.to_sexp();
+        }));
     }
 
     context.emitWarnings();
@@ -2007,3 +2025,5 @@ SEXP ci_sub_replacement_all(SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
 }
+
+} } // namespace charr::altrep_backend

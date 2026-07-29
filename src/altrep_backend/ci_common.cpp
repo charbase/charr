@@ -39,6 +39,8 @@
 #include <utility>
 #include <vector>
 
+namespace charr { namespace altrep_backend {
+
 
 
 /**
@@ -77,7 +79,7 @@ SEXP ci__make_character_vector_char_ptr(R_len_t numnames, ...)
     }
     va_end(arguments);
 
-    return charport::unwind_protect([&]() -> SEXP {
+    return ci::unwind_protect([&]() -> SEXP {
         return output.to_sexp();
     });
 }
@@ -114,7 +116,7 @@ SEXP ci__make_character_vector_UnicodeString_ptr(R_len_t numnames, ...)
     }
     va_end(arguments);
 
-    return charport::unwind_protect([&]() -> SEXP {
+    return ci::unwind_protect([&]() -> SEXP {
         return output.to_sexp();
     });
 }
@@ -236,7 +238,7 @@ SEXP ci__vector_NA_strings(R_len_t howmany)
     for (R_len_t i=0; i<howmany; ++i)
         output.set_na(i);
 
-    return charport::unwind_protect([&]() -> SEXP {
+    return ci::unwind_protect([&]() -> SEXP {
         return output.to_sexp();
     });
 }
@@ -288,7 +290,7 @@ SEXP ci__vector_empty_strings(R_len_t howmany)
             output, i, "", 0, cetype_ext_t::CE_ASCII
         );
 
-    return charport::unwind_protect([&]() -> SEXP {
+    return ci::unwind_protect([&]() -> SEXP {
         return output.to_sexp();
     });
 }
@@ -345,13 +347,13 @@ SEXP ci__matrix_NA_STRING(R_len_t nrow, R_len_t ncol)
         charport::charvec::Builder output(size);
         for (R_xlen_t i=0; i<size; ++i)
             output.set_na(i);
-        x = charport::unwind_protect([&]() -> SEXP {
+        x = ci::unwind_protect([&]() -> SEXP {
             return output.to_sexp();
         });
     }
 
     PROTECT(x);
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         SEXP dim;
         PROTECT(dim = Rf_allocVector(INTSXP, 2));
         INTEGER(dim)[0] = nrow;
@@ -408,3 +410,5 @@ int ci__match_arg(
     }
     return which;
 }
+
+} } // namespace charr::altrep_backend

@@ -154,10 +154,6 @@ ci_conv <- ci_encode
 #
 # @family encoding_conversion
 # @export
-ci_enc_toutf32 <- function(str)
-{
-    .Call(C_ci_enc_toutf32, str)
-}
 
 
 # @title
@@ -194,10 +190,6 @@ ci_enc_toutf32 <- function(str)
 #
 # @family encoding_conversion
 # @export
-ci_enc_fromutf32 <- function(vec)
-{
-    .Call(C_ci_enc_fromutf32, vec)
-}
 
 
 # @title
@@ -244,10 +236,6 @@ ci_enc_fromutf32 <- function(vec)
 #
 # @family encoding_conversion
 # @export
-ci_enc_toutf8 <- function(str, is_unknown_8bit = FALSE, validate = FALSE)
-{
-    .Call(C_ci_enc_toutf8, str, is_unknown_8bit, validate)
-}
 
 
 # @title
@@ -299,7 +287,3 @@ ci_enc_toutf8 <- function(str, is_unknown_8bit = FALSE, validate = FALSE)
 #
 # @family encoding_conversion
 # @export
-ci_enc_toascii <- function(str)
-{
-    .Call(C_ci_enc_toascii, str)
-}

@@ -15,7 +15,6 @@ test_that("optimized regex match preserves captures and marked input", {
 
   operations <- list(
     function(x) charr:::ci_match_first_regex(x, pattern, cg_missing = "MISS"),
-    function(x) charr:::ci_match_last_regex(x, pattern, cg_missing = "MISS"),
     function(x) charr:::ci_match_all_regex(x, pattern, cg_missing = "MISS"),
     function(x) charr:::ci_match_all_regex(
       x, pattern, omit_no_match = TRUE, cg_missing = "MISS"

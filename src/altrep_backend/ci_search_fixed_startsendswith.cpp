@@ -33,13 +33,15 @@
 
 #include "ci_stringi.h"
 #include "ci_utf8.h"
-#include "ci_container_bytesearch.h"
-#include "ci_container_integer.h"
+#include "fixed/pattern_set.h"
+#include "io/integer_input.h"
 
 #include <cstring>
 
+namespace charr { namespace altrep_backend {
 
-namespace {
+
+namespace search_fixed_startsendswith {
 
 // Default starts/ends checks can compare borrowed UTF-8 bytes directly.
 // The general container path handles conversion, indexing, and search options.
@@ -89,7 +91,9 @@ inline bool ci__fixed_at_end(
         ) == 0;
 }
 
-}
+} // namespace search_fixed_startsendswith
+
+using namespace search_fixed_startsendswith;
 
 /**
  * Detect if a string starts with a pattern match
@@ -106,10 +110,10 @@ inline bool ci__fixed_at_end(
  *
  * @version 0.4-1 (Marek Gagolewski, 2014-12-07)
  *    FR #110, #23: opts_fixed arg added;
- *    use StriContainerByteSearch::startsWith() and endsWith()
+ *    use fixed::PatternSet::startsWith() and endsWith()
  *
  * @version 0.5-1 (Marek Gagolewski, 2015-02-14)
- *    use Utf8Record::startsWith() and endsWith()
+ *    use io::Utf8Record::startsWith() and endsWith()
  *
  * @version 1.4.7 (Marek Gagolewski, 2020-08-24)
  *    #345: `negate` arg added
@@ -117,7 +121,7 @@ inline bool ci__fixed_at_end(
 SEXP ci_startswith_fixed(SEXP str, SEXP pattern, SEXP from, SEXP negate, SEXP opts_fixed)
 {
     bool negate_1 = ci__prepare_arg_logical_1_notNA(negate, "negate");
-    uint32_t pattern_flags = StriContainerByteSearch::getByteSearchFlags(opts_fixed);
+    uint32_t pattern_flags = fixed::PatternSet::getByteSearchFlags(opts_fixed);
     PROTECT(str = ci__prepare_arg_string(str, "str"));
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
     PROTECT(from = ci__prepare_arg_integer(from, "from"));
@@ -136,18 +140,18 @@ SEXP ci_startswith_fixed(SEXP str, SEXP pattern, SEXP from, SEXP negate, SEXP op
         context.size(from), "integer vectors"
     );
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             STRI__DEFERRED_WARNINGS, 3, str_n, pattern_n, from_n
         );
         return R_NilValue;
     });
 
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(LGLSXP, vectorize_length);
     }));
     int* ret_tab = LOGICAL(ret);
-    StriContainerInteger from_cont(from, vectorize_length);
+    io::IntegerInput from_cont(from, vectorize_length);
     R_len_t general_start = 0;
     std::shared_ptr<ci::ReaderBorrow> str_borrow;
     std::shared_ptr<ci::ReaderBorrow> pattern_borrow;
@@ -200,10 +204,10 @@ SEXP ci_startswith_fixed(SEXP str, SEXP pattern, SEXP from, SEXP negate, SEXP op
     }
 
     {
-        IndexedUtf8Input str_cont(
+        io::IndexedUtf8Input str_cont(
             context, str, vectorize_length
         );
-        StriContainerByteSearch pattern_cont(
+        fixed::PatternSet pattern_cont(
             context, pattern, vectorize_length, pattern_flags
         );
 
@@ -264,7 +268,7 @@ SEXP ci_startswith_fixed(SEXP str, SEXP pattern, SEXP from, SEXP negate, SEXP op
  *    FR #110, #23: opts_fixed arg added
  *
  * @version 0.5-1 (Marek Gagolewski, 2015-02-14)
- *    use Utf8Record::startsWith() and endsWith()
+ *    use io::Utf8Record::startsWith() and endsWith()
  *
  * @version 1.4.7 (Marek Gagolewski, 2020-08-24)
  *    #345: `negate` arg added
@@ -272,7 +276,7 @@ SEXP ci_startswith_fixed(SEXP str, SEXP pattern, SEXP from, SEXP negate, SEXP op
 SEXP ci_endswith_fixed(SEXP str, SEXP pattern, SEXP to, SEXP negate, SEXP opts_fixed)
 {
     bool negate_1 = ci__prepare_arg_logical_1_notNA(negate, "negate");
-    uint32_t pattern_flags = StriContainerByteSearch::getByteSearchFlags(opts_fixed);
+    uint32_t pattern_flags = fixed::PatternSet::getByteSearchFlags(opts_fixed);
     PROTECT(str = ci__prepare_arg_string(str, "str"));
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
     PROTECT(to = ci__prepare_arg_integer(to, "to"));
@@ -291,18 +295,18 @@ SEXP ci_endswith_fixed(SEXP str, SEXP pattern, SEXP to, SEXP negate, SEXP opts_f
         context.size(to), "integer vectors"
     );
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             STRI__DEFERRED_WARNINGS, 3, str_n, pattern_n, to_n
         );
         return R_NilValue;
     });
 
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(LGLSXP, vectorize_length);
     }));
     int* ret_tab = LOGICAL(ret);
-    StriContainerInteger to_cont(to, vectorize_length);
+    io::IntegerInput to_cont(to, vectorize_length);
     R_len_t general_start = 0;
     std::shared_ptr<ci::ReaderBorrow> str_borrow;
     std::shared_ptr<ci::ReaderBorrow> pattern_borrow;
@@ -355,10 +359,10 @@ SEXP ci_endswith_fixed(SEXP str, SEXP pattern, SEXP to, SEXP negate, SEXP opts_f
     }
 
     {
-        IndexedUtf8Input str_cont(
+        io::IndexedUtf8Input str_cont(
             context, str, vectorize_length
         );
-        StriContainerByteSearch pattern_cont(
+        fixed::PatternSet pattern_cont(
             context, pattern, vectorize_length, pattern_flags
         );
 
@@ -399,3 +403,5 @@ SEXP ci_endswith_fixed(SEXP str, SEXP pattern, SEXP to, SEXP negate, SEXP opts_f
     return ret;
     STRI__ERROR_HANDLER_END( ;/* do nothing special on error */ )
 }
+
+} } // namespace charr::altrep_backend

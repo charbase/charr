@@ -33,12 +33,14 @@
 
 #include "ci_stringi.h"
 #include "ci_utf8.h"
-#include "ci_container_utf16.h"
+#include "io/utf16_input.h"
 #include <unicode/ucol.h>
 #include <vector>
 #include <deque>
 #include <algorithm>
 #include <set>
+
+namespace charr { namespace altrep_backend {
 
 
 // !!!! no longer used since stringi_0.2-3 !!!!
@@ -93,123 +95,6 @@
    ************************************************************************* */
 
 
-/**
- * Compare elements in 2 character vectors, without collation [INTERNAL]
- *
- * @param e1 character vector
- * @param e2 character vector
- * @param _negate [internal] integer; 0 or 1 (whether to negate the results)
- *
- * @return logical vector
- *
- * @version 0.2-3 (Marek Gagolewski, 2014-05-07)
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- */
-SEXP ci_cmp_codepoints(SEXP e1, SEXP e2, int _negate)
-{
-    // _negate is an internal arg, check manually, error() allowed here
-    if (_negate < 0 || _negate > 1)
-        Rf_error(MSG__INCORRECT_INTERNAL_ARG);
-
-    PROTECT(e1 = ci__prepare_arg_string(e1, "e1")); // prepare string argument
-    PROTECT(e2 = ci__prepare_arg_string(e2, "e2")); // prepare string argument
-
-    STRI__ERROR_HANDLER_BEGIN(2)
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    R_len_t e1_n = ci::checked_r_len(
-        context.size(e1), "character vectors"
-    );
-    R_len_t e2_n = ci::checked_r_len(
-        context.size(e2), "character vectors"
-    );
-    R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
-        vectorize_length = ci__recycling_rule(
-            STRI__DEFERRED_WARNINGS, 2, e1_n, e2_n
-        );
-        return R_NilValue;
-    });
-
-    SEXP ret;
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
-        return Rf_allocVector(LGLSXP, vectorize_length);
-    }));
-    int* ret_tab = LOGICAL(ret);
-
-    {
-        Utf8Input e1_cont(context, e1, vectorize_length);
-        Utf8Input e2_cont(context, e2, vectorize_length);
-        const Utf8Record* e1_records = e1_cont.source_data();
-        const Utf8Record* e2_records = e2_cont.source_data();
-        R_len_t e1_index = 0;
-        R_len_t e2_index = 0;
-
-        for (R_len_t i = 0; i < vectorize_length; ++i)
-        {
-            const charport::StrView cur1 = e1_records[e1_index].view();
-            const charport::StrView cur2 = e2_records[e2_index].view();
-            if (++e1_index == e1_n)
-                e1_index = 0;
-            if (++e2_index == e2_n)
-                e2_index = 0;
-
-            if (cur1.is_na() || cur2.is_na()) {
-                ret_tab[i] = NA_LOGICAL;
-                continue;
-            }
-
-            if (cur1.len != cur2.len) // different number of bytes => not equal
-                ret_tab[i] = FALSE;
-            else
-                ret_tab[i] = (memcmp(cur1.ptr, cur2.ptr, cur1.len) == 0);
-
-            if (_negate)
-                ret_tab[i] = !ret_tab[i];
-        }
-    }
-
-    context.emitWarnings();
-    STRI__UNPROTECT_ALL
-    return ret;
-
-    STRI__ERROR_HANDLER_END({/* no-op on err */})
-}
-
-
-/**
- * Test if elements in 2 character vectors are equal, without collation
- *
- * @param e1 character vector
- * @param e2 character vector
- *
- * @return logical vector
- *
- * @version 0.6-1 (Marek Gagolewski, 2015-07-05)
- *    use ci_cmp_codepoints
- */
-SEXP ci_cmp_eq(SEXP e1, SEXP e2) {
-    return ci_cmp_codepoints(e1, e2, 0);
-}
-
-
-/**
- * Test if elements in 2 character vectors are non-equal, without collation
- *
- * @param e1 character vector
- * @param e2 character vector
- *
- * @return logical vector
- *
- * @version 0.6-1 (Marek Gagolewski, 2015-07-05)
- *    use ci_cmp_codepoints
- */
-SEXP ci_cmp_neq(SEXP e1, SEXP e2) {
-    return ci_cmp_codepoints(e1, e2, 1);
-}
-
-
 /* *************************************************************************
                                   STRI_CMP_LOGICAL
    ************************************************************************* */
@@ -250,7 +135,7 @@ SEXP ci__cmp_logical(SEXP e1, SEXP e2, SEXP opts_collator, int _type, int _negat
     STRI__ERROR_HANDLER_BEGIN(2)
     // Deviation from stringi: catch R errors from collator option parsing so
     // queued warnings and any opened collator are released before R resumes.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         col = ci__ucol_open(STRI__DEFERRED_WARNINGS, opts_collator);
         return R_NilValue;
     });
@@ -264,7 +149,7 @@ SEXP ci__cmp_logical(SEXP e1, SEXP e2, SEXP opts_collator, int _type, int _negat
     R_len_t vectorize_length = 0;
     // Deviation from stringi: queue recycling warnings while the collator is
     // live and emit them after the collator closes.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             STRI__DEFERRED_WARNINGS, 2, e1_n, e2_n
         );
@@ -272,16 +157,16 @@ SEXP ci__cmp_logical(SEXP e1, SEXP e2, SEXP opts_collator, int _type, int _negat
     });
 
     SEXP ret;
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(LGLSXP, vectorize_length);
     }));
     int* ret_tab = LOGICAL(ret);
 
     {
-        Utf8Input e1_cont(context, e1, vectorize_length);
-        Utf8Input e2_cont(context, e2, vectorize_length);
-        const Utf8Record* e1_records = e1_cont.source_data();
-        const Utf8Record* e2_records = e2_cont.source_data();
+        io::Utf8Input e1_cont(context, e1, vectorize_length);
+        io::Utf8Input e2_cont(context, e2, vectorize_length);
+        const io::Utf8Record* e1_records = e1_cont.source_data();
+        const io::Utf8Record* e2_records = e2_cont.source_data();
         R_len_t e1_index = 0;
         R_len_t e2_index = 0;
 
@@ -345,207 +230,8 @@ SEXP ci_cmp_equiv(SEXP e1, SEXP e2, SEXP opts_collator) {
 }
 
 
-/**
- * Compare elements in 2 character vectors, with collation [INTERNAL]
- *
- * @param e1 character vector
- * @param e2 character vector
- * @param opts_collator passed to ci__ucol_open()
- *
- * @return logical vector
- *
- * @version 0.6-1  (Marek Gagolewski, 2015-07-05)
- *    use ci__cmp_logical
- */
-SEXP ci_cmp_nequiv(SEXP e1, SEXP e2, SEXP opts_collator) {
-    return ci__cmp_logical(e1, e2, opts_collator, 0, 1);
-}
-
-
-/**
- * Compare elements in 2 character vectors, with collation [INTERNAL]
- *
- * @param e1 character vector
- * @param e2 character vector
- * @param opts_collator passed to ci__ucol_open()
- *
- * @return logical vector
- *
- * @version 0.6-1  (Marek Gagolewski, 2015-07-05)
- *    use ci__cmp_logical
- */
-SEXP ci_cmp_lt(SEXP e1, SEXP e2, SEXP opts_collator) {
-    return ci__cmp_logical(e1, e2, opts_collator, -1, 0);
-}
-
-
-/**
- * Compare elements in 2 character vectors, with collation [INTERNAL]
- *
- * @param e1 character vector
- * @param e2 character vector
- * @param opts_collator passed to ci__ucol_open()
- *
- * @return logical vector
- *
- * @version 0.6-1  (Marek Gagolewski, 2015-07-05)
- *    use ci__cmp_logical
- */
-SEXP ci_cmp_gt(SEXP e1, SEXP e2, SEXP opts_collator) {
-    return ci__cmp_logical(e1, e2, opts_collator, 1, 0);
-}
-
-
-/**
- * Compare elements in 2 character vectors, with collation [INTERNAL]
- *
- * @param e1 character vector
- * @param e2 character vector
- * @param opts_collator passed to ci__ucol_open()
- *
- * @return logical vector
- *
- * @version 0.6-1  (Marek Gagolewski, 2015-07-05)
- *    use ci__cmp_logical
- */
-SEXP ci_cmp_le(SEXP e1, SEXP e2, SEXP opts_collator) {
-    return ci__cmp_logical(e1, e2, opts_collator, 1, 1);
-}
-
-
-/**
- * Compare elements in 2 character vectors, with collation [INTERNAL]
- *
- * @param e1 character vector
- * @param e2 character vector
- * @param opts_collator passed to ci__ucol_open()
- *
- * @return logical vector
- *
- * @version 0.6-1  (Marek Gagolewski, 2015-07-05)
- *    use ci__cmp_logical
- */
-SEXP ci_cmp_ge(SEXP e1, SEXP e2, SEXP opts_collator) {
-    return ci__cmp_logical(e1, e2, opts_collator, -1, 1);
-}
-
-
 /* *************************************************************************
                                   STRI_CMP
    ************************************************************************* */
 
-/**
- * Compare character vectors, possibly with collation
- *
- * @param e1 character vector
- * @param e2 character vector
- * @param opts_collator passed to ci__ucol_open()
- *
- * @return integer vector, like strcmp in C
- *
- * @version 0.1-?? (Marek Gagolewski)
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
- *          make StriException friendly
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-27)
- *          moved to UTF16, as ucol_strcollUTF8 is DRAFT
- *
- * @version 0.2-1  (Marek Gagolewski, 2014-03-16)
- *          using ucol_strcollUTF8 again, as we now require ICU >= 50
- *          [4x speedup utf8, 2x slowdown 8bit]
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-03-19)
- *          one function for cmp with and without collation
- *
- * @version 0.2-3 (Marek Gagolewski, 2014-05-07)
- *          opts_collator == NA no longer allowed
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- */
-SEXP ci_cmp(SEXP e1, SEXP e2, SEXP opts_collator)
-{
-    PROTECT(e1 = ci__prepare_arg_string(e1, "e1"));
-    PROTECT(e2 = ci__prepare_arg_string(e2, "e2"));
-
-    UCollator* col = NULL;
-
-    STRI__ERROR_HANDLER_BEGIN(2)
-    // Deviation from stringi: catch R errors from collator option parsing so
-    // queued warnings and any opened collator are released before R resumes.
-    charport::unwind_protect([&]() -> SEXP {
-        col = ci__ucol_open(STRI__DEFERRED_WARNINGS, opts_collator);
-        return R_NilValue;
-    });
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    R_len_t e1_n = ci::checked_r_len(
-        context.size(e1), "character vectors"
-    );
-    R_len_t e2_n = ci::checked_r_len(
-        context.size(e2), "character vectors"
-    );
-    R_len_t vectorize_length = 0;
-    // Deviation from stringi: queue recycling warnings while the collator is
-    // live and emit them after the collator closes.
-    charport::unwind_protect([&]() -> SEXP {
-        vectorize_length = ci__recycling_rule(
-            STRI__DEFERRED_WARNINGS, 2, e1_n, e2_n
-        );
-        return R_NilValue;
-    });
-
-
-    SEXP ret;
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
-        return Rf_allocVector(INTSXP, vectorize_length);
-    }));
-    int* ret_int = INTEGER(ret);
-
-    {
-        Utf8Input e1_cont(context, e1, vectorize_length);
-        Utf8Input e2_cont(context, e2, vectorize_length);
-        const Utf8Record* e1_records = e1_cont.source_data();
-        const Utf8Record* e2_records = e2_cont.source_data();
-        R_len_t e1_index = 0;
-        R_len_t e2_index = 0;
-
-        for (R_len_t i = 0; i < vectorize_length; ++i)
-        {
-            const charport::StrView cur1 = e1_records[e1_index].view();
-            const charport::StrView cur2 = e2_records[e2_index].view();
-            if (++e1_index == e1_n)
-                e1_index = 0;
-            if (++e2_index == e2_n)
-                e2_index = 0;
-
-            if (cur1.is_na() || cur2.is_na()) {
-                ret_int[i] = NA_INTEGER;
-                continue;
-            }
-
-            // cmp with collation
-            UErrorCode status = U_ZERO_ERROR;
-            ret_int[i] = (int)ucol_strcollUTF8(col,
-                                               cur1.ptr, cur1.len,
-                                               cur2.ptr, cur2.len, &status
-                                              );
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-        }
-    }
-
-    if (col) {
-        ucol_close(col);
-        col = NULL;
-    }
-    context.emitWarnings();
-    STRI__UNPROTECT_ALL
-    return ret;
-
-    STRI__ERROR_HANDLER_END({
-        if (col) {
-            ucol_close(col);
-            col = NULL;
-        }
-    })
-}
+} } // namespace charr::altrep_backend

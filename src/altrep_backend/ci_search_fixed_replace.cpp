@@ -34,20 +34,22 @@
 #include "ci_stringi.h"
 #include "ci_builder.h"
 #include "ci_utf8.h"
-#include "ci_container_bytesearch.h"
+#include "fixed/pattern_set.h"
 #include "ci_string8buf.h"
-#include "altrep/utf8_output.h"
+#include "altrep_backend/io/utf8_output.h"
 //#include "ci_interval.h"
 #include <cstdint>
 #include <cstring>
 #include <deque>
 #include <memory>
+
+namespace charr { namespace altrep_backend {
 //#include <queue>
 //#include <algorithm>
 using namespace std;
 
 
-namespace {
+namespace search_fixed_replace {
 
 struct CiDirectView {
     const char* data;
@@ -93,7 +95,7 @@ R_len_t ci__find_byte_first(
         data, pattern, static_cast<size_t>(length)
     );
     return found == NULL
-        ? USEARCH_DONE
+        ? shared::ByteSearchMatcher::not_found
         : static_cast<R_len_t>(static_cast<const char*>(found)-data);
 }
 
@@ -106,7 +108,7 @@ R_len_t ci__find_byte_last(
         if (static_cast<unsigned char>(data[i-1]) == pattern)
             return i-1;
     }
-    return USEARCH_DONE;
+    return shared::ByteSearchMatcher::not_found;
 }
 
 
@@ -245,7 +247,7 @@ struct CiReplacementLayout {
 
 CiReplacementLayout ci__replacement_layout(
     const char* source, R_len_t source_length,
-    const Utf8Record& replacement,
+    const io::Utf8Record& replacement,
     const deque<pair<R_len_t, R_len_t> >& occurrences,
     size_t matched_bytes
 )
@@ -280,7 +282,7 @@ CiReplacementLayout ci__replacement_layout(
 
 void ci__write_replacements(
     char* output, const char* source, R_len_t source_length,
-    const Utf8Record& replacement,
+    const io::Utf8Record& replacement,
     const deque<pair<R_len_t, R_len_t> >& occurrences
 )
 {
@@ -314,7 +316,7 @@ bool ci__replace_scalar_byte_direct(
     const charport::StrView& pattern,
     const charport::StrView& replacement,
     R_len_t vectorize_length, uint32_t pattern_flags, int type,
-    charr::altrep::OutputBuilder& builder,
+    charr::altrep_backend::io::OutputBuilder& builder,
     R_len_t& general_start
 )
 {
@@ -351,7 +353,7 @@ bool ci__replace_scalar_byte_direct(
             continue;
         }
 
-        R_len_t match = USEARCH_DONE;
+        R_len_t match = shared::ByteSearchMatcher::not_found;
         size_t count = 0;
         bool output_is_ascii = false;
         if (type == 0) {
@@ -374,7 +376,7 @@ bool ci__replace_scalar_byte_direct(
             );
         }
 
-        if (match == USEARCH_DONE) {
+        if (match == shared::ByteSearchMatcher::not_found) {
             builder.set(
                 i, source.data, static_cast<size_t>(source.length),
                 source.encoding
@@ -417,7 +419,9 @@ bool ci__replace_scalar_byte_direct(
     return true;
 }
 
-} // namespace
+} // namespace search_fixed_replace
+
+using namespace search_fixed_replace;
 
 
 /**
@@ -429,9 +433,6 @@ bool ci__replace_scalar_byte_direct(
  * @return character vector
  *
  * @version 0.1-?? (Bartek Tartanus)
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-26)
- *          StriException friendly & Use StriContainers
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-07-10)
  *          BUGFIX: wrong behavior on empty str
@@ -453,7 +454,7 @@ bool ci__replace_scalar_byte_direct(
  */
 SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, SEXP opts_fixed, int type)
 {
-    uint32_t pattern_flags = StriContainerByteSearch::getByteSearchFlags(opts_fixed);
+    uint32_t pattern_flags = fixed::PatternSet::getByteSearchFlags(opts_fixed);
     PROTECT(str          = ci__prepare_arg_string(str, "str"));
     PROTECT(pattern      = ci__prepare_arg_string(pattern, "pattern"));
     PROTECT(replacement  = ci__prepare_arg_string(replacement, "replacement"));
@@ -472,7 +473,7 @@ SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, SE
         context.size(replacement), "character vectors"
     );
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             STRI__DEFERRED_WARNINGS, 3,
             str_n, pattern_n, replacement_n
@@ -480,7 +481,7 @@ SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, SE
         return R_NilValue;
     });
 
-    charr::altrep::OutputBuilder builder(vectorize_length);
+    charr::altrep_backend::io::OutputBuilder builder(vectorize_length);
     bool direct = vectorize_length == 0;
     R_len_t general_start = 0;
     std::shared_ptr<ci::ReaderBorrow> str_borrow;
@@ -500,11 +501,11 @@ SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, SE
 
     if (!direct) {
         {
-        Utf8Input str_cont(context, str, vectorize_length);
-        Utf8Input replacement_cont(
+        io::Utf8Input str_cont(context, str, vectorize_length);
+        io::Utf8Input replacement_cont(
             context, replacement, vectorize_length
         );
-        StriContainerByteSearch pattern_cont(
+        fixed::PatternSet pattern_cont(
             context, pattern, vectorize_length, pattern_flags
         );
 
@@ -520,17 +521,17 @@ SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, SE
                         i, "", 0, cetype_ext_t::CE_ASCII
                     );)
 
-            StriByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
+            shared::ByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
             matcher->reset(str_cont.get(i).data(), str_cont.get(i).length());
             R_len_t start;
             if (type >= 0) { // first or all
-                start = matcher->findFirst();
+                start = matcher->find_first();
             } else {
-                start = matcher->findLast();
+                start = matcher->find_last();
             }
 
-            if (start == USEARCH_DONE) {
-                const Utf8Record& source = str_cont.get(i);
+            if (start == shared::ByteSearchMatcher::not_found) {
+                const io::Utf8Record& source = str_cont.get(i);
                 builder.set(
                     i, source.data(), source.length(),
                     source.isASCII()
@@ -545,22 +546,22 @@ SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, SE
                 continue;
             }
 
-            R_len_t len = matcher->getMatchedLength();
+            R_len_t len = matcher->matched_length();
             size_t matched_bytes = static_cast<size_t>(len);
             deque< pair<R_len_t, R_len_t> > occurrences;
             occurrences.push_back(pair<R_len_t, R_len_t>(start, start+len));
 
             if (type == 0) {
-                while (USEARCH_DONE != matcher->findNext()) { // all
-                    start = matcher->getMatchedStart();
-                    len = matcher->getMatchedLength();
+                while (shared::ByteSearchMatcher::not_found != matcher->find_next()) { // all
+                    start = matcher->matched_start();
+                    len = matcher->matched_length();
                     occurrences.push_back(pair<R_len_t, R_len_t>(start, start+len));
                     matched_bytes += static_cast<size_t>(len);
                 }
             }
 
-            const Utf8Record& source = str_cont.get(i);
-            const Utf8Record& replacement_current = replacement_cont.get(i);
+            const io::Utf8Record& source = str_cont.get(i);
+            const io::Utf8Record& replacement_current = replacement_cont.get(i);
             const CiReplacementLayout layout = ci__replacement_layout(
                 source.data(), source.length(), replacement_current,
                 occurrences, matched_bytes
@@ -582,7 +583,9 @@ SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, SE
     replacement_borrow.reset();
     pattern_borrow.reset();
     str_borrow.reset();
-    STRI__PROTECT(ret = builder.to_sexp());
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return builder.to_sexp();
+    }));
     }
     STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
@@ -591,7 +594,7 @@ SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, SE
 }
 
 
-// Version 2, 2014-11-02, using Utf8Record::replaceAllAtPos, slower
+// Version 2, 2014-11-02, using io::Utf8Record::replaceAllAtPos, slower
 //SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, int type)
 //{
 //   str          = ci__prepare_arg_string(str, "str");
@@ -600,9 +603,9 @@ SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, SE
 //   R_len_t vectorize_length = ci__recycling_rule(true, 3, LENGTH(str), LENGTH(pattern), LENGTH(replacement));
 //
 //   STRI__ERROR_HANDLER_BEGIN
-//   Utf8Input str_cont(str, vectorize_length, false); // writable);
-//   Utf8Input replacement_cont(replacement, vectorize_length);
-//   StriContainerByteSearch pattern_cont(pattern, vectorize_length);
+//   io::Utf8Input str_cont(str, vectorize_length, false); // writable);
+//   io::Utf8Input replacement_cont(replacement, vectorize_length);
+//   fixed::PatternSet pattern_cont(pattern, vectorize_length);
 //
 //   for (R_len_t i = pattern_cont.vectorize_init();
 //         i != pattern_cont.vectorize_end();
@@ -626,7 +629,7 @@ SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, SE
 //         start = pattern_cont.findLast();
 //      }
 //
-//      if (start == USEARCH_DONE) {
+//      if (start == shared::ByteSearchMatcher::not_found) {
 //         // nothing to do, no change, leave as-is
 //         continue;
 //      }
@@ -637,7 +640,7 @@ SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, SE
 //      occurrences.push_back(pair<R_len_t, R_len_t>(start, start+len));
 //
 //      if (type == 0) {
-//         while (USEARCH_DONE != pattern_cont.findNext()) { // all
+//         while (shared::ByteSearchMatcher::not_found != pattern_cont.findNext()) { // all
 //            start = pattern_cont.getMatchedStart();
 //            len = pattern_cont.getMatchedLength();
 //            occurrences.push_back(pair<R_len_t, R_len_t>(start, start+len));
@@ -696,20 +699,22 @@ SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
     );
 
     if (str_n <= 0) {
-        charr::altrep::OutputBuilder builder(0);
-        STRI__PROTECT(ret = builder.to_sexp());
+        charr::altrep_backend::io::OutputBuilder builder(0);
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return builder.to_sexp();
+        }));
         STRI__UNPROTECT_ALL
         return ret;
     }
 
     // Deviation from stringi: lazy preparation now runs inside the C++
     // boundary, so queue its controlled warnings with the operation.
-    STRI__PROTECT(pattern = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(pattern = ci::unwind_protect([&]() -> SEXP {
         return ci__prepare_arg_string(
             pattern, "pattern", true, &STRI__DEFERRED_WARNINGS
         );
     }));
-    STRI__PROTECT(replacement = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(replacement = ci::unwind_protect([&]() -> SEXP {
         return ci__prepare_arg_string(
             replacement, "replacement", true,
             &STRI__DEFERRED_WARNINGS
@@ -724,7 +729,7 @@ SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
     );
     // Deviation from stringi: signal this controlled validation failure only
     // after the outer C++ boundary has released operation state.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         if (pattern_n < replacement_n || pattern_n <= 0 || replacement_n <= 0)
             throw StriException(MSG__WARN_RECYCLING_RULE2);
         return R_NilValue;
@@ -736,7 +741,7 @@ SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
         // Deviation from stringi: replay outer preparation diagnostics before
         // delegation, while no Reader or output owner is active.
         context.emitWarnings();
-        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
             return ci__replace_allfirstlast_fixed(
                 str, pattern, replacement, opts_fixed, 0
             );
@@ -746,20 +751,20 @@ SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
     }
 
     uint32_t pattern_flags = 0;
-    charport::unwind_protect([&]() -> SEXP {
-        pattern_flags = StriContainerByteSearch::getByteSearchFlags(
+    ci::unwind_protect([&]() -> SEXP {
+        pattern_flags = fixed::PatternSet::getByteSearchFlags(
             opts_fixed, false, &STRI__DEFERRED_WARNINGS
         );
         return R_NilValue;
     });
-    charr::altrep::OutputBuilder builder(str_n);
+    charr::altrep_backend::io::OutputBuilder builder(str_n);
 
     {
-        Utf8Workspace str_cont(context, str, str_n);
-        Utf8Input replacement_cont(
+        io::Utf8Workspace str_cont(context, str, str_n);
+        io::Utf8Input replacement_cont(
             context, replacement, pattern_n
         );
-        StriContainerByteSearch pattern_cont(
+        fixed::PatternSet pattern_cont(
             context, pattern, pattern_n, pattern_flags
         );
         bool return_all_na = false;
@@ -776,26 +781,26 @@ SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
                 break;
             }
 
-            StriByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
+            shared::ByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
             for (R_len_t j = 0; j<str_n; ++j) {
                 if (str_cont.isNA(j)) continue;
                 matcher->reset(str_cont.get(j).data(), str_cont.get(j).length());
-                R_len_t start = matcher->findFirst();
-                if (start == USEARCH_DONE)  continue;  // nothing to do now
+                R_len_t start = matcher->find_first();
+                if (start == shared::ByteSearchMatcher::not_found)  continue;  // nothing to do now
 
                 if (replacement_cont.isNA(i)) {
                     str_cont.setNA(j);
                     continue;
                 }
 
-                R_len_t len = matcher->getMatchedLength();
+                R_len_t len = matcher->matched_length();
                 size_t matched_bytes = static_cast<size_t>(len);
                 deque< pair<R_len_t, R_len_t> > occurrences;
                 occurrences.push_back(pair<R_len_t, R_len_t>(start, start+len));
 
-                while (USEARCH_DONE != matcher->findNext()) { // all
-                    start = matcher->getMatchedStart();
-                    len = matcher->getMatchedLength();
+                while (shared::ByteSearchMatcher::not_found != matcher->find_next()) { // all
+                    start = matcher->matched_start();
+                    len = matcher->matched_length();
                     occurrences.push_back(pair<R_len_t, R_len_t>(start, start+len));
                     matched_bytes += static_cast<size_t>(len);
                 }
@@ -819,7 +824,7 @@ SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
             if (return_all_na)
                 builder.set_na(j);
             else {
-                const Utf8Record& value = str_cont.getNAble(j);
+                const io::Utf8Record& value = str_cont.getNAble(j);
                 if (value.isNA()) {
                     builder.set_na(j);
                 }
@@ -835,7 +840,9 @@ SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
         }
     }
 
-    STRI__PROTECT(ret = builder.to_sexp());
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return builder.to_sexp();
+    }));
     }
     STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
@@ -894,9 +901,9 @@ SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
 //      return ci__vector_empty_strings(0);
 //
 //   STRI__ERROR_HANDLER_BEGIN
-//   Utf8Input str_cont(str, str_n);
-//   Utf8Input replacement_cont(replacement, pattern_n);
-//   StriContainerByteSearch pattern_cont(pattern, pattern_n);
+//   io::Utf8Input str_cont(str, str_n);
+//   io::Utf8Input replacement_cont(replacement, pattern_n);
+//   fixed::PatternSet pattern_cont(pattern, pattern_n);
 //
 //   // if any of the patterns is missing, then return an NA vector
 //   // if a pattern is empty, throw an error
@@ -929,7 +936,7 @@ SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
 //         R_len_t match_idx;
 //         pattern_cont.setupMatcherFwd(i, str_cont.get(j).c_str(), str_cont.get(j).length());
 //         match_idx = pattern_cont.findFirst();
-//         if (match_idx == USEARCH_DONE) continue; // no match at all
+//         if (match_idx == shared::ByteSearchMatcher::not_found) continue; // no match at all
 //
 //         // otherwise, there is >= 1 match
 //         if (replacement_cont.isNA(i)) {
@@ -941,7 +948,7 @@ SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
 //            queues[j].push_back(StriInterval<R_len_t>(match_idx, match_idx+pattern_cont.getMatchedLength(), i));
 //            match_idx = pattern_cont.findNext();
 //         }
-//         while (match_idx != USEARCH_DONE);
+//         while (match_idx != shared::ByteSearchMatcher::not_found);
 //      }
 //   }
 //
@@ -1051,31 +1058,6 @@ SEXP ci_replace_all_fixed(SEXP str, SEXP pattern, SEXP replacement, SEXP vectori
 
 
 /**
- * Replace last occurrence of a fixed pattern
- *
- * @param str character vector
- * @param pattern character vector
- * @param replacement character vector
- * @return character vector
- *
- * @version 0.1-?? (Bartek Tartanus)
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-26)
- *          use ci__replace_allfirstlast_fixed
- *
- * @version 0.2-3 (Marek Gagolewski, 2014-05-08)
- *          ci_replace_fixed now uses byte search only
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-12-07)
- *    FR #110, #23: opts_fixed arg added
- */
-SEXP ci_replace_last_fixed(SEXP str, SEXP pattern, SEXP replacement, SEXP opts_fixed)
-{
-    return ci__replace_allfirstlast_fixed(str, pattern, replacement, opts_fixed, -1);
-}
-
-
-/**
  * Replace first occurrence of a fixed pattern
  *
  * @param str character vector
@@ -1098,3 +1080,5 @@ SEXP ci_replace_first_fixed(SEXP str, SEXP pattern, SEXP replacement, SEXP opts_
 {
     return ci__replace_allfirstlast_fixed(str, pattern, replacement, opts_fixed, 1);
 }
+
+} } // namespace charr::altrep_backend

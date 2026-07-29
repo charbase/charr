@@ -32,15 +32,17 @@
 
 #include "ci_stringi.h"
 #include "ci_reader.h"
-#include "altrep/native_to_utf8.h"
+#include "../shared/native_to_utf8.h"
 
 #include <clocale>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 
+namespace charr { namespace altrep_backend {
 
-namespace {
+
+namespace length {
 
 bool ci__length_utf8_fast(const char* str, int n, int& length) noexcept
 {
@@ -75,7 +77,9 @@ int ci__ascii_string_width(const char* data, int length) noexcept
     return width;
 }
 
-} // namespace
+} // namespace length
+
+using namespace length;
 
 
 /**
@@ -150,18 +154,18 @@ SEXP ci_length(SEXP str)
 
     R_len_t str_n = ci::checked_r_len(XLENGTH(str), "character vectors");
     SEXP ret;
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(INTSXP, str_n);
     }));
     int* retint = INTEGER(ret);
 
-    charr::altrep::NativeToUtf8 native_to_utf8;
+    charr::shared::NativeToUtf8 native_to_utf8;
 
     if (str_n > 0) {
         // The copied stringi loop counts a leading UTF-8 BOM as a code point.
-        // Read the source records directly because Utf8Input's default policy
+        // Read the source records directly because io::Utf8Input's default policy
         // strips that prefix.
-        charport::Reader reader(str);
+        charport::Reader reader(ci::protected_reader_resolve(str));
         if (reader.size() != str_n)
             throw std::runtime_error(
                 "character vector length changed during an operation"
@@ -200,7 +204,7 @@ SEXP ci_length(SEXP str)
                     throw StriException(MSG__INVALID_UTF8);
             }
             else if (encoding == cetype_ext_t::CE_NATIVE) {
-                const charport::ByteView converted = native_to_utf8.native(
+                const shared::ByteView converted = native_to_utf8.native(
                     curs_s, curs_n
                 );
                 if (!ci__length_utf8_fast(
@@ -514,13 +518,13 @@ SEXP ci_width(SEXP str)
     STRI__ERROR_HANDLER_BEGIN(1)
     R_len_t str_n = ci::checked_r_len(XLENGTH(str), "character vectors");
     SEXP ret;
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(INTSXP, str_n);
     }));
     int* retint = INTEGER(ret);
 
     if (str_n > 0) {
-        charport::Reader reader(str);
+        charport::Reader reader(ci::protected_reader_resolve(str));
         if (reader.size() != str_n)
             throw std::runtime_error(
                 "character vector length changed during an operation"
@@ -532,7 +536,7 @@ SEXP ci_width(SEXP str)
         const char* const* ptrs = views.ptrs();
         const int* lengths = views.lengths();
         const cetype_ext_t* encodings = views.encodings();
-        charr::altrep::NativeToUtf8 native_to_utf8;
+        charr::shared::NativeToUtf8 native_to_utf8;
 
         for (R_len_t i = 0; i < str_n; ++i) {
             const cetype_ext_t encoding = encodings[i];
@@ -556,7 +560,7 @@ SEXP ci_width(SEXP str)
                 continue;
             }
 
-            charport::ByteView converted;
+            shared::ByteView converted;
             if (encoding == cetype_ext_t::CE_LATIN1) {
                 converted = native_to_utf8.latin1(data, length);
             }
@@ -574,3 +578,5 @@ SEXP ci_width(SEXP str)
     return ret;
     STRI__ERROR_HANDLER_END({ /* no special action on error */ })
 }
+
+} } // namespace charr::altrep_backend

@@ -1,7 +1,6 @@
 # charr-owned targeted equivalence tests for Reader/Builder coll extract.
 
 extract_first_coll <- function(...) charr:::ci_extract_first_coll(...)
-extract_last_coll <- function(...) charr:::ci_extract_last_coll(...)
 extract_all_coll <- function(...) charr:::ci_extract_all_coll(...)
 
 extract_coll_charvec <- function(x) charr:::ci_trim_both(x)
@@ -17,12 +16,8 @@ test_that("coll extract emits exact UTF-16 match slices through Builder", {
   opts <- list(locale = "de", strength = 1L)
 
   first <- extract_first_coll(strings, patterns, opts_collator = opts)
-  last <- extract_last_coll(strings, patterns, opts_collator = opts)
   expect_identical(first, c("ä", "ü", "aa", NA, NA, NA))
-  expect_identical(last, c("A", "Ü", "aa", NA, NA, NA))
   expect_identical(charport::is_charvec(first), charr_altrep())
-  # extract_last_coll is a revealed off-map helper, so it always uses charr.
-  expect_true(charport::is_charvec(last))
   expect_identical(Encoding(first), c("UTF-8", "UTF-8", "unknown",
     "unknown", "unknown", "unknown"))
 })
@@ -128,9 +123,6 @@ test_that("coll extract seeded differential matches stringi serially", {
     first = backend$stri_extract_first_coll(
       strings, patterns, opts_collator = opts
     ),
-    last = charr:::ci_extract_last_coll(
-      strings, patterns, opts_collator = opts
-    ),
     all = backend$stri_extract_all_coll(
       strings, patterns, opts_collator = opts
     ),
@@ -143,9 +135,6 @@ test_that("coll extract seeded differential matches stringi serially", {
   )
   run_oracle <- function() list(
     first = stringi::stri_extract_first_coll(
-      plain_strings, plain_patterns, opts_collator = opts
-    ),
-    last = stringi::stri_extract_last_coll(
       plain_strings, plain_patterns, opts_collator = opts
     ),
     all = stringi::stri_extract_all_coll(

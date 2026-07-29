@@ -34,7 +34,7 @@
 #include "ci_stringi.h"
 #include "ci_builder.h"
 #include "ci_utf8.h"
-#include "ci_container_utf16.h"
+#include "io/utf16_input.h"
 #include "ci_string8buf.h"
 #include <unicode/ucol.h>
 #include <unicode/sortkey.h>
@@ -44,19 +44,23 @@
 #include <set>
 #include <memory>
 
+namespace charr { namespace altrep_backend {
+
 
 # define STRI_SORTRANKORDER_SORT  1
 # define STRI_SORTRANKORDER_RANK  2
 # define STRI_SORTRANKORDER_ORDER 3
 
+namespace sort {
+
 /** help struct for ci_order **/
 struct StriSortComparer {
-    const Utf8Record* records;
+    const io::Utf8Record* records;
     bool decreasing;
     UCollator* col;
 
     StriSortComparer(
-        const Utf8Record* _records, UCollator* _col, bool _decreasing
+        const io::Utf8Record* _records, UCollator* _col, bool _decreasing
     )
     {
         this->records = _records;
@@ -84,6 +88,10 @@ struct StriSortComparer {
 //      }
     }
 };
+
+} // namespace sort
+
+using namespace sort;
 
 
 /** Sort, rank, or generate an ordering permutation
@@ -147,7 +155,7 @@ SEXP ci_order_rank_or_sort(SEXP str, SEXP decreasing, SEXP na_last,
     STRI__ERROR_HANDLER_BEGIN(2)
     // Deviation from stringi: catch R errors from collator option parsing so
     // queued warnings and any opened collator are released before R resumes.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         col = ci__ucol_open(STRI__DEFERRED_WARNINGS, opts_collator);
         return R_NilValue;
     });
@@ -163,7 +171,7 @@ SEXP ci_order_rank_or_sort(SEXP str, SEXP decreasing, SEXP na_last,
         // Deviation from stringi: allocate the integer shell before borrowing
         // ALTREP data. ci_order may drop NAs, so shrink this fresh vector after
         // the Reader has been released.
-        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
             return Rf_allocVector(INTSXP, vectorize_length);
         }));
         ret_tab = INTEGER(ret);
@@ -172,8 +180,8 @@ SEXP ci_order_rank_or_sort(SEXP str, SEXP decreasing, SEXP na_last,
     std::unique_ptr<charport::charvec::Builder> output;
     R_len_t output_length = vectorize_length;
     {
-        Utf8Input str_cont(context, str, vectorize_length);
-        const Utf8Record* records = str_cont.source_data();
+        io::Utf8Input str_cont(context, str, vectorize_length);
+        const io::Utf8Record* records = str_cont.source_data();
 
         deque<int> NA_pos;
         vector<int> order(vectorize_length);
@@ -270,11 +278,13 @@ SEXP ci_order_rank_or_sort(SEXP str, SEXP decreasing, SEXP na_last,
     }
 
     if (_type == STRI_SORTRANKORDER_SORT) {
-        STRI__PROTECT(ret = output->to_sexp());
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return output->to_sexp();
+        }));
         output.reset();
     }
     else if (output_length != vectorize_length) {
-        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
             return Rf_lengthgets(ret, output_length);
         }));
     }
@@ -295,26 +305,6 @@ SEXP ci_order_rank_or_sort(SEXP str, SEXP decreasing, SEXP na_last,
         }
     })
 }
-
-
-
-
-/** Sort a character vector
- *
- * @param str character vector
- * @param decreasing single logical value
- * @param na_last single logical value
- * @param opts_collator passed to ci__ucol_open()
- * @return charcter vector
- *
- * @version 0.6-1 (Marek Gagolewski, 2015-07-05)
- *    Call ci_order_rank_or_sort
- */
-SEXP ci_sort(SEXP str, SEXP decreasing, SEXP na_last, SEXP opts_collator)
-{
-    return ci_order_rank_or_sort(str, decreasing, na_last, opts_collator, STRI_SORTRANKORDER_SORT);
-}
-
 
 
 /** Return an ordering permutation
@@ -351,101 +341,6 @@ SEXP ci_rank(SEXP str, SEXP opts_collator)
 }
 
 
-/** Get unique elements from a character vector
- *
- * @param str character vector
- * @param opts_collator passed to ci__ucol_open()
- * @return character vector
- *
- * @version 0.2-1 (Bartek Tartanus, 2014-04-17)
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-04-17)
- *          using std::deque
- *
- * @version 0.2-3 (Marek Gagolewski, 2014-05-07)
- *          opts_collator == NA no longer allowed
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- */
-SEXP ci_unique(SEXP str, SEXP opts_collator)
-{
-    PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
-
-    UCollator* col = NULL;
-
-    STRI__ERROR_HANDLER_BEGIN(1)
-    // Deviation from stringi: catch R errors from collator option parsing so
-    // queued warnings and any opened collator are released before R resumes.
-    charport::unwind_protect([&]() -> SEXP {
-        col = ci__ucol_open(STRI__DEFERRED_WARNINGS, opts_collator);
-        return R_NilValue;
-    });
-
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    R_len_t vectorize_length = ci::checked_r_len(
-        context.size(str), "character vectors"
-    );
-    std::unique_ptr<charport::charvec::Builder> output;
-    {
-        Utf8Input str_cont(context, str, vectorize_length);
-        const Utf8Record* records = str_cont.source_data();
-
-        StriSortComparer comp(records, col, true);
-        set<int,StriSortComparer> uniqueset(comp);
-
-        bool was_na = false;
-        // Deviation from stringi: retain source indices instead of unprotected
-        // CHARSXPs, then copy through Builder while the Reader is still live.
-        deque<int> temp;
-        for (R_len_t i=0; i<vectorize_length; ++i) {
-            if (records[i].isNA()) {
-                if (!was_na) {
-                    was_na = true;
-                    temp.push_back(-1);
-                }
-            }
-            else {
-                pair<set<int,StriSortComparer>::iterator,bool> result = uniqueset.insert(i);
-                if (result.second) {
-                    temp.push_back(i);
-                }
-            }
-        }
-
-        output.reset(new charport::charvec::Builder(
-            static_cast<R_xlen_t>(temp.size())
-        ));
-        R_len_t i = 0;
-        for (deque<int>::iterator it = temp.begin(); it != temp.end(); it++) {
-            if (*it < 0)
-                output->set_na(i++);
-            else
-                ci::builder_set(*output, i++, records[*it]);
-        }
-    }
-
-    SEXP ret;
-    STRI__PROTECT(ret = output->to_sexp());
-    output.reset();
-    if (col) {
-        ucol_close(col);
-        col = NULL;
-    }
-    context.emitWarnings();
-
-    STRI__UNPROTECT_ALL
-    return ret;
-
-    STRI__ERROR_HANDLER_END({
-        if (col) {
-            ucol_close(col);
-            col = NULL;
-        }
-    })
-}
-
-
 /** Determine duplicated elements
  *
  * @param str character vector
@@ -471,7 +366,7 @@ SEXP ci_duplicated(SEXP str, SEXP fromLast, SEXP opts_collator)
     STRI__ERROR_HANDLER_BEGIN(1)
     // Deviation from stringi: catch R errors from collator option parsing so
     // queued warnings and any opened collator are released before R resumes.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         col = ci__ucol_open(STRI__DEFERRED_WARNINGS, opts_collator);
         return R_NilValue;
     });
@@ -481,14 +376,14 @@ SEXP ci_duplicated(SEXP str, SEXP fromLast, SEXP opts_collator)
         context.size(str), "character vectors"
     );
     SEXP ret;
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(LGLSXP, vectorize_length);
     }));
     int* ret_tab = LOGICAL(ret);
 
     {
-        Utf8Input str_cont(context, str, vectorize_length);
-        const Utf8Record* records = str_cont.source_data();
+        io::Utf8Input str_cont(context, str, vectorize_length);
+        const io::Utf8Record* records = str_cont.source_data();
 
         StriSortComparer comp(records, col, true);
         set<int,StriSortComparer> uniqueset(comp);
@@ -539,203 +434,4 @@ SEXP ci_duplicated(SEXP str, SEXP fromLast, SEXP opts_collator)
     })
 }
 
-
-/** Determine first duplicated elements
- *
- * @param str character vector
- * @param fromLast logical value
- * @param opts_collator passed to ci__ucol_open()
- * @return integer vector
- *
- * @version 0.2-1 (Bartek Tartanus, 2014-04-17)
- *
- * @version 0.2-3 (Marek Gagolewski, 2014-05-07)
- *          opts_collator == NA no longer allowed
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- */
-SEXP ci_duplicated_any(SEXP str, SEXP fromLast, SEXP opts_collator)
-{
-    PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
-    bool fromLastBool = ci__prepare_arg_logical_1_notNA(fromLast, "fromLast");
-
-    UCollator* col = NULL;
-
-    STRI__ERROR_HANDLER_BEGIN(1)
-    // Deviation from stringi: catch R errors from collator option parsing so
-    // queued warnings and any opened collator are released before R resumes.
-    charport::unwind_protect([&]() -> SEXP {
-        col = ci__ucol_open(STRI__DEFERRED_WARNINGS, opts_collator);
-        return R_NilValue;
-    });
-
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    R_len_t vectorize_length = ci::checked_r_len(
-        context.size(str), "character vectors"
-    );
-    SEXP ret;
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
-        return Rf_allocVector(INTSXP, 1);
-    }));
-    int* ret_tab = INTEGER(ret);
-    ret_tab[0] = 0;
-
-    {
-        Utf8Input str_cont(context, str, vectorize_length);
-        const Utf8Record* records = str_cont.source_data();
-
-        StriSortComparer comp(records, col, true);
-        set<int,StriSortComparer> uniqueset(comp);
-
-        bool was_na = false;
-        if (fromLastBool) {
-            for (R_len_t i=vectorize_length-1; i>=0; --i) {
-                if (records[i].isNA()) {
-                    if (!was_na)
-                        was_na = true;
-                    else {
-                        ret_tab[0] = i+1;
-                        break;
-                    }
-                }
-                else {
-                    pair<set<int,StriSortComparer>::iterator,bool> result = uniqueset.insert(i);
-                    if (!result.second) {
-                        ret_tab[0] = i+1;
-                        break;
-                    }
-                }
-            }
-        }
-        else {
-            for (R_len_t i=0; i<vectorize_length; ++i) {
-                if (records[i].isNA()) {
-                    if (!was_na)
-                        was_na = true;
-                    else {
-                        ret_tab[0] = i+1;
-                        break;
-                    }
-                }
-                else {
-                    pair<set<int,StriSortComparer>::iterator,bool> result = uniqueset.insert(i);
-                    if (!result.second) {
-                        ret_tab[0] = i+1;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    if (col) {
-        ucol_close(col);
-        col = NULL;
-    }
-    context.emitWarnings();
-
-    STRI__UNPROTECT_ALL
-    return ret;
-
-    STRI__ERROR_HANDLER_END({
-        if (col) {
-            ucol_close(col);
-            col = NULL;
-        }
-    })
-}
-
-
-/** Compute a character sort key
- *
- * @param str character vector
- * @param opts_collator passed to ci__ucol_open()
- * @return character vector
- *
- * @version 1.4.7 (Davis Vaughan, 2020-07-15)
- * @version 1.6.1 (Marek Gagolewski, 2021-04-29)
- *          output `bytes`-encoded strings
- */
-SEXP ci_sort_key(SEXP str, SEXP opts_collator) {
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
-
-    UCollator* col = NULL;
-
-    STRI__ERROR_HANDLER_BEGIN(1)
-    // Deviation from stringi: catch R errors from collator option parsing so
-    // queued warnings and any opened collator are released before R resumes.
-    charport::unwind_protect([&]() -> SEXP {
-        col = ci__ucol_open(STRI__DEFERRED_WARNINGS, opts_collator);
-        return R_NilValue;
-    });
-
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    R_len_t length = ci::checked_r_len(
-        context.size(str), "character vectors"
-    );
-    charport::charvec::Builder output(length);
-    {
-        StriContainerUTF16 str_cont(context, str, length);
-
-//        UErrorCode status = U_ZERO_ERROR;
-
-        // Allocate temporary buffer to hold the current sort key
-        size_t key_buffer_size = 16384;
-        String8buf key_buffer(key_buffer_size);
-        uint8_t* p_key_buffer_u8 = (uint8_t*) key_buffer.data();
-
-        for (R_len_t i = 0; i < length; ++i) {
-            if (str_cont.isNA(i)) {
-                output.set_na(i);
-                continue;
-            }
-
-            const UnicodeString* p_str_cur_data = &(str_cont.get(i));
-            const UChar* p_str_cur = p_str_cur_data->getBuffer();
-            const int str_cur_length = p_str_cur_data->length();
-
-            int32_t key_size = ucol_getSortKey(col, p_str_cur, str_cur_length, p_key_buffer_u8, key_buffer_size);
-
-            // Reallocate a larger buffer and retry as required
-            if ((size_t)key_size > key_buffer_size) {
-                const int32_t key_padding = 100;
-                key_buffer_size = key_size + key_padding;
-
-                key_buffer.resize(key_buffer_size, false);
-                p_key_buffer_u8 = (uint8_t*) key_buffer.data();
-
-                // Try again
-                key_size = ucol_getSortKey(col, p_str_cur, str_cur_length, p_key_buffer_u8, key_buffer_size);
-            }
-
-            // `key_size` includes null terminator,
-            // which we don't want to copy into the R CHARSXP
-            R_len_t key_char_size = key_size - 1;
-
-            // Keep sort keys bytes-marked even when their payload is ASCII.
-            output.set(
-                i, key_buffer.data(), static_cast<size_t>(key_char_size),
-                cetype_ext_t::CE_BYTES
-            );
-        }
-    }
-
-    SEXP ret;
-    STRI__PROTECT(ret = output.to_sexp());
-    if (col) {
-        ucol_close(col);
-        col = NULL;
-    }
-    context.emitWarnings();
-
-    STRI__UNPROTECT_ALL
-    return ret;
-
-    STRI__ERROR_HANDLER_END({
-        if (col) {
-            ucol_close(col);
-            col = NULL;
-        }
-    })
-}
+} } // namespace charr::altrep_backend

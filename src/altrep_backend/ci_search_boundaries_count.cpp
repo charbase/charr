@@ -33,15 +33,17 @@
 
 #include "ci_stringi.h"
 #include "ci_reader.h"
-#include "ci_brkiter.h"
+#include "boundary/iterator.h"
 #include "ci_utf8.h"
 
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
 
+namespace charr { namespace altrep_backend {
 
-namespace {
+
+namespace search_boundaries_count {
 
 bool has_direct_utf8_views(const charport::StrViews& values)
 {
@@ -75,23 +77,26 @@ charport::StrView direct_utf8_view(charport::StrView value) noexcept
     return value;
 }
 
-class BoundaryCounter : public StriBrkIterOptions {
+class BoundaryCounter {
 private:
+    boundary::Options options_;
     BreakIterator* iterator_;
     UText* text_;
 
     void open(ci::DeferredWarnings& warnings)
     {
         UErrorCode status = U_ZERO_ERROR;
-        const Locale locale_value = Locale::createFromName(locale);
-        if (!rules.isEmpty()) {
+        const Locale locale_value = Locale::createFromName(
+            options_.getLocale()
+        );
+        if (!options_.getRules().isEmpty()) {
             UParseError parse_error;
             iterator_ = new RuleBasedBreakIterator(
-                UnicodeString(rules), parse_error, status
+                UnicodeString(options_.getRules()), parse_error, status
             );
         }
         else {
-            switch (type) {
+            switch (options_.getType()) {
             case UBRK_CHARACTER:
                 iterator_ = BreakIterator::createCharacterInstance(
                     locale_value, status
@@ -118,7 +123,8 @@ private:
         }
         STRI__CHECKICUSTATUS_THROW(status, {})
 
-        if (status == U_USING_DEFAULT_WARNING && iterator_ && locale) {
+        if (status == U_USING_DEFAULT_WARNING && iterator_ &&
+                options_.getLocale()) {
             UErrorCode locale_status = U_ZERO_ERROR;
             const char* valid_locale = iterator_->getLocaleID(
                 ULOC_VALID_LOCALE, locale_status
@@ -129,8 +135,8 @@ private:
     }
 
 public:
-    explicit BoundaryCounter(const StriBrkIterOptions& options)
-        : StriBrkIterOptions(options), iterator_(nullptr), text_(nullptr)
+    explicit BoundaryCounter(const boundary::Options& options)
+        : options_(options), iterator_(nullptr), text_(nullptr)
     {
     }
 
@@ -156,7 +162,7 @@ public:
         STRI__CHECKICUSTATUS_THROW(status, {})
 
         R_len_t count = 0;
-        if (skip_size <= 0) {
+        if (options_.getSkipSize() <= 0) {
             while (iterator_->next() != BreakIterator::DONE)
                 ++count;
             return count;
@@ -165,19 +171,21 @@ public:
         while (iterator_->next() != BreakIterator::DONE) {
             const int rule = iterator_->getRuleStatus();
             R_len_t skip = 0;
-            for (; skip < skip_size; skip += 2) {
-                if (rule >= skip_rules[skip] &&
-                        rule < skip_rules[skip+1])
+            for (; skip < options_.getSkipSize(); skip += 2) {
+                if (rule >= options_.getSkipRules()[skip] &&
+                        rule < options_.getSkipRules()[skip+1])
                     break;
             }
-            if (skip == skip_size)
+            if (skip == options_.getSkipSize())
                 ++count;
         }
         return count;
     }
 };
 
-}
+} // namespace search_boundaries_count
+
+using namespace search_boundaries_count;
 
 
 /** Count the number of BreakIterator boundaries
@@ -192,7 +200,7 @@ public:
  *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
  *
  * @version 0.4-1 (Marek Gagolewski, 2014-12-02)
- *          use StriRuleBasedBreakIterator
+ *          use boundary::Utf8Iterator
  */
 SEXP ci_count_boundaries(SEXP str, SEXP opts_brkiter)
 {
@@ -203,7 +211,7 @@ SEXP ci_count_boundaries(SEXP str, SEXP opts_brkiter)
     {
     // Deviation from stringi: keep the option's ICU storage inside the
     // unwind-safe scope so it is released before warning replay.
-    StriBrkIterOptions opts_brkiter2(
+    boundary::Options opts_brkiter2(
         opts_brkiter, "line_break", STRI__DEFERRED_WARNINGS
     );
     ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
@@ -211,7 +219,7 @@ SEXP ci_count_boundaries(SEXP str, SEXP opts_brkiter)
         context.size(str), "character vectors"
     );
 
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(INTSXP, str_length);
     }));
     int* ret_tab = INTEGER(ret);
@@ -231,10 +239,10 @@ SEXP ci_count_boundaries(SEXP str, SEXP opts_brkiter)
             }
         }
         else {
-            Utf8Input input(borrow, str_length);
-            const Utf8Record* records = input.source_data();
+            io::Utf8Input input(borrow, str_length);
+            const io::Utf8Record* records = input.source_data();
             for (R_len_t i = 0; i < str_length; ++i) {
-                const Utf8Record& value = records[i];
+                const io::Utf8Record& value = records[i];
                 ret_tab[i] = value.isNA()
                     ? NA_INTEGER
                     : counter.count(
@@ -251,3 +259,5 @@ SEXP ci_count_boundaries(SEXP str, SEXP opts_brkiter)
     return ret;
     STRI__ERROR_HANDLER_END({ /* no action */  })
 }
+
+} } // namespace charr::altrep_backend

@@ -16,7 +16,6 @@ test_that("fixed replace keeps completed rows across mixed encodings", {
 
   operations <- list(
     first = function(x) charr:::ci_replace_first_fixed(x, "a", "X"),
-    last = function(x) charr:::ci_replace_last_fixed(x, "a", "X"),
     all_byte = function(x) charr:::ci_replace_all_fixed(x, "a", "X"),
     all_long = function(x) charr:::ci_replace_all_fixed(x, "a", "word"),
     all_delete = function(x) charr:::ci_replace_all_fixed(x, "a", ""),
@@ -78,7 +77,6 @@ test_that("fixed replace still rejects buried bytes inputs", {
   subjects <- c("a-a", "none", bytes)
   calls <- list(
     function(x) charr:::ci_replace_first_fixed(x, "a", "X"),
-    function(x) charr:::ci_replace_last_fixed(x, "a", "X"),
     function(x) charr:::ci_replace_all_fixed(x, "a", "X"),
     function(x) charr:::ci_replace_all_fixed(x, "a", "X", vectorize_all = FALSE)
   )

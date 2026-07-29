@@ -34,6 +34,8 @@
 #ifndef __ci_interval_h
 #define __ci_interval_h
 
+namespace charr { namespace altrep_backend {
+
 
 /**
  * @version 0.3-1 (Marek Gagolewski, 2014-11-01)
@@ -53,5 +55,7 @@ template<class T> struct StriInterval {
 template<class T> bool operator<(const StriInterval<T>& i1, const StriInterval<T>& i2) {
     return (i1.a < i2.a);
 }
+
+} } // namespace charr::altrep_backend
 
 #endif

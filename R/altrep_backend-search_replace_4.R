@@ -202,12 +202,6 @@ ci_replace_first_coll <- function(str, pattern, replacement, ..., opts_collator 
 
 # @export
 # @rdname ci_replace
-ci_replace_last_coll <- function(str, pattern, replacement, ..., opts_collator = NULL)
-{
-    if (!missing(...))
-        opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-    .Call(C_ci_replace_last_coll, str, pattern, replacement, opts_collator)
-}
 
 
 # @export
@@ -235,12 +229,6 @@ ci_replace_first_fixed <- function(str, pattern, replacement, ..., opts_fixed = 
 
 # @export
 # @rdname ci_replace
-ci_replace_last_fixed <- function(str, pattern, replacement, ..., opts_fixed = NULL)
-{
-    if (!missing(...))
-        opts_fixed <- do.call(ci_opts_fixed, as.list(c(opts_fixed, ...)))
-    .Call(C_ci_replace_last_fixed, str, pattern, replacement, opts_fixed)
-}
 
 
 # @export
@@ -268,12 +256,6 @@ ci_replace_first_regex <- function(str, pattern, replacement, ..., opts_regex = 
 
 # @export
 # @rdname ci_replace
-ci_replace_last_regex <- function(str, pattern, replacement, ..., opts_regex = NULL)
-{
-    if (!missing(...))
-        opts_regex <- do.call(ci_opts_regex, as.list(c(opts_regex, ...)))
-    .Call(C_ci_replace_last_regex, str, pattern, replacement, opts_regex)
-}
 
 
 # Convert gsub-Style Replacement Strings

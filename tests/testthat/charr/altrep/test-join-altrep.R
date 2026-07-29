@@ -9,9 +9,6 @@ flatten_strings <- function(x, collapse = "", na_empty = FALSE,
   charr:::ci_flatten(x, collapse, na_empty, omit_empty)
 }
 join_two <- function(x, y) charr:::ci_c(x, y)
-join_list <- function(x, sep = "", collapse = NULL) {
-  charr:::ci_join_list(x, sep, collapse)
-}
 
 
 test_that("dup preserves recycling and times edge cases", {
@@ -97,23 +94,6 @@ test_that("flatten preserves NA and empty-element controls", {
 })
 
 
-test_that("join_list flattens each nonempty list element", {
-  first <- charr:::ci_trim_both(c(" a ", " é "))
-  second <- charr:::ci_trim_both(c(" 🙂 ", " x ", " "))
-  third <- charr:::ci_trim_both(c(" z ", NA))
-  expect_identical(charport::is_charvec(first), charr_altrep())
-  expect_identical(charport::is_charvec(second), charr_altrep())
-  expect_identical(charport::is_charvec(third), charr_altrep())
-
-  result <- join_list(list(first, character(), second, third), sep = "|")
-  expect_identical(result, c("a|é", "🙂|x|", NA))
-  expect_true(charport::is_charvec(result))
-  expect_identical(
-    join_list(list(first, character(), second), sep = "|", collapse = ";"),
-    "a|é;🙂|x|"
-  )
-  expect_identical(join_list(list(character()), sep = "|"), character())
-})
 
 
 test_that("join copies malformed declared UTF-8 without validating", {

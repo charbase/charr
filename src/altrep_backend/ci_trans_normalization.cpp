@@ -32,8 +32,10 @@
 
 #include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_container_utf16.h"
+#include "io/utf16_input.h"
 #include <unicode/normalizer2.h>
+
+namespace charr { namespace altrep_backend {
 
 
 #define STRI_UNINORM_NFC 10
@@ -106,7 +108,7 @@ const Normalizer2* ci__normalizer_get(int _type)
  * @version 0.1 (Marek Gagolewski)
  *
  * @version 0.1-?? (Marek Gagolewski)
- *          use StriContainerUTF16 & ICU facilities
+ *          use io::Utf16Input & ICU facilities
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
  *          make StriException-friendly
@@ -146,8 +148,8 @@ SEXP ci_trans_nf(SEXP str, int type)
         charport::charvec::Builder builder(str_length);
         std::vector<char> utf8_buffer;
         {
-            StriContainerUTF16 str_cont(
-                context, str, str_length, false
+            io::Utf16Output str_cont(
+                context, str, str_length
             ); // writable, no recycle
 
             for (R_len_t i=0; i<str_length; ++i) {
@@ -167,7 +169,9 @@ SEXP ci_trans_nf(SEXP str, int type)
         }
 
         // normalizer shall not be deleted at all
-        STRI__PROTECT(ret = builder.to_sexp());
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return builder.to_sexp();
+        }));
     }
 
     STRI__DEFERRED_WARNINGS.emit();
@@ -189,3 +193,5 @@ SEXP ci_trans_nf(SEXP str, int type)
 SEXP ci_trans_nfc(SEXP str) {
     return ci_trans_nf(str, STRI_UNINORM_NFC);
 }
+
+} } // namespace charr::altrep_backend

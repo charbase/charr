@@ -117,14 +117,6 @@ ci_locate_all_boundaries <- function(
 
 # @export
 # @rdname ci_locate_boundaries
-ci_locate_last_boundaries <- function(
-    str, get_length=FALSE, ..., opts_brkiter=NULL
-) {
-    if (!missing(...))
-        opts_brkiter <- do.call(ci_opts_brkiter, as.list(c(opts_brkiter, ...)))
-
-    .Call(C_ci_locate_last_boundaries, str, opts_brkiter, get_length)
-}
 
 
 # @export

@@ -35,12 +35,14 @@
 #include <unicode/ucol.h>
 #include <unicode/usearch.h>
 
+namespace charr { namespace altrep_backend {
+
 
 /**
  * Create & set up an ICU Collator
  *
  * WARNING: this function may call R error helpers. Call it through
- * charport::unwind_protect inside STRI__ERROR_HANDLER_BEGIN.
+ * ci::unwind_protect inside STRI__ERROR_HANDLER_BEGIN.
  *
  * @param warnings entry point's deferred warning queue
  * @param opts_collator named R list
@@ -271,3 +273,5 @@ UCollator* ci__ucol_open(
 
     return col;
 }
+
+} } // namespace charr::altrep_backend

@@ -32,17 +32,19 @@
 
 
 #include "ci_stringi.h"
-#include "ci_container_utf16.h"
-#include "ci_container_regex.h"
+#include "io/utf16_input.h"
+#include "regex/pattern_set.h"
 #include <deque>
 #include <string>
 #include <utility>
 #include <vector>
 #include <unicode/ustring.h>
+
+namespace charr { namespace altrep_backend {
 using namespace std;
 
 
-namespace {
+namespace search_regex_locate {
 
 class ReusableLocateUtf16Text {
 private:
@@ -211,7 +213,7 @@ SEXP ci__capture_names_to_r(const vector<string>& names)
 
 void ci__locate_adjust_fromto(
     deque< pair<R_len_t, R_len_t> >& occurrences,
-    StriContainerUTF16& str_cont, R_len_t i, bool get_length1
+    io::Utf16Input& str_cont, R_len_t i, bool get_length1
 )
 {
     R_len_t noccurrences = static_cast<R_len_t>(occurrences.size());
@@ -260,7 +262,9 @@ void ci__locate_adjust_fromto(
     }
 }
 
-} // namespace
+} // namespace search_regex_locate
+
+using namespace search_regex_locate;
 
 
 /* Converts a deque with (from,to) pairs to a 2-column R matrix
@@ -301,7 +305,7 @@ SEXP ci__locate_get_fromto_matrix(
 
 SEXP ci__locate_get_fromto_matrix(
     deque< pair<R_len_t, R_len_t> >& occurrences,
-    StriContainerUTF16& str_cont,
+    io::Utf16Input& str_cont,
     R_len_t i,
     bool omit_no_match1,
     bool get_length1
@@ -370,10 +374,10 @@ SEXP ci__locate_get_fromto_matrix(
  * @version 0.1-?? (Bartek Tartanus)
  *
  * @version 0.1-?? (Marek Gagolewski)
- *          StriContainerUTF16+deque usage
+ *          io::Utf16Input+deque usage
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-19)
- *          use StriContainerRegexPattern + opts_regex
+ *          use regex::PatternSet + opts_regex
  *
  * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
  *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
@@ -385,7 +389,7 @@ SEXP ci__locate_get_fromto_matrix(
  *    Issue #214: allow a regex pattern like `.*`  to match an empty string
  *
  * @version 1.4.7 (Marek Gagolewski, 2020-08-24)
- *    Use StriContainerRegexPattern::getRegexOptions
+ *    Use regex::PatternSet::getRegexOptions
  *
  * @version 1.7.1 (Marek Gagolewski, 2021-06-20)
  *     #25: capture_groups
@@ -401,7 +405,7 @@ SEXP ci_locate_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_r
     bool omit_no_match1 = false;
     bool capture_groups1 = false;
     bool get_length1 = false;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         omit_no_match1 = ci__prepare_arg_logical_1_notNA(
             omit_no_match, "omit_no_match", &STRI__DEFERRED_WARNINGS
         );
@@ -413,19 +417,19 @@ SEXP ci_locate_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_r
         );
         return R_NilValue;
     });
-    StriRegexMatcherOptions pattern_opts;
-    charport::unwind_protect([&]() -> SEXP {
-        pattern_opts = StriContainerRegexPattern::getRegexOptions(
+    regex::Options pattern_opts;
+    ci::unwind_protect([&]() -> SEXP {
+        pattern_opts = regex::PatternSet::getRegexOptions(
             STRI__DEFERRED_WARNINGS, opts_regex
         );
         return R_NilValue;
     });
-    STRI__PROTECT(str = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(str = ci::unwind_protect([&]() -> SEXP {
         return ci__prepare_arg_string(
             str, "str", true, &STRI__DEFERRED_WARNINGS
         );
     }));
-    STRI__PROTECT(pattern = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(pattern = ci::unwind_protect([&]() -> SEXP {
         return ci__prepare_arg_string(
             pattern, "pattern", true, &STRI__DEFERRED_WARNINGS
         );
@@ -440,7 +444,7 @@ SEXP ci_locate_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_r
         context.size(pattern), "character vectors"
     );
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             false, 2, str_n, pattern_n
         );
@@ -452,7 +456,7 @@ SEXP ci_locate_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_r
             (vectorize_length % str_n != 0 ||
              vectorize_length % pattern_n != 0))
         context.warn(MSG__WARN_RECYCLING_RULE);
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(VECSXP, vectorize_length);
     }));
 
@@ -487,7 +491,7 @@ SEXP ci_locate_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_r
                 ci__locate_can_borrow_utf8(subjects)) {
             direct_completed = true;
             {
-                StriContainerRegexPattern pattern_cont(
+                regex::PatternSet pattern_cont(
                     context, pattern, vectorize_length, pattern_opts
                 );
                 RegexMatcher* matcher = pattern_cont.getMatcher(0);
@@ -539,7 +543,7 @@ SEXP ci_locate_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_r
         subject_borrow.reset();
 
         if (direct_completed) {
-            charport::unwind_protect([&]() -> SEXP {
+            ci::unwind_protect([&]() -> SEXP {
                 for (R_len_t i = 0; i < vectorize_length; ++i) {
                     const DirectElement& element =
                         elements[static_cast<size_t>(i)];
@@ -562,10 +566,10 @@ SEXP ci_locate_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_r
 
     if (!direct_completed) {
     {
-        StriContainerUTF16 str_cont(
+        io::Utf16Input str_cont(
             context, str, vectorize_length
         );
-        StriContainerRegexPattern pattern_cont(
+        regex::PatternSet pattern_cont(
             context, pattern, vectorize_length, pattern_opts
         );
         deque< pair<R_len_t, R_len_t> > occurrences;
@@ -575,7 +579,7 @@ SEXP ci_locate_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_r
         // child allocation and list write while the Reader and regex owners
         // are live. Reusable match storage lives outside the callback, so an
         // R error cleans it up without one bridge per child.
-        charport::unwind_protect([&]() -> SEXP {
+        ci::unwind_protect([&]() -> SEXP {
           for (R_len_t i = pattern_cont.vectorize_init();
                   i != pattern_cont.vectorize_end();
                   i = pattern_cont.vectorize_next(i))
@@ -728,10 +732,10 @@ SEXP ci_locate_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_r
  * @version 0.1-?? (Bartek Tartanus)
  *
  * @version 0.1-?? (Marek Gagolewski)
- *          Use StriContainerUTF16
+ *          Use io::Utf16Input
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-19)
- *          Use StriContainerRegexPattern + opts_regex
+ *          Use regex::PatternSet + opts_regex
  *
  * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
  *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
@@ -761,7 +765,7 @@ SEXP ci__locate_firstlast_regex(
         context.size(pattern), "character vectors"
     );
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             false, 2, str_n, pattern_n
         );
@@ -774,15 +778,15 @@ SEXP ci__locate_firstlast_regex(
              vectorize_length % pattern_n != 0))
         context.warn(MSG__WARN_RECYCLING_RULE);
 
-    StriRegexMatcherOptions pattern_opts;
-    charport::unwind_protect([&]() -> SEXP {
-        pattern_opts = StriContainerRegexPattern::getRegexOptions(
+    regex::Options pattern_opts;
+    ci::unwind_protect([&]() -> SEXP {
+        pattern_opts = regex::PatternSet::getRegexOptions(
             STRI__DEFERRED_WARNINGS, opts_regex
         );
         return R_NilValue;
     });
 
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocMatrix(INTSXP, vectorize_length, 2);
     }));
     int* ret_tab = INTEGER(ret);
@@ -805,7 +809,7 @@ SEXP ci__locate_firstlast_regex(
                 ci__locate_can_borrow_utf8(subjects)) {
             direct_completed = true;
             {
-                StriContainerRegexPattern pattern_cont(
+                regex::PatternSet pattern_cont(
                     context, pattern, vectorize_length, pattern_opts
                 );
                 RegexMatcher* matcher = pattern_cont.getMatcher(0);
@@ -874,10 +878,10 @@ SEXP ci__locate_firstlast_regex(
 
     if (!direct_completed) {
     {
-        StriContainerUTF16 str_cont(
+        io::Utf16Input str_cont(
             context, str, vectorize_length
         );
-        StriContainerRegexPattern pattern_cont(
+        regex::PatternSet pattern_cont(
             context, pattern, vectorize_length, pattern_opts
         );
 
@@ -1008,12 +1012,12 @@ SEXP ci__locate_firstlast_regex(
         R_len_t pattern_cur_groups = static_cast<R_len_t>(
             cg_occurrences.size()
         );
-        STRI__PROTECT(cgs = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(cgs = ci::unwind_protect([&]() -> SEXP {
             return Rf_allocVector(VECSXP, pattern_cur_groups);
         }));
         for (R_len_t j=0; j<pattern_cur_groups; ++j) {
             SEXP ans2;
-            STRI__PROTECT(ans2 = charport::unwind_protect([&]() -> SEXP {
+            STRI__PROTECT(ans2 = ci::unwind_protect([&]() -> SEXP {
                 return ci__locate_get_fromto_matrix(
                     cg_occurrences[j], false, get_length1
                 );
@@ -1023,10 +1027,10 @@ SEXP ci__locate_firstlast_regex(
         }
 
         SEXP names;
-        STRI__PROTECT(names = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(names = ci::unwind_protect([&]() -> SEXP {
             return ci__capture_names_to_r(capture_names);
         }));
-        charport::unwind_protect([&]() -> SEXP {
+        ci::unwind_protect([&]() -> SEXP {
             ci__locate_set_dimnames_list(cgs, get_length1);  // all matrices get from&to colnames
             if (!Rf_isNull(names))
                 Rf_setAttrib(cgs, R_NamesSymbol, names);
@@ -1036,7 +1040,7 @@ SEXP ci__locate_firstlast_regex(
         });
         STRI__UNPROTECT(2);
     }
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         ci__locate_set_dimnames_matrix(ret, get_length1);
         return R_NilValue;
     });
@@ -1059,10 +1063,10 @@ SEXP ci__locate_firstlast_regex(
  * @version 0.1-?? (Bartek Tartanus)
  *
  * @version 0.1-?? (Marek Gagolewski)
- *          Use StriContainerUTF16
+ *          Use io::Utf16Input
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-19)
- *          Use StriContainerRegexPattern + opts_regex
+ *          Use regex::PatternSet + opts_regex
  *
  * @version 1.7.1 (Marek Gagolewski, 2021-06-20)
  *     #25: capture_groups
@@ -1077,29 +1081,4 @@ SEXP ci_locate_first_regex(SEXP str, SEXP pattern, SEXP opts_regex, SEXP capture
     return ci__locate_firstlast_regex(str, pattern, opts_regex, true, capture_groups1, get_length1);
 }
 
-
-/** Locate first occurrence of a regex pattern
- * @param str character vector
- * @param pattern character vector
- * @param opts_regex list
- * @param capture_groups single logical value
- * @return list of integer matrices (2 columns)
- *
- * @version 0.1-?? (Bartlomiej Tartanus, 2013-06-10)
- *          Use StriContainerUTF16
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-19)
- *          Use StriContainerRegexPattern + opts_regex
- *
- * @version 1.7.1 (Marek Gagolewski, 2021-06-20)
- *     #25: capture_groups
- *
- * @version 1.7.1 (Marek Gagolewski, 2021-06-29)
- *     get_length
- */
-SEXP ci_locate_last_regex(SEXP str, SEXP pattern, SEXP opts_regex, SEXP capture_groups, SEXP get_length)
-{
-    bool capture_groups1 = ci__prepare_arg_logical_1_notNA(capture_groups, "capture_groups");
-    bool get_length1 = ci__prepare_arg_logical_1_notNA(get_length, "get_length");
-    return ci__locate_firstlast_regex(str, pattern, opts_regex, false, capture_groups1, get_length1);
-}
+} } // namespace charr::altrep_backend

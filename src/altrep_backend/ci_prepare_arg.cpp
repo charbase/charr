@@ -37,8 +37,10 @@
 #include <cstring>
 #include <unicode/uloc.h>
 
+namespace charr { namespace altrep_backend {
 
-namespace {
+
+namespace prepare_arg {
 
 void ci__prepare_arg_list_warning(ci::DeferredWarnings* warnings)
 {
@@ -80,7 +82,9 @@ void ci__prepare_arg_scalar_warning(
     warnings->push(formatted);
 }
 
-} // namespace
+} // namespace prepare_arg
+
+using namespace prepare_arg;
 
 
 
@@ -208,7 +212,7 @@ SEXP ci__prepare_arg_list(
  * or character vector argument
  *
  * Useful when dealing with raw data, like in string encoding
- * conversion or detection. For use, e.g., with StriContainerListRaw.
+ * conversion or detection. For use, e.g., with io::RawListInput.
  *
  * If the object cannot be coerced, then an error will be generated
  *
@@ -248,8 +252,6 @@ SEXP ci__prepare_arg_list_raw(SEXP x, const char* argname)
 
 /**
  * Prepare list of integer vectors or an integer vector argument
- *
- *  For use, e.g., with StriContainerListInt.
  *
  * If the object cannot be coerced, then an error will be generated
  *
@@ -1684,11 +1686,11 @@ TimeZone* ci__prepare_arg_timezone(
         // Deviation from stringi: read the prepared scalar through the common
         // UTF-8 adapter and pass ICU an explicit byte length.
         ci::ReaderContext context(warnings);
-        Utf8Input tz_cont(context, tz, 1);
+        io::Utf8Input tz_cont(context, tz, 1);
         if (tz_cont.isNA(0)) {
             throw StriException(MSG__ARG_EXPECTED_NOT_NA, argname);
         }
-        const Utf8Record& value = tz_cont.get(0);
+        const io::Utf8Record& value = tz_cont.get(0);
         tz_val.setTo(UnicodeString::fromUTF8(
             StringPiece(value.data(), value.length())
         ));
@@ -1790,3 +1792,5 @@ const char* ci__prepare_arg_enc(SEXP enc, const char* argname, bool allowdefault
     // won't come here anyway
     return NULL; // avoid compiler warning
 }
+
+} } // namespace charr::altrep_backend

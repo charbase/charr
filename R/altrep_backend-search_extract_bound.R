@@ -104,12 +104,6 @@ ci_extract_all_boundaries <- function(str, simplify = FALSE, omit_no_match = FAL
 
 # @export
 # @rdname ci_extract_boundaries
-ci_extract_last_boundaries <- function(str, ..., opts_brkiter = NULL)
-{
-    if (!missing(...))
-        opts_brkiter <- do.call(ci_opts_brkiter, as.list(c(opts_brkiter, ...)))
-    .Call(C_ci_extract_last_boundaries, str, opts_brkiter)
-}
 
 
 # @export

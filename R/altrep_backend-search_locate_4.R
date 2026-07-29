@@ -211,14 +211,6 @@ ci_locate_first_coll <- function(
 
 # @export
 # @rdname ci_locate
-ci_locate_last_coll <- function(
-    str, pattern, get_length=FALSE, ..., opts_collator=NULL
-) {
-    if (!missing(...))
-        opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-
-    .Call(C_ci_locate_last_coll, str, pattern, opts_collator, get_length)
-}
 
 
 # @export
@@ -251,14 +243,6 @@ ci_locate_first_regex <- function(
 
 # @export
 # @rdname ci_locate
-ci_locate_last_regex <- function(
-    str, pattern, capture_groups=FALSE, get_length=FALSE, ..., opts_regex=NULL
-) {
-    if (!missing(...))
-        opts_regex <- do.call(ci_opts_regex, as.list(c(opts_regex, ...)))
-
-    .Call(C_ci_locate_last_regex, str, pattern, opts_regex, capture_groups, get_length)
-}
 
 
 # @export

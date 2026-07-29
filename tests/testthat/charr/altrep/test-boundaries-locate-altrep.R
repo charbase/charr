@@ -1,7 +1,6 @@
 # charr-owned targeted equivalence tests for Reader-backed boundary locate.
 
 locate_first_boundaries <- function(...) charr:::ci_locate_first_boundaries(...)
-locate_last_boundaries <- function(...) charr:::ci_locate_last_boundaries(...)
 locate_all_boundaries <- function(...) charr:::ci_locate_all_boundaries(...)
 
 boundary_locate_charvec <- function(x) charr::str_trim(x)
@@ -39,12 +38,6 @@ test_that("boundary locate uses code-point positions for every iterator type", {
     structure(c(1L, 5L), dim = c(1L, 2L),
       dimnames = list(NULL, c("start", "end")))
   )
-  expect_identical(
-    locate_last_boundaries(cjk,
-      opts_brkiter = list(type = "line_break"), get_length = TRUE),
-    structure(c(8L, 1L), dim = c(1L, 2L),
-      dimnames = list(NULL, c("start", "length")))
-  )
 })
 test_that("boundary locate preserves empty, NA, and omit shapes", {
   strings <- boundary_locate_charvec(c("", NA))
@@ -78,9 +71,6 @@ test_that("boundary locate retains copied lazy custom-rule parsing", {
   expect_no_error(
     locate_first_boundaries(strings, opts_brkiter = bad_rules)
   )
-  expect_no_error(
-    locate_last_boundaries(strings, opts_brkiter = bad_rules)
-  )
   expect_error(
     locate_all_boundaries(strings, opts_brkiter = bad_rules),
     "U_MALFORMED_SET"
@@ -100,41 +90,4 @@ test_that("boundary locate is lenient for malformed declared UTF-8", {
       as.character(malformed), opts_brkiter = opts
     )
   )
-})
-
-
-test_that("revealed boundary locate-last matches stringi on seeded cases", {
-  set.seed(20260716)
-  atoms <- c(
-    "a", " ", ". ", "é", "e\u0301", "👩‍👩‍👧‍👦",
-    "日本語", "文章", "ภาษา", "ไทย", "! "
-  )
-  raw <- vapply(seq_len(600L), function(i) {
-    paste0(sample(atoms, sample.int(8L, 1L) - 1L, replace = TRUE),
-      collapse = "")
-  }, character(1L))
-  raw[seq(19L, 600L, 19L)] <- ""
-  raw[seq(37L, 600L, 37L)] <- NA_character_
-  strings <- boundary_locate_charvec(raw)
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-
-  option_cases <- list(
-    list(type = "character", locale = "en"),
-    list(type = "line_break", locale = "ja"),
-    list(type = "sentence", locale = "en_US"),
-    list(type = "word", skip_word_none = TRUE, locale = "th")
-  )
-  for (opts in option_cases) {
-    for (get_length in c(FALSE, TRUE)) {
-      expect_identical(
-        suppressWarnings(locate_last_boundaries(
-          strings, get_length = get_length, opts_brkiter = opts
-        )),
-        suppressWarnings(stringi::stri_locate_last_boundaries(
-          as.character(strings), get_length = get_length,
-          opts_brkiter = opts
-        ))
-      )
-    }
-  }
 })

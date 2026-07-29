@@ -36,6 +36,8 @@
 
 #include "ci_stringi.h"
 
+namespace charr { namespace altrep_backend {
+
 
 /**
  * A class to represent an integer vector or NULL/NA
@@ -107,5 +109,8 @@ public:
         return this->m_n;
     }
 };
+
+
+} } // namespace charr::altrep_backend
 
 #endif

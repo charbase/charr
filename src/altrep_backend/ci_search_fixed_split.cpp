@@ -34,17 +34,19 @@
 #include "ci_stringi.h"
 #include "ci_builder.h"
 #include "ci_utf8.h"
-#include "ci_container_bytesearch.h"
-#include "ci_container_integer.h"
-#include "ci_container_logical.h"
+#include "fixed/pattern_set.h"
+#include "io/integer_input.h"
+#include "io/logical_input.h"
 #include <cstring>
 #include <stdexcept>
 #include <utility>
 #include <vector>
+
+namespace charr { namespace altrep_backend {
 using namespace std;
 
 
-namespace {
+namespace search_fixed_split {
 
 typedef pair<R_len_t, R_len_t> CiSplitField;
 
@@ -87,7 +89,9 @@ void ci__collect_split_fields(
     }
 }
 
-} // namespace
+} // namespace search_fixed_split
+
+using namespace search_fixed_split;
 
 
 /**
@@ -108,7 +112,7 @@ void ci__collect_split_fields(
  * @version 0.1-?? (Bartek Tartanus)
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-25)
- *          StriException friendly, use Utf8Input
+ *          StriException friendly, use io::Utf8Input
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-07-10)
  *          BUGFIX: wrong behavior on empty str
@@ -135,12 +139,12 @@ void ci__collect_split_fields(
  *    FR #110, #23: opts_fixed arg added
  *
  * @version 0.5-1 (Marek Gagolewski, 2015-02-14)
- *    use StriByteSearchMatcher
+ *    use shared::ByteSearchMatcher
  */
 SEXP ci_split_fixed(SEXP str, SEXP pattern, SEXP n,
                       SEXP omit_empty, SEXP tokens_only, SEXP simplify, SEXP opts_fixed)
 {
-    uint32_t pattern_flags = StriContainerByteSearch::getByteSearchFlags(opts_fixed);
+    uint32_t pattern_flags = fixed::PatternSet::getByteSearchFlags(opts_fixed);
     bool tokens_only1 = ci__prepare_arg_logical_1_notNA(tokens_only, "tokens_only");
     PROTECT(simplify = ci__prepare_arg_logical_1(simplify, "simplify"));
     PROTECT(str = ci__prepare_arg_string(str, "str"));
@@ -162,7 +166,7 @@ SEXP ci_split_fixed(SEXP str, SEXP pattern, SEXP n,
     R_len_t n_n = 0;
     R_len_t omit_empty_n = 0;
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         n_n = LENGTH(n);
         omit_empty_n = LENGTH(omit_empty);
         vectorize_length = ci__recycling_rule(
@@ -180,10 +184,10 @@ SEXP ci_split_fixed(SEXP str, SEXP pattern, SEXP n,
     for (R_len_t i=0; i<vectorize_length; ++i)
         stores.emplace_back(0, 0);
     {
-        StriContainerInteger n_cont(n, vectorize_length);
-        StriContainerLogical omit_empty_cont(omit_empty, vectorize_length);
-        Utf8Input str_cont(context, str, vectorize_length);
-        StriContainerByteSearch pattern_cont(
+        io::IntegerInput n_cont(n, vectorize_length);
+        io::LogicalInput omit_empty_cont(omit_empty, vectorize_length);
+        io::Utf8Input str_cont(context, str, vectorize_length);
+        fixed::PatternSet pattern_cont(
             context, pattern, vectorize_length, pattern_flags
         );
         charport::charvec::Builder output(0);
@@ -217,7 +221,7 @@ SEXP ci_split_fixed(SEXP str, SEXP pattern, SEXP n,
                     );
             })
 
-            const Utf8Record& str_cur = str_cont.get(i);
+            const io::Utf8Record& str_cur = str_cont.get(i);
             R_len_t     str_cur_n = str_cur.length();
             const char* str_cur_s = str_cur.data();
             const cetype_ext_t field_encoding = str_cur.isASCII()
@@ -234,7 +238,7 @@ SEXP ci_split_fixed(SEXP str, SEXP pattern, SEXP n,
             else if (tokens_only1)
                 n_cur++; // we need to do one split ahead here
 
-            const Utf8Record& pattern_cur = pattern_cont.get(i);
+            const io::Utf8Record& pattern_cur = pattern_cont.get(i);
             if (!pattern_cont.isCaseInsensitive() && pattern_cur.length() == 1) {
                 R_len_t search_from = 0;
                 const unsigned char needle =
@@ -261,15 +265,15 @@ SEXP ci_split_fixed(SEXP str, SEXP pattern, SEXP n,
                 );
             }
             else {
-                StriByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
+                shared::ByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
                 matcher->reset(str_cur_s, str_cur_n);
                 ci__collect_split_fields(
                     str_cur_n, n_cur, omit_empty_cur, tokens_only1,
                     [&](R_len_t& start, R_len_t& end) {
-                        if (USEARCH_DONE == matcher->findNext())
+                        if (shared::ByteSearchMatcher::not_found == matcher->find_next())
                             return false;
-                        start = matcher->getMatchedStart();
-                        end = start+matcher->getMatchedLength();
+                        start = matcher->matched_start();
+                        end = start+matcher->matched_length();
                         return true;
                     },
                     fields
@@ -318,21 +322,23 @@ SEXP ci_split_fixed(SEXP str, SEXP pattern, SEXP n,
     }
 
     if (simplify_1 != NA_LOGICAL && !simplify_1) {
-        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
             return Rf_allocVector(VECSXP, vectorize_length);
         }));
-        for (R_len_t i=0; i<vectorize_length; ++i) {
-            SEXP ans;
-            STRI__PROTECT(ans = charport::charvec::wrap(
-                std::move(stores[i])
-            ));
-            SET_VECTOR_ELT(ret, i, ans);
-            STRI__UNPROTECT(1);
-        }
+        ci::unwind_protect([&]() -> SEXP {
+            for (R_len_t i=0; i<vectorize_length; ++i) {
+                SEXP ans = PROTECT(charport::charvec::wrap(
+                    std::move(stores[i])
+                ));
+                SET_VECTOR_ELT(ret, i, ans);
+                UNPROTECT(1);
+            }
+            return R_NilValue;
+        });
     }
     else {
         R_len_t n_min = 0;
-        charport::unwind_protect([&]() -> SEXP {
+        ci::unwind_protect([&]() -> SEXP {
             R_len_t n_length = LENGTH(n);
             const int* n_tab = INTEGER_RO(n);
             for (R_len_t i=0; i<n_length; ++i) {
@@ -382,8 +388,10 @@ SEXP ci_split_fixed(SEXP str, SEXP pattern, SEXP n,
             }
         }
 
-        STRI__PROTECT(ret = matrix.to_sexp());
-        ret = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return matrix.to_sexp();
+        }));
+        ret = ci::unwind_protect([&]() -> SEXP {
             SEXP dim;
             PROTECT(dim = Rf_allocVector(INTSXP, 2));
             INTEGER(dim)[0] = vectorize_length;
@@ -400,3 +408,5 @@ SEXP ci_split_fixed(SEXP str, SEXP pattern, SEXP n,
     return ret;
     STRI__ERROR_HANDLER_END(; /* nothing interesting on error */)
 }
+
+} } // namespace charr::altrep_backend

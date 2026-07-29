@@ -1,7 +1,6 @@
 # charr-owned targeted equivalence tests for Reader/Builder boundary extract.
 
 extract_first_boundaries <- function(...) charr:::ci_extract_first_boundaries(...)
-extract_last_boundaries <- function(...) charr:::ci_extract_last_boundaries(...)
 extract_all_boundaries <- function(...) charr:::ci_extract_all_boundaries(...)
 
 boundary_extract_charvec <- function(x) charr::str_trim(x)
@@ -74,11 +73,8 @@ test_that("boundary extract preserves NA, no-match, omit, and simplify shapes", 
     skip_word_letter = TRUE)
 
   first <- extract_first_boundaries(strings, opts_brkiter = opts)
-  last <- extract_last_boundaries(strings, opts_brkiter = opts)
   expect_identical(first, rep(NA_character_, 3L))
-  expect_identical(last, rep(NA_character_, 3L))
   expect_identical(charport::is_charvec(first), charr_altrep())
-  expect_true(charport::is_charvec(last))
 
   all <- extract_all_boundaries(strings, opts_brkiter = opts)
   expect_identical(all, rep(list(NA_character_), 3L))
@@ -130,38 +126,4 @@ test_that("boundary extract is lenient for malformed declared UTF-8", {
       as.character(malformed), opts_brkiter = opts
     )
   )
-})
-
-
-test_that("revealed boundary extract-last matches stringi on seeded cases", {
-  set.seed(8162026)
-  atoms <- c(
-    "a", " ", ". ", "é", "e\u0301", "👩‍👩‍👧‍👦",
-    "日本語", "文章", "ภาษา", "ไทย", "! ", "123"
-  )
-  raw <- vapply(seq_len(600L), function(i) {
-    paste0(sample(atoms, sample.int(8L, 1L) - 1L, replace = TRUE),
-      collapse = "")
-  }, character(1L))
-  raw[seq(17L, 600L, 17L)] <- ""
-  raw[seq(41L, 600L, 41L)] <- NA_character_
-  strings <- boundary_extract_charvec(raw)
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-
-  option_cases <- list(
-    list(type = "character", locale = "en"),
-    list(type = "line_break", locale = "ja"),
-    list(type = "sentence", locale = "en_US"),
-    list(type = "word", skip_word_none = TRUE, locale = "th")
-  )
-  for (opts in option_cases) {
-    expect_identical(
-      suppressWarnings(extract_last_boundaries(
-        strings, opts_brkiter = opts
-      )),
-      suppressWarnings(stringi::stri_extract_last_boundaries(
-        as.character(strings), opts_brkiter = opts
-      ))
-    )
-  }
 })

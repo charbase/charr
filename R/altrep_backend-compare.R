@@ -137,33 +137,18 @@
 # @family locale_sensitive
 # @export
 # @rdname ci_compare
-ci_compare <- function(e1, e2, ..., opts_collator = NULL)
-{
-    if (!missing(...))
-        opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-    .Call(C_ci_cmp, e1, e2, opts_collator)
-}
 
 
 # @export
 # @rdname ci_compare
-ci_cmp <- ci_compare
 
 
 # @export
 # @rdname ci_compare
-ci_cmp_eq <- function(e1, e2)
-{
-    .Call(C_ci_cmp_eq, e1, e2)
-}
 
 
 # @export
 # @rdname ci_compare
-ci_cmp_neq <- function(e1, e2)
-{
-    .Call(C_ci_cmp_neq, e1, e2)
-}
 
 
 # @export
@@ -178,50 +163,20 @@ ci_cmp_equiv <- function(e1, e2, ..., opts_collator = NULL)
 
 # @export
 # @rdname ci_compare
-ci_cmp_nequiv <- function(e1, e2, ..., opts_collator = NULL)
-{
-    if (!missing(...))
-        opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-    .Call(C_ci_cmp_nequiv, e1, e2, opts_collator)
-}
 
 # @export
 # @rdname ci_compare
-ci_cmp_lt <- function(e1, e2, ..., opts_collator = NULL)
-{
-    if (!missing(...))
-        opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-    .Call(C_ci_cmp_lt, e1, e2, opts_collator)
-}
 
 
 # @export
 # @rdname ci_compare
-ci_cmp_gt <- function(e1, e2, ..., opts_collator = NULL)
-{
-    if (!missing(...))
-        opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-    .Call(C_ci_cmp_gt, e1, e2, opts_collator)
-}
 
 # @export
 # @rdname ci_compare
-ci_cmp_le <- function(e1, e2, ..., opts_collator = NULL)
-{
-    if (!missing(...))
-        opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-    .Call(C_ci_cmp_le, e1, e2, opts_collator)
-}
 
 
 # @export
 # @rdname ci_compare
-ci_cmp_ge <- function(e1, e2, ..., opts_collator = NULL)
-{
-    if (!missing(...))
-        opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-    .Call(C_ci_cmp_ge, e1, e2, opts_collator)
-}
 
 
 # @title

@@ -127,13 +127,6 @@
 
 # @export
 # @rdname ci_subset
-ci_subset_coll <- function(str, pattern, omit_na = FALSE, negate = FALSE, ...,
-    opts_collator = NULL)
-{
-    if (!missing(...))
-        opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-    .Call(C_ci_subset_coll, str, pattern, omit_na, negate, opts_collator)
-}
 
 
 # @export
@@ -143,13 +136,6 @@ ci_subset_coll <- function(str, pattern, omit_na = FALSE, negate = FALSE, ...,
 
 # @export
 # @rdname ci_subset
-ci_subset_regex <- function(str, pattern, omit_na = FALSE, negate = FALSE, ...,
-    opts_regex = NULL)
-{
-    if (!missing(...))
-        opts_regex <- do.call(ci_opts_regex, as.list(c(opts_regex, ...)))
-    .Call(C_ci_subset_regex, str, pattern, omit_na, negate, opts_regex)
-}
 
 
 # @export

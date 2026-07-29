@@ -16,11 +16,6 @@ test_that("regex extract emits UTF-16 matches with exact encodings", {
   expect_identical(
     Encoding(first), c("UTF-8", "UTF-8", "UTF-8", "UTF-8", "unknown")
   )
-
-  expect_identical(
-    charr:::ci_extract_last_regex(strings, c("😀", "𐐷", ".", "ü", ".")),
-    c("😀", "𐐷", "b", "ü", "c")
-  )
 })
 
 

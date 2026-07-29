@@ -34,9 +34,9 @@
 #include "ci_stringi.h"
 #include "ci_builder.h"
 #include "ci_utf8.h"
-#include "ci_container_bytesearch.h"
-#include "altrep/utf8_input.h"
-#include "altrep/utf8_output.h"
+#include "fixed/pattern_set.h"
+#include "altrep_backend/io/utf8_input.h"
+#include "altrep_backend/io/utf8_output.h"
 
 #include <cstring>
 #include <limits>
@@ -46,10 +46,12 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+namespace charr { namespace altrep_backend {
 using namespace std;
 
 
-namespace {
+namespace search_fixed_extract {
 
 bool ci__direct_extract_string(const charport::StrView& value) noexcept
 {
@@ -177,11 +179,11 @@ R_len_t ci__count_extract_matches(
 }
 
 
-charr::altrep::OutputStore ci__repeated_extract_store(
+charr::altrep_backend::io::OutputStore ci__repeated_extract_store(
     R_len_t size, unsigned char pattern_byte
 )
 {
-    charr::altrep::OutputStore output(
+    charr::altrep_backend::io::OutputStore output(
         static_cast<size_t>(size), static_cast<size_t>(size)
     );
     if (size <= 0)
@@ -376,11 +378,11 @@ struct FixedExtractListHash {
 };
 
 
-charr::altrep::OutputStore ci__repeated_extract_store(
+charr::altrep_backend::io::OutputStore ci__repeated_extract_store(
     const string& pattern, cetype_ext_t encoding, R_len_t size
 )
 {
-    charr::altrep::OutputStore output(
+    charr::altrep_backend::io::OutputStore output(
         static_cast<size_t>(size), pattern.size()
     );
     if (size <= 0)
@@ -404,7 +406,8 @@ void ci__build_extract_all_fixed_list(
     bool omit_no_match, SEXP& result
 )
 {
-    PROTECT(result = charport::unwind_protect([&]() -> SEXP {
+    ci::UnwindCallbackProtector protector;
+    result = protector.hold(ci::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(VECSXP, vectorize_length);
     }));
 
@@ -425,15 +428,17 @@ void ci__build_extract_all_fixed_list(
             (count == 0 && !omit_no_match);
         if (forced_na) {
             if (missing_child == R_NilValue) {
-                charr::altrep::OutputStore store =
-                    charr::altrep::scalar_store(
-                        charr::altrep::missing_output_record()
+                charr::altrep_backend::io::OutputStore store =
+                    charr::altrep_backend::io::scalar_store(
+                        charr::altrep_backend::io::missing_output_record()
                     );
-                PROTECT(missing_child = charr::altrep::finalize(
-                    std::move(store)
-                ));
+                missing_child = protector.hold(
+                    ci::unwind_protect([&]() -> SEXP {
+                        return charr::altrep_backend::io::finalize(std::move(store));
+                    })
+                );
                 SET_VECTOR_ELT(result, i, missing_child);
-                UNPROTECT(1);
+                protector.release(1);
             }
             else {
                 SET_VECTOR_ELT(result, i, missing_child);
@@ -443,12 +448,14 @@ void ci__build_extract_all_fixed_list(
 
         if (count == 0) {
             if (empty_child == R_NilValue) {
-                charr::altrep::OutputStore store(0, 0);
-                PROTECT(empty_child = charr::altrep::finalize(
-                    std::move(store)
-                ));
+                charr::altrep_backend::io::OutputStore store(0, 0);
+                empty_child = protector.hold(
+                    ci::unwind_protect([&]() -> SEXP {
+                        return charr::altrep_backend::io::finalize(std::move(store));
+                    })
+                );
                 SET_VECTOR_ELT(result, i, empty_child);
-                UNPROTECT(1);
+                protector.release(1);
             }
             else {
                 SET_VECTOR_ELT(result, i, empty_child);
@@ -463,16 +470,18 @@ void ci__build_extract_all_fixed_list(
             continue;
         }
 
-        charr::altrep::OutputStore store = ci__repeated_extract_store(
+        charr::altrep_backend::io::OutputStore store = ci__repeated_extract_store(
             plan.patterns[key.pattern], plan.encodings[key.pattern], count
         );
         SEXP child;
-        PROTECT(child = charr::altrep::finalize(std::move(store)));
+        child = protector.hold(ci::unwind_protect([&]() -> SEXP {
+            return charr::altrep_backend::io::finalize(std::move(store));
+        }));
         SET_VECTOR_ELT(result, i, child);
-        UNPROTECT(1);
+        protector.release(1);
         children.emplace(key, child);
     }
-    UNPROTECT(1);
+    protector.release(1);
 }
 
 
@@ -521,12 +530,13 @@ void ci__build_extract_all_fixed_byte(
     int simplify, bool omit_no_match, SEXP& result
 )
 {
+    ci::UnwindCallbackProtector protector;
     const unsigned char pattern_byte = plan.pattern_byte;
     const vector<R_len_t>& counts = plan.counts;
     const R_len_t max_columns = plan.max_columns;
 
     if (simplify != NA_LOGICAL && !simplify) {
-        PROTECT(result = charport::unwind_protect([&]() -> SEXP {
+        result = protector.hold(ci::unwind_protect([&]() -> SEXP {
             return Rf_allocVector(VECSXP, vectorize_length);
         }));
         // Equal result signatures produce byte-for-byte identical immutable
@@ -546,15 +556,17 @@ void ci__build_extract_all_fixed_byte(
             if (forced_na) {
                 child = missing_child;
                 if (child == R_NilValue) {
-                    charr::altrep::OutputStore store =
-                        charr::altrep::scalar_store(
-                            charr::altrep::missing_output_record()
+                    charr::altrep_backend::io::OutputStore store =
+                        charr::altrep_backend::io::scalar_store(
+                            charr::altrep_backend::io::missing_output_record()
                         );
-                    PROTECT(child = charr::altrep::finalize(
-                        std::move(store)
-                    ));
+                    child = protector.hold(
+                        ci::unwind_protect([&]() -> SEXP {
+                            return charr::altrep_backend::io::finalize(std::move(store));
+                        })
+                    );
                     SET_VECTOR_ELT(result, i, child);
-                    UNPROTECT(1);
+                    protector.release(1);
                     missing_child = child;
                     continue;
                 }
@@ -563,20 +575,22 @@ void ci__build_extract_all_fixed_byte(
                 SEXP& cached = children[static_cast<size_t>(count)];
                 child = cached;
                 if (child == R_NilValue) {
-                    charr::altrep::OutputStore store =
+                    charr::altrep_backend::io::OutputStore store =
                         ci__repeated_extract_store(count, pattern_byte);
-                    PROTECT(child = charr::altrep::finalize(
-                        std::move(store)
-                    ));
+                    child = protector.hold(
+                        ci::unwind_protect([&]() -> SEXP {
+                            return charr::altrep_backend::io::finalize(std::move(store));
+                        })
+                    );
                     SET_VECTOR_ELT(result, i, child);
-                    UNPROTECT(1);
+                    protector.release(1);
                     cached = child;
                     continue;
                 }
             }
             SET_VECTOR_ELT(result, i, child);
         }
-        UNPROTECT(1);
+        protector.release(1);
         return;
     }
 
@@ -591,7 +605,7 @@ void ci__build_extract_all_fixed_byte(
             )) {
         throw length_error("matrix length exceeds C++ limits");
     }
-    charr::altrep::OutputStore output(
+    charr::altrep_backend::io::OutputStore output(
         static_cast<size_t>(output_size),
         static_cast<size_t>(output_size)
     );
@@ -625,8 +639,10 @@ void ci__build_extract_all_fixed_byte(
         }
     }
 
-    PROTECT(result = charr::altrep::finalize(std::move(output)));
-    charport::unwind_protect([&]() -> SEXP {
+    result = protector.hold(ci::unwind_protect([&]() -> SEXP {
+        return charr::altrep_backend::io::finalize(std::move(output));
+    }));
+    ci::unwind_protect([&]() -> SEXP {
         SEXP dim;
         PROTECT(dim = Rf_allocVector(INTSXP, 2));
         INTEGER(dim)[0] = vectorize_length;
@@ -635,10 +651,12 @@ void ci__build_extract_all_fixed_byte(
         UNPROTECT(1);
         return R_NilValue;
     });
-    UNPROTECT(1);
+    protector.release(1);
 }
 
-} // namespace
+} // namespace search_fixed_extract
+
+using namespace search_fixed_extract;
 
 
 /**
@@ -658,11 +676,11 @@ void ci__build_extract_all_fixed_byte(
  *          new args: opts_fixed
  *
  * @version 0.5-1 (Marek Gagolewski, 2015-02-14)
- *    use StriByteSearchMatcher
+ *    use shared::ByteSearchMatcher
  */
 SEXP ci__extract_firstlast_fixed(SEXP str, SEXP pattern, SEXP opts_fixed, bool first)
 {
-    uint32_t pattern_flags = StriContainerByteSearch::getByteSearchFlags(opts_fixed);
+    uint32_t pattern_flags = fixed::PatternSet::getByteSearchFlags(opts_fixed);
     PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern")); // prepare string argument
 
@@ -677,7 +695,7 @@ SEXP ci__extract_firstlast_fixed(SEXP str, SEXP pattern, SEXP opts_fixed, bool f
         context.size(pattern), "character vectors"
     );
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             STRI__DEFERRED_WARNINGS, 2, str_n, pattern_n
         );
@@ -700,8 +718,8 @@ SEXP ci__extract_firstlast_fixed(SEXP str, SEXP pattern, SEXP opts_fixed, bool f
     if (!direct) {
         builder.reset(vectorize_length);
         {
-            Utf8Input str_cont(context, str, vectorize_length);
-            StriContainerByteSearch pattern_cont(
+            io::Utf8Input str_cont(context, str, vectorize_length);
+            fixed::PatternSet pattern_cont(
                 context, pattern, vectorize_length, pattern_flags
             );
 
@@ -712,20 +730,20 @@ SEXP ci__extract_firstlast_fixed(SEXP str, SEXP pattern, SEXP opts_fixed, bool f
                 STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
                         builder.set_na(i);, builder.set_na(i);)
 
-                StriByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
+                shared::ByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
                 matcher->reset(str_cont.get(i).data(), str_cont.get(i).length());
                 int start, len;
                 if (first) {
-                    start = matcher->findFirst();
+                    start = matcher->find_first();
                 } else {
-                    start = matcher->findLast();
+                    start = matcher->find_last();
                 }
-                if (start == USEARCH_DONE) {
+                if (start == shared::ByteSearchMatcher::not_found) {
                     builder.set_na(i);
                     continue;
                 }
 
-                len = matcher->getMatchedLength();
+                len = matcher->matched_length();
 
                 ci::builder_set(
                     builder, i, str_cont.get(i).data()+start, len,
@@ -737,7 +755,9 @@ SEXP ci__extract_firstlast_fixed(SEXP str, SEXP pattern, SEXP opts_fixed, bool f
 
     pattern_borrow.reset();
     str_borrow.reset();
-    STRI__PROTECT(ret = builder.to_sexp());
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return builder.to_sexp();
+    }));
     }
     STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
@@ -768,27 +788,6 @@ SEXP ci_extract_first_fixed(SEXP str, SEXP pattern, SEXP opts_fixed)
 
 
 /**
- * Extract last occurrence of a fixed pattern in each string
- *
- * @param str character vector
- * @param pattern character vector
- * @return character vector
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-24)
- *
- * @version 0.2-3 (Marek Gagolewski, 2014-05-08)
- *          ci_extract_fixed now uses byte search only
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-12-08)
- *          new args: opts_fixed
- */
-SEXP ci_extract_last_fixed(SEXP str, SEXP pattern, SEXP opts_fixed)
-{
-    return ci__extract_firstlast_fixed(str, pattern, opts_fixed, false);
-}
-
-
-/**
  * Extract all occurrences of pattern in a string [exact byte search]
  *
  * @param str character vector
@@ -804,11 +803,11 @@ SEXP ci_extract_last_fixed(SEXP str, SEXP pattern, SEXP opts_fixed)
  *          new args: opts_fixed, omit_no_match, simplify
  *
  * @version 0.5-1 (Marek Gagolewski, 2015-02-14)
- *    use StriByteSearchMatcher
+ *    use shared::ByteSearchMatcher
  */
 SEXP ci_extract_all_fixed(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_match, SEXP opts_fixed)
 {
-    uint32_t pattern_flags = StriContainerByteSearch::getByteSearchFlags(opts_fixed, /*allow_overlap*/true);
+    uint32_t pattern_flags = fixed::PatternSet::getByteSearchFlags(opts_fixed, /*allow_overlap*/true);
     bool omit_no_match1 = ci__prepare_arg_logical_1_notNA(omit_no_match, "omit_no_match");
     PROTECT(simplify = ci__prepare_arg_logical_1(simplify, "simplify"));
     PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
@@ -826,7 +825,7 @@ SEXP ci_extract_all_fixed(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_ma
         context.size(pattern), "character vectors"
     );
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             STRI__DEFERRED_WARNINGS, 2, str_n, pattern_n
         );
@@ -876,38 +875,38 @@ SEXP ci_extract_all_fixed(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_ma
         STRI__PROTECT(ret);
     }
     else {
-    vector<charr::altrep::OutputStore> stores;
+    vector<charr::altrep_backend::io::OutputStore> stores;
     stores.reserve(static_cast<size_t>(vectorize_length));
     for (R_len_t i=0; i<vectorize_length; ++i)
-        stores.push_back(charr::altrep::OutputStore(0, 0));
+        stores.push_back(charr::altrep_backend::io::OutputStore(0, 0));
 
     if (vectorize_length > 0) {
-        charr::altrep::Utf8Input str_input(
+        charr::altrep_backend::io::Utf8Input str_input(
             context, str, vectorize_length
         );
         for (R_xlen_t i = 0; i < str_input.source_size(); ++i) {
             if (str_input.is_bytes(i))
                 throw StriException(MSG__BYTESENC);
         }
-        StriContainerByteSearch pattern_cont(
+        fixed::PatternSet pattern_cont(
             context, pattern, vectorize_length, pattern_flags
         );
         // Each child's match count is unknown until its matcher is exhausted.
         // Reusing one growable builder preserves the single-pass search while
         // avoiding a fresh builder allocation for every input record.
-        charr::altrep::GrowableOutputBuilder builder;
+        charr::altrep_backend::io::GrowableOutputBuilder builder;
 
         for (R_len_t i = 0; i < general_start; ++i) {
             const R_len_t count = direct_plan.counts[
                 static_cast<size_t>(i)
             ];
-            charr::altrep::OutputStore& current = stores[
+            charr::altrep_backend::io::OutputStore& current = stores[
                 static_cast<size_t>(i)
             ];
             if (count == NA_INTEGER ||
                     (count == 0 && !omit_no_match1)) {
-                current = charr::altrep::scalar_store(
-                    charr::altrep::missing_output_record()
+                current = charr::altrep_backend::io::scalar_store(
+                    charr::altrep_backend::io::missing_output_record()
                 );
             }
             else if (count > 0) {
@@ -925,45 +924,45 @@ SEXP ci_extract_all_fixed(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_ma
                 i != pattern_cont.vectorize_end();
                 i = pattern_cont.vectorize_next(i))
         {
-            charr::altrep::OutputStore& current = stores[
+            charr::altrep_backend::io::OutputStore& current = stores[
                 static_cast<size_t>(i)
             ];
             if (str_input.is_na(i) || pattern_cont.isNA(i) ||
                     pattern_cont.get(i).length() <= 0) {
-                current = charr::altrep::scalar_store(
-                    charr::altrep::missing_output_record()
+                current = charr::altrep_backend::io::scalar_store(
+                    charr::altrep_backend::io::missing_output_record()
                 );
                 continue;
             }
             const charport::StrView subject = str_input.text(i);
             if (subject.len <= 0) {
                 if (!omit_no_match1) {
-                    current = charr::altrep::scalar_store(
-                        charr::altrep::missing_output_record()
+                    current = charr::altrep_backend::io::scalar_store(
+                        charr::altrep_backend::io::missing_output_record()
                     );
                 }
                 continue;
             }
 
-            StriByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
+            shared::ByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
             matcher->reset(subject.ptr, subject.len);
 
-            const int first_start = matcher->findFirst();
-            if (first_start == USEARCH_DONE) {
+            const int first_start = matcher->find_first();
+            if (first_start == shared::ByteSearchMatcher::not_found) {
                 if (!omit_no_match1) {
-                    current = charr::altrep::scalar_store(
-                        charr::altrep::missing_output_record()
+                    current = charr::altrep_backend::io::scalar_store(
+                        charr::altrep_backend::io::missing_output_record()
                     );
                 }
                 continue;
             }
 
             const size_t first_length = static_cast<size_t>(
-                matcher->getMatchedLength()
+                matcher->matched_length()
             );
-            int start = matcher->findNext();
-            if (start == USEARCH_DONE) {
-                current = charr::altrep::scalar_store(
+            int start = matcher->find_next();
+            if (start == shared::ByteSearchMatcher::not_found) {
+                current = charr::altrep_backend::io::scalar_store(
                     subject.ptr + first_start, first_length,
                     cetype_ext_t::CE_ASCII_OR_UTF8
                 );
@@ -978,11 +977,11 @@ SEXP ci_extract_all_fixed(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_ma
             do {
                 builder.append(
                     subject.ptr + start,
-                    static_cast<size_t>(matcher->getMatchedLength()),
+                    static_cast<size_t>(matcher->matched_length()),
                     cetype_ext_t::CE_ASCII_OR_UTF8
                 );
-                start = matcher->findNext();
-            } while (start != USEARCH_DONE);
+                start = matcher->find_next();
+            } while (start != shared::ByteSearchMatcher::not_found);
             current = builder.release_store();
         }
     }
@@ -991,14 +990,14 @@ SEXP ci_extract_all_fixed(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_ma
     str_borrow.reset();
 
     if (simplify1 != NA_LOGICAL && !simplify1) {
-        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
             return Rf_allocVector(VECSXP, vectorize_length);
         }));
         for (R_len_t i=0; i<vectorize_length; ++i) {
             SEXP current;
-            STRI__PROTECT(current = charr::altrep::finalize(
-                std::move(stores[i])
-            ));
+            STRI__PROTECT(current = ci::unwind_protect([&]() -> SEXP {
+                return charr::altrep_backend::io::finalize(std::move(stores[i]));
+            }));
             SET_VECTOR_ELT(ret, i, current);
             STRI__UNPROTECT(1);
         }
@@ -1019,9 +1018,9 @@ SEXP ci_extract_all_fixed(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_ma
         if (rows > 0 && columns > R_XLEN_T_MAX/rows)
             throw length_error("matrix length exceeds R's vector limit");
 
-        charr::altrep::OutputBuilder matrix_builder(rows*columns);
+        charr::altrep_backend::io::OutputBuilder matrix_builder(rows*columns);
         for (R_xlen_t i=0; i<rows; ++i) {
-            const charr::altrep::OutputStore& current = stores[i];
+            const charr::altrep_backend::io::OutputStore& current = stores[i];
             const R_xlen_t current_size = static_cast<R_xlen_t>(
                 current.size()
             );
@@ -1041,8 +1040,10 @@ SEXP ci_extract_all_fixed(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_ma
             }
         }
 
-        STRI__PROTECT(ret = matrix_builder.to_sexp());
-        charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return matrix_builder.to_sexp();
+        }));
+        ci::unwind_protect([&]() -> SEXP {
             SEXP dim;
             PROTECT(dim = Rf_allocVector(INTSXP, 2));
             INTEGER(dim)[0] = vectorize_length;
@@ -1060,3 +1061,5 @@ SEXP ci_extract_all_fixed(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_ma
     return ret;
     STRI__ERROR_HANDLER_END({/* no-op */})
 }
+
+} } // namespace charr::altrep_backend

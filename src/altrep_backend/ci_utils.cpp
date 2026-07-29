@@ -34,9 +34,11 @@
 #include "ci_stringi.h"
 #include "ci_builder.h"
 #include "ci_utf8.h"
-#include "ci_container_listutf8.h"
+#include "io/utf8_list_input.h"
 
 #include <cstring>
+
+namespace charr { namespace altrep_backend {
 
 
 /**
@@ -68,7 +70,7 @@ SEXP ci_list2matrix(SEXP x, SEXP byrow, SEXP fill, SEXP n_min)
     // Deviation from stringi: stage the protected list's child SEXPs before
     // opening any Reader, so later list access cannot run inside a borrow.
     std::vector<SEXP> elements(static_cast<size_t>(n));
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         for (R_len_t i=0; i<n; ++i)
             elements[static_cast<size_t>(i)] = VECTOR_ELT(x, i);
         return R_NilValue;
@@ -123,10 +125,12 @@ SEXP ci_list2matrix(SEXP x, SEXP byrow, SEXP fill, SEXP n_min)
         }
 
         fill_borrow.reset();
-        STRI__PROTECT(ret = builder.to_sexp());
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return builder.to_sexp();
+        }));
     }
 
-    ret = charport::unwind_protect([&]() -> SEXP {
+    ret = ci::unwind_protect([&]() -> SEXP {
         SEXP dim;
         PROTECT(dim = Rf_allocVector(INTSXP, 2));
         INTEGER(dim)[0] = byrow2 ? n : m;
@@ -156,7 +160,7 @@ SEXP ci_list2matrix(SEXP x, SEXP byrow, SEXP fill, SEXP n_min)
 * @version 0.2-1 (Bartek Tartanus, 2014-03-15)
 *
 * @version 0.2-1 (Marek Gagolewski, 2014-04-02)
-*          Use Utf8Input for replacement
+*          Use io::Utf8Input for replacement
 *
 * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
 *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
@@ -209,7 +213,7 @@ SEXP ci_replace_na(SEXP str, SEXP replacement) {
             if (!has_na && source_is_result_shaped) {
                 // Constructed for its validation side effect: an invalid
                 // replacement must still signal even when nothing is replaced.
-                Utf8Input replacement_cont(
+                io::Utf8Input replacement_cont(
                     context, replacement, 1
                 );
                 ret = str;
@@ -222,7 +226,7 @@ SEXP ci_replace_na(SEXP str, SEXP replacement) {
                 builder.reset(str_len);
                 build_output = true;
                 {
-                    Utf8Input replacement_cont(
+                    io::Utf8Input replacement_cont(
                         context, replacement, 1
                     );
                     for (R_len_t i=0; i<str_len; ++i) {
@@ -246,8 +250,8 @@ SEXP ci_replace_na(SEXP str, SEXP replacement) {
             builder.reset(str_len);
             build_output = true;
             {
-                Utf8Input str_cont(context, str, str_len);
-                Utf8Input replacement_cont(context, replacement, 1);
+                io::Utf8Input str_cont(context, str, str_len);
+                io::Utf8Input replacement_cont(context, replacement, 1);
 
                 for (R_len_t i=0; i<str_len; ++i) {
                     if (str_cont.isNA(i))
@@ -262,10 +266,14 @@ SEXP ci_replace_na(SEXP str, SEXP replacement) {
     }
 
     if (build_output)
-        STRI__PROTECT(ret = builder.to_sexp());
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return builder.to_sexp();
+        }));
 
     context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
 }
+
+} } // namespace charr::altrep_backend

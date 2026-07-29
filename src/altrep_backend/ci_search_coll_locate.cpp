@@ -32,11 +32,13 @@
 
 
 #include "ci_stringi.h"
-#include "ci_container_utf16.h"
-#include "ci_container_usearch.h"
+#include "io/utf16_input.h"
+#include "collation/pattern_set.h"
 #include "ci_utf16_cursor.h"
 #include <utility>
 #include <vector>
+
+namespace charr { namespace altrep_backend {
 using namespace std;
 
 
@@ -53,10 +55,10 @@ using namespace std;
  * @version 0.1-?? (Bartlomiej Tartanus)
  *
  * @version 0.1-?? (Bartlomiej Tartanus, 2013-06-09)
- *          StriContainerUTF16 & collator
+ *          io::Utf16Input & collator
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-23)
- *          StriException friendly, use StriContainerUStringSearch
+ *          StriException friendly, use collation::PatternSet
  *
  * @version 0.2-3 (Marek Gagolewski, 2014-05-08)
  *          new fun: ci_locate_firstlast_coll (opts_collator == NA not allowed)
@@ -77,7 +79,7 @@ SEXP ci__locate_firstlast_coll(SEXP str, SEXP pattern, SEXP opts_collator, bool 
     STRI__ERROR_HANDLER_BEGIN(2)
     // Deviation from stringi: catch R errors from collator option parsing so
     // queued warnings and any opened collator are released before R resumes.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         collator = ci__ucol_open(
             STRI__DEFERRED_WARNINGS, opts_collator
         );
@@ -93,7 +95,7 @@ SEXP ci__locate_firstlast_coll(SEXP str, SEXP pattern, SEXP opts_collator, bool 
     R_len_t vectorize_length = 0;
     // Deviation from stringi: queue recycling warnings while the collator is
     // live and emit them after the collator closes.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             false, 2, str_n, pattern_n
         );
@@ -105,7 +107,7 @@ SEXP ci__locate_firstlast_coll(SEXP str, SEXP pattern, SEXP opts_collator, bool 
     });
 
     SEXP ret;
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocMatrix(INTSXP, vectorize_length, 2);
     }));
     int* ret_tab = INTEGER(ret);
@@ -114,7 +116,7 @@ SEXP ci__locate_firstlast_coll(SEXP str, SEXP pattern, SEXP opts_collator, bool 
         ci::Utf16Cursor str_cont(
             context, str, vectorize_length
         );
-        StriContainerUStringSearch pattern_cont(
+        collation::PatternSet pattern_cont(
             context, pattern, vectorize_length, collator
         );  // collator is not owned by pattern_cont
 
@@ -164,7 +166,7 @@ SEXP ci__locate_firstlast_coll(SEXP str, SEXP pattern, SEXP opts_collator, bool 
         }
     }
 
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         ci__locate_set_dimnames_matrix(ret, get_length1);
         return R_NilValue;
     });
@@ -192,7 +194,7 @@ SEXP ci__locate_firstlast_coll(SEXP str, SEXP pattern, SEXP opts_collator, bool 
  * @version 0.1-?? (Bartlomiej Tartanus)
  *
  * @version 0.1-?? (Bartlomiej Tartanus, 2013-06-09)
- *          StriContainerUTF16 & collator
+ *          io::Utf16Input & collator
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-23)
  *          use ci_locate_firstlast_fixed
@@ -211,35 +213,6 @@ SEXP ci_locate_first_coll(SEXP str, SEXP pattern, SEXP opts_collator, SEXP get_l
 
 
 /**
- * Locate last occurrences of pattern in a string [with collation]
- *
- * @param str character vector
- * @param pattern character vector
- * @param opts_collator list
- * @return integer matrix (2 columns)
- *
- * @version 0.1-?? (Bartlomiej Tartanus)
- *
- * @version 0.1-?? (Bartlomiej Tartanus, 2013-06-09)
- *          StriContainerUTF16 & collator
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-23)
- *          use ci_locate_firstlast_fixed
- *
- * @version 0.2-3 (Marek Gagolewski, 2014-05-08)
- *          new fun: ci_locate_last_coll (opts_collator == NA not allowed)
- *
- * @version 1.7.1 (Marek Gagolewski, 2021-06-29)
- *     get_length
- */
-SEXP ci_locate_last_coll(SEXP str, SEXP pattern, SEXP opts_collator, SEXP get_length)
-{
-    bool get_length1 = ci__prepare_arg_logical_1_notNA(get_length, "get_length");
-    return ci__locate_firstlast_coll(str, pattern, opts_collator, false, get_length1);
-}
-
-
-/**
  * Locate all pattern occurrences in a string [with collation]
  *
  * @param str character vector
@@ -251,10 +224,10 @@ SEXP ci_locate_last_coll(SEXP str, SEXP pattern, SEXP opts_collator, SEXP get_le
  * @version 0.1-?? (Bartlomiej Tartanus)
  *
  * @version 0.1-?? (Bartlomiej Tartanus, 2013-06-09)
- *          StriContainerUTF16 & collator
+ *          io::Utf16Input & collator
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-23)
- *          StriException friendly, use StriContainerUStringSearch
+ *          StriException friendly, use collation::PatternSet
  *
  *
  * @version 0.2-3 (Marek Gagolewski, 2014-05-08)
@@ -281,7 +254,7 @@ SEXP ci_locate_all_coll(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_co
     STRI__ERROR_HANDLER_BEGIN(2)
     // Deviation from stringi: catch R errors from collator option parsing so
     // queued warnings and any opened collator are released before R resumes.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         collator = ci__ucol_open(
             STRI__DEFERRED_WARNINGS, opts_collator
         );
@@ -297,7 +270,7 @@ SEXP ci_locate_all_coll(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_co
     R_len_t vectorize_length = 0;
     // Deviation from stringi: queue recycling warnings while the collator is
     // live and emit them after the collator closes.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             false, 2, str_n, pattern_n
         );
@@ -313,10 +286,10 @@ SEXP ci_locate_all_coll(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_co
         ci::Utf16Cursor str_cont(
             context, str, vectorize_length
         );
-        StriContainerUStringSearch pattern_cont(
+        collation::PatternSet pattern_cont(
             context, pattern, vectorize_length, collator
         );  // collator is not owned by pattern_cont
-        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
             return Rf_allocVector(VECSXP, vectorize_length);
         }));
         vector< pair<R_len_t, R_len_t> > occurrences;
@@ -330,7 +303,7 @@ SEXP ci_locate_all_coll(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_co
         // child allocation and list write while the Reader and ICU owners are
         // live. Reusable contiguous scratch lives outside the callback, so it
         // is destroyed on an R error without paying one bridge per child.
-        charport::unwind_protect([&]() -> SEXP {
+        ci::unwind_protect([&]() -> SEXP {
           for (R_len_t i = pattern_cont.vectorize_init();
                   i != pattern_cont.vectorize_end();
                   i = pattern_cont.vectorize_next(i))
@@ -423,3 +396,5 @@ SEXP ci_locate_all_coll(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_co
         if (collator) ucol_close(collator);
     )
     }
+
+} } // namespace charr::altrep_backend

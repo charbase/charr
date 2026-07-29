@@ -3,9 +3,11 @@
 
 #include "ci_reader.h"
 #include "ci_stringi.h"
-#include "altrep/utf8_input.h"
+#include "altrep_backend/io/utf8_input.h"
 
 #include <unicode/ustring.h>
+
+namespace charr { namespace altrep_backend {
 
 
 namespace ci {
@@ -16,8 +18,8 @@ namespace ci {
 // is reused as vectorization advances.
 class Utf16Cursor {
 private:
-    charr::altrep::Utf8Input input_;
-    const charr::altrep::Utf8Record* records_;
+    charr::altrep_backend::io::Utf8Input input_;
+    const charr::altrep_backend::io::Utf8Record* records_;
     R_len_t source_size_;
     bool aligned_;
     UnicodeString current_;
@@ -39,7 +41,7 @@ private:
         if (current_index_ == raw)
             return;
 
-        const charr::altrep::Utf8Record& value = records_[raw];
+        const charr::altrep_backend::io::Utf8Record& value = records_[raw];
         if (value.isNA()) {
             current_.setToBogus();
             current_index_ = raw;
@@ -80,7 +82,7 @@ public:
         ReaderContext& context, SEXP source, R_len_t recycle_size
     ) : input_(
             context, source, recycle_size, true,
-            charr::altrep::Utf8BomPolicy::preserve
+            charr::altrep_backend::io::Utf8BomPolicy::preserve
         ), records_(input_.source_data()), source_size_(input_.get_n()),
         aligned_(source_size_ == recycle_size), current_(),
         current_index_(-1), current_utf8_valid_(false)
@@ -98,7 +100,7 @@ public:
         return current_;
     }
 
-    const charr::altrep::Utf8Record* utf8_if_valid(R_len_t index)
+    const charr::altrep_backend::io::Utf8Record* utf8_if_valid(R_len_t index)
     {
         load(index);
         return current_utf8_valid_ ? &records_[raw_index(index)] : nullptr;
@@ -171,5 +173,8 @@ public:
 
 
 } // namespace ci
+
+
+} } // namespace charr::altrep_backend
 
 #endif

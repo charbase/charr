@@ -37,6 +37,8 @@
 #include "ci_stringi.h"
 #include <deque>
 
+namespace charr { namespace altrep_backend {
+
 
 /**
  * [DEPRECATED] A class to represent a temporary string buffer
@@ -204,5 +206,8 @@ public:
     }
 
 };
+
+
+} } // namespace charr::altrep_backend
 
 #endif

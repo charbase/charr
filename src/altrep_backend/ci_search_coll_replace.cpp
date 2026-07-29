@@ -33,14 +33,16 @@
 
 #include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_container_utf16.h"
-#include "ci_container_usearch.h"
+#include "io/utf16_input.h"
+#include "collation/pattern_set.h"
 #include "ci_utf16_cursor.h"
 #include <vector>
+
+namespace charr { namespace altrep_backend {
 using namespace std;
 
 
-namespace {
+namespace search_coll_replace {
 
 typedef pair<R_len_t, R_len_t> CollOccurrence;
 
@@ -68,7 +70,9 @@ UnicodeString ci__coll_replace_splice(
     return answer;
 }
 
-} // namespace
+} // namespace search_coll_replace
+
+using namespace search_coll_replace;
 
 
 /**
@@ -81,9 +85,6 @@ UnicodeString ci__coll_replace_splice(
  * @return character vector
  *
  * @version 0.1-?? (Bartek Tartanus)
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-26)
- *          StriException friendly & Use StriContainers
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-07-10)
  *          BUGFIX: wrong behavior on empty str
@@ -108,7 +109,7 @@ SEXP ci__replace_allfirstlast_coll(SEXP str, SEXP pattern, SEXP replacement, SEX
     STRI__ERROR_HANDLER_BEGIN(3)
     // Deviation from stringi: catch R errors from collator option parsing so
     // queued warnings and any opened collator are released before R resumes.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         collator = ci__ucol_open(
             STRI__DEFERRED_WARNINGS, opts_collator
         );
@@ -127,7 +128,7 @@ SEXP ci__replace_allfirstlast_coll(SEXP str, SEXP pattern, SEXP replacement, SEX
     R_len_t vectorize_length = 0;
     // Deviation from stringi: queue recycling warnings while the collator is
     // live and emit them after the collator closes.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             false, 3, str_n, pattern_n, replacement_n
         );
@@ -142,16 +143,16 @@ SEXP ci__replace_allfirstlast_coll(SEXP str, SEXP pattern, SEXP replacement, SEX
     charport::charvec::Builder builder(vectorize_length);
     {
         ci::Utf16Cursor str_cont(context, str, vectorize_length);
-        StriContainerUStringSearch pattern_cont(
+        collation::PatternSet pattern_cont(
             context, pattern, vectorize_length, collator
         );  // collator is not owned by pattern_cont
-        StriContainerUTF16 replacement_cont(
+        io::Utf16Input replacement_cont(
             context, replacement, vectorize_length
         );
         vector<CollOccurrence> occurrences;
         vector<char> utf8_buffer;
         const auto set_unchanged = [&] (R_len_t i) {
-            const charr::altrep::Utf8Record* value =
+            const charr::altrep_backend::io::Utf8Record* value =
                 str_cont.utf8_if_valid(i);
             if (value) {
                 ci::builder_set(builder, i, *value);
@@ -227,7 +228,9 @@ SEXP ci__replace_allfirstlast_coll(SEXP str, SEXP pattern, SEXP replacement, SEX
     }
 
     SEXP ret;
-    STRI__PROTECT(ret = builder.to_sexp());
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return builder.to_sexp();
+    }));
     if (collator) {
         ucol_close(collator);
         collator=NULL;
@@ -277,7 +280,9 @@ SEXP ci__replace_all_coll_no_vectorize_all(SEXP str, SEXP pattern, SEXP replacem
     if (str_n <= 0) {
         charport::charvec::Builder builder(0);
         SEXP ret;
-        STRI__PROTECT(ret = builder.to_sexp());
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return builder.to_sexp();
+        }));
         context.emitWarnings();
         STRI__UNPROTECT_ALL
         return ret;
@@ -285,12 +290,12 @@ SEXP ci__replace_all_coll_no_vectorize_all(SEXP str, SEXP pattern, SEXP replacem
 
     // Deviation from stringi: lazy preparation now runs inside the C++
     // boundary, so queue its controlled warnings with the operation.
-    STRI__PROTECT(pattern = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(pattern = ci::unwind_protect([&]() -> SEXP {
         return ci__prepare_arg_string(
             pattern, "pattern", true, &STRI__DEFERRED_WARNINGS
         );
     }));
-    STRI__PROTECT(replacement = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(replacement = ci::unwind_protect([&]() -> SEXP {
         return ci__prepare_arg_string(
             replacement, "replacement", true,
             &STRI__DEFERRED_WARNINGS
@@ -302,7 +307,7 @@ SEXP ci__replace_all_coll_no_vectorize_all(SEXP str, SEXP pattern, SEXP replacem
     R_len_t replacement_n = ci::checked_r_len(
         context.size(replacement), "character vectors"
     );
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         // Deviation from stringi: keep controlled recycling conditions on the
         // C++ path so R signalling happens after operation cleanup.
         if (pattern_n < replacement_n || pattern_n <= 0 || replacement_n <= 0)
@@ -317,7 +322,7 @@ SEXP ci__replace_all_coll_no_vectorize_all(SEXP str, SEXP pattern, SEXP replacem
         // Deviation from stringi: replay outer preparation diagnostics before
         // delegation, while no Reader, collator, or output owner is active.
         context.emitWarnings();
-        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
             return ci__replace_allfirstlast_coll(
                 str, pattern, replacement, opts_collator, 0
             );
@@ -328,7 +333,7 @@ SEXP ci__replace_all_coll_no_vectorize_all(SEXP str, SEXP pattern, SEXP replacem
 
     // Deviation from stringi: catch R errors from collator option parsing so
     // queued warnings and any opened collator are released before R resumes.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         collator = ci__ucol_open(
             STRI__DEFERRED_WARNINGS, opts_collator
         );
@@ -337,13 +342,13 @@ SEXP ci__replace_all_coll_no_vectorize_all(SEXP str, SEXP pattern, SEXP replacem
 
     charport::charvec::Builder builder(str_n);
     {
-        StriContainerUTF16 str_cont(
-            context, str, str_n, false
+        io::Utf16Output str_cont(
+            context, str, str_n
         ); // writable
-        StriContainerUStringSearch pattern_cont(
+        collation::PatternSet pattern_cont(
             context, pattern, pattern_n, collator
         );  // collator is not owned by pattern_cont
-        StriContainerUTF16 replacement_cont(
+        io::Utf16Input replacement_cont(
             context, replacement, pattern_n
         );
         bool return_all_na = false;
@@ -359,7 +364,7 @@ SEXP ci__replace_all_coll_no_vectorize_all(SEXP str, SEXP pattern, SEXP replacem
                 break;
             }
             else if (pattern_cont.get(i).length() <= 0) {
-                // StriContainerUStringSearch already queued stringi's first
+                // collation::PatternSet already queued stringi's first
                 // warning; preserve this sequential path's second warning.
                 context.warn(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
                 return_all_na = true;
@@ -411,7 +416,9 @@ SEXP ci__replace_all_coll_no_vectorize_all(SEXP str, SEXP pattern, SEXP replacem
     }
 
     SEXP ret;
-    STRI__PROTECT(ret = builder.to_sexp());
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return builder.to_sexp();
+    }));
     if (collator) {
         ucol_close(collator);
         collator=NULL;
@@ -455,29 +462,6 @@ SEXP ci_replace_all_coll(SEXP str, SEXP pattern, SEXP replacement, SEXP vectoriz
 
 
 /**
- * Replace last occurrence of a fixed pattern [with collation]
- *
- * @param str character vector
- * @param pattern character vector
- * @param replacement character vector
- * @param opts_collator list
- * @return character vector
- *
- * @version 0.1-?? (Bartek Tartanus)
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-26)
- *          use ci__replace_allfirstlast_fixed
- *
- * @version 0.2-3 (Marek Gagolewski, 2014-05-08)
- *          new fun: ci_replace_last_coll (opts_collator == NA not allowed)
- */
-SEXP ci_replace_last_coll(SEXP str, SEXP pattern, SEXP replacement, SEXP opts_collator)
-{
-    return ci__replace_allfirstlast_coll(str, pattern, replacement, opts_collator, -1);
-}
-
-
-/**
  * Replace first occurrence of a fixed pattern [with collation]
  *
  * @param str character vector
@@ -498,3 +482,5 @@ SEXP ci_replace_first_coll(SEXP str, SEXP pattern, SEXP replacement, SEXP opts_c
 {
     return ci__replace_allfirstlast_coll(str, pattern, replacement, opts_collator, 1);
 }
+
+} } // namespace charr::altrep_backend

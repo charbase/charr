@@ -33,6 +33,8 @@
 
 #include "ci_stringi.h"
 
+namespace charr { namespace altrep_backend {
+
 
 /** Get ICU error name
  *
@@ -345,3 +347,5 @@ const char* ICUError::getICUerrorName(UErrorCode status)
         return "Unknown ICU error or warning.";
     }
 }
+
+} } // namespace charr::altrep_backend

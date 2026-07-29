@@ -159,10 +159,3 @@ ci_match_first_regex <- function(str, pattern, cg_missing = NA_character_, ...,
 
 # @export
 # @rdname ci_match
-ci_match_last_regex <- function(str, pattern, cg_missing = NA_character_, ...,
-    opts_regex = NULL)
-{
-    if (!missing(...))
-        opts_regex <- do.call(ci_opts_regex, as.list(c(opts_regex, ...)))
-    .Call(C_ci_match_last_regex, str, pattern, cg_missing, opts_regex)
-}

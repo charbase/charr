@@ -34,17 +34,19 @@
 #include "ci_stringi.h"
 #include "ci_builder.h"
 #include "ci_utf8.h"
-#include "ci_container_utf16.h"
-#include "ci_container_usearch.h"
-#include "ci_container_bytesearch.h"
-#include "ci_container_integer.h"
-#include "ci_container_logical.h"
-#include "../read_lines_common.h"
+#include "io/utf16_input.h"
+#include "collation/pattern_set.h"
+#include "fixed/pattern_set.h"
+#include "io/integer_input.h"
+#include "io/logical_input.h"
+#include "../shared/read_lines.h"
 #include <string>
 #include <utility>
 #include <vector>
 #include <unicode/brkiter.h>
 #include <unicode/rbbi.h>
+
+namespace charr { namespace altrep_backend {
 using namespace std;
 
 
@@ -71,7 +73,7 @@ SEXP ci_read_lines(SEXP path, SEXP encoding)
             // Read into Store-owned bytes so the final records can refer to
             // the file payload directly. Only malformed input needs a second
             // owned slice for repaired UTF-8.
-            file_length = charr::read_lines::read_file_into(
+            file_length = charr::shared::read_lines::read_file_into(
                 expanded_path.c_str(),
                 [&output](size_t size) -> char* {
                     output = charport::charvec::Store(0, size);
@@ -79,10 +81,10 @@ SEXP ci_read_lines(SEXP path, SEXP encoding)
                 }
             );
         }
-        catch (const charr::read_lines::FileConditionError& error) {
+        catch (const charr::shared::read_lines::FileConditionError& error) {
             char warning[4096];
             if (error.condition() ==
-                    charr::read_lines::FileCondition::directory) {
+                    charr::shared::read_lines::FileCondition::directory) {
                 std::snprintf(
                     warning, sizeof(warning),
                     "'raw = FALSE' but '%s' is not a regular file",
@@ -111,25 +113,25 @@ SEXP ci_read_lines(SEXP path, SEXP encoding)
             ? ""
             : output.slices.front_data();
         int utf8_length = file_length;
-        if (charr::read_lines::has_utf8_bom(utf8, utf8_length)) {
+        if (charr::shared::read_lines::has_utf8_bom(utf8, utf8_length)) {
             utf8 += 3;
             utf8_length -= 3;
         }
 
-        charr::read_lines::ScanResult scan =
-            charr::read_lines::scan_utf8(utf8, utf8_length, false);
+        charr::shared::read_lines::ScanResult scan =
+            charr::shared::read_lines::scan_utf8(utf8, utf8_length, false);
         if (scan.embedded_nul)
             throw StriException("embedded nul in string");
 
         vector<char> repaired;
         if (!scan.invalid.empty()) {
             for (size_t i=0; i<scan.invalid.size(); ++i) {
-                const string warning = charr::read_lines::invalid_warning(
+                const string warning = charr::shared::read_lines::invalid_warning(
                     utf8, scan.invalid[i]
                 );
                 STRI__DEFERRED_WARNINGS.push(warning.c_str());
             }
-            repaired = charr::read_lines::repair_utf8(
+            repaired = charr::shared::read_lines::repair_utf8(
                 utf8, utf8_length, scan.invalid
             );
             utf8_length = static_cast<int>(repaired.size());
@@ -146,7 +148,7 @@ SEXP ci_read_lines(SEXP path, SEXP encoding)
             else {
                 utf8 = "";
             }
-            scan = charr::read_lines::scan_utf8(
+            scan = charr::shared::read_lines::scan_utf8(
                 utf8, utf8_length, false
             );
         }
@@ -155,7 +157,7 @@ SEXP ci_read_lines(SEXP path, SEXP encoding)
             static_cast<R_xlen_t>(scan.lines.size())
         );
         for (size_t i=0; i<scan.lines.size(); ++i) {
-            const charr::read_lines::LineSlice& line = scan.lines[i];
+            const charr::shared::read_lines::LineSlice& line = scan.lines[i];
             output.records.set(
                 i,
                 line.length == 0
@@ -169,7 +171,9 @@ SEXP ci_read_lines(SEXP path, SEXP encoding)
         }
     }
 
-    STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return charport::charvec::wrap(std::move(output));
+    }));
     STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
     return ret;
@@ -203,7 +207,7 @@ SEXP ci_split_lines1(SEXP str)
     // remains lazy, then release that owner before warnings.
     charport::charvec::Store output(0, 0);
     {
-        Utf8Input str_cont(context, str, vectorize_length);
+        io::Utf8Input str_cont(context, str, vectorize_length);
 
         if (str_cont.isNA(0)) {
             source_is_na = true;
@@ -212,13 +216,13 @@ SEXP ci_split_lines1(SEXP str)
             const char* str_cur_s = str_cont.get(0).data();
             R_len_t str_cur_n = str_cont.get(0).length();
 
-            charr::read_lines::ScanResult scan =
-                charr::read_lines::scan_utf8(
+            charr::shared::read_lines::ScanResult scan =
+                charr::shared::read_lines::scan_utf8(
                     str_cur_s, str_cur_n, false
                 );
 
             if (scan.lines.size() == 1) {
-                const charr::read_lines::LineSlice& line = scan.lines[0];
+                const charr::shared::read_lines::LineSlice& line = scan.lines[0];
                 const char* value = str_cur_s+line.begin;
                 size_t value_length = static_cast<size_t>(line.length);
                 output = ci::scalar_store(
@@ -233,7 +237,7 @@ SEXP ci_split_lines1(SEXP str)
                     static_cast<R_xlen_t>(scan.lines.size())
                 );
                 for (size_t i=0; i<scan.lines.size(); ++i) {
-                    const charr::read_lines::LineSlice& line =
+                    const charr::shared::read_lines::LineSlice& line =
                         scan.lines[i];
                     builder.set(
                         static_cast<R_xlen_t>(i),
@@ -250,9 +254,9 @@ SEXP ci_split_lines1(SEXP str)
     }
 
     if (!source_is_na) {
-        STRI__PROTECT(ans = charport::charvec::wrap(
-            std::move(output)
-        ));
+        STRI__PROTECT(ans = ci::unwind_protect([&]() -> SEXP {
+            return charport::charvec::wrap(std::move(output));
+        }));
     }
     }
     STRI__DEFERRED_WARNINGS.emit();
@@ -295,7 +299,7 @@ SEXP ci_split_lines(SEXP str, SEXP omit_empty)
     );
     R_len_t omit_empty_n = 0;
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         omit_empty_n = LENGTH(omit_empty);
         vectorize_length = ci__recycling_rule(
             false, 2, str_n, omit_empty_n
@@ -316,10 +320,10 @@ SEXP ci_split_lines(SEXP str, SEXP omit_empty)
     stores.reserve(static_cast<size_t>(vectorize_length));
     for (R_len_t i=0; i<vectorize_length; ++i)
         stores.emplace_back(0, 0);
-//   StriContainerInteger   n_max_cont(n_max, vectorize_length);
-    StriContainerLogical   omit_empty_cont(omit_empty, vectorize_length);
+//   io::IntegerInput   n_max_cont(n_max, vectorize_length);
+    io::LogicalInput   omit_empty_cont(omit_empty, vectorize_length);
     {
-        Utf8Input str_cont(context, str, vectorize_length);
+        io::Utf8Input str_cont(context, str, vectorize_length);
         charport::charvec::Builder output(0);
 
         for (R_len_t i = str_cont.vectorize_init();
@@ -359,14 +363,14 @@ SEXP ci_split_lines(SEXP str, SEXP omit_empty)
             // for (R_len_t j=0; j<STRI_INDEX_NEWLINE_LAST; ++j)
             //    counts[j] = 0;
 
-            charr::read_lines::ScanResult scan =
-                charr::read_lines::scan_utf8(
+            charr::shared::read_lines::ScanResult scan =
+                charr::shared::read_lines::scan_utf8(
                     str_cur_s, str_cur_n, omit_empty_cur != 0,
                     true
                 );
 
             if (scan.lines.size() == 1) {
-                const charr::read_lines::LineSlice& line = scan.lines[0];
+                const charr::shared::read_lines::LineSlice& line = scan.lines[0];
                 const char* value = str_cur_s+line.begin;
                 size_t value_length = static_cast<size_t>(line.length);
                 stores[i] = ci::scalar_store(
@@ -379,7 +383,7 @@ SEXP ci_split_lines(SEXP str, SEXP omit_empty)
             else if (!scan.lines.empty()) {
                 output.reset(static_cast<R_xlen_t>(scan.lines.size()));
                 for (size_t j=0; j<scan.lines.size(); ++j) {
-                    const charr::read_lines::LineSlice& line = scan.lines[j];
+                    const charr::shared::read_lines::LineSlice& line = scan.lines[j];
                     output.set(
                         static_cast<R_xlen_t>(j),
                         str_cur_s+line.begin,
@@ -394,17 +398,19 @@ SEXP ci_split_lines(SEXP str, SEXP omit_empty)
         }
     }
 
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(VECSXP, vectorize_length);
     }));
-    for (R_len_t i=0; i<vectorize_length; ++i) {
-        SEXP ans;
-        STRI__PROTECT(ans = charport::charvec::wrap(
-            std::move(stores[i])
-        ));
-        SET_VECTOR_ELT(ret, i, ans);
-        STRI__UNPROTECT(1);
-    }
+    ci::unwind_protect([&]() -> SEXP {
+        for (R_len_t i=0; i<vectorize_length; ++i) {
+            SEXP ans = PROTECT(charport::charvec::wrap(
+                std::move(stores[i])
+            ));
+            SET_VECTOR_ELT(ret, i, ans);
+            UNPROTECT(1);
+        }
+        return R_NilValue;
+    });
     }
     STRI__DEFERRED_WARNINGS.emit();
 
@@ -412,3 +418,5 @@ SEXP ci_split_lines(SEXP str, SEXP omit_empty)
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
 }
+
+} } // namespace charr::altrep_backend

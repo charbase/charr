@@ -39,6 +39,8 @@
 #include <string>
 #include <vector>
 
+namespace charr { namespace altrep_backend {
+
 
 /**
  * A class to manage an encoding converter
@@ -219,5 +221,8 @@ public:
         return CE_BYTES;
     }
 };
+
+
+} } // namespace charr::altrep_backend
 
 #endif

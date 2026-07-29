@@ -34,10 +34,12 @@
 #include "ci_stringi.h"
 #include "ci_builder.h"
 #include "ci_utf8.h"
-#include "ci_container_usearch.h"
+#include "collation/pattern_set.h"
 #include <unicode/uregex.h>
 #include "ci_string8buf.h"
 #include <deque>
+
+namespace charr { namespace altrep_backend {
 using namespace std;
 
 
@@ -106,12 +108,9 @@ void ci__locate_set_dimnames_list(
  * @return output Store
  *
  * @version 0.3-1 (Bartlomiej Tartanus, 2014-07-25)
- * @version 0.3-1 (Marek Gagolewski, 2014-10-17)
- *                using std::vector<int> to avoid mem-leaks, and
- *                const StriContainer& for increased performance
  */
 charport::charvec::Store ci__subset_by_logical(
-    const Utf8Input& str_cont,
+    const io::Utf8Input& str_cont,
     const std::vector<int>& which, int result_counter
 )
 {
@@ -125,7 +124,7 @@ charport::charvec::Store ci__subset_by_logical(
                     NULL, 0, cetype_ext_t::CE_NA
                 );
             if (which[j]) {
-                const Utf8Record& value = str_cont.get(j);
+                const io::Utf8Record& value = str_cont.get(j);
                 if (value.isNA())
                     return charport::charvec::Store::scalar(
                         NULL, 0, cetype_ext_t::CE_NA
@@ -165,12 +164,9 @@ charport::charvec::Store ci__subset_by_logical(
  * @return output Store
  *
  * @version 0.3-1 (Bartlomiej Tartanus, 2014-07-25)
- * @version 0.3-1 (Marek Gagolewski, 2014-10-17)
- *                using std::vector<int> to avoid mem-leaks, and
- *                const StriContainer& for increased performance
  */
 charport::charvec::Store ci__subset_by_logical(
-    const StriContainerUTF16& str_cont,
+    const io::Utf16Input& str_cont,
     const std::vector<int>& which, int result_counter
 )
 {
@@ -217,3 +213,5 @@ charport::charvec::Store ci__subset_by_logical(
         throw std::logic_error("subset result count mismatch");
     return output.release_store();
 }
+
+} } // namespace charr::altrep_backend

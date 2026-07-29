@@ -34,8 +34,8 @@
 #include "ci_stringi.h"
 #include "ci_builder.h"
 #include "ci_utf8.h"
-#include "ci_container_integer.h"
-#include "ci_brkiter.h"
+#include "io/integer_input.h"
+#include "boundary/iterator.h"
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -44,11 +44,14 @@
 #include <utility>
 #include <vector>
 
+namespace charr { namespace altrep_backend {
 
-namespace {
 
-class BoundaryIterator : public StriBrkIterOptions {
+namespace search_boundaries_split {
+
+class BoundaryIterator {
 private:
+    boundary::Options options_;
     BreakIterator* iterator_;
     UText* text_;
     R_len_t position_;
@@ -56,15 +59,17 @@ private:
     void open(ci::DeferredWarnings& warnings)
     {
         UErrorCode status = U_ZERO_ERROR;
-        const Locale locale_value = Locale::createFromName(locale);
-        if (!rules.isEmpty()) {
+        const Locale locale_value = Locale::createFromName(
+            options_.getLocale()
+        );
+        if (!options_.getRules().isEmpty()) {
             UParseError parse_error;
             iterator_ = new RuleBasedBreakIterator(
-                UnicodeString(rules), parse_error, status
+                UnicodeString(options_.getRules()), parse_error, status
             );
         }
         else {
-            switch (type) {
+            switch (options_.getType()) {
             case UBRK_CHARACTER:
                 iterator_ = BreakIterator::createCharacterInstance(
                     locale_value, status
@@ -91,7 +96,8 @@ private:
         }
         STRI__CHECKICUSTATUS_THROW(status, {})
 
-        if (status == U_USING_DEFAULT_WARNING && iterator_ && locale) {
+        if (status == U_USING_DEFAULT_WARNING && iterator_ &&
+                options_.getLocale()) {
             UErrorCode locale_status = U_ZERO_ERROR;
             const char* valid_locale = iterator_->getLocaleID(
                 ULOC_VALID_LOCALE, locale_status
@@ -103,19 +109,20 @@ private:
 
     bool skip() const
     {
-        if (skip_size <= 0)
+        if (options_.getSkipSize() <= 0)
             return false;
         const int rule = iterator_->getRuleStatus();
-        for (R_len_t i = 0; i < skip_size; i += 2) {
-            if (rule >= skip_rules[i] && rule < skip_rules[i+1])
+        for (R_len_t i = 0; i < options_.getSkipSize(); i += 2) {
+            if (rule >= options_.getSkipRules()[i] &&
+                    rule < options_.getSkipRules()[i+1])
                 return true;
         }
         return false;
     }
 
 public:
-    explicit BoundaryIterator(const StriBrkIterOptions& options)
-        : StriBrkIterOptions(options), iterator_(nullptr), text_(nullptr),
+    explicit BoundaryIterator(const boundary::Options& options)
+        : options_(options), iterator_(nullptr), text_(nullptr),
           position_(0)
     {
     }
@@ -210,7 +217,9 @@ public:
     }
 };
 
-}
+} // namespace search_boundaries_split
+
+using namespace search_boundaries_split;
 
 
 /** Split a string at BreakIterator boundaries
@@ -238,7 +247,7 @@ public:
  *          new args: n, tokens_only, simplify
  *
  * @version 0.4-1 (Marek Gagolewski, 2014-12-02)
- *          use StriRuleBasedBreakIterator
+ *          use boundary::Utf8Iterator
  *
  * @version 0.4-1 (Marek Gagolewski, 2014-12-04)
  *    allow `simplify=NA`; FR #126: pass n to ci_list2matrix
@@ -256,10 +265,10 @@ SEXP ci_split_boundaries(SEXP str, SEXP n, SEXP tokens_only, SEXP simplify, SEXP
     {
     // Deviation from stringi: keep the option's ICU storage inside the
     // unwind-safe staging scope so it is released before warning replay.
-    StriBrkIterOptions opts_brkiter2(
+    boundary::Options opts_brkiter2(
         opts_brkiter, "line_break", STRI__DEFERRED_WARNINGS
     );
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         simplify1 = LOGICAL_RO(simplify)[0];
         return R_NilValue;
     });
@@ -270,7 +279,7 @@ SEXP ci_split_boundaries(SEXP str, SEXP n, SEXP tokens_only, SEXP simplify, SEXP
     R_len_t n_n = 0;
     R_len_t vectorize_length = 0;
     bool scalar_unlimited_n = false;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         n_n = LENGTH(n);
         vectorize_length = ci__recycling_rule(
             false, 2, str_n, n_n
@@ -295,8 +304,8 @@ SEXP ci_split_boundaries(SEXP str, SEXP n, SEXP tokens_only, SEXP simplify, SEXP
     for (R_len_t i=0; i<vectorize_length; ++i)
         stores.emplace_back(0, 0);
     {
-        StriContainerInteger n_cont(n, vectorize_length);
-        Utf8Input str_cont(context, str, vectorize_length);
+        io::IntegerInput n_cont(n, vectorize_length);
+        io::Utf8Input str_cont(context, str, vectorize_length);
         BoundaryIterator brkiter(opts_brkiter2);
         charport::charvec::Builder output(0);
 
@@ -377,21 +386,23 @@ SEXP ci_split_boundaries(SEXP str, SEXP n, SEXP tokens_only, SEXP simplify, SEXP
     }
 
     if (simplify1 != NA_LOGICAL && !simplify1) {
-        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
             return Rf_allocVector(VECSXP, vectorize_length);
         }));
-        for (R_len_t i=0; i<vectorize_length; ++i) {
-            SEXP ans;
-            STRI__PROTECT(ans = charport::charvec::wrap(
-                std::move(stores[i])
-            ));
-            SET_VECTOR_ELT(ret, i, ans);
-            STRI__UNPROTECT(1);
-        }
+        ci::unwind_protect([&]() -> SEXP {
+            for (R_len_t i=0; i<vectorize_length; ++i) {
+                SEXP ans = PROTECT(charport::charvec::wrap(
+                    std::move(stores[i])
+                ));
+                SET_VECTOR_ELT(ret, i, ans);
+                UNPROTECT(1);
+            }
+            return R_NilValue;
+        });
     }
     else {
         R_len_t n_min = 0;
-        charport::unwind_protect([&]() -> SEXP {
+        ci::unwind_protect([&]() -> SEXP {
             R_len_t n_length = LENGTH(n);
             const int* n_tab = INTEGER_RO(n);
             for (R_len_t i=0; i<n_length; ++i) {
@@ -441,10 +452,10 @@ SEXP ci_split_boundaries(SEXP str, SEXP n, SEXP tokens_only, SEXP simplify, SEXP
             }
         }
 
-        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
             return matrix.to_sexp();
         }));
-        ret = charport::unwind_protect([&]() -> SEXP {
+        ret = ci::unwind_protect([&]() -> SEXP {
             SEXP dim;
             PROTECT(dim = Rf_allocVector(INTSXP, 2));
             INTEGER(dim)[0] = vectorize_length;
@@ -461,3 +472,5 @@ SEXP ci_split_boundaries(SEXP str, SEXP n, SEXP tokens_only, SEXP simplify, SEXP
     return ret;
     STRI__ERROR_HANDLER_END({ /* no action */ })
 }
+
+} } // namespace charr::altrep_backend

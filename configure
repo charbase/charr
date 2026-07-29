@@ -46,7 +46,7 @@ emit() {
   # a mode switch cannot link stale objects.
   if [ -f src/Makevars ] && ! cmp -s src/Makevars.new src/Makevars; then
     echo "* charr: build flags changed; removing cached object files"
-    rm -f src/*.o src/base/*.o src/altrep/*.o src/altrep_backend/*.o \
+    rm -f src/*.o src/base_backend/*.o src/altrep_backend/io/*.o src/altrep_backend/*.o \
           src/icu78/common/*.o \
           src/icu78/i18n/*.o src/icu78/stubdata/*.o src/*.a
   fi

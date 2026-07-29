@@ -190,12 +190,6 @@ ci_extract_first_coll <- function(str, pattern, ..., opts_collator = NULL)
 
 # @export
 # @rdname ci_extract
-ci_extract_last_coll <- function(str, pattern, ..., opts_collator = NULL)
-{
-    if (!missing(...))
-        opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-    .Call(C_ci_extract_last_coll, str, pattern, opts_collator)
-}
 
 
 # @export
@@ -221,12 +215,6 @@ ci_extract_first_regex <- function(str, pattern, ..., opts_regex = NULL)
 
 # @export
 # @rdname ci_extract
-ci_extract_last_regex <- function(str, pattern, ..., opts_regex = NULL)
-{
-    if (!missing(...))
-        opts_regex <- do.call(ci_opts_regex, as.list(c(opts_regex, ...)))
-    .Call(C_ci_extract_last_regex, str, pattern, opts_regex)
-}
 
 
 # @export
@@ -252,9 +240,3 @@ ci_extract_first_fixed <- function(str, pattern, ..., opts_fixed = NULL)
 
 # @export
 # @rdname ci_extract
-ci_extract_last_fixed <- function(str, pattern, ..., opts_fixed = NULL)
-{
-    if (!missing(...))
-        opts_fixed <- do.call(ci_opts_fixed, as.list(c(opts_fixed, ...)))
-    .Call(C_ci_extract_last_fixed, str, pattern, opts_fixed)
-}

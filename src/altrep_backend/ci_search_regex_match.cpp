@@ -34,8 +34,8 @@
 #include "ci_stringi.h"
 #include "ci_builder.h"
 #include "ci_utf8.h"
-#include "ci_container_regex.h"
-#include "altrep/utf8_input.h"
+#include "regex/pattern_set.h"
+#include "altrep_backend/io/utf8_input.h"
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -43,10 +43,12 @@
 #include <deque>
 #include <utility>
 #include <unicode/utf8.h>
+
+namespace charr { namespace altrep_backend {
 using namespace std;
 
 
-namespace {
+namespace search_regex_match {
 
 struct CiMatchRegexMatrix {
     R_len_t nrow;
@@ -223,7 +225,7 @@ public:
 
 
 charport::StrView ci__match_text(
-    const charr::altrep::Utf8Input& inputs, R_len_t i
+    const charr::altrep_backend::io::Utf8Input& inputs, R_len_t i
 )
 {
     return inputs.text(i);
@@ -255,15 +257,15 @@ void ci__match_capture_offsets(
 void ci__match_firstlast_scalar(
     ci::ReaderContext& context, SEXP str, SEXP pattern,
     R_len_t str_n, R_len_t pattern_n, R_len_t vectorize_length,
-    const StriRegexMatcherOptions& pattern_opts, bool first,
+    const regex::Options& pattern_opts, bool first,
     const charport::StrView& cg_missing, CiMatchRegexMatrix& result
 )
 {
-    StriContainerRegexPattern pattern_cont(
+    regex::PatternSet pattern_cont(
         context, pattern,
         str_n > 0 ? vectorize_length : pattern_n, pattern_opts
     );
-    charr::altrep::Utf8Input inputs(
+    charr::altrep_backend::io::Utf8Input inputs(
         context, str, vectorize_length
     );
     for (R_xlen_t i=0; i<inputs.source_size(); ++i) {
@@ -361,15 +363,15 @@ void ci__match_firstlast_scalar(
 void ci__match_all_scalar(
     ci::ReaderContext& context, SEXP str, SEXP pattern,
     R_len_t vectorize_length,
-    const StriRegexMatcherOptions& pattern_opts, bool omit_no_match,
+    const regex::Options& pattern_opts, bool omit_no_match,
     const charport::StrView& cg_missing,
     vector<CiMatchRegexMatrix>& results
 )
 {
-    StriContainerRegexPattern pattern_cont(
+    regex::PatternSet pattern_cont(
         context, pattern, vectorize_length, pattern_opts
     );
-    charr::altrep::Utf8Input inputs(
+    charr::altrep_backend::io::Utf8Input inputs(
         context, str, vectorize_length
     );
     for (R_xlen_t i=0; i<inputs.source_size(); ++i) {
@@ -489,8 +491,9 @@ void ci__match_all_scalar(
     }
 }
 
-} // namespace
+} // namespace search_regex_match
 
+using namespace search_regex_match;
 
 
 /**
@@ -520,7 +523,7 @@ void ci__match_all_scalar(
  *    when input was empty
  *
  * @version 1.4.7 (Marek Gagolewski, 2020-08-24)
- *    Use StriContainerRegexPattern::getRegexOptions
+ *    Use regex::PatternSet::getRegexOptions
  *
  * @version 1.7.1 (Marek Gagolewski, 2021-06-19)
  *    #153: named capture groups
@@ -543,7 +546,7 @@ SEXP ci__match_firstlast_regex(SEXP str, SEXP pattern, SEXP cg_missing, SEXP opt
         context.size(pattern), "character vectors"
     );
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             false, 2, str_n, pattern_n
         );
@@ -556,9 +559,9 @@ SEXP ci__match_firstlast_regex(SEXP str, SEXP pattern, SEXP cg_missing, SEXP opt
              vectorize_length % pattern_n != 0))
         context.warn(MSG__WARN_RECYCLING_RULE);
 
-    StriRegexMatcherOptions pattern_opts;
-    charport::unwind_protect([&]() -> SEXP {
-        pattern_opts = StriContainerRegexPattern::getRegexOptions(
+    regex::Options pattern_opts;
+    ci::unwind_protect([&]() -> SEXP {
+        pattern_opts = regex::PatternSet::getRegexOptions(
             STRI__DEFERRED_WARNINGS, opts_regex
         );
         return R_NilValue;
@@ -566,7 +569,7 @@ SEXP ci__match_firstlast_regex(SEXP str, SEXP pattern, SEXP cg_missing, SEXP opt
 
     CiMatchRegexMatrix result;
     if (pattern_n == 1) {
-        Utf8Input cg_missing_cont(
+        io::Utf8Input cg_missing_cont(
             context, cg_missing, 1
         );
         shared_ptr<ci::ReaderBorrow> cg_missing_borrow =
@@ -580,10 +583,10 @@ SEXP ci__match_firstlast_regex(SEXP str, SEXP pattern, SEXP cg_missing, SEXP opt
         );
     }
     else {
-        Utf8Input str_cont(
+        io::Utf8Input str_cont(
             context, str, vectorize_length
         );
-        Utf8Input cg_missing_cont(
+        io::Utf8Input cg_missing_cont(
             context, cg_missing, 1
         );
         // The copied container validates cg_missing as UTF-8 input, but
@@ -599,7 +602,7 @@ SEXP ci__match_firstlast_regex(SEXP str, SEXP pattern, SEXP cg_missing, SEXP opt
         );
         R_len_t occurrences_max = 1;
 
-        StriContainerRegexPattern pattern_cont(
+        regex::PatternSet pattern_cont(
             context, pattern,
             (str_n>0)?vectorize_length:pattern_n, pattern_opts
         );
@@ -728,14 +731,14 @@ SEXP ci__match_firstlast_regex(SEXP str, SEXP pattern, SEXP cg_missing, SEXP opt
         result.output = output.release_store();
     }
 
-    STRI__PROTECT(ret = charport::charvec::wrap(
-        std::move(result.output)
-    ));
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return charport::charvec::wrap(std::move(result.output));
+    }));
     SEXP dimnames;
-    STRI__PROTECT(dimnames = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(dimnames = ci::unwind_protect([&]() -> SEXP {
         return ci__match_capture_dimnames(result.capture_names);
     }));
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         return ci__match_set_matrix_attributes(
             ret, result.nrow, result.ncol, dimnames
         );
@@ -766,26 +769,6 @@ SEXP ci__match_firstlast_regex(SEXP str, SEXP pattern, SEXP cg_missing, SEXP opt
 SEXP ci_match_first_regex(SEXP str, SEXP pattern, SEXP cg_missing, SEXP opts_regex)
 {
     return ci__match_firstlast_regex(str, pattern, cg_missing, opts_regex, true);
-}
-
-
-/**
- * Extract all capture groups of the  last occurrence of a regex pattern in each string
- *
- * @param str character vector
- * @param pattern character vector
- * @param cg_missing single string
- * @param opts_regex list
- * @return character matrix
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-22)
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-12-06)
- *    new arg: cg_missing
- */
-SEXP ci_match_last_regex(SEXP str, SEXP pattern, SEXP cg_missing, SEXP opts_regex)
-{
-    return ci__match_firstlast_regex(str, pattern, cg_missing, opts_regex, false);
 }
 
 
@@ -833,7 +816,7 @@ SEXP ci_match_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP cg_miss
         context.size(pattern), "character vectors"
     );
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             false, 2, str_n, pattern_n
         );
@@ -846,9 +829,9 @@ SEXP ci_match_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP cg_miss
              vectorize_length % pattern_n != 0))
         context.warn(MSG__WARN_RECYCLING_RULE);
 
-    StriRegexMatcherOptions pattern_opts;
-    charport::unwind_protect([&]() -> SEXP {
-        pattern_opts = StriContainerRegexPattern::getRegexOptions(
+    regex::Options pattern_opts;
+    ci::unwind_protect([&]() -> SEXP {
+        pattern_opts = regex::PatternSet::getRegexOptions(
             STRI__DEFERRED_WARNINGS, opts_regex
         );
         return R_NilValue;
@@ -858,7 +841,7 @@ SEXP ci_match_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP cg_miss
         static_cast<size_t>(vectorize_length)
     );
     if (pattern_n == 1) {
-        Utf8Input cg_missing_cont(
+        io::Utf8Input cg_missing_cont(
             context, cg_missing, 1
         );
         shared_ptr<ci::ReaderBorrow> cg_missing_borrow =
@@ -871,13 +854,13 @@ SEXP ci_match_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP cg_miss
         );
     }
     else {
-        Utf8Input str_cont(
+        io::Utf8Input str_cont(
             context, str, vectorize_length
         );
-        StriContainerRegexPattern pattern_cont(
+        regex::PatternSet pattern_cont(
             context, pattern, vectorize_length, pattern_opts
         );
-        Utf8Input cg_missing_cont(
+        io::Utf8Input cg_missing_cont(
             context, cg_missing, 1
         );
         // The copied container validates cg_missing as UTF-8 input, but
@@ -1006,13 +989,13 @@ SEXP ci_match_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP cg_miss
         }
     }
 
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(VECSXP, vectorize_length);
     }));
     // Deviation from stringi: one assembly-level unwind bridge releases the
     // staged Stores and capture names if an R allocation fails. A bridge for
     // every matrix and attribute assignment only adds per-result overhead.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
       for (R_len_t i=0; i<vectorize_length; ++i) {
           ci::UnwindCallbackProtector protector;
           CiMatchRegexMatrix& result = results[static_cast<size_t>(i)];
@@ -1037,3 +1020,5 @@ SEXP ci_match_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP cg_miss
     return ret;
     STRI__ERROR_HANDLER_END(if (str_text) utext_close(str_text);)
 }
+
+} } // namespace charr::altrep_backend

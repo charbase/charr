@@ -67,17 +67,13 @@ test_that("fixed replacement sequential mode preserves copied order", {
   expect_identical(charport::is_charvec(result$all), charr_altrep())
 })
 
-test_that("fixed replacement bounds forward and reverse Reader scans", {
+test_that("fixed replacement bounds forward Reader scans", {
   strings <- charr:::ci_trim_both(c("aaa", "z", "aaaa", "xyz", "abcx"))
   expect_identical(charport::is_charvec(strings), charr_altrep())
 
   expect_identical(
     charr:::ci_replace_first_fixed(strings, "xy", "!"),
     c("aaa", "z", "aaaa", "!z", "abcx")
-  )
-  expect_identical(
-    charr:::ci_replace_last_fixed(strings, "z", "!"),
-    c("aaa", "!", "aaaa", "xy!", "abcx")
   )
 })
 

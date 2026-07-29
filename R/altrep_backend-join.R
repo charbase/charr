@@ -286,10 +286,6 @@ ci_flatten <- function(str, collapse = "", na_empty = FALSE, omit_empty = FALSE)
 #
 # @family join
 # @rdname ci_join_list
-ci_join_list <- function(x, sep = "", collapse = NULL)
-{
-    .Call(C_ci_join_list, x, sep, collapse)
-}
 
 
 # @rdname ci_join_list

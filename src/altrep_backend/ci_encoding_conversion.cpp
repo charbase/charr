@@ -34,12 +34,11 @@
 #include "ci_stringi.h"
 #include "ci_builder.h"
 #include "ci_utf8.h"
-#include "ci_container_utf16.h"
-#include "ci_container_listraw.h"
-#include "ci_container_listint.h"
+#include "io/utf16_input.h"
+#include "io/raw_list_input.h"
 #include "ci_string8buf.h"
 #include "ci_ucnv.h"
-#include "altrep/native_to_utf8.h"
+#include "../shared/native_to_utf8.h"
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -49,11 +48,13 @@
 #include <utility>
 #include <vector>
 
+namespace charr { namespace altrep_backend {
+
 
 #define BUF_MAX_LENGTH 2147483647
 
 
-namespace {
+namespace encoding_conversion {
 
 static const char CI__EMBEDDED_NUL_MESSAGE[] =
     "embedded nul in string";
@@ -325,465 +326,9 @@ static void ci__set_validated_utf8(
 }
 
 
-} // namespace
+} // namespace encoding_conversion
 
-
-/** Convert from UTF-32
- *
- * @param vec integer vector or list with integer vectors
- * @return character vector
- *
- * @version 0.1-?? (Marek Gagolewski)
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-03-25)
- *          StriException friently;
- *          use StriContainerListInt
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- */
-SEXP ci_enc_fromutf32(SEXP vec)
-{
-    PROTECT(vec = ci__prepare_arg_list_integer(vec, "vec"));
-
-    STRI__ERROR_HANDLER_BEGIN(1)
-    SEXP ret;
-    {
-        StriContainerListInt vec_cont(vec);
-        R_len_t vec_n = vec_cont.get_n();
-        charport::charvec::Builder builder(vec_n);
-
-        // get required buf size
-        R_len_t bufsize = 0;
-        for (R_len_t i=0; i<vec_n; ++i) {
-            if (!vec_cont.isNA(i) && vec_cont.get(i).size() > bufsize)
-                bufsize = vec_cont.get(i).size();
-        }
-        bufsize = U8_MAX_LENGTH*bufsize+1; // this will surely be sufficient
-        String8buf buf(bufsize);
-        char* bufdata = buf.data();
-
-        for (R_len_t i=0; i<vec_n; ++i) {
-            if (vec_cont.isNA(i)) {
-                builder.set_na(i);
-                continue;
-            }
-
-            const int* cur_data = vec_cont.get(i).data();
-            R_len_t    cur_n    = vec_cont.get(i).size();
-            UChar32 c = (UChar32)0;
-            R_len_t j = 0;
-            R_len_t k = 0;
-            UBool err = FALSE;
-            while (!err && k < cur_n) {
-                c = cur_data[k++];
-                U8_APPEND((uint8_t*)bufdata, j, bufsize, c, err);
-
-                // Rf_mkCharLenCE detects embedded nuls, but stops execution completely
-                if (c == 0) err = TRUE;
-            }
-
-            if (err) {
-                // Deviation from stringi: queue the copied per-record warning
-                // until local output resources have been released.
-                ci__queue_formatted_warning(
-                    STRI__DEFERRED_WARNINGS,
-                    MSG__INVALID_CODE_POINT, (int)c
-                );
-                builder.set_na(i);
-            }
-            else {
-                ci::builder_set(
-                    builder, i, bufdata, j,
-                    cetype_ext_t::CE_ASCII_OR_UTF8
-                );
-            }
-        }
-
-        STRI__PROTECT(ret = builder.to_sexp());
-    }
-
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL;
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-}
-
-
-/** Convert character vector to UTF-32
- *
- * @param str character vector
- * @return list with integer vectors
- *
- * @version 0.1-?? (Marek Gagolewski)
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
- *          make StriException-friendly
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-03-26)
- *          use vector<UChar32> buf instead of R_alloc;
- *          warn and set NULL on improper UTF-8 byte sequences
- *
- * @version 0.2-3 (Marek Gagolewski, 2014-05-12)
- *          Use UChar32* instead of vector<UChar32> as ::data is C++11
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- */
-SEXP ci_enc_toutf32(SEXP str)
-{
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
-
-    STRI__ERROR_HANDLER_BEGIN(1)
-    SEXP ret;
-    {
-        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-        R_len_t n = ci::checked_r_len(
-            context.size(str), "character vectors"
-        );
-        // Deviation from stringi: stage data-dependent integer results until
-        // the Reader-backed UTF-8 container has been released.
-        std::vector< std::vector<int> > outputs(static_cast<size_t>(n));
-        std::vector<bool> missing(static_cast<size_t>(n), false);
-        {
-            Utf8Input str_cont(context, str, n);
-
-            R_len_t bufsize = 1; // to avoid allocating an empty buffer
-            for (R_len_t i=0; i<n; ++i) {
-                if (str_cont.isNA(i)) continue;
-                R_len_t ni = str_cont.get(i).length();
-                if (ni > bufsize) bufsize = ni;
-            }
-
-            std::vector<UChar32> buf(static_cast<size_t>(bufsize));
-            // deque<UChar32> was slower than using a common, over-sized buf
-
-            for (R_len_t i=0; i<n; ++i) {
-                if (str_cont.isNA(i)) {
-                    missing[static_cast<size_t>(i)] = true;
-                    continue;
-                }
-
-                UChar32 c = (UChar32)0;
-                const char* s = str_cont.get(i).data();
-                R_len_t sn = str_cont.get(i).length();
-                R_len_t j = 0;
-                R_len_t k = 0;
-                while (c >= 0 && j < sn) {
-                    U8_NEXT(s, j, sn, c);
-                    buf[static_cast<size_t>(k++)] = (int)c;
-                }
-
-                if (c < 0) {
-                    throw StriException(MSG__INVALID_UTF8);
-//                     outputs[static_cast<size_t>(i)].clear();
-//                     continue;
-                }
-                else {
-                    outputs[static_cast<size_t>(i)].assign(
-                        buf.begin(), buf.begin()+k
-                    );
-                }
-            }
-        }
-
-        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
-            return Rf_allocVector(VECSXP, n);
-        }));
-        for (R_len_t i=0; i<n; ++i) {
-            if (missing[static_cast<size_t>(i)])
-                continue;
-
-            const std::vector<int>& output = outputs[static_cast<size_t>(i)];
-            SEXP conv;
-            STRI__PROTECT(conv = charport::unwind_protect([&]() -> SEXP {
-                return Rf_allocVector(
-                    INTSXP, static_cast<R_xlen_t>(output.size())
-                );
-            }));
-            if (!output.empty()) {
-                memcpy(
-                    INTEGER(conv), output.data(),
-                    sizeof(int)*output.size()
-                );
-            }
-            SET_VECTOR_ELT(ret, i, conv);
-            STRI__UNPROTECT(1);
-        }
-    }
-
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END({ /* do nothing on error */ })
-}
-
-
-/** Convert character vector to UTF-8
- *
- * @param str character vector
- * @param is_unknown_8bit single logical value;
- * if TRUE, then in case of ENC_NATIVE or ENC_LATIN1, UTF-8
- * REPLACEMENT CHARACTERs (U+FFFD) are
- * put for codes > 127
- * @param validate single logical value (or NA)
- *
- * @return character vector
- *
- * @version 0.1-XX (Marek Gagolewski)
- *
- * @version 0.1-XX (Marek Gagolewski, 2013-06-16)
- *                  make StriException-friendly
- *
- * @version 0.2-1  (Marek Gagolewski, 2014-03-26)
- *                 Use one String8buf;
- *                 is_unknown_8bit_logical and UTF-8 tries now to remove BOMs
- *
- * @version 0.2-1  (Marek Gagolewksi, 2014-03-30)
- *                 added validate arg
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- */
-SEXP ci_enc_toutf8(SEXP str, SEXP is_unknown_8bit, SEXP validate)
-{
-    PROTECT(validate = ci__prepare_arg_logical_1(validate, "validate"));
-    bool is_unknown_8bit_logical =
-        ci__prepare_arg_logical_1_notNA(is_unknown_8bit, "is_unknown_8bit");
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
-    const int validate1 = LOGICAL_RO(validate)[0];
-
-    STRI__ERROR_HANDLER_BEGIN(2)
-    SEXP ret;
-    {
-        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-        R_len_t n = ci::checked_r_len(
-            context.size(str), "character vectors"
-        );
-        charport::charvec::Builder builder(n);
-        if (!is_unknown_8bit_logical) {
-            // Trivial - everything we need is in Utf8Input :)
-            // which removes BOMs silently
-            {
-                std::shared_ptr<ci::ReaderBorrow> borrow =
-                    context.acquire(str);
-                const charport::StrViews& views = borrow->views();
-                Utf8Input str_cont(context, str, n);
-                for (R_len_t i=0; i<n; ++i) {
-                    if (str_cont.isNA(i)) {
-                        builder.set_na(i);
-                        continue;
-                    }
-                    const Utf8Record& value = str_cont.get(i);
-                    const charport::StrView source = views[i];
-                    const cetype_ext_t encoding =
-                        value.data() == source.ptr &&
-                        value.length() == source.len ?
-                            source.enc : cetype_ext_t::CE_ASCII_OR_UTF8;
-                    ci__set_validated_utf8(
-                        builder, i, value.data(), value.length(), encoding,
-                        validate1, context
-                    );
-                }
-            }
-        }
-        else {
-            std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(str);
-            const charport::StrViews& views = borrow->views();
-
-            // get buf size
-            size_t bufsize = 0;
-            for (R_len_t i=0; i<n; ++i) {
-                const charport::StrView curs = views[i];
-                if (curs.is_na() ||
-                        curs.enc == cetype_ext_t::CE_ASCII ||
-                        curs.enc == cetype_ext_t::CE_UTF8 ||
-                        curs.enc == cetype_ext_t::CE_ASCII_OR_UTF8)
-                    continue;
-
-                if (static_cast<size_t>(curs.len) > bufsize)
-                    bufsize = static_cast<size_t>(curs.len);
-            }
-            String8buf buf(bufsize*3); // either 1 byte < 127 or U+FFFD == 3 bytes UTF-8
-            char* bufdata = buf.data();
-
-            for (R_len_t i=0; i<n; ++i) {
-                const charport::StrView curs = views[i];
-                if (curs.is_na()) {
-                    builder.set_na(i);
-                    continue;
-                }
-
-                if (curs.enc == cetype_ext_t::CE_ASCII ||
-                        curs.enc == cetype_ext_t::CE_UTF8 ||
-                        curs.enc == cetype_ext_t::CE_ASCII_OR_UTF8) {
-                    const char* curs_s = ci__nonnull_bytes(
-                        curs.ptr, static_cast<size_t>(curs.len)
-                    );
-                    if (curs.len >= 3 &&
-                            (uint8_t)(curs_s[0]) == UTF8_BOM_BYTE1 &&
-                            (uint8_t)(curs_s[1]) == UTF8_BOM_BYTE2 &&
-                            (uint8_t)(curs_s[2]) == UTF8_BOM_BYTE3) {
-                        // has BOM - get rid of it
-                        ci__set_validated_utf8(
-                            builder, i, curs_s+3, curs.len-3,
-                            cetype_ext_t::CE_ASCII_OR_UTF8,
-                            validate1, context
-                        );
-                    }
-                    else {
-                        ci__set_validated_utf8(
-                            builder, i, curs_s, curs.len, curs.enc,
-                            validate1, context
-                        );
-                    }
-                    continue;
-                }
-
-                // otherwise, we have an 8-bit encoding
-                const char* curs_tab = ci__nonnull_bytes(
-                    curs.ptr, static_cast<size_t>(curs.len)
-                );
-                R_len_t k = 0;
-                for (R_len_t j=0; j<curs.len; ++j) {
-                    if (U8_IS_SINGLE(curs_tab[j]))
-                        bufdata[k++] = curs_tab[j];
-                    else { // 0xEF 0xBF 0xBD
-                        bufdata[k++] = (char)UCHAR_REPLACEMENT_UTF8_BYTE1;
-                        bufdata[k++] = (char)UCHAR_REPLACEMENT_UTF8_BYTE2;
-                        bufdata[k++] = (char)UCHAR_REPLACEMENT_UTF8_BYTE3;
-                    }
-                }
-                ci__set_validated_utf8(
-                    builder, i, bufdata, k,
-                    cetype_ext_t::CE_ASCII_OR_UTF8,
-                    validate1, context
-                );
-            }
-        }
-
-        STRI__PROTECT(ret = builder.to_sexp());
-    }
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-}
-
-
-/** Convert character vector to ASCII
- *
- * All charcodes > 127 are replaced with subst chars (0x1A)
- *
- * @param str character vector
- * @return character vector
- *
- * @version 0.1-?? (Marek Gagolewski)
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
- *          make StriException-friendly
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-03-30)
- *          use single common buf;
- *          warn on invalid utf8 byte stream
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- */
-SEXP ci_enc_toascii(SEXP str)
-{
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
-
-    STRI__ERROR_HANDLER_BEGIN(1)
-    SEXP ret;
-    {
-        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-        R_len_t n = ci::checked_r_len(
-            context.size(str), "character vectors"
-        );
-        charport::charvec::Builder builder(n);
-        {
-            std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(str);
-            const charport::StrViews& views = borrow->views();
-
-            // get buf size
-            size_t bufsize = 0;
-            for (R_len_t i=0; i<n; ++i) {
-                const charport::StrView curs = views[i];
-                if (curs.is_na())
-                    continue;
-
-                if (static_cast<size_t>(curs.len) > bufsize)
-                    bufsize = static_cast<size_t>(curs.len);
-            }
-            String8buf buf(bufsize); // no more bytes than this needed
-            char* bufdata = buf.data();
-
-            for (R_len_t i=0; i<n; ++i) {
-                const charport::StrView curs = views[i];
-                if (curs.is_na()) {
-                    builder.set_na(i);
-                    continue;
-                }
-
-                const char* curs_tab = ci__nonnull_bytes(
-                    curs.ptr, static_cast<size_t>(curs.len)
-                );
-                const bool ascii_mark =
-                    curs.enc == cetype_ext_t::CE_ASCII ||
-                    (curs.enc == cetype_ext_t::CE_ASCII_OR_UTF8 &&
-                     ci::is_ascii(curs_tab, curs.len));
-                if (ascii_mark) {
-                    // nothing to do
-                    ci::builder_set(
-                        builder, i, curs_tab, curs.len,
-                        cetype_ext_t::CE_ASCII
-                    );
-                    continue;
-                }
-
-                if (curs.enc == cetype_ext_t::CE_UTF8 ||
-                        curs.enc == cetype_ext_t::CE_ASCII_OR_UTF8) {
-                    R_len_t k = 0, j = 0;
-                    UChar32 c;
-                    while (j<curs.len) {
-                        U8_NEXT(curs_tab, j, curs.len, c);
-                        if (c < 0) {
-                            context.warn(MSG__INVALID_CODE_POINT_FIXING);
-                            bufdata[k++] = ASCII_SUBSTITUTE;
-                        }
-                        else if (c > ASCII_MAXCHARCODE)
-                            bufdata[k++] = ASCII_SUBSTITUTE;
-                        else
-                            bufdata[k++] = (char)c;
-                    }
-                    ci::builder_set(
-                        builder, i, bufdata, k, cetype_ext_t::CE_ASCII
-                    );
-                }
-                else { // some 8-bit encoding
-                    R_len_t k = 0;
-                    for (R_len_t j=0; j<curs.len; ++j) {
-                        if (U8_IS_SINGLE(curs_tab[j]))
-                            bufdata[k++] = curs_tab[j];
-                        else {
-                            bufdata[k++] = (char)ASCII_SUBSTITUTE; // subst char in ascii
-                        }
-                    }
-                    ci::builder_set(
-                        builder, i, bufdata, k, cetype_ext_t::CE_ASCII
-                    );
-                }
-            }
-        }
-
-        STRI__PROTECT(ret = builder.to_sexp());
-    }
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-}
+using namespace encoding_conversion;
 
 
 // ------------------------------------------------------------------------
@@ -827,7 +372,9 @@ SEXP ci_encode_from_marked(SEXP str, SEXP to, SEXP to_raw)
             )) {
             identity_borrow.reset();
             SEXP ret;
-            STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+            STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+                return charport::charvec::wrap(std::move(output));
+            }));
             context.emitWarnings();
             STRI__UNPROTECT_ALL
             return ret;
@@ -848,7 +395,7 @@ SEXP ci_encode_from_marked(SEXP str, SEXP to, SEXP to_raw)
 
         if (str_n > 0) {
             {
-                StriContainerUTF16 str_cont(context, str, str_n);
+                io::Utf16Input str_cont(context, str, str_n);
 
                 // Open converters
                 StriUcnv ucnv(
@@ -859,11 +406,11 @@ SEXP ci_encode_from_marked(SEXP str, SEXP to, SEXP to_raw)
                 // Staging is only needed where the native encoding differs
                 // from the UTF-8 side ICU sees. When it is UTF-8 the pass is
                 // an identity transcode.
-                std::unique_ptr<charr::altrep::NativeToUtf8>
+                std::unique_ptr<charr::shared::NativeToUtf8>
                     native_output;
                 if (!selected_to) {
                     native_output.reset(
-                        new charr::altrep::NativeToUtf8()
+                        new charr::shared::NativeToUtf8()
                     );
                     if (native_output->native_is_utf8())
                         native_output.reset();
@@ -932,7 +479,7 @@ SEXP ci_encode_from_marked(SEXP str, SEXP to, SEXP to_raw)
                     const char* output_data = buf.data();
                     size_t output_length = bufneed;
                     if (native_output) {
-                        const charport::ByteView converted =
+                        const shared::ByteView converted =
                             native_output->utf8_to_native(
                                 output_data,
                                 static_cast<int>(output_length)
@@ -972,12 +519,14 @@ SEXP ci_encode_from_marked(SEXP str, SEXP to, SEXP to_raw)
 
         identity_borrow.reset();
         if (!to_raw_logical) {
-            STRI__PROTECT(ret = builder->to_sexp());
+            STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+                return builder->to_sexp();
+            }));
         }
         else {
             // Deviation from stringi: stage data-dependent raw results until the
             // input and converter lifetimes have ended, then assemble the R list.
-            STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+            STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
                 return Rf_allocVector(VECSXP, str_n);
             }));
             for (R_len_t i=0; i<str_n; ++i) {
@@ -987,7 +536,7 @@ SEXP ci_encode_from_marked(SEXP str, SEXP to, SEXP to_raw)
                     continue;
 
                 SEXP outobj;
-                STRI__PROTECT(outobj = charport::unwind_protect([&]() -> SEXP {
+                STRI__PROTECT(outobj = ci::unwind_protect([&]() -> SEXP {
                     return Rf_allocVector(
                         RAWSXP, static_cast<R_xlen_t>(output.data.size())
                     );
@@ -1029,7 +578,7 @@ SEXP ci_encode_from_marked(SEXP str, SEXP to, SEXP to_raw)
  *          make StriException-friendly
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-08-08)
- *          use StriContainerListRaw
+ *          use io::RawListInput
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-11-20)
  *          BUGFIX call ci_encode_from_marked if necessary
@@ -1072,7 +621,9 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
             )) {
             identity_borrow.reset();
             SEXP ret;
-            STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+            STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+                return charport::charvec::wrap(std::move(output));
+            }));
             context.emitWarnings();
             STRI__UNPROTECT_ALL
             return ret;
@@ -1085,7 +636,7 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
         std::vector<CiRawResult> raw_outputs;
         std::unique_ptr<charport::charvec::Builder> builder;
         {
-            StriContainerListRaw str_cont(context, str);
+            io::RawListInput str_cont(context, str);
             str_n = str_cont.get_n();
             if (to_raw_logical)
                 raw_outputs.resize(static_cast<size_t>(str_n));
@@ -1105,10 +656,10 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
                 // through to ICU is both cheaper and closer to stringi:
                 // Riconv rejects malformed input and fails the whole vector,
                 // while ICU's callbacks substitute per record and warn.
-                std::unique_ptr<charr::altrep::NativeToUtf8> raw_native;
+                std::unique_ptr<charr::shared::NativeToUtf8> raw_native;
                 if (!selected_from && !to_raw_logical && selected_to &&
                         ucnv_compareNames(selected_to, "UTF-8") == 0) {
-                    raw_native.reset(new charr::altrep::NativeToUtf8());
+                    raw_native.reset(new charr::shared::NativeToUtf8());
                     if (raw_native->native_is_utf8())
                         raw_native.reset();
                 }
@@ -1119,8 +670,8 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
                             continue;
                         }
 
-                        const charr::altrep::ByteView& input = str_cont.get(i);
-                        const charport::ByteView output =
+                        const charr::altrep_backend::io::ByteView& input = str_cont.get(i);
+                        const shared::ByteView output =
                             raw_native->native(
                                 input.data(), input.length()
                             );
@@ -1146,20 +697,20 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
                     // Staging is only needed where the native encoding
                     // differs from the UTF-8 side ICU sees. When it is UTF-8
                     // the pass is an identity transcode.
-                    std::unique_ptr<charr::altrep::NativeToUtf8>
+                    std::unique_ptr<charr::shared::NativeToUtf8>
                         native_input;
                     if (!selected_from) {
                         native_input.reset(
-                            new charr::altrep::NativeToUtf8()
+                            new charr::shared::NativeToUtf8()
                         );
                         if (native_input->native_is_utf8())
                             native_input.reset();
                     }
-                    std::unique_ptr<charr::altrep::NativeToUtf8>
+                    std::unique_ptr<charr::shared::NativeToUtf8>
                         native_output;
                     if (!selected_to) {
                         native_output.reset(
-                            new charr::altrep::NativeToUtf8()
+                            new charr::shared::NativeToUtf8()
                         );
                         if (native_output->native_is_utf8())
                             native_output.reset();
@@ -1193,11 +744,11 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
                             continue;
                         }
 
-                        const charr::altrep::ByteView& input = str_cont.get(i);
+                        const charr::altrep_backend::io::ByteView& input = str_cont.get(i);
                         const char* curs = input.data();
                         R_len_t curn     = input.length();
                         if (native_input) {
-                            const charport::ByteView converted =
+                            const shared::ByteView converted =
                                 native_input->native(curs, curn);
                             curs = converted.ptr;
                             curn = converted.len;
@@ -1209,7 +760,7 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
                         const char* output_data = buf.data();
                         size_t output_length = bufneed;
                         if (native_output) {
-                            const charport::ByteView converted =
+                            const shared::ByteView converted =
                                 native_output->utf8_to_native(
                                     output_data,
                                     static_cast<int>(output_length)
@@ -1250,12 +801,14 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
 
         identity_borrow.reset();
         if (!to_raw_logical) {
-            STRI__PROTECT(ret = builder->to_sexp());
+            STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+                return builder->to_sexp();
+            }));
         }
         else {
             // Deviation from stringi: stage data-dependent raw results until the
             // input and converter lifetimes have ended, then assemble the R list.
-            STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+            STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
                 return Rf_allocVector(VECSXP, str_n);
             }));
             for (R_len_t i=0; i<str_n; ++i) {
@@ -1265,7 +818,7 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
                     continue;
 
                 SEXP outobj;
-                STRI__PROTECT(outobj = charport::unwind_protect([&]() -> SEXP {
+                STRI__PROTECT(outobj = ci::unwind_protect([&]() -> SEXP {
                     return Rf_allocVector(
                         RAWSXP, static_cast<R_xlen_t>(output.data.size())
                     );
@@ -1287,3 +840,5 @@ SEXP ci_encode(SEXP str, SEXP from, SEXP to, SEXP to_raw)
 
     STRI__ERROR_HANDLER_END({/* no special action on error */})
 }
+
+} } // namespace charr::altrep_backend

@@ -48,8 +48,10 @@
 #include <unicode/stringpiece.h>
 #include <unicode/uniset.h>
 
+namespace charr { namespace altrep_backend {
 
-namespace {
+
+namespace wrap {
 
 struct CiWrapIcuState {
     BreakIterator* iterator;
@@ -239,7 +241,9 @@ public:
     }
 };
 
-}
+} // namespace wrap
+
+using namespace wrap;
 
 
 /** Greedy word wrap algorithm
@@ -404,6 +408,8 @@ void ci__wrap_dynamic(CiWrapScratch& scratch,
 }
 
 
+namespace wrap {
+
 struct StriWrapLineStart {
     std::string str;
     R_len_t nbytes;
@@ -411,7 +417,7 @@ struct StriWrapLineStart {
     R_len_t width;
     bool ascii;
 
-    StriWrapLineStart(const Utf8Record& s, R_len_t v) :
+    StriWrapLineStart(const io::Utf8Record& s, R_len_t v) :
         str(
             s.isNA() ? "" : s.data(),
             s.isNA() ? 0 : static_cast<std::size_t>(s.length())
@@ -428,6 +434,8 @@ struct StriWrapLineStart {
         str.append(std::string(v, ' '));
     }
 };
+
+} // namespace wrap
 
 
 bool ci__wrap_ascii_fits(
@@ -652,11 +660,11 @@ SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent,
     if (!flatten_val && !join_val)
         stores.reserve(static_cast<std::size_t>(str_length));
     {
-        IndexedUtf8Input str_cont(
+        io::IndexedUtf8Input str_cont(
             context, str, str_length
         );
-        Utf8Input prefix_cont(context, prefix, 1);
-        Utf8Input initial_cont(context, initial, 1);
+        io::Utf8Input prefix_cont(context, prefix, 1);
+        io::Utf8Input initial_cont(context, initial, 1);
         // Deviation from stringi: this guard is declared after the Reader
         // containers so exception unwinding releases ICU's borrowed view
         // before it releases the Reader borrow.
@@ -701,7 +709,7 @@ SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent,
         const bool source_is_na = str_cont.isNA(i);
         CiWrapRecordView record{nullptr, 0, false};
         if (!source_is_na) {
-            const Utf8Record& source = str_cont.get(i);
+            const io::Utf8Record& source = str_cont.get(i);
             record = CiWrapRecordView{
                 source.data(), source.length(), source.isASCII()
             };
@@ -983,25 +991,29 @@ SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent,
     // Deviation from stringi: protect the complete lazy list, then release
     // its staging Stores before deferred warnings are replayed.
     if (flatten_val) {
-        STRI__PROTECT(ret = flat_output.to_sexp());
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return flat_output.to_sexp();
+        }));
     }
     else if (join_val) {
-        STRI__PROTECT(ret = charport::charvec::wrap(
-            std::move(*joined_store)
-        ));
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return charport::charvec::wrap(std::move(*joined_store));
+        }));
     }
     else {
-        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
             return Rf_allocVector(VECSXP, str_length);
         }));
-        for (R_len_t i=0; i<str_length; ++i) {
-            SEXP ans;
-            STRI__PROTECT(ans = charport::charvec::wrap(
-                std::move(stores[i])
-            ));
-            SET_VECTOR_ELT(ret, i, ans);
-            STRI__UNPROTECT(1);
-        }
+        ci::unwind_protect([&]() -> SEXP {
+            for (R_len_t i=0; i<str_length; ++i) {
+                SEXP ans = PROTECT(charport::charvec::wrap(
+                    std::move(stores[i])
+                ));
+                SET_VECTOR_ELT(ret, i, ans);
+                UNPROTECT(1);
+            }
+            return R_NilValue;
+        });
     }
     }
     STRI__DEFERRED_WARNINGS.emit();
@@ -1015,3 +1027,5 @@ SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent,
         }
     })
 }
+
+} } // namespace charr::altrep_backend

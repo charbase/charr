@@ -2,7 +2,6 @@
 
 replace_all_coll <- function(...) charr:::ci_replace_all_coll(...)
 replace_first_coll <- function(...) charr:::ci_replace_first_coll(...)
-replace_last_coll <- function(...) charr:::ci_replace_last_coll(...)
 replace_coll_charvec <- function(x) charr:::ci_trim_both(x)
 
 
@@ -23,22 +22,14 @@ test_that("coll replace splices literal UTF-16 ranges", {
   first <- replace_first_coll(
     strings, patterns, replacements, opts_collator = opts
   )
-  last <- replace_last_coll(
-    strings, patterns, replacements, opts_collator = opts
-  )
   expect_identical(
     all, c("😀$1-$1-$1", "ZxZ", NA, "none", "", NA)
   )
   expect_identical(
     first, c("😀$1-a-A", "ZxÜ", NA, "none", "", NA)
   )
-  expect_identical(
-    last, c("😀ä-a-$1", "üxZ", NA, "none", "", NA)
-  )
   expect_identical(charport::is_charvec(all), charr_altrep())
   expect_identical(charport::is_charvec(first), charr_altrep())
-  # replace_last_coll is off the dispatch map and always runs charr.
-  expect_true(charport::is_charvec(last))
   expect_identical(
     Encoding(all),
     c("UTF-8", "unknown", "unknown", "unknown", "unknown", "unknown")
@@ -153,47 +144,4 @@ test_that("coll replace sequential mode applies patterns in order", {
   )
   expect_identical(result, c("X-Y-A", "ü-Z", "å-YY", "none", "", NA))
   expect_identical(charport::is_charvec(result), charr_altrep())
-})
-
-
-test_that("off-map coll replace last matches stringi randomized", {
-  set.seed(7105)
-  atoms <- c("a", "A", "ä", "å", "aa", "ü", "ü", "😀", "-", "")
-  make_strings <- function(n) {
-    vapply(seq_len(n), function(i) {
-      paste0(sample(atoms, sample(0:6, 1L), TRUE), collapse = "")
-    }, character(1L))
-  }
-
-  got <- want <- vector("list", 300L)
-  for (case in seq_along(got)) {
-    ns <- sample(1:12, 1L)
-    np <- sample(1:6, 1L)
-    nr <- sample(1:6, 1L)
-    strings <- make_strings(ns)
-    patterns <- make_strings(np)
-    patterns[patterns == ""] <- "a"
-    replacements <- make_strings(nr)
-    if (runif(1L) < 0.3)
-      strings[sample(ns, 1L)] <- NA
-    if (runif(1L) < 0.2)
-      patterns[sample(np, 1L)] <- NA
-    if (runif(1L) < 0.2)
-      replacements[sample(nr, 1L)] <- NA
-    opts <- list(
-      locale = sample(c("de", "da"), 1L),
-      strength = sample(c(1L, 3L), 1L)
-    )
-
-    strings_cv <- replace_coll_charvec(strings)
-    patterns_cv <- replace_coll_charvec(patterns)
-    replacements_cv <- replace_coll_charvec(replacements)
-    got[[case]] <- suppressWarnings(as.character(replace_last_coll(
-      strings_cv, patterns_cv, replacements_cv, opts_collator = opts
-    )))
-    want[[case]] <- suppressWarnings(stringi::stri_replace_last_coll(
-      strings, patterns, replacements, opts_collator = opts
-    ))
-  }
-  expect_identical(got, want)
 })

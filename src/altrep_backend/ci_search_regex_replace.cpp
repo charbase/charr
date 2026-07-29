@@ -34,15 +34,17 @@
 #include "ci_stringi.h"
 #include "ci_builder.h"
 #include "ci_utf8.h"
-#include "ci_container_utf16.h"
-#include "ci_container_regex.h"
-#include "altrep/utf8_input.h"
+#include "io/utf16_input.h"
+#include "regex/pattern_set.h"
+#include "altrep_backend/io/utf8_input.h"
 
 #include <memory>
 #include <unicode/ustring.h>
 
+namespace charr { namespace altrep_backend {
 
-namespace {
+
+namespace search_regex_replace {
 
 class ReusableUtf16Text {
 private:
@@ -140,7 +142,9 @@ void replace_matches(
     throw StriException(MSG__INTERNAL_ERROR);
 }
 
-} // namespace
+} // namespace search_regex_replace
+
+using namespace search_regex_replace;
 
 
 /**
@@ -155,10 +159,10 @@ void replace_matches(
  * @version 0.1-?? (Bartek Tartanus)
  *
  * @version 0.1-?? (Marek Gagolewski)
- *          use StriContainerUTF16's vectorization
+ *          use io::Utf16Input's vectorization
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-21)
- *          use StriContainerRegexPattern + more general
+ *          use regex::PatternSet + more general
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-07-10)
  *          BUGFIX: wrong behavior on empty str
@@ -173,7 +177,7 @@ void replace_matches(
  *    Issue #210: Allow NA replacement
  *
  * @version 1.4.7 (Marek Gagolewski, 2020-08-24)
- *    Use StriContainerRegexPattern::getRegexOptions
+ *    Use regex::PatternSet::getRegexOptions
  */
 SEXP ci__replace_allfirstlast_regex(SEXP str, SEXP pattern, SEXP replacement, SEXP opts_regex, int type)
 {
@@ -182,11 +186,11 @@ SEXP ci__replace_allfirstlast_regex(SEXP str, SEXP pattern, SEXP replacement, SE
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
 
     STRI__ERROR_HANDLER_BEGIN(3)
-    StriRegexMatcherOptions pattern_opts;
+    regex::Options pattern_opts;
     // Deviation from stringi: keep option parsing in its copied position but
     // queue controlled option warnings through the operation boundary.
-    charport::unwind_protect([&]() -> SEXP {
-        pattern_opts = StriContainerRegexPattern::getRegexOptions(
+    ci::unwind_protect([&]() -> SEXP {
+        pattern_opts = regex::PatternSet::getRegexOptions(
             STRI__DEFERRED_WARNINGS, opts_regex
         );
         return R_NilValue;
@@ -204,7 +208,7 @@ SEXP ci__replace_allfirstlast_regex(SEXP str, SEXP pattern, SEXP replacement, SE
         context.size(replacement), "character vectors"
     );
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             false, 3, str_n, pattern_n, replacement_n
         );
@@ -220,16 +224,16 @@ SEXP ci__replace_allfirstlast_regex(SEXP str, SEXP pattern, SEXP replacement, SE
 
     charport::charvec::Builder builder(vectorize_length);
     {
-        charr::altrep::Utf8Input subjects(
+        charr::altrep_backend::io::Utf8Input subjects(
             context, str, vectorize_length, true,
-            charr::altrep::Utf8BomPolicy::preserve
+            charr::altrep_backend::io::Utf8BomPolicy::preserve
         );
-        StriContainerRegexPattern pattern_cont(
+        regex::PatternSet pattern_cont(
             context, pattern, vectorize_length, pattern_opts
         );
-        charr::altrep::Utf8Input replacements(
+        charr::altrep_backend::io::Utf8Input replacements(
             context, replacement, vectorize_length, true,
-            charr::altrep::Utf8BomPolicy::preserve
+            charr::altrep_backend::io::Utf8BomPolicy::preserve
         );
 
         ReusableUtf16Text subject_text;
@@ -306,7 +310,9 @@ SEXP ci__replace_allfirstlast_regex(SEXP str, SEXP pattern, SEXP replacement, SE
         }
     }
 
-    STRI__PROTECT(ret = builder.to_sexp());
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return builder.to_sexp();
+    }));
     }
     STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
@@ -350,27 +356,29 @@ SEXP ci__replace_all_regex_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
     );
     if (str_n <= 0) {
         charport::charvec::Builder builder(0);
-        STRI__PROTECT(ret = builder.to_sexp());
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return builder.to_sexp();
+        }));
         STRI__UNPROTECT_ALL
         return ret;
     }
 
     // Deviation from stringi: lazy preparation now runs inside the C++
     // boundary, so queue its controlled warnings with the operation.
-    STRI__PROTECT(pattern = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(pattern = ci::unwind_protect([&]() -> SEXP {
         return ci__prepare_arg_string(
             pattern, "pattern", true, &STRI__DEFERRED_WARNINGS
         );
     }));
-    STRI__PROTECT(replacement = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(replacement = ci::unwind_protect([&]() -> SEXP {
         return ci__prepare_arg_string(
             replacement, "replacement", true,
             &STRI__DEFERRED_WARNINGS
         );
     }));
-    StriRegexMatcherOptions pattern_opts;
-    charport::unwind_protect([&]() -> SEXP {
-        pattern_opts = StriContainerRegexPattern::getRegexOptions(
+    regex::Options pattern_opts;
+    ci::unwind_protect([&]() -> SEXP {
+        pattern_opts = regex::PatternSet::getRegexOptions(
             STRI__DEFERRED_WARNINGS, opts_regex
         );
         return R_NilValue;
@@ -384,7 +392,7 @@ SEXP ci__replace_all_regex_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
     );
     // Deviation from stringi: a controlled length error crosses the outer
     // C++ boundary before it is signalled to R.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         if (pattern_n < replacement_n || pattern_n <= 0 || replacement_n <= 0)
             throw StriException(MSG__WARN_RECYCLING_RULE2);
         return R_NilValue;
@@ -400,7 +408,7 @@ SEXP ci__replace_all_regex_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
         // it, while no Reader, regex, or output owner is active, to preserve
         // stringi's two-parser warning order (and warn=2 short-circuit).
         context.emitWarnings();
-        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
             return ci__replace_allfirstlast_regex(
                 str, pattern, replacement, opts_regex, 0
             );
@@ -411,11 +419,11 @@ SEXP ci__replace_all_regex_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
 
     charport::charvec::Builder builder(str_n);
     {
-        StriContainerUTF16 str_cont(context, str, str_n, false); // writable
-        StriContainerRegexPattern pattern_cont(
+        io::Utf16Output str_cont(context, str, str_n); // writable
+        regex::PatternSet pattern_cont(
             context, pattern, pattern_n, pattern_opts
         );
-        StriContainerUTF16 replacement_cont(
+        io::Utf16Input replacement_cont(
             context, replacement, pattern_n
         );
         bool return_all_na = false;
@@ -429,7 +437,7 @@ SEXP ci__replace_all_regex_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
                 break;
             }
             else if (pattern_cont.get(i).length() <= 0) {
-                // StriContainerRegexPattern already queued stringi's first
+                // regex::PatternSet already queued stringi's first
                 // warning; preserve this sequential path's second warning.
                 context.warn(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
                 return_all_na = true;
@@ -467,7 +475,9 @@ SEXP ci__replace_all_regex_no_vectorize_all(SEXP str, SEXP pattern, SEXP replace
         }
     }
 
-    STRI__PROTECT(ret = builder.to_sexp());
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return builder.to_sexp();
+    }));
     }
     STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
@@ -546,19 +556,4 @@ SEXP ci_replace_first_regex(SEXP str, SEXP pattern, SEXP replacement, SEXP opts_
     return ci__replace_allfirstlast_regex(str, pattern, replacement, opts_regex, 1);
 }
 
-
-/**
- * Replace last occurrence of a regex pattern
- *
- * @param str strings to search in
- * @param pattern regex patterns to search for
- * @param replacement replacements
- * @param opts_regex list
- * @return character vector
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-21)
- */
-SEXP ci_replace_last_regex(SEXP str, SEXP pattern, SEXP replacement, SEXP opts_regex)
-{
-    return ci__replace_allfirstlast_regex(str, pattern, replacement, opts_regex, -1);
-}
+} } // namespace charr::altrep_backend

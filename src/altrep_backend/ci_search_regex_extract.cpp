@@ -34,9 +34,9 @@
 #include "ci_stringi.h"
 #include "ci_builder.h"
 #include "ci_utf8.h"
-#include "ci_container_regex.h"
-#include "altrep/native_to_utf8.h"
-#include "altrep/stable_slice_arena.h"
+#include "regex/pattern_set.h"
+#include "../shared/native_to_utf8.h"
+#include "../shared/slice_arena.h"
 #include <cstdint>
 #include <cstring>
 #include <deque>
@@ -44,10 +44,12 @@
 #include <utility>
 #include <vector>
 #include <unicode/utf8.h>
+
+namespace charr { namespace altrep_backend {
 using namespace std;
 
 
-namespace {
+namespace search_regex_extract {
 
 struct CiRegexExtractInput {
     const char* data;
@@ -60,7 +62,7 @@ struct CiRegexExtractInput {
 
 class CiRegexExtractNormalizer {
 private:
-    charr::altrep::NativeToUtf8 converter_;
+    charr::shared::NativeToUtf8 converter_;
 
 public:
     CiRegexExtractInput get(const charport::StrView& value)
@@ -90,7 +92,7 @@ public:
 
         const bool native_has_bom = value.enc == cetype_ext_t::CE_NATIVE &&
             STRI__ENC_HAS_BOM_UTF8(source, length);
-        charport::ByteView converted;
+        shared::ByteView converted;
         if (value.enc == cetype_ext_t::CE_LATIN1) {
             converted = converter_.latin1(source, length);
         }
@@ -114,7 +116,7 @@ public:
 class CiRegexExtractInputs {
 private:
     CiRegexExtractNormalizer normalizer_;
-    charr::altrep::StableSliceArena owned_;
+    charr::shared::SliceArena owned_;
     vector<CiRegexExtractInput> values_;
 
 public:
@@ -225,14 +227,14 @@ public:
 void ci__regex_extract_firstlast_scalar(
     ci::ReaderContext& context, SEXP pattern,
     const charport::StrViews& values, R_len_t vectorize_length,
-    const StriRegexMatcherOptions& pattern_opts, bool first,
+    const regex::Options& pattern_opts, bool first,
     charport::charvec::Builder& output
 )
 {
     CiRegexExtractInputs inputs(vectorize_length);
     for (R_len_t i = 0; i < vectorize_length; ++i)
         inputs.append(values[i]);
-    StriContainerRegexPattern pattern_cont(
+    regex::PatternSet pattern_cont(
         context, pattern, vectorize_length, pattern_opts
     );
     if (vectorize_length <= 0)
@@ -291,14 +293,14 @@ void ci__regex_extract_firstlast_scalar(
 void ci__regex_extract_all_scalar(
     ci::ReaderContext& context, SEXP pattern,
     const charport::StrViews& values, R_len_t vectorize_length,
-    const StriRegexMatcherOptions& pattern_opts, bool omit_no_match,
+    const regex::Options& pattern_opts, bool omit_no_match,
     vector<charport::charvec::Store>& stores
 )
 {
     CiRegexExtractInputs inputs(vectorize_length);
     for (R_len_t i = 0; i < vectorize_length; ++i)
         inputs.append(values[i]);
-    StriContainerRegexPattern pattern_cont(
+    regex::PatternSet pattern_cont(
         context, pattern, vectorize_length, pattern_opts
     );
     if (vectorize_length <= 0)
@@ -371,7 +373,9 @@ void ci__regex_extract_all_scalar(
     }
 }
 
-} // namespace
+} // namespace search_regex_extract
+
+using namespace search_regex_extract;
 
 
 /**
@@ -392,7 +396,7 @@ void ci__regex_extract_all_scalar(
  *    Issue #214: allow a regex pattern like `.*`  to match an empty string
  *
  * @version 1.4.7 (Marek Gagolewski, 2020-08-24)
- *    Use StriContainerRegexPattern::getRegexOptions
+ *    Use regex::PatternSet::getRegexOptions
  */
 SEXP ci__extract_firstlast_regex(SEXP str, SEXP pattern, SEXP opts_regex, bool first)
 {
@@ -411,7 +415,7 @@ SEXP ci__extract_firstlast_regex(SEXP str, SEXP pattern, SEXP opts_regex, bool f
         context.size(pattern), "character vectors"
     );
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             false, 2, str_n, pattern_n
         );
@@ -424,11 +428,11 @@ SEXP ci__extract_firstlast_regex(SEXP str, SEXP pattern, SEXP opts_regex, bool f
              vectorize_length % pattern_n != 0))
         context.warn(MSG__WARN_RECYCLING_RULE);
 
-    StriRegexMatcherOptions pattern_opts;
+    regex::Options pattern_opts;
     // Deviation from stringi: preserve recycling-before-options order while
     // routing option-parser R unwinds through the common error boundary.
-    charport::unwind_protect([&]() -> SEXP {
-        pattern_opts = StriContainerRegexPattern::getRegexOptions(
+    ci::unwind_protect([&]() -> SEXP {
+        pattern_opts = regex::PatternSet::getRegexOptions(
             STRI__DEFERRED_WARNINGS, opts_regex
         );
         return R_NilValue;
@@ -444,8 +448,8 @@ SEXP ci__extract_firstlast_regex(SEXP str, SEXP pattern, SEXP opts_regex, bool f
     }
     else {
         {
-            Utf8Input str_cont(context, str, vectorize_length);
-            StriContainerRegexPattern pattern_cont(
+            io::Utf8Input str_cont(context, str, vectorize_length);
+            regex::PatternSet pattern_cont(
                 context, pattern, vectorize_length, pattern_opts
             );
 
@@ -506,7 +510,9 @@ SEXP ci__extract_firstlast_regex(SEXP str, SEXP pattern, SEXP opts_regex, bool f
         }
     }
 
-    STRI__PROTECT(ret = output.to_sexp());
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return output.to_sexp();
+    }));
     }
     STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
@@ -528,22 +534,6 @@ SEXP ci__extract_firstlast_regex(SEXP str, SEXP pattern, SEXP opts_regex, bool f
 SEXP ci_extract_first_regex(SEXP str, SEXP pattern, SEXP opts_regex)
 {
     return ci__extract_firstlast_regex(str, pattern, opts_regex, true);
-}
-
-
-/**
- * Extract last occurrence of a regex pattern in each string
- *
- * @param str character vector
- * @param pattern character vector
- * @param opts_regex list
- * @return character vector
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-20)
- */
-SEXP ci_extract_last_regex(SEXP str, SEXP pattern, SEXP opts_regex)
-{
-    return ci__extract_firstlast_regex(str, pattern, opts_regex, false);
 }
 
 
@@ -580,31 +570,31 @@ SEXP ci_extract_all_regex(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_ma
     STRI__ERROR_HANDLER_BEGIN(0)
     // Deviation from stringi: begin the C++ boundary at the copied option-
     // parsing position so its controlled warnings can join the operation queue.
-    StriRegexMatcherOptions pattern_opts;
-    charport::unwind_protect([&]() -> SEXP {
-        pattern_opts = StriContainerRegexPattern::getRegexOptions(
+    regex::Options pattern_opts;
+    ci::unwind_protect([&]() -> SEXP {
+        pattern_opts = regex::PatternSet::getRegexOptions(
             STRI__DEFERRED_WARNINGS, opts_regex
         );
         return R_NilValue;
     });
     bool omit_no_match1 = false;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         omit_no_match1 = ci__prepare_arg_logical_1_notNA(
             omit_no_match, "omit_no_match", &STRI__DEFERRED_WARNINGS
         );
         return R_NilValue;
     });
-    STRI__PROTECT(simplify = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(simplify = ci::unwind_protect([&]() -> SEXP {
         return ci__prepare_arg_logical_1(
             simplify, "simplify", &STRI__DEFERRED_WARNINGS
         );
     }));
-    STRI__PROTECT(str = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(str = ci::unwind_protect([&]() -> SEXP {
         return ci__prepare_arg_string(
             str, "str", true, &STRI__DEFERRED_WARNINGS
         );
     }));
-    STRI__PROTECT(pattern = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(pattern = ci::unwind_protect([&]() -> SEXP {
         return ci__prepare_arg_string(
             pattern, "pattern", true, &STRI__DEFERRED_WARNINGS
         );
@@ -620,7 +610,7 @@ SEXP ci_extract_all_regex(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_ma
         context.size(pattern), "character vectors"
     );
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             false, 2, str_n, pattern_n
         );
@@ -646,8 +636,8 @@ SEXP ci_extract_all_regex(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_ma
     }
     else {
         {
-            Utf8Input str_cont(context, str, vectorize_length);
-            StriContainerRegexPattern pattern_cont(
+            io::Utf8Input str_cont(context, str, vectorize_length);
+            regex::PatternSet pattern_cont(
                 context, pattern, vectorize_length, pattern_opts
             );
             charport::charvec::Builder builder(0);
@@ -732,17 +722,19 @@ SEXP ci_extract_all_regex(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_ma
     }
 
     if (simplify1 != NA_LOGICAL && !simplify1) {
-        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
             return Rf_allocVector(VECSXP, vectorize_length);
         }));
-        for (R_len_t i=0; i<vectorize_length; ++i) {
-            SEXP current;
-            STRI__PROTECT(current = charport::charvec::wrap(
-                std::move(stores[i])
-            ));
-            SET_VECTOR_ELT(ret, i, current);
-            STRI__UNPROTECT(1);
-        }
+        ci::unwind_protect([&]() -> SEXP {
+            for (R_len_t i=0; i<vectorize_length; ++i) {
+                SEXP current = PROTECT(charport::charvec::wrap(
+                    std::move(stores[i])
+                ));
+                SET_VECTOR_ELT(ret, i, current);
+                UNPROTECT(1);
+            }
+            return R_NilValue;
+        });
     }
     else {
         size_t max_columns = 0;
@@ -782,8 +774,10 @@ SEXP ci_extract_all_regex(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_ma
             }
         }
 
-        STRI__PROTECT(ret = matrix_builder.to_sexp());
-        charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return matrix_builder.to_sexp();
+        }));
+        ci::unwind_protect([&]() -> SEXP {
             SEXP dim;
             PROTECT(dim = Rf_allocVector(INTSXP, 2));
             INTEGER(dim)[0] = vectorize_length;
@@ -800,3 +794,5 @@ SEXP ci_extract_all_regex(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_ma
     return ret;
     STRI__ERROR_HANDLER_END(if (str_text) utext_close(str_text);)
     }
+
+} } // namespace charr::altrep_backend

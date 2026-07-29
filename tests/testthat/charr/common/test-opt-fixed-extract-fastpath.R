@@ -14,7 +14,6 @@ test_that("optimized fixed extract keeps scalar ASCII matches and shapes", {
 
   operations <- list(
     first = function(x) charr:::ci_extract_first_fixed(x, " "),
-    last = function(x) charr:::ci_extract_last_fixed(x, " "),
     all = function(x) charr:::ci_extract_all_fixed(x, " "),
     all_omit = function(x) {
       charr:::ci_extract_all_fixed(x, " ", omit_no_match = TRUE)
@@ -131,7 +130,6 @@ test_that("fixed extract keeps completed rows across mixed encodings", {
 
   operations <- list(
     first = function(x) charr:::ci_extract_first_fixed(x, " "),
-    last = function(x) charr:::ci_extract_last_fixed(x, " "),
     all = function(x) charr:::ci_extract_all_fixed(x, " "),
     all_omit = function(x) {
       charr:::ci_extract_all_fixed(x, " ", omit_no_match = TRUE)
@@ -167,7 +165,6 @@ test_that("fixed extract still rejects bytes after a direct prefix", {
   values <- c("a a", "none", bytes)
   operations <- list(
     function(x) charr:::ci_extract_first_fixed(x, " "),
-    function(x) charr:::ci_extract_last_fixed(x, " "),
     function(x) charr:::ci_extract_all_fixed(x, " "),
     function(x) {
       charr:::ci_extract_all_fixed(x, " ", simplify = TRUE)
@@ -194,7 +191,6 @@ test_that("fixed extract validates bytes before an empty pattern", {
   Encoding(bytes) <- "bytes"
   operations <- list(
     function(x) charr:::ci_extract_first_fixed(x, ""),
-    function(x) charr:::ci_extract_last_fixed(x, ""),
     function(x) charr:::ci_extract_all_fixed(x, ""),
     function(x) {
       charr:::ci_extract_all_fixed(x, "", simplify = TRUE)

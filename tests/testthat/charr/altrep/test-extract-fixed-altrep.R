@@ -13,13 +13,6 @@ test_that("fixed extract emits multibyte Reader slices with exact encodings", {
   expect_identical(charport::is_charvec(first), charr_altrep())
   expect_identical(Encoding(first), c("UTF-8", "UTF-8", "UTF-8", "unknown"))
 
-  # locate_last_fixed is a revealed helper rather than a dispatch-map entry,
-  # but it shares the converted Reader/Builder kernel and must remain exact.
-  expect_identical(
-    charr:::ci_extract_last_fixed(strings, c("é", "🙂", "ü", "b")),
-    c("é", "🙂", "ü", "b")
-  )
-
   expect_identical(
     extract_all_fixed(
       charr:::ci_trim_both(c(" ééé ", " 🙂x🙂 ", " üü ")),

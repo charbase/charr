@@ -39,6 +39,9 @@
 #include "ci_macros.h"
 #include "ci_exception.h"
 #include "ci_exports.h"
+#include <unicode/ucol.h>
+
+namespace charr { namespace altrep_backend {
 
 
 namespace ci {
@@ -63,8 +66,7 @@ int     ci__match_arg(
 );
 
 // collator.cpp:
-struct UCollator;
-UCollator* ci__ucol_open(
+::UCollator* ci__ucol_open(
     ci::DeferredWarnings& warnings, SEXP opts_collator
 );
 
@@ -177,5 +179,8 @@ Calendar* ci__get_calendar(
 );
 
 // ------------------------------------------------------------------------
+
+
+} } // namespace charr::altrep_backend
 
 #endif

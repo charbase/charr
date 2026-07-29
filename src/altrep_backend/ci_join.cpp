@@ -33,19 +33,20 @@
 
 #include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_container_base.h"
 #include "ci_utf8.h"
-#include "ci_container_integer.h"
-#include "ci_container_listutf8.h"
-#include "../altrep/native_to_utf8.h"
+#include "io/integer_input.h"
+#include "io/utf8_list_input.h"
+#include "../shared/native_to_utf8.h"
 #include <algorithm>
 #include <memory>
 #include <utility>
 #include <vector>
+
+namespace charr { namespace altrep_backend {
 using namespace std;
 
 
-namespace {
+namespace join {
 
 
 struct ScalarStringInfo {
@@ -65,7 +66,7 @@ struct DirectStringView {
 
 class JoinStringNormalizer {
 private:
-    charr::altrep::NativeToUtf8 converter_;
+    charr::shared::NativeToUtf8 converter_;
 
 public:
     DirectStringView get(const charport::StrView& value)
@@ -104,7 +105,7 @@ public:
         const bool native_has_bom =
             value.enc == cetype_ext_t::CE_NATIVE &&
             STRI__ENC_HAS_BOM_UTF8(data, length);
-        const charport::ByteView converted =
+        const shared::ByteView converted =
             value.enc == cetype_ext_t::CE_LATIN1
             ? converter_.latin1(data, length)
             : converter_.native(data, length);
@@ -319,7 +320,9 @@ SEXP ci__inspect_scalar_string(SEXP source, ScalarStringInfo& info)
 }
 
 
-} // namespace
+} // namespace join
+
+using namespace join;
 
 
 /**
@@ -403,10 +406,10 @@ SEXP ci__prepare_arg_list_ignore_null(SEXP x, bool ignore_null)
  * @version 0.1-?? (Marek Gagolewski)
  *
  * @version 0.1-?? (Marek Gagolewski)
- *     use Utf8Input's vectorization
+ *     use io::Utf8Input's vectorization
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-15)
- *     use StriContainerInteger
+ *     use io::IntegerInput
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
  *     make StriException friendly
@@ -427,14 +430,16 @@ SEXP ci_dup(SEXP str, SEXP times)
     if (vectorize_length <= 0) {
         charport::charvec::Builder builder(0);
         SEXP ret;
-        STRI__PROTECT(ret = builder.to_sexp());
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return builder.to_sexp();
+        }));
         STRI__UNPROTECT_ALL
         return ret;
     }
 
     ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
     charport::charvec::Builder builder(vectorize_length);
-    StriContainerInteger times_cont(times, vectorize_length);
+    io::IntegerInput times_cont(times, vectorize_length);
     {
         std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(str);
         const charport::StrViews& values = borrow->views();
@@ -476,7 +481,9 @@ SEXP ci_dup(SEXP str, SEXP times)
     // Clean up & finish
 
     SEXP ret;
-    STRI__PROTECT(ret = builder.to_sexp());
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return builder.to_sexp();
+    }));
     context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
@@ -501,7 +508,7 @@ SEXP ci_dup(SEXP str, SEXP times)
  * @version 0.1-?? (Marek Gagolewski)
  *
  * @version 0.1-?? (Marek Gagolewski)
- *    use Utf8Input's vectorization
+ *    use io::Utf8Input's vectorization
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
  *    make StriException friendly
@@ -583,16 +590,16 @@ SEXP ci_join2(SEXP e1, SEXP e2) // a.k.a. ci_join2_nocollapse
             }
         }
         else {
-            Utf8Input e1_cont(context, e1, vectorize_length);
-            Utf8Input e2_cont(context, e2, vectorize_length);
+            io::Utf8Input e1_cont(context, e1, vectorize_length);
+            io::Utf8Input e2_cont(context, e2, vectorize_length);
             for (R_len_t i=0; i<vectorize_length; ++i) {
                 if (e1_cont.isNA(i) || e2_cont.isNA(i)) {
                     builder.set_na(i);
                     continue;
                 }
 
-                const Utf8Record& a = e1_cont.get(i);
-                const Utf8Record& b = e2_cont.get(i);
+                const io::Utf8Record& a = e1_cont.get(i);
+                const io::Utf8Record& b = e2_cont.get(i);
                 const size_t a_length = static_cast<size_t>(a.length());
                 const size_t b_length = static_cast<size_t>(b.length());
                 if (a_length > static_cast<size_t>(POW_2_31_M_1)-b_length)
@@ -614,7 +621,9 @@ SEXP ci_join2(SEXP e1, SEXP e2) // a.k.a. ci_join2_nocollapse
 
     // 4. Cleanup & finish
     SEXP ret;
-    STRI__PROTECT(ret = builder.to_sexp());
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return builder.to_sexp();
+    }));
     context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
@@ -673,7 +682,9 @@ SEXP ci_join2_withcollapse(SEXP e1, SEXP e2, SEXP collapse)
                 NULL, 0, cetype_ext_t::CE_NA
             );
         SEXP ret;
-        STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return charport::charvec::wrap(std::move(output));
+        }));
         STRI__UNPROTECT_ALL
         return ret;
     }
@@ -683,7 +694,9 @@ SEXP ci_join2_withcollapse(SEXP e1, SEXP e2, SEXP collapse)
             "", 0, cetype_ext_t::CE_ASCII
         );
         SEXP ret;
-        STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return charport::charvec::wrap(std::move(output));
+        }));
         STRI__UNPROTECT_ALL
         return ret;
     }
@@ -691,9 +704,9 @@ SEXP ci_join2_withcollapse(SEXP e1, SEXP e2, SEXP collapse)
     ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
     charport::charvec::Store output(0, 0);
     {
-        Utf8Input e1_cont(context, e1, vectorize_length);
-        Utf8Input e2_cont(context, e2, vectorize_length);
-        Utf8Input collapse_cont(context, collapse, 1);
+        io::Utf8Input e1_cont(context, e1, vectorize_length);
+        io::Utf8Input e2_cont(context, e2, vectorize_length);
+        io::Utf8Input collapse_cont(context, collapse, 1);
         R_len_t collapse_nbytes = collapse_cont.get(0).length();
         const char* collapse_s = collapse_cont.get(0).data();
 
@@ -746,7 +759,7 @@ SEXP ci_join2_withcollapse(SEXP e1, SEXP e2, SEXP collapse)
                     last_buf_idx += collapse_nbytes;
                 }
 
-                const Utf8Record* cur_string_1 = &(e1_cont.get(i));
+                const io::Utf8Record* cur_string_1 = &(e1_cont.get(i));
                 R_len_t  cur_len_1 = cur_string_1->length();
                 if (cur_len_1 > 0) {
                     memcpy(
@@ -756,7 +769,7 @@ SEXP ci_join2_withcollapse(SEXP e1, SEXP e2, SEXP collapse)
                 }
                 last_buf_idx += cur_len_1;
 
-                const Utf8Record* cur_string_2 = &(e2_cont.get(i));
+                const io::Utf8Record* cur_string_2 = &(e2_cont.get(i));
                 R_len_t  cur_len_2 = cur_string_2->length();
                 if (cur_len_2 > 0) {
                     memcpy(
@@ -772,7 +785,9 @@ SEXP ci_join2_withcollapse(SEXP e1, SEXP e2, SEXP collapse)
     }
 
     SEXP ret;
-    STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return charport::charvec::wrap(std::move(output));
+    }));
     context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
@@ -792,10 +807,7 @@ SEXP ci_join2_withcollapse(SEXP e1, SEXP e2, SEXP collapse)
  * @version 0.1-?? (Marek Gagolewski)
  *
  * @version 0.1-?? (Marek Gagolewski)
- *          use Utf8Input's vectorization
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
- *          make StriException-friendly, useStriContainerListUTF8
+ *          use io::Utf8Input's vectorization
  *
  * @version 0.1-12 (Marek Gagolewski, 2013-12-04)
  *          fixed bug #49
@@ -821,7 +833,9 @@ SEXP ci_join_nocollapse(SEXP strlist, SEXP sep, SEXP ignore_null)
         STRI__ERROR_HANDLER_BEGIN(1)
         charport::charvec::Builder builder(0);
         SEXP ret;
-        STRI__PROTECT(ret = builder.to_sexp());
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return builder.to_sexp();
+        }));
         STRI__UNPROTECT_ALL
         return ret;
         STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -835,7 +849,9 @@ SEXP ci_join_nocollapse(SEXP strlist, SEXP sep, SEXP ignore_null)
             STRI__ERROR_HANDLER_BEGIN(1)
             charport::charvec::Builder builder(0);
             SEXP ret;
-            STRI__PROTECT(ret = builder.to_sexp());
+            STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+                return builder.to_sexp();
+            }));
             STRI__UNPROTECT_ALL
             return ret;
             STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -853,7 +869,9 @@ SEXP ci_join_nocollapse(SEXP strlist, SEXP sep, SEXP ignore_null)
         for (R_len_t i=0; i<vectorize_length; ++i)
             builder.set_na(i);
         SEXP ret;
-        STRI__PROTECT(ret = builder.to_sexp());
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return builder.to_sexp();
+        }));
         STRI__UNPROTECT_ALL
         return ret;
         STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -879,11 +897,11 @@ SEXP ci_join_nocollapse(SEXP strlist, SEXP sep, SEXP ignore_null)
     ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
     charport::charvec::Builder builder(vectorize_length);
     {
-        Utf8Input sep_cont(context, sep, 1);
+        io::Utf8Input sep_cont(context, sep, 1);
         const char* sep_char = sep_cont.get(0).data();
         R_len_t     sep_len  = sep_cont.get(0).length();
 
-        StriContainerListUTF8 strlist_cont(
+        io::Utf8ListInput strlist_cont(
             context, strlist, vectorize_length
         );
 
@@ -900,7 +918,7 @@ SEXP ci_join_nocollapse(SEXP strlist, SEXP sep, SEXP ignore_null)
                     plan.has_na = true;
                     break;
                 }
-                const Utf8Record& value = strlist_cont.get(j).get(i);
+                const io::Utf8Record& value = strlist_cont.get(j).get(i);
                 ci__plan_add(plan, static_cast<size_t>(value.length()));
                 plan.is_ascii = plan.is_ascii && value.isASCII();
                 if (j > 0) {
@@ -934,7 +952,7 @@ SEXP ci_join_nocollapse(SEXP strlist, SEXP sep, SEXP ignore_null)
                     cursize += sep_len;
                 }
 
-                const Utf8Record* curstring = &(strlist_cont.get(j).get(i));
+                const io::Utf8Record* curstring = &(strlist_cont.get(j).get(i));
                 size_t curstring_n = curstring->length();
                 if (curstring_n > 0) {
                     memcpy(
@@ -949,7 +967,9 @@ SEXP ci_join_nocollapse(SEXP strlist, SEXP sep, SEXP ignore_null)
 
     // nothing more to do:
     SEXP ret;
-    STRI__PROTECT(ret = builder.to_sexp());
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return builder.to_sexp();
+    }));
     context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
@@ -1002,7 +1022,9 @@ SEXP ci_join(SEXP strlist, SEXP sep, SEXP collapse, SEXP ignore_null)
             "", 0, cetype_ext_t::CE_ASCII
         );
         SEXP ret;
-        STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return charport::charvec::wrap(std::move(output));
+        }));
         STRI__UNPROTECT_ALL
         return ret;
         STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -1030,7 +1052,9 @@ SEXP ci_join(SEXP strlist, SEXP sep, SEXP collapse, SEXP ignore_null)
                 NULL, 0, cetype_ext_t::CE_NA
             );
         SEXP ret;
-        STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return charport::charvec::wrap(std::move(output));
+        }));
         STRI__UNPROTECT_ALL
         return ret;
         STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -1054,7 +1078,9 @@ SEXP ci_join(SEXP strlist, SEXP sep, SEXP collapse, SEXP ignore_null)
                 "", 0, cetype_ext_t::CE_ASCII
             );
             SEXP ret;
-            STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+            STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+                return charport::charvec::wrap(std::move(output));
+            }));
             STRI__UNPROTECT_ALL
             return ret;
             STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -1068,15 +1094,15 @@ SEXP ci_join(SEXP strlist, SEXP sep, SEXP collapse, SEXP ignore_null)
     ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
     charport::charvec::Store output(0, 0);
     {
-        StriContainerListUTF8 strlist_cont(
+        io::Utf8ListInput strlist_cont(
             context, strlist, vectorize_length
         );
 
-        Utf8Input sep_cont(context, sep, 1); // definitely not NA
+        io::Utf8Input sep_cont(context, sep, 1); // definitely not NA
         const char* sep_s = sep_cont.get(0).data();
         R_len_t     sep_n = sep_cont.get(0).length();
 
-        Utf8Input collapse_cont(
+        io::Utf8Input collapse_cont(
             context, collapse, 1
         ); // definitely not NA
         const char* collapse_s = collapse_cont.get(0).data();
@@ -1097,7 +1123,7 @@ SEXP ci_join(SEXP strlist, SEXP sep, SEXP collapse, SEXP ignore_null)
                     break;
                 }
 
-                const Utf8Record& value = strlist_cont.get(j).get(i);
+                const io::Utf8Record& value = strlist_cont.get(j).get(i);
                 ci__plan_add(plan, static_cast<size_t>(value.length()));
                 plan.is_ascii = plan.is_ascii && value.isASCII();
                 if (j > 0)
@@ -1143,7 +1169,7 @@ SEXP ci_join(SEXP strlist, SEXP sep, SEXP collapse, SEXP ignore_null)
                         last_buf_idx += sep_n;
                     }
 
-                    const Utf8Record* curstring = &(strlist_cont.get(j).get(i));
+                    const io::Utf8Record* curstring = &(strlist_cont.get(j).get(i));
                     size_t curstring_n = curstring->length();
                     if (curstring_n > 0) {
                         memcpy(
@@ -1166,7 +1192,9 @@ SEXP ci_join(SEXP strlist, SEXP sep, SEXP collapse, SEXP ignore_null)
 
     // we are done
     SEXP ret;
-    STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return charport::charvec::wrap(std::move(output));
+    }));
     context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
@@ -1185,7 +1213,7 @@ SEXP ci_join(SEXP strlist, SEXP sep, SEXP collapse, SEXP ignore_null)
  * @version 0.1-?? (Marek Gagolewski)
  *
  * @version 0.1-?? (Marek Gagolewski)
- *          Utf8Input - any R Encoding
+ *          io::Utf8Input - any R Encoding
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
  *          make StriException friendly
@@ -1214,7 +1242,9 @@ SEXP ci_flatten_noressep(SEXP str, int na_empty)
             "", 0, cetype_ext_t::CE_ASCII
         );
         SEXP ret;
-        STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return charport::charvec::wrap(std::move(output));
+        }));
         STRI__UNPROTECT_ALL
         return ret;
         STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -1267,7 +1297,9 @@ SEXP ci_flatten_noressep(SEXP str, int na_empty)
 
     // 3. Get ret val & good bye
     SEXP ret;
-    STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return charport::charvec::wrap(std::move(output));
+    }));
     context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
@@ -1289,7 +1321,7 @@ SEXP ci_flatten_noressep(SEXP str, int na_empty)
  *          collapse arg added (1 sep supported)
  *
  * @version 0.1-?? (Marek Gagolewski)
- *          Utf8Input - any R Encoding
+ *          io::Utf8Input - any R Encoding
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
  *          make StriException friendly
@@ -1322,7 +1354,9 @@ SEXP ci_flatten(SEXP str, SEXP collapse, SEXP na_empty, SEXP omit_empty) // a.k.
                 NULL, 0, cetype_ext_t::CE_NA
             );
         SEXP ret;
-        STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return charport::charvec::wrap(std::move(output));
+        }));
         STRI__UNPROTECT_ALL
         return ret;
         STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -1343,7 +1377,9 @@ SEXP ci_flatten(SEXP str, SEXP collapse, SEXP na_empty, SEXP omit_empty) // a.k.
             "", 0, cetype_ext_t::CE_ASCII
         );
         SEXP ret;
-        STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return charport::charvec::wrap(std::move(output));
+        }));
         STRI__UNPROTECT_ALL
         return ret;
         STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
@@ -1434,85 +1470,13 @@ SEXP ci_flatten(SEXP str, SEXP collapse, SEXP na_empty, SEXP omit_empty) // a.k.
 
     // 3. Get ret val & return
     SEXP ret;
-    STRI__PROTECT(ret = charport::charvec::wrap(std::move(output)));
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return charport::charvec::wrap(std::move(output));
+    }));
     context.emitWarnings();
     STRI__UNPROTECT_ALL
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
 }
 
-
-/**
- * Concatenate strings in a list
- *
- * @param x list of character vectors
- * @param sep single string
- * @param collapse single string or NULL
- * @return character vector
- *
- * @version 1.0-3 (Marek Gagolewski, 2016-02-07)
- *    FR#175
- */
-SEXP ci_join_list(SEXP x, SEXP sep, SEXP collapse)
-{
-    PROTECT(x = ci__prepare_arg_list_ignore_null(
-                    ci__prepare_arg_list_string(x, "x"), true
-                ));
-
-    R_len_t strlist_length = LENGTH(x);
-    if (strlist_length <= 0) {
-        STRI__ERROR_HANDLER_BEGIN(1)
-        charport::charvec::Builder builder(0);
-        SEXP ret;
-        STRI__PROTECT(ret = builder.to_sexp());
-        STRI__UNPROTECT_ALL
-        return ret;
-        STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-    }
-
-    PROTECT(sep = ci__prepare_arg_string_1(sep, "sep"));
-    if (Rf_isNull(collapse))
-        PROTECT(collapse);
-    else
-        PROTECT(collapse = ci__prepare_arg_string_1(collapse, "collapse"));
-
-    STRI__ERROR_HANDLER_BEGIN(3)
-
-    // Deviation from stringi: run the nested flatten entry points before
-    // opening output Readers or a Builder. A protected list keeps their lazy
-    // scalar results alive without materializing them as CHARSXPs.
-    SEXP flattened;
-    STRI__PROTECT(flattened = charport::unwind_protect([&]() -> SEXP {
-        return Rf_allocVector(VECSXP, strlist_length);
-    }));
-    for (R_len_t j=0; j<strlist_length; ++j) {
-        SEXP ret2;
-        STRI__PROTECT(ret2 = charport::unwind_protect([&]() -> SEXP {
-            return ci_flatten(VECTOR_ELT(x, j), sep);
-        }));
-        SET_VECTOR_ELT(flattened, j, ret2);
-        STRI__UNPROTECT(1);
-    }
-
-    charport::charvec::Builder builder(strlist_length);
-    ci::ReaderContext output_context(STRI__DEFERRED_WARNINGS);
-    for (R_len_t j=0; j<strlist_length; ++j) {
-        SEXP ret2 = VECTOR_ELT(flattened, j);
-        {
-            Utf8Input ret2_cont(output_context, ret2, 1);
-            ci::builder_set(builder, j, ret2_cont.getNAble(0));
-        }
-    }
-    SEXP ret;
-    STRI__PROTECT(ret = builder.to_sexp());
-    if (!Rf_isNull(collapse)) {
-        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
-            return ci_flatten(ret, collapse);
-        }));
-    }
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL
-    return ret;
-
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-}
+} } // namespace charr::altrep_backend

@@ -33,20 +33,22 @@
 
 #include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_container_utf16.h"
+#include "io/utf16_input.h"
 #include "ci_reader.h"
-#include "../altrep/native_to_utf8.h"
-#include "../altrep/utf8_output.h"
+#include "../shared/native_to_utf8.h"
+#include "altrep_backend/io/utf8_output.h"
 
 #include <cstdint>
 #include <stdexcept>
 #include <utility>
 
+namespace charr { namespace altrep_backend {
+
 
 static const char CI__EMBEDDED_NUL_MESSAGE[] =
     "embedded nul in string";
 
-namespace {
+namespace escape {
 
 struct EscapeInput {
     const char* ptr;
@@ -65,7 +67,7 @@ bool has_utf8_bom(const char* ptr, int length) noexcept
 
 EscapeInput normalize_escape_input(
     const charport::StrView& value,
-    charr::altrep::NativeToUtf8& converter
+    charr::shared::NativeToUtf8& converter
 )
 {
     if (value.ptr == nullptr || value.len < 0)
@@ -83,7 +85,7 @@ EscapeInput normalize_escape_input(
     if (value.enc == cetype_ext_t::CE_LATIN1 ||
             value.enc == cetype_ext_t::CE_NATIVE) {
         const bool native = value.enc == cetype_ext_t::CE_NATIVE;
-        const charport::ByteView converted = native
+        const shared::ByteView converted = native
             ? converter.native(ptr, length)
             : converter.latin1(ptr, length);
         strip_bom = native && has_utf8_bom(ptr, length);
@@ -205,7 +207,9 @@ void write_escape(const EscapeInput& input, char* output) noexcept
     }
 }
 
-} // namespace
+} // namespace escape
+
+using namespace escape;
 
 /**
  *  Escape Unicode code points
@@ -230,9 +234,9 @@ SEXP ci_escape_unicode(SEXP str)
 
     STRI__ERROR_HANDLER_BEGIN(1)
     SEXP ret;
-    charr::altrep::OutputStore output_store(0, 0);
+    charr::altrep_backend::io::OutputStore output_store(0, 0);
     {
-        charport::Reader reader(str);
+        charport::Reader reader(ci::protected_reader_resolve(str));
         const R_len_t str_length = ci::checked_r_len(
             reader.size(), "character vectors"
         );
@@ -240,8 +244,8 @@ SEXP ci_escape_unicode(SEXP str)
         if (str_length > 0)
             reader.views(0, str_length, values);
 
-        charr::altrep::OutputBuilder builder(str_length);
-        charr::altrep::NativeToUtf8 converter;
+        charr::altrep_backend::io::OutputBuilder builder(str_length);
+        charr::shared::NativeToUtf8 converter;
         for (R_len_t i = 0; i < str_length; ++i) {
             const charport::StrView source = values[i];
             if (source.is_na()) {
@@ -262,7 +266,9 @@ SEXP ci_escape_unicode(SEXP str)
 
         output_store = builder.release_store();
     }
-    STRI__PROTECT(ret = charr::altrep::finalize(std::move(output_store)));
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+        return charr::altrep_backend::io::finalize(std::move(output_store));
+    }));
 
     STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
@@ -270,80 +276,4 @@ SEXP ci_escape_unicode(SEXP str)
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
 }
 
-
-/**
- *  Unescape Unicode code points
- *
- *  @param str character vector
- *  @return character vector
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-08-17)
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
-*/
-SEXP ci_unescape_unicode(SEXP str)
-{
-    PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
-
-    STRI__ERROR_HANDLER_BEGIN(1)
-    SEXP ret;
-    {
-        ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-        R_len_t str_length = ci::checked_r_len(
-            context.size(str), "character vectors"
-        );
-        charport::charvec::Builder builder(str_length);
-        std::vector<char> utf8_buffer;
-
-        {
-            StriContainerUTF16 str_cont(
-                context, str, str_length, false
-            ); // writable
-
-            for (R_len_t i = str_cont.vectorize_init();
-                    i != str_cont.vectorize_end();
-                    i = str_cont.vectorize_next(i))
-            {
-                if (str_cont.isNA(i) || str_cont.get(i).length() == 0)
-                    continue;
-
-                str_cont.getWritable(i).setTo(str_cont.get(i).unescape());
-
-                if (str_cont.get(i).length() == 0) {
-                    context.warn(MSG__INVALID_ESCAPE);
-                    str_cont.setNA(i); // something went wrong
-                }
-            }
-
-            for (R_len_t i = str_cont.vectorize_init();
-                    i != str_cont.vectorize_end();
-                    i = str_cont.vectorize_next(i))
-            {
-                if (str_cont.isNA(i)) {
-                    builder.set_na(i);
-                    continue;
-                }
-
-                const UnicodeString& value = str_cont.get(i);
-                // Deviation from stringi: Builder accepts U+0000, while the copied
-                // StriContainerUTF16::toR() path rejected it through Rf_mkCharLenCE().
-                for (int32_t j = 0; j < value.length(); ++j) {
-                    if (value.charAt(j) == 0)
-                        throw StriException(CI__EMBEDDED_NUL_MESSAGE);
-                }
-
-                ci::builder_set(
-                    builder, i, value, utf8_buffer
-                );
-            }
-        }
-
-        STRI__PROTECT(ret = builder.to_sexp());
-    }
-
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-}
+} } // namespace charr::altrep_backend

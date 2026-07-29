@@ -33,14 +33,16 @@
 
 #include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_container_utf16.h"
-#include "ci_container_usearch.h"
-#include "ci_container_integer.h"
-#include "ci_container_logical.h"
+#include "io/utf16_input.h"
+#include "collation/pattern_set.h"
+#include "io/integer_input.h"
+#include "io/logical_input.h"
 #include <deque>
 #include <stdexcept>
 #include <utility>
 #include <vector>
+
+namespace charr { namespace altrep_backend {
 using namespace std;
 
 
@@ -65,7 +67,7 @@ using namespace std;
  * @version 0.1-?? (Bartek Tartanus)
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-25)
- *          StriException friendly, use StriContainerUTF16
+ *          StriException friendly, use io::Utf16Input
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-07-10)
  *          BUGFIX: wrong behavior on empty str
@@ -104,7 +106,7 @@ SEXP ci_split_coll(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
     STRI__ERROR_HANDLER_BEGIN(5)
     // Deviation from stringi: catch R errors from collator option parsing so
     // queued warnings and any opened collator are released before R resumes.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         collator = ci__ucol_open(
             STRI__DEFERRED_WARNINGS, opts_collator
         );
@@ -122,7 +124,7 @@ SEXP ci_split_coll(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
     R_len_t vectorize_length = 0;
     // Deviation from stringi: queue recycling warnings while the collator is
     // live and emit them after the collator closes.
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             false, 4, str_n, pattern_n, n_n, omit_empty_n
         );
@@ -143,14 +145,14 @@ SEXP ci_split_coll(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
     for (R_len_t i=0; i<vectorize_length; ++i)
         stores.emplace_back(0, 0);
     {
-        StriContainerUTF16 str_cont(
+        io::Utf16Input str_cont(
             context, str, vectorize_length
         );
-        StriContainerUStringSearch pattern_cont(
+        collation::PatternSet pattern_cont(
             context, pattern, vectorize_length, collator
         );  // collator is not owned by pattern_cont
-        StriContainerInteger n_cont(n, vectorize_length);
-        StriContainerLogical omit_empty_cont(
+        io::IntegerInput n_cont(n, vectorize_length);
+        io::LogicalInput omit_empty_cont(
             omit_empty, vectorize_length
         );
         vector<char> utf8_buffer;
@@ -284,21 +286,23 @@ SEXP ci_split_coll(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
 
     SEXP ret;
     if (simplify1 != NA_LOGICAL && !simplify1) {
-        STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
             return Rf_allocVector(VECSXP, vectorize_length);
         }));
-        for (R_len_t i=0; i<vectorize_length; ++i) {
-            SEXP current;
-            STRI__PROTECT(current = charport::charvec::wrap(
-                std::move(stores[i])
-            ));
-            SET_VECTOR_ELT(ret, i, current);
-            STRI__UNPROTECT(1);
-        }
+        ci::unwind_protect([&]() -> SEXP {
+            for (R_len_t i=0; i<vectorize_length; ++i) {
+                SEXP current = PROTECT(charport::charvec::wrap(
+                    std::move(stores[i])
+                ));
+                SET_VECTOR_ELT(ret, i, current);
+                UNPROTECT(1);
+            }
+            return R_NilValue;
+        });
     }
     else {
         R_len_t n_min = 0;
-        charport::unwind_protect([&]() -> SEXP {
+        ci::unwind_protect([&]() -> SEXP {
             R_len_t n_length = LENGTH(n);
             const int* n_tab = INTEGER_RO(n);
             for (R_len_t i=0; i<n_length; ++i) {
@@ -350,8 +354,10 @@ SEXP ci_split_coll(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
             }
         }
 
-        STRI__PROTECT(ret = matrix.to_sexp());
-        ret = charport::unwind_protect([&]() -> SEXP {
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return matrix.to_sexp();
+        }));
+        ret = ci::unwind_protect([&]() -> SEXP {
             SEXP dim;
             PROTECT(dim = Rf_allocVector(INTSXP, 2));
             INTEGER(dim)[0] = vectorize_length;
@@ -377,3 +383,5 @@ SEXP ci_split_coll(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
         if (collator) ucol_close(collator);
     )
     }
+
+} } // namespace charr::altrep_backend

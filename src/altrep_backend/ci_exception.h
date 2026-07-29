@@ -38,12 +38,15 @@
 
 #include "ci_external.h"
 #include "ci_messages.h"
+#include "ci_unwind.h"
 
 
 #include <cstdarg>
 #include <exception>
 #include <string>
 #include <vector>
+
+namespace charr { namespace altrep_backend {
 using namespace std;
 
 
@@ -52,7 +55,7 @@ using namespace std;
 
 namespace ci {
 
-// Deviation from stringi: track PROTECT calls made inside a charport unwind
+// Deviation from stringi: track PROTECT calls made inside an unwind
 // callback without folding them into the operation-wide counter.
 // A C++ exception runs this destructor and releases the callback's local
 // protections. An R error skips C++ destructors but restores the protection
@@ -115,7 +118,7 @@ public:
         pending.swap(messages_);
         for (std::vector<std::string>::const_iterator it = pending.begin();
                 it != pending.end(); ++it) {
-            charport::unwind_protect([&]() -> SEXP {
+            ci::unwind_protect([&]() -> SEXP {
                 // Rf_warning is an isolated, genuine C-string boundary; the
                 // queued message is owned here until the call returns.
                 Rf_warning("%s", it->c_str());
@@ -146,7 +149,7 @@ public:
       cleanup;                                                \
       snprintf(__ci_error_msg, StriException_BUFSIZE, "%s", e.getMessage()); \
    }                                                          \
-   catch (const charport::r_unwind& e) {                      \
+   catch (const ci::unwind_detail::RUnwind& e) {             \
       cleanup;                                                \
       __ci_unwind_token = e.token;                            \
    }                                                          \
@@ -163,7 +166,7 @@ public:
    try {                                                      \
       __ci_deferred_warnings.emit();                          \
    }                                                          \
-   catch (const charport::r_unwind& e) {                      \
+   catch (const ci::unwind_detail::RUnwind& e) {             \
       __ci_warning_unwind_token = e.token;                    \
    }                                                          \
    catch (const std::exception& e) {                          \
@@ -180,7 +183,7 @@ public:
    if (__ci_warning_unwind_token != R_NilValue) {             \
       if (__ci_unwind_token != R_NilValue)                    \
          R_ReleaseObject(__ci_unwind_token);                  \
-      charport::continue_r_unwind(__ci_warning_unwind_token); \
+      ci::continue_r_unwind(__ci_warning_unwind_token);       \
    }                                                          \
    if (__ci_warning_error && __ci_unwind_token != R_NilValue) { \
       R_ReleaseObject(__ci_unwind_token);                     \
@@ -188,7 +191,7 @@ public:
    }                                                          \
    /* Continue only after the caught unwind object is destroyed. */ \
    if (__ci_unwind_token != R_NilValue)                       \
-      charport::continue_r_unwind(__ci_unwind_token);         \
+      ci::continue_r_unwind(__ci_unwind_token);               \
    if (__ci_error_msg[0] == '\0')                            \
       snprintf(__ci_error_msg, StriException_BUFSIZE,         \
          "unknown C++ exception");                           \
@@ -384,5 +387,8 @@ public:
 
 /* *************** NDEBUG *************************************************** */
 #endif
+
+
+} } // namespace charr::altrep_backend
 
 #endif

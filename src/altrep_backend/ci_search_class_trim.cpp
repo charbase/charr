@@ -32,9 +32,9 @@
 
 
 #include "ci_stringi.h"
-#include "ci_container_charclass.h"
-#include "../altrep/native_to_utf8.h"
-#include "../altrep/utf8_output.h"
+#include "charclass/pattern_set.h"
+#include "../shared/native_to_utf8.h"
+#include "altrep_backend/io/utf8_output.h"
 
 #include <array>
 #include <cstring>
@@ -42,8 +42,10 @@
 #include <stdexcept>
 #include <utility>
 
+namespace charr { namespace altrep_backend {
 
-namespace {
+
+namespace search_class_trim {
 
 struct TrimSlice {
     const char* data;
@@ -126,7 +128,7 @@ TrimSlice trim_slice(
 
 charport::StrView normalize_source(
     const charport::StrView& value,
-    charr::altrep::NativeToUtf8& converter
+    charr::shared::NativeToUtf8& converter
 )
 {
     if (value.is_na())
@@ -134,7 +136,7 @@ charport::StrView normalize_source(
     if (value.ptr == nullptr || value.len < 0)
         throw std::runtime_error("Reader returned an invalid string view");
 
-    charport::ByteView converted;
+    shared::ByteView converted;
     switch (value.enc) {
     case cetype_ext_t::CE_ASCII:
     case cetype_ext_t::CE_UTF8:
@@ -200,7 +202,7 @@ cetype_ext_t trimmed_encoding(
 
 
 ScalarTrimPattern make_scalar_pattern(
-    const StriContainerCharClass& patterns
+    const charclass::PatternSet& patterns
 )
 {
     ScalarTrimPattern scalar{nullptr, {}, patterns.isNA(0)};
@@ -261,7 +263,7 @@ void add_payload_length(std::size_t& total, R_len_t length)
 
 template<bool ScalarPattern>
 const UnicodeSet* select_pattern(
-    R_len_t index, const StriContainerCharClass& patterns,
+    R_len_t index, const charclass::PatternSet& patterns,
     const ScalarTrimPattern& scalar, bool& missing,
     const unsigned char*& ascii_retained
 )
@@ -280,13 +282,13 @@ const UnicodeSet* select_pattern(
 
 
 template<bool Left, bool Right, bool ScalarPattern, bool RecycledSource>
-charr::altrep::OutputStore trim_direct_records(
+charr::altrep_backend::io::OutputStore trim_direct_records(
     const charport::StrViews& source, R_len_t output_length,
-    const StriContainerCharClass& patterns,
+    const charclass::PatternSet& patterns,
     const ScalarTrimPattern& scalar
 )
 {
-    charr::altrep::OutputStore output(
+    charr::altrep_backend::io::OutputStore output(
         static_cast<std::size_t>(output_length), 0
     );
     const R_len_t source_length = static_cast<R_len_t>(source.size());
@@ -345,14 +347,14 @@ charr::altrep::OutputStore trim_direct_records(
 
 
 template<bool Left, bool Right, bool ScalarPattern, bool RecycledSource>
-charr::altrep::OutputStore trim_converted_records(
+charr::altrep_backend::io::OutputStore trim_converted_records(
     const charport::StrViews& source, R_len_t output_length,
-    const StriContainerCharClass& patterns,
+    const charclass::PatternSet& patterns,
     const ScalarTrimPattern& scalar
 )
 {
     charport::charvec::Builder output(output_length);
-    charr::altrep::NativeToUtf8 converter;
+    charr::shared::NativeToUtf8 converter;
     const R_len_t source_length = static_cast<R_len_t>(source.size());
 
     for (R_len_t i = 0; i < output_length; ++i) {
@@ -386,9 +388,9 @@ charr::altrep::OutputStore trim_converted_records(
 
 
 template<bool Left, bool Right, bool ScalarPattern>
-charr::altrep::OutputStore trim_dispatch_source(
+charr::altrep_backend::io::OutputStore trim_dispatch_source(
     const charport::StrViews& source, R_len_t output_length,
-    const StriContainerCharClass& patterns,
+    const charclass::PatternSet& patterns,
     const ScalarTrimPattern& scalar, bool direct_source
 )
 {
@@ -412,7 +414,9 @@ charr::altrep::OutputStore trim_dispatch_source(
         );
 }
 
-} // namespace
+} // namespace search_class_trim
+
+using namespace search_class_trim;
 
 
 /**
@@ -425,16 +429,13 @@ charr::altrep::OutputStore trim_dispatch_source(
  * @version 0.1-?? (Bartek Tartanus)
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-04)
- *          Use Utf8Input and CharClass
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
- *          make StriException-friendly & Use StrContainerCharClass
+ *          Use io::Utf8Input and CharClass
  *
  * @version 0.2-1 (Marek Gagolewski, 2014-04-03)
  *          detects invalid UTF-8 byte stream
  *
  * @version 0.2-1 (Marek Gagolewski, 2014-04-05)
- *          StriContainerCharClass now relies on UnicodeSet
+ *          charclass::PatternSet now relies on UnicodeSet
  *
  * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
  *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
@@ -448,10 +449,10 @@ SEXP ci__trim_leftright(SEXP str, SEXP pattern, bool negate)
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
     STRI__ERROR_HANDLER_BEGIN(2)
     SEXP ret;
-    charr::altrep::OutputStore output_store(0, 0);
+    charr::altrep_backend::io::OutputStore output_store(0, 0);
     {
     ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    charport::Reader source_reader(str);
+    charport::Reader source_reader(ci::protected_reader_resolve(str));
     R_len_t str_n = ci::checked_r_len(
         source_reader.size(), "character vectors"
     );
@@ -459,7 +460,7 @@ SEXP ci__trim_leftright(SEXP str, SEXP pattern, bool negate)
         context.size(pattern), "character vectors"
     );
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             STRI__DEFERRED_WARNINGS, 2, str_n, pattern_n
         );
@@ -470,11 +471,11 @@ SEXP ci__trim_leftright(SEXP str, SEXP pattern, bool negate)
         source_reader.views(0, str_n, source_views);
 
     {
-        StriContainerCharClass pattern_cont(
+        charclass::PatternSet pattern_cont(
             context, pattern, vectorize_length, negate
         );
         if (vectorize_length == 0) {
-            output_store = charr::altrep::OutputStore(0, 0);
+            output_store = charr::altrep_backend::io::OutputStore(0, 0);
         }
         else {
             const bool scalar_pattern = pattern_n == 1;
@@ -495,7 +496,9 @@ SEXP ci__trim_leftright(SEXP str, SEXP pattern, bool negate)
     }
     }
 
-    ret = charr::altrep::finalize(std::move(output_store));
+    ret = ci::unwind_protect([&]() -> SEXP {
+        return charr::altrep_backend::io::finalize(std::move(output_store));
+    });
     STRI__PROTECT(ret);
     STRI__DEFERRED_WARNINGS.emit();
     STRI__UNPROTECT_ALL
@@ -568,3 +571,5 @@ SEXP ci_trim_right(SEXP str, SEXP pattern, SEXP negate)
     bool negate_val = ci__prepare_arg_logical_1_notNA(negate, "negate");
     return ci__trim_leftright<false, true>(str, pattern, negate_val);
 }
+
+} } // namespace charr::altrep_backend

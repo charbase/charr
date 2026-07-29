@@ -3,7 +3,6 @@
 # a plain STRSXP matrix, so is_charvec is asserted on the input only.
 
 match_first <- function(...) charr:::ci_match_first_regex(...)
-match_last <- function(...) charr:::ci_match_last_regex(...)
 match_all <- function(...) charr:::ci_match_all_regex(...)
 
 
@@ -38,12 +37,11 @@ test_that("regex match names columns for named capture groups; cg_missing", {
 })
 
 
-test_that("regex match first vs last, and match_all shapes", {
+test_that("regex match first and match_all preserve shapes", {
   strings <- charr:::ci_replace_all_fixed(c("a1b2c3", "xx"), "~", "~")
   expect_identical(charport::is_charvec(strings), charr_altrep())
 
   expect_identical(match_first(strings, "([a-z])([0-9])")[1, ], c("a1", "a", "1"))
-  expect_identical(match_last(strings, "([a-z])([0-9])")[1, ], c("c3", "c", "3"))
 
   all <- match_all(strings, "([a-z])([0-9])")
   expect_identical(dim(all[[1]]), c(3L, 3L))
@@ -67,10 +65,6 @@ test_that("regex match preserves malformed declared UTF-8 like stringi", {
     # R and stringi retain the declared UTF-8 byte in captured source slices.
     replacement <- rawToChar(as.raw(0x80))
     Encoding(replacement) <- "UTF-8"
-    expect_identical(
-      unname(match_last(malformed, "(.)")),
-      structure(c(replacement, replacement), dim = c(1L, 2L))
-    )
     expect_identical(
       unname(match_all(malformed, "(.)")[[1]]),
       structure(c(replacement, replacement), dim = c(1L, 2L))

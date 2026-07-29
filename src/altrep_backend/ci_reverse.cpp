@@ -33,14 +33,16 @@
 
 #include "ci_stringi.h"
 #include "ci_reader.h"
-#include "../altrep/native_to_utf8.h"
-#include "../altrep/utf8_output.h"
+#include "../shared/native_to_utf8.h"
+#include "altrep_backend/io/utf8_output.h"
 
 #include <algorithm>
 #include <cstdint>
 
+namespace charr { namespace altrep_backend {
 
-namespace {
+
+namespace reverse {
 
 struct ReverseInput {
     const char* ptr;
@@ -58,7 +60,7 @@ bool has_utf8_bom(const char* ptr, int len) noexcept
 
 ReverseInput normalize_input(
     const charport::StrView& value,
-    charr::altrep::NativeToUtf8& converter
+    charr::shared::NativeToUtf8& converter
 )
 {
     if (value.enc == cetype_ext_t::CE_ASCII)
@@ -71,7 +73,7 @@ ReverseInput normalize_input(
     bool ambiguous = value.enc == cetype_ext_t::CE_ASCII_OR_UTF8;
     if (value.enc == cetype_ext_t::CE_LATIN1 ||
             value.enc == cetype_ext_t::CE_NATIVE) {
-        const charport::ByteView converted =
+        const shared::ByteView converted =
             value.enc == cetype_ext_t::CE_LATIN1
             ? converter.latin1(ptr, len)
             : converter.native(ptr, len);
@@ -136,7 +138,9 @@ void reverse_utf8(const ReverseInput& value, char* output)
     }
 }
 
-}
+} // namespace reverse
+
+using namespace reverse;
 
 
 /**
@@ -148,10 +152,10 @@ void reverse_utf8(const ReverseInput& value, char* output)
  * @version 0.1-?? (Bartek Tartanus)
  *
  * @version 0.1-?? (Marek Gagolewski)
- *          use StriContainerUTF16
+ *          use io::Utf16Input
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
- *          make StriException-friendly + Utf8Input (bug fix, do reversing manually)
+ *          make StriException-friendly + io::Utf8Input (bug fix, do reversing manually)
  *
  * @version 0.2-1 (Marek Gagolewski, 2014-04-01)
  *          detect incorrect utf8 byte stream
@@ -170,8 +174,8 @@ SEXP ci_reverse(SEXP str)
         std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(str);
         const charport::StrViews& values = borrow->views();
         const R_xlen_t str_len = values.size();
-        charr::altrep::OutputBuilder builder(str_len);
-        charr::altrep::NativeToUtf8 converter;
+        charr::altrep_backend::io::OutputBuilder builder(str_len);
+        charr::shared::NativeToUtf8 converter;
 
         for (R_xlen_t i = 0; i < str_len; ++i) {
             const charport::StrView source = values[i];
@@ -198,7 +202,9 @@ SEXP ci_reverse(SEXP str)
         }
 
         borrow.reset();
-        STRI__PROTECT(ret = builder.to_sexp());
+        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
+            return builder.to_sexp();
+        }));
     }
 
     STRI__DEFERRED_WARNINGS.emit();
@@ -206,3 +212,5 @@ SEXP ci_reverse(SEXP str)
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
 }
+
+} } // namespace charr::altrep_backend

@@ -33,9 +33,11 @@
 
 #include "ci_stringi.h"
 #include "ci_utf8.h"
-#include "ci_container_bytesearch.h"
+#include "fixed/pattern_set.h"
 
 #include <cstring>
+
+namespace charr { namespace altrep_backend {
 
 
 /**
@@ -50,13 +52,13 @@
  * @version 0.1-?? (Bartek Tartanus)
  *
  * @version 0.1-?? (Marek Gagolewski)
- *    use Utf8Input, BUGFIX: the loop could go to far
+ *    use io::Utf8Input, BUGFIX: the loop could go to far
  *
  * @version 0.1-?? (Marek Gagolewski)
  *    corrected behavior on empty str/pattern
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-23)
- *    make StriException-friendly, use StriContainerByteSearch
+ *    make StriException-friendly, use fixed::PatternSet
  *
  * @version 0.2-3 (Marek Gagolewski, 2014-05-08)
  *          ci_detect_fixed now uses byte search only
@@ -68,7 +70,7 @@
  *    FR #110, #23: opts_fixed arg added
  *
  * @version 0.5-1 (Marek Gagolewski, 2015-02-14)
- *    use StriByteSearchMatcher
+ *    use shared::ByteSearchMatcher
  *
  * @version 1.0-3 (Marek Gagolewski, 2016-02-03)
  *    #216: `negate` arg added
@@ -81,7 +83,7 @@ SEXP ci_detect_fixed(SEXP str, SEXP pattern, SEXP negate,
 {
     bool negate_1 = ci__prepare_arg_logical_1_notNA(negate, "negate");
     int max_count_1 = ci__prepare_arg_integer_1_notNA(max_count, "max_count");
-    uint32_t pattern_flags = StriContainerByteSearch::getByteSearchFlags(opts_fixed);
+    uint32_t pattern_flags = fixed::PatternSet::getByteSearchFlags(opts_fixed);
     PROTECT(str = ci__prepare_arg_string(str, "str"));
     PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
 
@@ -96,14 +98,14 @@ SEXP ci_detect_fixed(SEXP str, SEXP pattern, SEXP negate,
         context.size(pattern), "character vectors"
     );
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             STRI__DEFERRED_WARNINGS, 2, str_n, pattern_n
         );
         return R_NilValue;
     });
 
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(LGLSXP, vectorize_length);
     }));
     int* ret_tab = LOGICAL(ret);
@@ -174,8 +176,8 @@ SEXP ci_detect_fixed(SEXP str, SEXP pattern, SEXP negate,
     }
 
     {
-        Utf8Input str_cont(context, str, vectorize_length);
-        StriContainerByteSearch pattern_cont(
+        io::Utf8Input str_cont(context, str, vectorize_length);
+        fixed::PatternSet pattern_cont(
             context, pattern, vectorize_length, pattern_flags
         );
 
@@ -197,9 +199,9 @@ SEXP ci_detect_fixed(SEXP str, SEXP pattern, SEXP negate,
                 if (max_count_1 > 0 && ret_tab[i]) --max_count_1;
             })
 
-            StriByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
+            shared::ByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
             matcher->reset(str_cont.get(i).data(), str_cont.get(i).length());
-            ret_tab[i] = (int)(matcher->findFirst() != USEARCH_DONE);
+            ret_tab[i] = (int)(matcher->find_first() != shared::ByteSearchMatcher::not_found);
             if (negate_1) ret_tab[i] = !ret_tab[i];
             if (max_count_1 > 0 && ret_tab[i]) --max_count_1;
         }
@@ -219,16 +221,16 @@ SEXP ci_detect_fixed(SEXP str, SEXP pattern, SEXP negate,
 //
 //   STRI__ERROR_HANDLER_BEGIN
 //   int vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
-//   Utf8Input str_cont(str, vectorize_length);
-//   StriContainerByteSearch pattern_cont(pattern, vectorize_length);
+//   io::Utf8Input str_cont(str, vectorize_length);
+//   fixed::PatternSet pattern_cont(pattern, vectorize_length);
 //
 //   SEXP ret;
 //   PROTECT(ret = Rf_allocVector(LGLSXP, vectorize_length));
 //   int* ret_tab = LOGICAL(ret);
 //
 //
-//   const Utf8Record* last_s = NULL;
-//   const Utf8Record* last_p = NULL;
+//   const io::Utf8Record* last_s = NULL;
+//   const io::Utf8Record* last_p = NULL;
 //   UErrorCode err = U_ZERO_ERROR;
 //
 //   for (R_len_t i = pattern_cont.vectorize_init();
@@ -239,8 +241,8 @@ SEXP ci_detect_fixed(SEXP str, SEXP pattern, SEXP negate,
 //         ret_tab[i] = NA_LOGICAL,
 //         ret_tab[i] = FALSE)
 //
-//      const Utf8Record* cur_s = &(str_cont.get(i));
-//      const Utf8Record* cur_p = &(pattern_cont.get(i));
+//      const io::Utf8Record* cur_s = &(str_cont.get(i));
+//      const io::Utf8Record* cur_p = &(pattern_cont.get(i));
 //
 //      if (last_p != cur_p) {
 //         last_p = cur_p;
@@ -274,3 +276,5 @@ SEXP ci_detect_fixed(SEXP str, SEXP pattern, SEXP negate,
 //      if (utp) { utext_close(utp); utp=NULL; }
 //   })
 }
+
+} } // namespace charr::altrep_backend

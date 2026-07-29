@@ -105,7 +105,3 @@ ci_escape_unicode <- function(str)
 #
 # @family escape
 # @export
-ci_unescape_unicode <- function(str)
-{
-    .Call(C_ci_unescape_unicode, str)
-}

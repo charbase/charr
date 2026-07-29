@@ -32,12 +32,14 @@
 
 
 #include "ci_stringi.h"
-#include "ci_container_regex.h"
-#include "altrep/utf8_input.h"
+#include "regex/pattern_set.h"
+#include "altrep_backend/io/utf8_input.h"
 
 #include <unicode/ustring.h>
 
-namespace {
+namespace charr { namespace altrep_backend {
+
+namespace search_regex_detect {
 
 class ReusableUtf16Text {
 private:
@@ -77,7 +79,9 @@ public:
     }
 };
 
-}
+} // namespace search_regex_detect
+
+using namespace search_regex_detect;
 
 /**
  * Detect if a pattern occurs in a string
@@ -91,13 +95,13 @@ public:
  * @version 0.1-?? (Marcin Bujarski)
  *
  * @version 0.1-?? (Marek Gagolewski)
- *          use StriContainerUTF16
+ *          use io::Utf16Input
  *
  * @version 0.1-?? (Marek Gagolewski)
- *          use StriContainerUTF16's vectorization
+ *          use io::Utf16Input's vectorization
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-18)
- *          use StriContainerRegexPattern + opts_regex
+ *          use regex::PatternSet + opts_regex
  *
  * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
  *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
@@ -112,7 +116,7 @@ public:
  *    #232: `max_count` arg added
  *
  * @version 1.4.7 (Marek Gagolewski, 2020-08-24)
- *    Use StriContainerRegexPattern::getRegexOptions
+ *    Use regex::PatternSet::getRegexOptions
  */
 SEXP ci_detect_regex(SEXP str, SEXP pattern, SEXP negate,
                        SEXP max_count, SEXP opts_regex)
@@ -130,7 +134,7 @@ SEXP ci_detect_regex(SEXP str, SEXP pattern, SEXP negate,
         context.size(pattern), "character vectors"
     );
     R_len_t vectorize_length = 0;
-    charport::unwind_protect([&]() -> SEXP {
+    ci::unwind_protect([&]() -> SEXP {
         vectorize_length = ci__recycling_rule(
             false, 2, str_n, pattern_n
         );
@@ -143,18 +147,18 @@ SEXP ci_detect_regex(SEXP str, SEXP pattern, SEXP negate,
              vectorize_length % pattern_n != 0))
         context.warn(MSG__WARN_RECYCLING_RULE);
 
-    StriRegexMatcherOptions pattern_opts;
+    regex::Options pattern_opts;
     // Deviation from stringi: preserve recycling-before-options order while
     // routing option-parser R unwinds through the common error boundary.
-    charport::unwind_protect([&]() -> SEXP {
-        pattern_opts = StriContainerRegexPattern::getRegexOptions(
+    ci::unwind_protect([&]() -> SEXP {
+        pattern_opts = regex::PatternSet::getRegexOptions(
             STRI__DEFERRED_WARNINGS, opts_regex
         );
         return R_NilValue;
     });
 
     SEXP ret;
-    STRI__PROTECT(ret = charport::unwind_protect([&]() -> SEXP {
+    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
         return Rf_allocVector(LGLSXP, vectorize_length);
     }));
     int* ret_tab = LOGICAL(ret);
@@ -164,12 +168,12 @@ SEXP ci_detect_regex(SEXP str, SEXP pattern, SEXP negate,
         // The pattern container owns its UTF-16 data. Build it before the
         // final subject borrow so an exact str/pattern alias cannot make a
         // retained Reader view depend on another Reader access.
-        StriContainerRegexPattern pattern_cont(
+        regex::PatternSet pattern_cont(
             context, pattern, vectorize_length, pattern_opts
         );
-        charr::altrep::Utf8Input str_input(
+        charr::altrep_backend::io::Utf8Input str_input(
             context, str, vectorize_length, true,
-            charr::altrep::Utf8BomPolicy::preserve
+            charr::altrep_backend::io::Utf8BomPolicy::preserve
         );
 
         if (pattern_n == 1) {
@@ -230,3 +234,5 @@ SEXP ci_detect_regex(SEXP str, SEXP pattern, SEXP negate,
     return ret;
     STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
 }
+
+} } // namespace charr::altrep_backend

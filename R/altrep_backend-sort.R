@@ -82,12 +82,6 @@
 # ci_sort(c(1, 100, 2, 101, 11, 10))  # lexicographic order
 # ci_sort(c(1, 100, 2, 101, 11, 10), numeric=TRUE)  # OK for integers
 # ci_sort(c(0.25, 0.5, 1, -1, -2, -3), numeric=TRUE)  # incorrect
-ci_sort <- function(str, decreasing = FALSE, na_last = NA, ..., opts_collator = NULL)
-{
-    if (!missing(...))
-        opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-    .Call(C_ci_sort, str, decreasing, na_last, opts_collator)
-}
 
 
 # @title Ordering Permutation
@@ -188,12 +182,6 @@ ci_order <- function(str, decreasing = FALSE, na_last = TRUE, ..., opts_collator
 #
 # @family locale_sensitive
 # @export
-ci_unique <- function(str, ..., opts_collator = NULL)
-{
-    if (!missing(...))
-        opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-    .Call(C_ci_unique, str, opts_collator)
-}
 
 
 # @title
@@ -273,16 +261,6 @@ ci_duplicated <- function(str, from_last = FALSE,
 
 # @rdname ci_duplicated
 # @export
-ci_duplicated_any <- function(str, from_last = FALSE, fromLast = from_last, ...,
-    opts_collator = NULL) {
-    if (!missing(fromLast)) {  # DEPRECATED
-        warning("The 'fromLast' argument in ci_duplicated_any is a deprecated alias of 'from_last' and will be removed in a future release of 'stringi'.")
-        from_last <- fromLast
-    }
-    if (!missing(...))
-        opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-    .Call(C_ci_duplicated_any, str, from_last, opts_collator)
-}
 
 
 # @title
@@ -324,12 +302,6 @@ ci_duplicated_any <- function(str, from_last = FALSE, fromLast = from_last, ...,
 # @family locale_sensitive
 # @export
 # @rdname ci_sort_key
-ci_sort_key <- function(str, ..., opts_collator = NULL)
-{
-    if (!missing(...))
-        opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-    .Call(C_ci_sort_key, str, opts_collator)
-}
 
 
 

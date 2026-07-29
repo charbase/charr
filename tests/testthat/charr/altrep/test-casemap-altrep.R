@@ -3,7 +3,6 @@
 case_lower <- function(...) charr:::ci_trans_tolower(...)
 case_upper <- function(...) charr:::ci_trans_toupper(...)
 case_title <- function(...) charr:::ci_trans_totitle(...)
-case_fold <- function(...) charr:::ci_trans_casefold(...)
 
 
 test_that("case mapping is locale-sensitive on CHARVEC inputs", {
@@ -56,23 +55,6 @@ test_that("titlecase preserves word and sentence break iteration", {
 })
 
 
-test_that("case folding is locale-independent and Builder-backed", {
-  strings <- charr:::ci_trim_both(c(
-    " I ", " İ ", " ı ", " ß ", " ΟΣ ", " 𐐀 ", " ", NA
-  ))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-
-  folded <- case_fold(strings)
-  expect_identical(folded, c("i", "i̇", "ı", "ss", "οσ", "𐐨", "", NA))
-  # casefold is a revealed copied helper, not a stringr-facing dispatch entry;
-  # both routes therefore exercise the new Builder directly.
-  expect_true(charport::is_charvec(folded))
-  expect_identical(
-    Encoding(folded),
-    c("unknown", "UTF-8", "UTF-8", "unknown", "UTF-8", "UTF-8",
-      "unknown", "unknown")
-  )
-})
 
 
 casemap_bom_input <- function() {
@@ -94,7 +76,6 @@ test_that("case mapping strips leading BOMs and preserves malformed UTF-8", {
     case_title(bom, opts_brkiter = charr:::ci_opts_brkiter(locale = "en")),
     "Abc"
   )
-  expect_identical(case_fold(bom), "abc")
 
   invalid <- rawToChar(as.raw(0xC3))
   Encoding(invalid) <- "UTF-8"
@@ -107,7 +88,6 @@ test_that("case mapping strips leading BOMs and preserves malformed UTF-8", {
     )),
     as.raw(0xC3)
   )
-  expect_identical(charToRaw(case_fold(malformed)), as.raw(0xC3))
 })
 
 
@@ -120,7 +100,6 @@ test_that("case mapping handles empty CHARVEC inputs", {
     case_title(strings, opts_brkiter = charr:::ci_opts_brkiter(locale = "el")),
     character()
   )
-  expect_identical(case_fold(strings), character())
 })
 
 
