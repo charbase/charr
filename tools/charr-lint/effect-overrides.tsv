@@ -1,0 +1,55 @@
+add_effects	remove_effects	qualified_name	canonical_type	reason
+	r	ALTREP	int (struct SEXPREC *)	R inline accessor reads object metadata without allocating or signaling an R error.
+	r	ANY_ATTRIB	int (struct SEXPREC *)	R inline accessor reads object metadata without allocating or signaling an R error.
+	r	NO_REFERENCES	int (struct SEXPREC *)	R inline accessor reads object metadata without allocating or signaling an R error.
+	r	PRINTNAME	struct SEXPREC *(struct SEXPREC *)	R inline accessor reads a symbol field without allocating or signaling an R error.
+	r	R_IsNA	int (double)	R numeric predicate does not allocate or signal an R error.
+	r	R_forceSymbols	Rboolean (struct _DllInfo *, Rboolean)	R registration setter does not allocate or signal an R error.
+	r	R_useDynamicSymbols	Rboolean (struct _DllInfo *, Rboolean)	R registration setter does not allocate or signal an R error.
+	r	Rf_isInteger	Rboolean (struct SEXPREC *)	R type predicate does not allocate or signal an R error.
+	r	Rf_isLogical	Rboolean (struct SEXPREC *)	R type predicate does not allocate or signal an R error.
+	r	Rf_isObject	Rboolean (struct SEXPREC *)	R metadata predicate does not allocate or signal an R error.
+	r	Rf_isReal	Rboolean (struct SEXPREC *)	R type predicate does not allocate or signal an R error.
+	r	Rf_isString	Rboolean (struct SEXPREC *)	R type predicate does not allocate or signal an R error.
+	r	Rf_isSymbol	Rboolean (struct SEXPREC *)	R type predicate does not allocate or signal an R error.
+	r	Rf_isVectorAtomic	Rboolean (struct SEXPREC *)	R type predicate does not allocate or signal an R error.
+	r	Rf_unprotect	void (int)	With a valid count on R's main thread, this only decrements the protection stack.
+	r	Riconv	unsigned long (void *, const char **, unsigned long *, char **, unsigned long *)	Riconv reports conversion failure through its return value.
+raw-release	r	Riconv_close	int (void *)	Riconv_close releases a converter and reports failure through its return value.
+raw-acquire	r	Riconv_open	void *(const char *, const char *)	Riconv_open returns an owned converter or a failure sentinel.
+	r	TYPEOF	int (struct SEXPREC *)	R inline accessor reads the object type without allocating or signaling an R error.
+	cxx	U_FAILURE	signed char (enum UErrorCode)	Inline ICU error predicate performs one integer comparison.
+	cxx	U_SUCCESS	signed char (enum UErrorCode)	Inline ICU error predicate performs one integer comparison.
+r	cxx	charport::Reader::reset	void (struct SEXPREC *)	charport Reader initialization may raise an R error and does not propagate C++ exceptions.
+r		charport::charvec::Builder::to_sexp	struct SEXPREC *(void) noexcept	charport permits R errors during ALTREP wrapping and does not propagate C++ exceptions.
+r		charport::charvec::GrowableBuilder::to_sexp	struct SEXPREC *(void) noexcept	charport permits R errors during ALTREP wrapping and does not propagate C++ exceptions.
+r		charport::charvec::wrap	struct SEXPREC *(class charport::charvec::Store &&) noexcept	charport permits R errors during ALTREP wrapping and does not propagate C++ exceptions.
+r	cxx	charport::check_abi	_Bool (void)	The first ABI check may raise an R error while resolving charport through R_GetCCallable; it does not propagate C++ exceptions.
+raw-release		fclose	int (struct _IO_FILE *)	Closes and releases an owned FILE handle.
+raw-acquire		fopen	struct _IO_FILE *(const char *, const char *)	Returns an owned FILE handle that fclose must release.
+raw-release		free	void (void *) noexcept	Releases memory returned by a C allocation function.
+raw-acquire	cxx	icu_78::BreakIterator::createLineInstance	class icu_78::BreakIterator *(const class icu_78::Locale &, enum UErrorCode &)	ICU returns an owned BreakIterator and reports failure through UErrorCode.
+	cxx	icu_78::RegexMatcher::groupCount	int (void) const	ICU accessor reads compiled regular-expression metadata without allocating.
+	cxx	icu_78::UnicodeSet::contains	signed char (int) const	ICU membership test does not allocate or propagate C++ exceptions.
+	cxx	icu_78::UnicodeString::getBuffer	char16_t *(int)	ICU uses a non-throwing allocator and records allocation failure in the string state.
+	cxx	icu_78::UnicodeString::getBuffer	const char16_t *(void) const	ICU accessor returns the existing string buffer without allocating.
+	cxx	icu_78::UnicodeString::length	int (void) const	ICU accessor reads the stored string length without allocating.
+raw-acquire		malloc	void *(unsigned long) noexcept	Returns owned memory that free must release.
+raw-acquire+raw-release		realloc	void *(void *, unsigned long) noexcept	May replace and release the original allocation on success; preserves it on allocation failure.
+	cxx	std::min	const int &(const int &, const int &)	Integer comparison and reference selection cannot throw.
+	cxx	std::min	const unsigned long &(const unsigned long &, const unsigned long &)	Integer comparison and reference selection cannot throw.
+raw-release		ubrk_close_78	void (struct UBreakIterator *)	Releases an ICU BreakIterator handle.
+raw-acquire		ubrk_openRules_78	struct UBreakIterator *(const char16_t *, int, const char16_t *, int, struct UParseError *, enum UErrorCode *)	Returns an owned ICU BreakIterator handle.
+raw-acquire		ubrk_open_78	struct UBreakIterator *(enum UBreakIteratorType, const char *, const char16_t *, int, enum UErrorCode *)	Returns an owned ICU BreakIterator handle.
+raw-release		ucasemap_close_78	void (struct UCaseMap *)	Releases an ICU CaseMap handle.
+raw-acquire		ucasemap_open_78	struct UCaseMap *(const char *, unsigned int, enum UErrorCode *)	Returns an owned ICU CaseMap handle.
+raw-release		ucnv_close_78	void (struct UConverter *)	Releases an ICU converter handle.
+raw-acquire		ucnv_open_78	struct UConverter *(const char *, enum UErrorCode *)	Returns an owned ICU converter handle.
+raw-release		ucol_close_78	void (struct UCollator *)	Releases an ICU collator handle.
+raw-acquire		ucol_open_78	struct UCollator *(const char *, enum UErrorCode *)	Returns an owned ICU collator handle.
+raw-release		uregex_close_78	void (struct URegularExpression *)	Releases an ICU regular-expression handle.
+raw-acquire		uregex_open_78	struct URegularExpression *(const char16_t *, int, unsigned int, struct UParseError *, enum UErrorCode *)	Returns an owned ICU regular-expression handle.
+raw-release		usearch_close_78	void (struct UStringSearch *)	Releases an ICU string-search handle.
+raw-acquire		usearch_openFromCollator_78	struct UStringSearch *(const char16_t *, int, const char16_t *, int, const struct UCollator *, struct UBreakIterator *, enum UErrorCode *)	Returns an owned ICU string-search handle.
+raw-release		utext_close_78	struct UText *(struct UText *)	Releases an ICU UText handle.
+raw-acquire		utext_openUTF8_78	struct UText *(struct UText *, const char *, long, enum UErrorCode *)	May allocate provider storage that creates a utext_close cleanup obligation; caller-supplied UText storage itself remains caller-owned.

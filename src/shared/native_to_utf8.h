@@ -2,6 +2,7 @@
 #define CHARR_SHARED_NATIVE_TO_UTF8_H
 
 #include "byte_view.h"
+#include "lint.h"
 
 #include <cstddef>
 #include <memory>
@@ -12,19 +13,21 @@
 namespace charr {
 namespace shared {
 
-class NativeToUtf8 {
+class CHARR_OWNER_TYPE NativeToUtf8 {
 public:
-    NativeToUtf8();
-    ~NativeToUtf8();
+    CHARR_CXX_HELPER NativeToUtf8();
+    CHARR_CXX_HELPER ~NativeToUtf8();
 
     NativeToUtf8(const NativeToUtf8&) = delete;
     NativeToUtf8& operator=(const NativeToUtf8&) = delete;
     NativeToUtf8(NativeToUtf8&&) = delete;
     NativeToUtf8& operator=(NativeToUtf8&&) = delete;
 
-    ByteView native(const char* data, int length);
-    ByteView latin1(const char* data, int length);
-    ByteView utf8_to_native(const char* data, int length);
+    CHARR_CXX_HELPER ByteView native(const char* data, int length);
+    CHARR_CXX_HELPER ByteView latin1(const char* data, int length);
+    CHARR_CXX_HELPER ByteView utf8_to_native(
+        const char* data, int length
+    );
 
     // Whether R's native encoding is UTF-8, decided by probing the same
     // converter the native() path uses. This is the only such predicate:
@@ -32,7 +35,9 @@ public:
     // Resolved at most once per instance; because instances are per-operation
     // and Riconv_open("") binds the locale when it opens, a Sys.setlocale()
     // between operations is picked up automatically.
-    bool native_is_utf8();
+    CHARR_CXX_HELPER bool native_is_utf8();
+
+    CHARR_CXX_HELPER void reset() noexcept;
 
 private:
     class Descriptor;
@@ -45,11 +50,13 @@ private:
     std::vector<char> scratch_;
     Tristate native_is_utf8_;
 
-    Descriptor& native_descriptor();
-    Descriptor& latin1_descriptor();
-    Descriptor& utf8_to_native_descriptor();
-    ByteView convert(Descriptor& descriptor, const char* data, int length);
-    void ensure_capacity(std::size_t required);
+    CHARR_CXX_HELPER Descriptor& native_descriptor();
+    CHARR_CXX_HELPER Descriptor& latin1_descriptor();
+    CHARR_CXX_HELPER Descriptor& utf8_to_native_descriptor();
+    CHARR_CXX_HELPER ByteView convert(
+        Descriptor& descriptor, const char* data, int length
+    );
+    CHARR_CXX_HELPER void ensure_capacity(std::size_t required);
 };
 
 } // namespace shared

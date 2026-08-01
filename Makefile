@@ -3,11 +3,242 @@ PACKAGE := $(shell perl -aF: -ne 'print, exit if s/^Package:\s+//' DESCRIPTION)
 VERSION := $(shell perl -aF: -ne 'print, exit if s/^Version:\s+//' DESCRIPTION)
 BUILD   := $(PACKAGE)_$(VERSION).tar.gz
 RLIBS   := $(shell Rscript -e 'cat(paste(.libPaths(), collapse = ":"))')
+CODE_MAP_DIR ?= scratch/code-map
+CODE_MAP_BACKEND_METHODS ?= 70
+LINT_EFFECT_ARGS := \
+	--effects tools/charr-lint/effects.tsv \
+	--effect-overrides tools/charr-lint/effect-overrides.tsv
 
-.PHONY: doc build install check check-no-vignette test test-stringi \
+.PHONY: doc build install install-dev check check-no-vignette test test-stringi \
 	test-base test-altrep test-system test-bundle \
 	test-san test-valgrind vignette figures pkgdown pkgdown-index \
-	clean-pkgdown clean clean-altrep clean-build-products
+	lint lint-tool lint-fixtures lint-db lint-frontier lint-converted lint-audit \
+	lint-effects-update \
+	code-map code-map-current code-map-validate \
+	clean-pkgdown clean clean-altrep \
+	clean-build-products
+
+LINT_CONVERTED := \
+	src/runtime/icu.cpp \
+	src/runtime/registration.cpp \
+	src/shared/boundary_iterator.cpp \
+	src/shared/case_mapper.cpp \
+	src/shared/character_class.cpp \
+	src/shared/character_class_search.cpp \
+	src/shared/collation_ordering.cpp \
+	src/shared/collation_search.cpp \
+	src/shared/collator.cpp \
+	src/shared/encoding_info.cpp \
+	src/shared/fixed_search.cpp \
+	src/shared/join.cpp \
+	src/shared/line_split.cpp \
+	src/shared/native_to_utf8.cpp \
+	src/shared/nfc_normalizer.cpp \
+	src/shared/r_matrix.cpp \
+	src/shared/read_lines.cpp \
+	src/shared/regex_search.cpp \
+	src/shared/repeat.cpp \
+	src/shared/replacement.cpp \
+	src/shared/substring.cpp \
+	src/shared/title_case.cpp \
+	src/shared/utf8.cpp \
+	src/shared/wrap.cpp \
+	src/base_backend/collator/options.cpp \
+	src/altrep_backend/collator/options.cpp \
+	src/base_backend/boundary/options_r.cpp \
+	src/altrep_backend/boundary/options_r.cpp \
+	src/base_backend/fixed/options.cpp \
+	src/altrep_backend/fixed/options.cpp \
+	src/base_backend/regex/options_r.cpp \
+	src/altrep_backend/regex/options_r.cpp \
+	src/base_backend/entrypoints.cpp \
+	src/altrep_backend/entrypoints.cpp \
+	src/base_backend/ci_exception.cpp \
+	src/altrep_backend/ci_exception.cpp \
+	src/base_backend/ci_prepare_arg.cpp \
+	src/altrep_backend/ci_prepare_arg.cpp \
+	src/base_backend/ci_search_common.cpp \
+	src/altrep_backend/ci_search_common.cpp \
+	src/base_backend/ci_length.cpp \
+	src/altrep_backend/ci_length.cpp \
+	src/base_backend/ci_reverse.cpp \
+	src/altrep_backend/ci_reverse.cpp \
+	src/base_backend/ci_split_lines.cpp \
+	src/altrep_backend/ci_split_lines.cpp \
+	src/base_backend/ci_search_other_split.cpp \
+	src/altrep_backend/ci_search_other_split.cpp \
+	src/base_backend/ci_escape.cpp \
+	src/altrep_backend/ci_escape.cpp \
+	src/base_backend/ci_join.cpp \
+	src/altrep_backend/ci_join.cpp \
+	src/base_backend/ci_sub.cpp \
+	src/altrep_backend/ci_sub.cpp \
+	src/base_backend/ci_pad.cpp \
+	src/altrep_backend/ci_pad.cpp \
+	src/base_backend/ci_compare.cpp \
+	src/altrep_backend/ci_compare.cpp \
+	src/base_backend/ci_dup.cpp \
+	src/altrep_backend/ci_dup.cpp \
+	src/base_backend/ci_duplicated.cpp \
+	src/altrep_backend/ci_duplicated.cpp \
+	src/base_backend/ci_order_rank.cpp \
+	src/altrep_backend/ci_order_rank.cpp \
+	src/base_backend/ci_search_coll_count.cpp \
+	src/altrep_backend/ci_search_coll_count.cpp \
+	src/base_backend/ci_search_coll_detect.cpp \
+	src/altrep_backend/ci_search_coll_detect.cpp \
+	src/base_backend/ci_search_coll_extract.cpp \
+	src/altrep_backend/ci_search_coll_extract.cpp \
+	src/base_backend/ci_search_coll_locate.cpp \
+	src/altrep_backend/ci_search_coll_locate.cpp \
+	src/base_backend/ci_search_coll_replace.cpp \
+	src/altrep_backend/ci_search_coll_replace.cpp \
+	src/base_backend/ci_search_coll_split.cpp \
+	src/altrep_backend/ci_search_coll_split.cpp \
+	src/base_backend/ci_search_coll_startsendswith.cpp \
+	src/altrep_backend/ci_search_coll_startsendswith.cpp \
+	src/base_backend/ci_search_fixed_count.cpp \
+	src/altrep_backend/ci_search_fixed_count.cpp \
+	src/base_backend/ci_search_fixed_detect.cpp \
+	src/altrep_backend/ci_search_fixed_detect.cpp \
+	src/base_backend/ci_search_fixed_extract_first.cpp \
+	src/altrep_backend/ci_search_fixed_extract_first.cpp \
+	src/base_backend/ci_search_fixed_extract.cpp \
+	src/altrep_backend/ci_search_fixed_extract.cpp \
+	src/base_backend/ci_search_fixed_locate.cpp \
+	src/altrep_backend/ci_search_fixed_locate.cpp \
+	src/base_backend/ci_search_fixed_replace.cpp \
+	src/altrep_backend/ci_search_fixed_replace.cpp \
+	src/base_backend/ci_search_fixed_split.cpp \
+	src/altrep_backend/ci_search_fixed_split.cpp \
+	src/base_backend/ci_search_fixed_startsendswith.cpp \
+	src/altrep_backend/ci_search_fixed_startsendswith.cpp \
+	src/base_backend/ci_search_regex_count.cpp \
+	src/altrep_backend/ci_search_regex_count.cpp \
+	src/base_backend/ci_search_regex_detect.cpp \
+	src/altrep_backend/ci_search_regex_detect.cpp \
+	src/base_backend/ci_search_regex_extract.cpp \
+	src/altrep_backend/ci_search_regex_extract.cpp \
+	src/base_backend/ci_search_regex_locate.cpp \
+	src/altrep_backend/ci_search_regex_locate.cpp \
+	src/base_backend/ci_search_regex_match.cpp \
+	src/altrep_backend/ci_search_regex_match.cpp \
+	src/base_backend/ci_search_regex_replace.cpp \
+	src/altrep_backend/ci_search_regex_replace.cpp \
+	src/base_backend/ci_search_regex_split.cpp \
+	src/altrep_backend/ci_search_regex_split.cpp \
+	src/base_backend/ci_search_boundaries_count.cpp \
+	src/altrep_backend/ci_search_boundaries_count.cpp \
+	src/base_backend/ci_search_boundaries_extract.cpp \
+	src/altrep_backend/ci_search_boundaries_extract.cpp \
+	src/base_backend/ci_search_boundaries_split.cpp \
+	src/altrep_backend/ci_search_boundaries_split.cpp \
+	src/base_backend/ci_search_boundaries_locate.cpp \
+	src/altrep_backend/ci_search_boundaries_locate.cpp \
+	src/base_backend/ci_search_class_replace.cpp \
+	src/altrep_backend/ci_search_class_replace.cpp \
+	src/base_backend/ci_search_class_trim.cpp \
+	src/altrep_backend/ci_search_class_trim.cpp \
+	src/base_backend/ci_replace_na.cpp \
+	src/altrep_backend/ci_replace_na.cpp \
+	src/base_backend/ci_trans_normalization.cpp \
+	src/altrep_backend/ci_trans_normalization.cpp \
+	src/base_backend/ci_trans_casemap.cpp \
+	src/altrep_backend/ci_trans_casemap.cpp \
+	src/base_backend/ci_trans_title.cpp \
+	src/altrep_backend/ci_trans_title.cpp \
+	src/base_backend/ci_ucnv.cpp \
+	src/altrep_backend/ci_ucnv.cpp \
+	src/base_backend/ci_encoding_conversion.cpp \
+	src/altrep_backend/ci_encoding_conversion.cpp \
+	src/base_backend/ci_encoding_management.cpp \
+	src/altrep_backend/ci_encoding_management.cpp \
+	src/base_backend/ci_wrap.cpp \
+	src/altrep_backend/ci_wrap.cpp \
+	src/altrep_backend/io/utf8_output.cpp
+
+lint:
+	$(MAKE) lint-fixtures
+	$(MAKE) lint-db
+	$(MAKE) lint-converted
+
+lint-tool:
+	$(MAKE) -C tools/charr-lint all
+
+lint-fixtures:
+	$(MAKE) -C tools/charr-lint fixtures
+
+# Bundled ICU injects uconfig_local.h; it contains macros, not functions.
+lint-frontier:
+	@test -s compile_commands.json
+	@diff -u --label lint-frontier --label production-cpp \
+	  <(printf '%s\n' $(LINT_CONVERTED) | sort -u) \
+	  <(find src -path src/icu78 -prune -o -name '*.cpp' -print | sort -u)
+	@diff -u --label lint-frontier --label compiled-cpp \
+	  <(printf '%s\n' $(LINT_CONVERTED) | sort -u) \
+	  <(jq -r '.[].file' compile_commands.json | \
+	    while IFS= read -r file; do \
+	      realpath --relative-to='$(CURDIR)' "$$file"; \
+	    done | grep -E '^src/.*\.cpp$$' | grep -v '^src/icu78/' | sort -u)
+	@diff -u --label production-headers --label reachable-headers \
+	  <(find src -path src/icu78 -prune -o -name '*.h' -print | \
+	    grep -v '^src/uconfig_local\.h$$' | sort -u) \
+	  <(clang-scan-deps -compilation-database=compile_commands.json \
+	      -format=experimental-full | \
+	    jq -r '.. | objects | .["file-deps"]? // empty | .[]' | \
+	    grep -E '^$(CURDIR)/src/.*\.h$$' | grep -v '/src/icu78/' | \
+	    while IFS= read -r file; do \
+	      realpath --relative-to='$(CURDIR)' "$$file"; \
+	    done | sort -u)
+
+lint-db: clean-altrep
+	rm -f compile_commands.json
+	lint_lib=$$(mktemp -d /tmp/$(PACKAGE)-lint-XXXXXX); \
+	trap 'rm -rf "$$lint_lib"' EXIT; \
+	bear --output compile_commands.json -- \
+	  R CMD INSTALL --preclean --libs-only --no-test-load \
+	    -l "$$lint_lib" .
+	test -s compile_commands.json
+	$(MAKE) clean-altrep
+
+lint-converted: lint-tool
+	@$(MAKE) lint-frontier
+	local/charr-lint/charr-lint \
+	  $(LINT_EFFECT_ARGS) -p . $(LINT_CONVERTED)
+
+lint-audit: lint-tool lint-db
+	@$(MAKE) lint-frontier
+	files=$$(jq -r '.[].file' compile_commands.json | sort -u); \
+	local/charr-lint/charr-lint --audit \
+	  $(LINT_EFFECT_ARGS) -p . $$files
+
+lint-effects-update: lint-tool lint-db
+	@$(MAKE) lint-frontier
+	files=$$(jq -r '.[].file' compile_commands.json | sort -u); \
+	local/charr-lint/charr-lint --audit \
+	  $(LINT_EFFECT_ARGS) \
+	  --write-effects-manifest tools/charr-lint/effects.tsv \
+	  -p . $$files
+
+# `code-map` refreshes the compilation database. Use `code-map-current` while
+# iterating on the viewer when the existing database still matches the source.
+code-map: lint-db
+	$(MAKE) code-map-current
+
+code-map-current: lint-tool
+	@$(MAKE) lint-frontier
+	mkdir -p "$(CODE_MAP_DIR)"
+	local/charr-lint/charr-lint \
+	  $(LINT_EFFECT_ARGS) \
+	  --code-map-dir "$(CODE_MAP_DIR)" \
+	  -p . $(LINT_CONVERTED)
+	cp tools/charr-map/index.html tools/charr-map/app.js "$(CODE_MAP_DIR)/"
+	$(MAKE) code-map-validate
+
+code-map-validate:
+	Rscript tools/charr-map/validate.R \
+	  "$(CODE_MAP_DIR)" "$(words $(LINT_CONVERTED))" \
+	  "$(CODE_MAP_BACKEND_METHODS)"
 
 check: $(BUILD)
 	R CMD check --as-cran $<
@@ -30,6 +261,10 @@ install: $(BUILD)
 	R CMD INSTALL $(BUILD)
 	$(MAKE) clean-altrep
 	rm -f $(BUILD)
+
+install-dev: clean-altrep
+	R CMD INSTALL --preclean .
+	$(MAKE) clean-altrep
 
 # Run the complete suite against all three public backends after one install.
 test: install

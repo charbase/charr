@@ -21,8 +21,6 @@
 #include <unicode/uchar.h>
 #include <unicode/uclean.h>
 #include <unicode/udata.h>
-#include <unicode/ustring.h>
-#include <unicode/uregex.h>
 
 #ifndef U_CHARSET_IS_UTF8
 #define U_CHARSET_IS_UTF8 0
@@ -53,80 +51,92 @@ void* icu_data = nullptr;
 #endif
 bool icu_initialized = false;
 
-// Compile a UTF-8 regex pattern and test whether it matches anywhere in a
-// UTF-8 subject. Returns false on any ICU error (including data not loaded).
-bool regex_matches(const char* pattern, const char* subject) {
+CHARR_CXX_HELPER bool initialize_icu_native(const char* path) noexcept
+{
+#if CHARR_BUNDLED_ICU
+  if (icu_data == nullptr) {
+    if (path == nullptr)
+      return false;
+
+    FILE* file = std::fopen(path, "rb");
+    if (file == nullptr)
+      return false;
+
+    if (std::fseek(file, 0, SEEK_END) != 0) {
+      std::fclose(file);
+      return false;
+    }
+    const long size = std::ftell(file);
+    if (size <= 0) {
+      std::fclose(file);
+      return false;
+    }
+    std::rewind(file);
+
+    void* data = std::malloc(static_cast<std::size_t>(size));
+    if (data == nullptr) {
+      std::fclose(file);
+      return false;
+    }
+    const std::size_t read = std::fread(
+      data, 1, static_cast<std::size_t>(size), file
+    );
+    std::fclose(file);
+    if (read != static_cast<std::size_t>(size)) {
+      std::free(data);
+      return false;
+    }
+
+    UErrorCode data_status = U_ZERO_ERROR;
+    udata_setCommonData(data, &data_status);
+    if (U_FAILURE(data_status)) {
+      std::free(data);
+      return false;
+    }
+
+    // ICU retains the accepted data for the rest of the process.
+    icu_data = data;
+  }
+#else
+  (void)path;
+#endif
+
   UErrorCode status = U_ZERO_ERROR;
+  u_init(&status);
+  if (U_FAILURE(status))
+    return false;
 
-  UChar upat[64];
-  UChar usub[64];
-  int32_t plen = 0;
-  int32_t slen = 0;
-  u_strFromUTF8(upat, 64, &plen, pattern, -1, &status);
-  u_strFromUTF8(usub, 64, &slen, subject, -1, &status);
-  if (U_FAILURE(status)) return false;
-
-  URegularExpression* re = uregex_open(upat, plen, 0, nullptr, &status);
-  if (U_FAILURE(status)) return false;
-
-  uregex_setText(re, usub, slen, &status);
-  UBool found = U_FAILURE(status) ? FALSE : uregex_find(re, 0, &status);
-  uregex_close(re);
-  if (U_FAILURE(status)) return false;
-  return found == TRUE;
+  icu_initialized = true;
+  return true;
 }
 
 extern "C" {
 
-SEXP C_charr_abi_ok(void) {
+SEXP C_charr_abi_ok(void) noexcept {
   return Rf_ScalarLogical(charport::check_abi() ? TRUE : FALSE);
 }
 
-SEXP C_charr_icu_init(SEXP path) {
-  if (icu_initialized) return Rf_ScalarLogical(TRUE);
+SEXP C_charr_icu_init(SEXP path) noexcept {
+  if (icu_initialized)
+    return Rf_ScalarLogical(TRUE);
 
 #if CHARR_BUNDLED_ICU
-  void* buf = nullptr;
-  if (TYPEOF(path) != STRSXP || XLENGTH(path) != 1) return Rf_ScalarLogical(FALSE);
-
+  if (TYPEOF(path) != STRSXP || XLENGTH(path) != 1)
+    return Rf_ScalarLogical(FALSE);
   const char* file = Rf_translateChar(STRING_ELT(path, 0));
-  FILE* f = std::fopen(file, "rb");
-  if (!f) return Rf_ScalarLogical(FALSE);
-
-  if (std::fseek(f, 0, SEEK_END) != 0) { std::fclose(f); return Rf_ScalarLogical(FALSE); }
-  long size = std::ftell(f);
-  if (size <= 0) { std::fclose(f); return Rf_ScalarLogical(FALSE); }
-  std::rewind(f);
-
-  buf = std::malloc(static_cast<size_t>(size));
-  if (!buf) { std::fclose(f); return Rf_ScalarLogical(FALSE); }
-  size_t got = std::fread(buf, 1, static_cast<size_t>(size), f);
-  std::fclose(f);
-  if (got != static_cast<size_t>(size)) { std::free(buf); return Rf_ScalarLogical(FALSE); }
-
-  UErrorCode status = U_ZERO_ERROR;
-  udata_setCommonData(buf, &status);
-  if (U_FAILURE(status)) { std::free(buf); return Rf_ScalarLogical(FALSE); }
-  // ICU retains this pointer. Keep it for the process even if later
-  // initialization fails; freeing it would leave ICU with a dangling source.
-  icu_data = buf;
 #else
-  (void)path;  // the system ICU locates its own complete data archive
-  UErrorCode status = U_ZERO_ERROR;
+  const char* file = nullptr;
+  (void)path;
 #endif
 
-  u_init(&status);
-  if (U_FAILURE(status)) return Rf_ScalarLogical(FALSE);
-
-  icu_initialized = true;
-  return Rf_ScalarLogical(TRUE);
+  return Rf_ScalarLogical(initialize_icu_native(file) ? TRUE : FALSE);
 }
 
-SEXP C_charr_icu_bundled(void) {
+SEXP C_charr_icu_bundled(void) noexcept {
   return Rf_ScalarLogical(CHARR_BUNDLED_ICU ? TRUE : FALSE);
 }
 
-SEXP C_charr_icu_info(void) {
+SEXP C_charr_icu_info(void) noexcept {
   if (!icu_initialized) Rf_error("charr's ICU is not initialized");
 
   UErrorCode status = U_ZERO_ERROR;
@@ -189,23 +199,6 @@ SEXP C_charr_icu_info(void) {
   Rf_setAttrib(output, R_NamesSymbol, names);
   UNPROTECT(2);
   return output;
-}
-
-SEXP C_charr_icu_version(void) {
-  return Rf_mkString(U_ICU_VERSION);
-}
-
-SEXP C_charr_icu_ok(void) {
-  return Rf_ScalarLogical(icu_initialized ? TRUE : FALSE);
-}
-
-SEXP C_charr_icu_smoke(void) {
-  if (!icu_initialized) return Rf_ScalarLogical(FALSE);
-  // "a.c" ~ "abc" proves the regex engine runs; "\p{L}" ~ "é" proves the
-  // character-property DATA actually loaded, not just the code.
-  bool ok = regex_matches("a.c", "abc") &&
-            regex_matches("\\p{L}", "\xc3\xa9");  // "é" in UTF-8
-  return Rf_ScalarLogical(ok ? TRUE : FALSE);
 }
 
 } // extern "C"

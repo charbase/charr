@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+// Derived from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f.
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -32,170 +32,206 @@
 
 
 #include "ci_stringi.h"
-#include "ci_utf8.h"
-#include "fixed/pattern_set.h"
-#include "io/integer_input.h"
-#include "io/logical_input.h"
-#include <cstring>
-#include <utility>
+#include "fixed/options.h"
+#include "io/string_view.h"
+#include "../shared/entrypoint.h"
+#include "../shared/fixed_search.h"
+#include "../shared/native_to_utf8.h"
+#include "../shared/protect.h"
+#include "../shared/slice_arena.h"
+#include "../shared/unwind.h"
+#include "../shared/utf8.h"
+
+#include <cstddef>
+#include <exception>
 #include <vector>
+
+
 namespace charr { namespace base_backend {
-
-using namespace std;
-
 
 namespace search_fixed_split {
 
-typedef pair<R_len_t, R_len_t> CiSplitField;
-
-
-template <typename FindNext>
-void ci__collect_split_fields(
-    R_len_t string_length,
-    int n_cur,
-    bool omit_empty,
-    bool tokens_only,
-    FindNext find_next,
-    vector<CiSplitField>& fields
-)
+CHARR_NEUTRAL_HELPER R_len_t recycling_length(
+    R_len_t subject_length,
+    R_len_t pattern_length,
+    R_len_t n_length,
+    R_len_t omit_empty_length,
+    bool& warning
+) noexcept
 {
-    fields.clear();
-    fields.emplace_back(0, 0);
-
-    R_len_t start = 0;
-    R_len_t end = 0;
-    int k = 1;
-    while (k < n_cur && find_next(start, end)) {
-        if (omit_empty && fields.back().first == start) {
-            fields.back().first = end;
-        }
-        else {
-            fields.back().second = start;
-            fields.emplace_back(end, end);
-            ++k;
-        }
+    warning = false;
+    if (subject_length <= 0 || pattern_length <= 0 || n_length <= 0 ||
+            omit_empty_length <= 0) {
+        return 0;
     }
 
-    fields.back().second = string_length;
-    if (omit_empty && fields.back().first == fields.back().second)
-        fields.pop_back();
-
-    if (tokens_only && n_cur < INT_MAX) {
-        --n_cur;
-        if (fields.size() > static_cast<size_t>(n_cur))
-            fields.resize(static_cast<size_t>(n_cur));
-    }
+    R_len_t result = subject_length;
+    if (pattern_length > result)
+        result = pattern_length;
+    if (n_length > result)
+        result = n_length;
+    if (omit_empty_length > result)
+        result = omit_empty_length;
+    warning = result % subject_length != 0 ||
+        result % pattern_length != 0 ||
+        result % n_length != 0 ||
+        result % omit_empty_length != 0;
+    return result;
 }
 
 
-bool ci__split_ascii_scalar_direct(
-    SEXP str, SEXP pattern, uint32_t pattern_flags,
-    R_len_t vectorize_length, const io::IntegerInput& n_cont,
-    const io::LogicalInput& omit_empty_cont, bool tokens_only,
-    SEXP output
+CHARR_NEUTRAL_HELPER R_len_t requested_columns(
+    const int* values, R_len_t size
+) noexcept
+{
+    R_len_t result = 0;
+    for (R_len_t i = 0; i < size; ++i) {
+        if (values[i] != NA_INTEGER && values[i] > result)
+            result = values[i];
+    }
+    return result;
+}
+
+
+CHARR_CXX_HELPER CHARR_ALWAYS_INLINE shared::StringView normalize_view(
+    const shared::StringView& source,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage
 )
 {
-    if (pattern_flags != 0 || LENGTH(pattern) != 1)
+    if (source.enc == shared::StringEncoding::bytes)
+        throw StriException(MSG__BYTESENC);
+    return shared::normalize_utf8(source, converter, storage);
+}
+
+
+CHARR_CXX_HELPER R_len_t count_empty_patterns(
+    const std::vector<shared::StringView>& patterns
+)
+{
+    R_len_t result = 0;
+    for (std::size_t i = 0; i < patterns.size(); ++i) {
+        const shared::StringView& pattern = patterns[i];
+        if (!pattern.is_na() && pattern.len <= 0)
+            ++result;
+    }
+    return result;
+}
+
+
+CHARR_R_HELPER bool direct_scalar_inputs_r(
+    SEXP subjects,
+    SEXP patterns,
+    shared::FixedSearchOptions options,
+    R_len_t subject_length,
+    R_len_t pattern_length,
+    const SEXP*& subject_values,
+    shared::StringView& pattern
+) noexcept
+{
+    if (options.case_insensitive || options.overlap || pattern_length != 1)
         return false;
 
-    const SEXP pattern_value = STRING_ELT(pattern, 0);
+    const SEXP pattern_value = STRING_ELT(patterns, 0);
     if (pattern_value == NA_STRING || !IS_ASCII(pattern_value) ||
             LENGTH(pattern_value) != 1) {
         return false;
     }
 
-    const R_len_t source_length = LENGTH(str);
-    const SEXP* values = STRING_PTR_RO(str);
-    // Plain CHARSXP payloads remain stable while `str` is protected. When
-    // every record is already ASCII or UTF-8, splitting can borrow them
-    // directly instead of constructing a parallel normalized record table.
-    for (R_len_t i=0; i<source_length; ++i) {
-        const SEXP value = values[i];
+    subject_values = STRING_PTR_RO(subjects);
+    for (R_len_t i = 0; i < subject_length; ++i) {
+        const SEXP value = subject_values[i];
         if (value != NA_STRING && !IS_ASCII(value) && !IS_UTF8(value))
             return false;
     }
 
-    const unsigned char needle = static_cast<unsigned char>(
-        CHAR(pattern_value)[0]
-    );
-    vector<CiSplitField> fields;
-    fields.reserve(16);
-
-    for (R_len_t i=0; i<vectorize_length; ++i) {
-        const SEXP value = values[i % source_length];
-        if (n_cont.isNA(i) || value == NA_STRING) {
-            SET_VECTOR_ELT(output, i, ci__vector_NA_strings(1));
-            continue;
-        }
-
-        int n_cur = n_cont.get(i);
-        const bool omit_empty =
-            !omit_empty_cont.isNA(i) && omit_empty_cont.get(i);
-        const char* data = CHAR(value);
-        R_len_t length = LENGTH(value);
-        if (!IS_ASCII(value) && STRI__ENC_HAS_BOM_UTF8(data, length)) {
-            data += 3;
-            length -= 3;
-        }
-        if (length <= 0) {
-            SET_VECTOR_ELT(
-                output, i,
-                omit_empty_cont.isNA(i) ? ci__vector_NA_strings(1) :
-                ci__vector_empty_strings((omit_empty || n_cur == 0) ? 0 : 1)
-            );
-            continue;
-        }
-
-        if (n_cur >= INT_MAX-1)
-            throw StriException(
-                MSG__INCORRECT_NAMED_ARG "; " MSG__EXPECTED_SMALLER, "n"
-            );
-        if (n_cur < 0)
-            n_cur = INT_MAX;
-        else if (n_cur == 0) {
-            SET_VECTOR_ELT(output, i, Rf_allocVector(STRSXP, 0));
-            continue;
-        }
-        else if (tokens_only)
-            ++n_cur;
-
-        R_len_t search_from = 0;
-        ci__collect_split_fields(
-            length, n_cur, omit_empty, tokens_only,
-            [&](R_len_t& start, R_len_t& end) {
-                const void* match = std::memchr(
-                    data+search_from, needle,
-                    static_cast<size_t>(length-search_from)
-                );
-                if (match == NULL)
-                    return false;
-                start = static_cast<R_len_t>(
-                    static_cast<const char*>(match)-data
-                );
-                end = start+1;
-                search_from = end;
-                return true;
-            },
-            fields
-        );
-
-        SEXP answer;
-        PROTECT(answer = Rf_allocVector(STRSXP, fields.size()));
-        for (R_len_t k=0; k<static_cast<R_len_t>(fields.size()); ++k) {
-            const CiSplitField& field = fields[static_cast<size_t>(k)];
-            SET_STRING_ELT(
-                answer, k,
-                field.second == field.first && omit_empty_cont.isNA(i) ?
-                NA_STRING : Rf_mkCharLenCE(
-                    data+field.first, field.second-field.first, CE_UTF8
-                )
-            );
-        }
-        SET_VECTOR_ELT(output, i, answer);
-        UNPROTECT(1);
-    }
-
+    pattern = io::as_direct_utf8_view(pattern_value);
     return true;
+}
+
+
+CHARR_R_HELPER SEXP missing_strings_r(R_len_t size) noexcept
+{
+    SEXP result = Rf_allocVector(STRSXP, size);
+    for (R_len_t i = 0; i < size; ++i)
+        SET_STRING_ELT(result, i, NA_STRING);
+    return result;
+}
+
+
+CHARR_R_HELPER SEXP empty_strings_r(R_len_t size) noexcept
+{
+    SEXP result = Rf_allocVector(STRSXP, size);
+    for (R_len_t i = 0; i < size; ++i)
+        SET_STRING_ELT(result, i, R_BlankString);
+    return result;
+}
+
+
+CHARR_R_HELPER SEXP strings_r(R_len_t size) noexcept
+{
+    return Rf_allocVector(STRSXP, size);
+}
+
+
+CHARR_R_HELPER CHARR_ALWAYS_INLINE void set_field_r(
+    SEXP output,
+    R_len_t index,
+    const shared::StringView& subject,
+    const shared::FixedRange& field
+) noexcept
+{
+    const int length = field.end-field.start;
+    SET_STRING_ELT(
+        output, index,
+        Rf_mkCharLenCE(
+            length == 0 ? "" : subject.ptr+field.start,
+            length, CE_UTF8
+        )
+    );
+}
+
+
+CHARR_R_HELPER SEXP simplify_result_r(
+    SEXP input, R_len_t rows, R_len_t columns, bool pad_na
+) noexcept
+{
+    SEXP output = Rf_allocMatrix(STRSXP, rows, columns);
+    const SEXP fill = pad_na ? NA_STRING : R_BlankString;
+    for (R_len_t i = 0; i < rows; ++i) {
+        const SEXP current = VECTOR_ELT(input, i);
+        const R_len_t current_size = LENGTH(current);
+        R_len_t j = 0;
+        for (; j < current_size; ++j) {
+            SET_STRING_ELT(
+                output,
+                static_cast<R_xlen_t>(i) +
+                    static_cast<R_xlen_t>(j)*rows,
+                STRING_ELT(current, j)
+            );
+        }
+        for (; j < columns; ++j) {
+            SET_STRING_ELT(
+                output,
+                static_cast<R_xlen_t>(i) +
+                    static_cast<R_xlen_t>(j)*rows,
+                fill
+            );
+        }
+    }
+    return output;
+}
+
+
+CHARR_R_HELPER void emit_warnings_r(
+    bool recycling_warning,
+    R_len_t empty_pattern_warnings
+) noexcept
+{
+    if (recycling_warning)
+        Rf_warning(MSG__WARN_RECYCLING_RULE);
+    for (R_len_t i = 0; i < empty_pattern_warnings; ++i)
+        Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
 }
 
 } // namespace search_fixed_split
@@ -203,199 +239,243 @@ bool ci__split_ascii_scalar_direct(
 using namespace search_fixed_split;
 
 
-/**
- * Split a string into parts [byte compare]
- *
- * The pattern matches identify delimiters that separate the input into fields.
- * The input data between the matches becomes the fields themselves.
- *
- * @param str character vector
- * @param pattern character vector
- * @param n integer vector
- * @param omit_empty logical vector
- * @param tokens_only single logical value
- * @param simplify single logical value
- *
- * @return list of character vectors  or character matrix
- *
- * @version 0.1-?? (Bartek Tartanus)
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-25)
- *          StriException friendly, use a UTF-8 input adapter
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-07-10)
- *          BUGFIX: wrong behavior on empty str
- *
- * @version 0.2-3 (Marek Gagolewski, 2014-05-08)
- *          ci_split_fixed now uses byte search only
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-10-19)
- *          added tokens_only param
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-10-23)
- *          added split param
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-10-24)
- *          allow omit_empty=NA
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-12-04)
- *    allow `simplify=NA`; FR #126: pass n to ci_list2matrix
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-12-07)
- *    FR #110, #23: opts_fixed arg added
- *
- * @version 0.5-1 (Marek Gagolewski, 2015-02-14)
- *    use shared::ByteSearchMatcher
- */
-SEXP ci_split_fixed(SEXP str, SEXP pattern, SEXP n,
-                      SEXP omit_empty, SEXP tokens_only, SEXP simplify, SEXP opts_fixed)
+/** Split strings around fixed byte-pattern matches. */
+CHARR_ENTRYPOINT SEXP ci_split_fixed(
+    SEXP str,
+    SEXP pattern,
+    SEXP n,
+    SEXP omit_empty,
+    SEXP tokens_only,
+    SEXP simplify,
+    SEXP opts_fixed
+) noexcept
 {
-    uint32_t pattern_flags = fixed::PatternSet::getByteSearchFlags(opts_fixed);
-    bool tokens_only1 = ci__prepare_arg_logical_1_notNA(tokens_only, "tokens_only");
-    PROTECT(simplify = ci__prepare_arg_logical_1(simplify, "simplify"));
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
-    PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
-    PROTECT(n = ci__prepare_arg_integer(n, "n"));
-    PROTECT(omit_empty = ci__prepare_arg_logical(omit_empty, "omit_empty"));
+    CHARR_ENTRYPOINT_BEGIN();
 
-    STRI__ERROR_HANDLER_BEGIN(5)
-    R_len_t vectorize_length = ci__recycling_rule(true, 4,
-                               LENGTH(str), LENGTH(pattern), LENGTH(n), LENGTH(omit_empty));
-    io::IntegerInput n_cont(n, vectorize_length);
-    io::LogicalInput omit_empty_cont(omit_empty, vectorize_length);
-
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(VECSXP, vectorize_length));
-    if (!ci__split_ascii_scalar_direct(
-            str, pattern, pattern_flags, vectorize_length,
-            n_cont, omit_empty_cont, tokens_only1, ret
-    )) {
-        io::Utf8Input str_cont(str, vectorize_length);
-        fixed::PatternSet pattern_cont(
-            pattern, vectorize_length, pattern_flags
+    const shared::FixedSearchOptions options =
+        fixed::prepare_options(opts_fixed);
+    const bool tokens_only_value =
+        ci__prepare_arg_logical_1_notNA_r(
+            tokens_only, "tokens_only"
         );
-        vector<CiSplitField> fields;
+    simplify = entry_protections.protect_one(ci__prepare_arg_logical_1_r(
+        simplify, "simplify"
+    ));
+    str = entry_protections.protect_one(ci__prepare_arg_string_r(str, "str"));
+    pattern = entry_protections.protect_one(ci__prepare_arg_string_r(pattern, "pattern"));
+    n = entry_protections.protect_one(ci__prepare_arg_integer_r(n, "n"));
+    omit_empty = entry_protections.protect_one(ci__prepare_arg_logical_r(
+        omit_empty, "omit_empty"
+    ));
+
+    const int simplify_value = LOGICAL_RO(simplify)[0];
+    const bool simplifying =
+        simplify_value == NA_LOGICAL || simplify_value != 0;
+    const R_len_t subject_length = LENGTH(str);
+    const R_len_t pattern_length = LENGTH(pattern);
+    const R_len_t n_length = LENGTH(n);
+    const R_len_t omit_empty_length = LENGTH(omit_empty);
+    bool recycling_needed = false;
+    const R_len_t vectorize_length = recycling_length(
+        subject_length, pattern_length, n_length,
+        omit_empty_length, recycling_needed
+    );
+
+    bool recycling_warning = false;
+    R_len_t empty_pattern_warnings = 0;
+    R_len_t max_columns = 0;
+
+    try {
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        std::vector<shared::StringView> subjects;
+        std::vector<shared::StringView> patterns;
+        shared::FixedMatcher matcher;
+        std::vector<shared::FixedRange> fields;
+
         fields.reserve(16);
 
-        for (R_len_t i = pattern_cont.vectorize_init();
-                i != pattern_cont.vectorize_end();
-                i = pattern_cont.vectorize_next(i))
-        {
-            if (n_cont.isNA(i)) {
-                SET_VECTOR_ELT(ret, i, ci__vector_NA_strings(1));
-                continue;
-            }
-            int  n_cur        = n_cont.get(i);
-            int  omit_empty_cur   = !omit_empty_cont.isNA(i) && omit_empty_cont.get(i);
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                recycling_warning = recycling_needed;
 
-            STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-                    SET_VECTOR_ELT(ret, i, ci__vector_NA_strings(1));,
-                    SET_VECTOR_ELT(ret, i,
-                                   (omit_empty_cont.isNA(i))?ci__vector_NA_strings(1):
-                                   ci__vector_empty_strings((omit_empty_cur || n_cur == 0)?0:1));)
+                const SEXP* direct_subject_values = nullptr;
+                shared::StringView direct_pattern{
+                    nullptr, 0, shared::StringEncoding::missing
+                };
+                bool direct = false;
+                if (vectorize_length > 0) {
+                    direct = direct_scalar_inputs_r(
+                        str, pattern, options,
+                        subject_length, pattern_length,
+                        direct_subject_values, direct_pattern
+                    );
 
-            const io::Utf8Record& str_cur = str_cont.get(i);
-            R_len_t     str_cur_n = str_cur.length();
-            const char* str_cur_s = str_cur.data();
-
-            if (n_cur >= INT_MAX-1)
-                throw StriException(MSG__INCORRECT_NAMED_ARG "; " MSG__EXPECTED_SMALLER, "n");
-            else if (n_cur < 0)
-                n_cur = INT_MAX;
-            else if (n_cur == 0) {
-                SET_VECTOR_ELT(ret, i, Rf_allocVector(STRSXP, 0));
-                continue;
-            }
-            else if (tokens_only1)
-                n_cur++; // we need to do one split ahead here
-
-            const io::Utf8Record& pattern_cur = pattern_cont.get(i);
-            if (!pattern_cont.isCaseInsensitive() && pattern_cur.length() == 1) {
-                R_len_t search_from = 0;
-                const unsigned char needle =
-                    static_cast<unsigned char>(pattern_cur.data()[0]);
-                ci__collect_split_fields(
-                    str_cur_n, n_cur, omit_empty_cur, tokens_only1,
-                    [&](R_len_t& start, R_len_t& end) {
-                        const size_t remaining = static_cast<size_t>(
-                            str_cur_n-search_from
+                    if (!direct) {
+                        subjects.resize(
+                            static_cast<std::size_t>(subject_length)
                         );
-                        const void* match = std::memchr(
-                            str_cur_s+search_from, needle, remaining
+                        const SEXP* values = STRING_PTR_RO(str);
+                        for (R_len_t i = 0; i < subject_length; ++i) {
+                            subjects[static_cast<std::size_t>(i)] =
+                                normalize_view(
+                                    io::as_shared_view(values[i]),
+                                    subject_converter, subject_storage
+                                );
+                        }
+
+                        patterns.resize(
+                            static_cast<std::size_t>(pattern_length)
                         );
-                        if (!match)
-                            return false;
-                        start = static_cast<R_len_t>(
-                            static_cast<const char*>(match)-str_cur_s
-                        );
-                        end = start+1;
-                        search_from = end;
-                        return true;
-                    },
-                    fields
+                        values = STRING_PTR_RO(pattern);
+                        for (R_len_t i = 0; i < pattern_length; ++i) {
+                            patterns[static_cast<std::size_t>(i)] =
+                                normalize_view(
+                                    io::as_shared_view(values[i]),
+                                    pattern_converter, pattern_storage
+                                );
+                        }
+                        empty_pattern_warnings =
+                            count_empty_patterns(patterns);
+                    }
+                }
+
+                const int* n_values = INTEGER_RO(n);
+                const int* omit_empty_values = LOGICAL_RO(omit_empty);
+                if (simplifying) {
+                    max_columns = requested_columns(
+                        n_values, n_length
+                    );
+                }
+
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(VECSXP, vectorize_length),
+                    result_index
                 );
-            }
-            else {
-                shared::ByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
-                matcher->reset(str_cur_s, str_cur_n);
-                ci__collect_split_fields(
-                    str_cur_n, n_cur, omit_empty_cur, tokens_only1,
-                    [&](R_len_t& start, R_len_t& end) {
-                        if (shared::ByteSearchMatcher::not_found == matcher->find_next())
-                            return false;
-                        start = matcher->matched_start();
-                        end = start+matcher->matched_length();
-                        return true;
-                    },
-                    fields
-                );
-            }
+                SEXP child = R_NilValue;
+                PROTECT_INDEX child_index;
+                callback_protections.protect_with_index(child, &child_index);
 
-            SEXP ans;
-            STRI__PROTECT(ans = Rf_allocVector(STRSXP, fields.size()));
+                for (R_len_t lane = 0;
+                        lane < (vectorize_length > 0
+                            ? pattern_length : 0);
+                        ++lane) {
+                    const shared::StringView prepared_pattern = direct
+                        ? direct_pattern
+                        : patterns[static_cast<std::size_t>(lane)];
+                    R_len_t i = lane;
+                    for (;;) {
+                        const int raw_n = n_values[i % n_length];
+                        const int raw_omit = omit_empty_values[
+                            i % omit_empty_length
+                        ];
+                        const bool omit = raw_omit != NA_LOGICAL &&
+                            raw_omit != 0;
+                        const R_len_t subject_index = i % subject_length;
+                        const shared::StringView subject = direct
+                            ? normalize_view(
+                                io::as_direct_utf8_view(
+                                    direct_subject_values[subject_index]
+                                ),
+                                subject_converter, subject_storage
+                            )
+                            : subjects[
+                                static_cast<std::size_t>(subject_index)
+                            ];
 
-            R_len_t k = 0;
-            vector<CiSplitField>::const_iterator iter = fields.begin();
-            for (; iter != fields.end(); ++iter, ++k) {
-                const CiSplitField& curoccur = *iter;
-                if (curoccur.second == curoccur.first && omit_empty_cont.isNA(i))
-                    SET_STRING_ELT(ans, k, NA_STRING);
-                else
-                    SET_STRING_ELT(ans, k,
-                                   Rf_mkCharLenCE(str_cur_s+curoccur.first,
-                                                  curoccur.second-curoccur.first, CE_UTF8));
+                        if (raw_n == NA_INTEGER || subject.is_na() ||
+                                prepared_pattern.is_na() ||
+                                prepared_pattern.len <= 0) {
+                            child = callback_protections.reprotect_slot(
+                                missing_strings_r(1), child_index
+                            );
+                        }
+                        else if (subject.len <= 0) {
+                            if (raw_omit == NA_LOGICAL) {
+                                child = callback_protections.reprotect_slot(
+                                    missing_strings_r(1), child_index
+                                );
+                            }
+                            else {
+                                const R_len_t child_size =
+                                    omit || raw_n == 0 ? 0 : 1;
+                                child = callback_protections.reprotect_slot(
+                                    empty_strings_r(child_size), child_index
+                                );
+                            }
+                        }
+                        else {
+                            const shared::FixedSplitResult split =
+                                shared::split_fixed_fields(
+                                    matcher,
+                                    subject, prepared_pattern, options,
+                                    raw_n, omit, tokens_only_value, fields
+                                );
+                            if (split == shared::FixedSplitResult::
+                                    limit_too_large) {
+                                throw StriException(
+                                    MSG__INCORRECT_NAMED_ARG "; "
+                                    MSG__EXPECTED_SMALLER,
+                                    "n"
+                                );
+                            }
+
+                            const R_len_t child_size =
+                                static_cast<R_len_t>(fields.size());
+                            child = callback_protections.reprotect_slot(
+                                strings_r(child_size), child_index
+                            );
+                            for (R_len_t j = 0; j < child_size; ++j) {
+                                const shared::FixedRange& field = fields[
+                                    static_cast<std::size_t>(j)
+                                ];
+                                if (raw_omit == NA_LOGICAL &&
+                                        field.start == field.end) {
+                                    SET_STRING_ELT(child, j, NA_STRING);
+                                }
+                                else {
+                                    set_field_r(
+                                        child, j, subject, field
+                                    );
+                                }
+                            }
+                        }
+
+                        SET_VECTOR_ELT(result, i, child);
+                        if (simplifying) {
+                            const R_len_t child_size = LENGTH(child);
+                            if (max_columns < child_size)
+                                max_columns = child_size;
+                        }
+
+                        if (pattern_length >= vectorize_length-i)
+                            break;
+                        i += pattern_length;
+                    }
+                }
+
+                if (simplifying) {
+                    result = entry_protections.reprotect_one(
+                        simplify_result_r(
+                            result, vectorize_length, max_columns,
+                            simplify_value == NA_LOGICAL
+                        ),
+                        result_index
+                    );
+                }
+
+                CHARR_UNWIND_RETURN();
             }
-
-            SET_VECTOR_ELT(ret, i, ans);
-            STRI__UNPROTECT(1);
-        }
+        );
     }
-
-    if (LOGICAL(simplify)[0] == NA_LOGICAL || LOGICAL(simplify)[0]) {
-        R_len_t n_min = 0;
-        R_len_t n_length = LENGTH(n);
-        int* n_tab = INTEGER(n);
-        for (R_len_t i=0; i<n_length; ++i) {
-            if (n_tab[i] != NA_INTEGER && n_min < n_tab[i])
-                n_min = n_tab[i];
-        }
-        SEXP robj_TRUE, robj_n_min, robj_na_strings, robj_empty_strings;
-        STRI__PROTECT(robj_TRUE = Rf_ScalarLogical(TRUE));
-        STRI__PROTECT(robj_n_min = Rf_ScalarInteger(n_min));
-        STRI__PROTECT(robj_na_strings = ci__vector_NA_strings(1));
-        STRI__PROTECT(robj_empty_strings = ci__vector_empty_strings(1));
-        STRI__PROTECT(ret = ci_list2matrix(ret, robj_TRUE,
-                                             (LOGICAL(simplify)[0] == NA_LOGICAL)?robj_na_strings
-                                             :robj_empty_strings,
-                                             robj_n_min))
-    }
-
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(; /* nothing interesting on error */)
+    CHARR_ENTRYPOINT_END(
+        emit_warnings_r(
+            recycling_warning, empty_pattern_warnings
+        );
+    );
 }
 
 } } // namespace charr::base_backend

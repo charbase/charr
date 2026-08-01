@@ -86,3 +86,19 @@ test_that("optimized length and width reject malformed and bytes input", {
     )
   }
 })
+
+
+test_that("optimized length converts coercion warnings to recoverable errors", {
+  old <- options(warn = 2)
+  on.exit(options(old), add = TRUE)
+
+  input <- list(c("alpha", "beta"))
+  for (backend in c("base", "altrep")) {
+    expect_error(
+      with_backend(backend, str_length(input)),
+      "argument is not an atomic vector; coercing",
+      fixed = TRUE
+    )
+    expect_identical(with_backend(backend, str_length("alpha")), 5L)
+  }
+})

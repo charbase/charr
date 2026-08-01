@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+// Derived from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f.
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -30,465 +30,432 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-
+#include "io/reader_utils.h"
 #include "ci_stringi.h"
-#include "ci_builder.h"
-#include "ci_utf8.h"
-#include "regex/pattern_set.h"
-#include "altrep_backend/io/utf8_input.h"
-#include <memory>
+#include "io/string_view.h"
+#include "io/utf8_output.h"
+#include "regex/options_r.h"
+#include "../shared/entrypoint.h"
+#include "../shared/native_to_utf8.h"
+#include "../shared/protect.h"
+#include "../shared/regex_search.h"
+#include "../shared/slice_arena.h"
+#include "../shared/unwind.h"
+#include "../shared/utf8.h"
+
+#include <charport.h>
+
+#include <cstddef>
+#include <exception>
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <deque>
-#include <utility>
-#include <unicode/utf8.h>
 
 namespace charr { namespace altrep_backend {
-using namespace std;
-
 
 namespace search_regex_match {
 
-struct CiMatchRegexMatrix {
-    R_len_t nrow;
-    R_len_t ncol;
-    charport::charvec::Store output;
-    vector<string> capture_names;
-
-    CiMatchRegexMatrix()
-        : nrow(0), ncol(0), output(0, 0), capture_names()
-    {
-    }
-};
-
-
-bool ci__match_has_capture_names(const vector<string>& names)
+CHARR_NEUTRAL_HELPER R_len_t recycling_length(
+    R_len_t subject_length,
+    R_len_t pattern_length,
+    bool& warning
+) noexcept
 {
-    for (vector<string>::const_iterator it=names.begin();
-            it != names.end(); ++it) {
-        if (!it->empty())
+    warning = false;
+    if (subject_length <= 0 || pattern_length <= 0)
+        return 0;
+
+    const R_len_t result = subject_length > pattern_length
+        ? subject_length
+        : pattern_length;
+    warning = result % subject_length != 0 ||
+        result % pattern_length != 0;
+    return result;
+}
+
+
+CHARR_CXX_HELPER shared::StringView normalize_subject(
+    const shared::StringView& source,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage
+)
+{
+    if (source.enc == shared::StringEncoding::bytes)
+        throw StriException(MSG__BYTESENC);
+    return shared::normalize_utf8(source, converter, storage);
+}
+
+
+CHARR_CXX_HELPER shared::StringView normalize_pattern(
+    const shared::StringView& source,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage
+)
+{
+    if (source.enc == shared::StringEncoding::bytes)
+        throw StriException(MSG__BYTESENC);
+    return shared::normalize_utf8_preserve_bom(
+        source, converter, storage
+    );
+}
+
+
+CHARR_CXX_HELPER void normalize_subjects(
+    const charport::StrViews& source,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage,
+    std::vector<shared::StringView>& output
+)
+{
+    output.resize(static_cast<std::size_t>(source.size()));
+    for (R_xlen_t i = 0; i < source.size(); ++i) {
+        output[static_cast<std::size_t>(i)] = normalize_subject(
+            io::as_shared_view(source[i]), converter, storage
+        );
+    }
+}
+
+
+CHARR_CXX_HELPER void normalize_patterns(
+    const charport::StrViews& source,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage,
+    shared::RegexPatterns& output
+)
+{
+    output.resize(static_cast<std::size_t>(source.size()));
+    for (R_xlen_t i = 0; i < source.size(); ++i) {
+        output.set(
+            static_cast<std::size_t>(i),
+            normalize_pattern(
+                io::as_shared_view(source[i]), converter, storage
+            )
+        );
+    }
+}
+
+
+CHARR_CXX_HELPER [[noreturn]] void throw_regex_error(
+    UErrorCode status,
+    bool pattern_compile_error,
+    const shared::RegexPatterns& patterns,
+    std::size_t pattern_index
+)
+{
+    if (pattern_compile_error) {
+        std::string context;
+        patterns.context(pattern_index, context);
+        throw StriException(status, context.c_str());
+    }
+    throw StriException(status);
+}
+
+
+CHARR_CXX_HELPER void bind_pattern(
+    shared::RegexMatcher& matcher,
+    const shared::RegexInput& pattern,
+    const shared::RegexPatterns& patterns,
+    std::size_t pattern_index
+)
+{
+    UErrorCode status = U_ZERO_ERROR;
+    bool pattern_compile_error = false;
+    if (!matcher.bind(pattern, status, pattern_compile_error) ||
+            U_FAILURE(status)) {
+        throw_regex_error(
+            status, pattern_compile_error, patterns, pattern_index
+        );
+    }
+}
+
+
+CHARR_CXX_HELPER void read_capture_names(
+    const shared::RegexMatcher& matcher,
+    const shared::RegexPatterns& patterns,
+    std::size_t pattern_index,
+    std::vector<std::string>& names
+)
+{
+    UErrorCode status = U_ZERO_ERROR;
+    matcher.capture_names(names, status);
+    if (U_FAILURE(status))
+        throw_regex_error(status, false, patterns, pattern_index);
+}
+
+
+CHARR_CXX_HELPER bool find_first(
+    shared::RegexMatcher& matcher,
+    const shared::StringView& subject,
+    const void* subject_identity,
+    const shared::RegexPatterns& patterns,
+    std::size_t pattern_index,
+    shared::RegexRange& match,
+    std::vector<shared::RegexRange>& captures
+)
+{
+    UErrorCode status = U_ZERO_ERROR;
+    const bool found = matcher.find_first_with_captures(
+        subject, subject_identity, match, captures, status
+    );
+    if (U_FAILURE(status))
+        throw_regex_error(status, false, patterns, pattern_index);
+    return found;
+}
+
+
+CHARR_CXX_HELPER void find_all(
+    shared::RegexMatcher& matcher,
+    const shared::StringView& subject,
+    const void* subject_identity,
+    const shared::RegexPatterns& patterns,
+    std::size_t pattern_index,
+    std::vector<shared::RegexRange>& matches,
+    std::vector<std::vector<shared::RegexRange> >& captures
+)
+{
+    UErrorCode status = U_ZERO_ERROR;
+    matcher.find_all_with_captures(
+        subject, subject_identity, matches, captures, status
+    );
+    if (U_FAILURE(status))
+        throw_regex_error(status, false, patterns, pattern_index);
+}
+
+
+CHARR_CXX_HELPER void ensure_capture_columns(
+    std::vector<std::vector<shared::RegexRange> >& columns,
+    std::size_t count,
+    std::size_t length
+)
+{
+    const std::size_t previous = columns.size();
+    if (previous >= count)
+        return;
+
+    columns.resize(count);
+    for (std::size_t i = previous; i < count; ++i) {
+        columns[i].assign(
+            length, shared::RegexRange{NA_INTEGER, NA_INTEGER}
+        );
+    }
+}
+
+
+CHARR_NEUTRAL_HELPER void stage_no_match(
+    std::vector<shared::RegexRange>& matches,
+    std::vector<std::vector<shared::RegexRange> >& captures,
+    std::size_t group_count,
+    std::size_t index
+) noexcept
+{
+    matches[index] = shared::RegexRange{-1, -1};
+    for (std::size_t i = 0; i < group_count; ++i)
+        captures[i][index] = shared::RegexRange{-1, -1};
+}
+
+
+CHARR_NEUTRAL_HELPER void stage_match(
+    const shared::RegexRange& match,
+    const std::vector<shared::RegexRange>& current_captures,
+    std::vector<shared::RegexRange>& matches,
+    std::vector<std::vector<shared::RegexRange> >& captures,
+    std::size_t index
+) noexcept
+{
+    matches[index] = match;
+    for (std::size_t i = 0; i < current_captures.size(); ++i)
+        captures[i][index] = current_captures[i];
+}
+
+
+CHARR_NEUTRAL_HELPER bool capture_names_present(
+    const std::vector<std::string>& names
+) noexcept
+{
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        if (names[i].size() > 0)
             return true;
     }
     return false;
 }
 
 
-SEXP ci__match_capture_dimnames(const vector<string>& names)
+CHARR_CXX_HELPER R_xlen_t matrix_size(
+    R_len_t rows, R_len_t columns
+)
 {
-    if (!ci__match_has_capture_names(names))
+    if (rows < 0 || columns < 0 ||
+            (rows > 0 &&
+             static_cast<R_xlen_t>(columns) > R_XLEN_T_MAX/rows)) {
+        throw std::length_error("matrix length exceeds R's vector limit");
+    }
+    return static_cast<R_xlen_t>(rows)*columns;
+}
+
+
+CHARR_CXX_HELPER void fill_na(
+    io::OutputBuilder& output, R_xlen_t size
+)
+{
+    for (R_xlen_t i = 0; i < size; ++i)
+        output.set_na(i);
+}
+
+
+CHARR_NEUTRAL_HELPER charport::StrView matched_view(
+    const shared::StringView& subject,
+    const shared::RegexRange& range
+) noexcept
+{
+    const int length = range.end-range.start;
+    cetype_ext_t encoding = cetype_ext_t::CE_UTF8;
+    if (subject.enc == shared::StringEncoding::ascii)
+        encoding = cetype_ext_t::CE_ASCII;
+    else if (subject.enc == shared::StringEncoding::ascii_or_utf8)
+        encoding = cetype_ext_t::CE_ASCII_OR_UTF8;
+    return charport::StrView{
+        length == 0 ? "" : subject.ptr+range.start,
+        length,
+        encoding
+    };
+}
+
+
+CHARR_CXX_HELPER void set_match_cell(
+    io::OutputBuilder& output,
+    R_xlen_t index,
+    const shared::StringView& subject,
+    const shared::RegexRange& range,
+    const charport::StrView& capture_missing
+)
+{
+    if (range.start == NA_INTEGER || range.end == NA_INTEGER) {
+        output.set_na(index);
+        return;
+    }
+    if (range.start < 0 || range.end < 0) {
+        output.set_validated(index, capture_missing);
+        return;
+    }
+    output.set_validated(index, matched_view(subject, range));
+}
+
+
+CHARR_CXX_HELPER void fill_staged_first(
+    io::OutputBuilder& output,
+    R_len_t rows,
+    R_len_t subject_length,
+    const std::vector<shared::StringView>& subjects,
+    const std::vector<shared::RegexRange>& matches,
+    const std::vector<std::vector<shared::RegexRange> >& captures,
+    const charport::StrView& capture_missing
+)
+{
+    for (R_len_t row = 0; row < rows; ++row) {
+        const shared::StringView& subject = subjects[
+            static_cast<std::size_t>(row % subject_length)
+        ];
+        set_match_cell(
+            output, row, subject,
+            matches[static_cast<std::size_t>(row)], capture_missing
+        );
+        for (std::size_t column = 0; column < captures.size(); ++column) {
+            set_match_cell(
+                output,
+                row+static_cast<R_xlen_t>(column+1)*rows,
+                subject, captures[column][static_cast<std::size_t>(row)],
+                capture_missing
+            );
+        }
+    }
+}
+
+
+CHARR_CXX_HELPER void build_all_matches(
+    io::OutputBuilder& output,
+    const shared::StringView& subject,
+    const std::vector<shared::RegexRange>& matches,
+    const std::vector<std::vector<shared::RegexRange> >& captures,
+    bool omit_no_match,
+    const charport::StrView& capture_missing,
+    R_len_t& rows,
+    R_len_t& columns
+)
+{
+    columns = static_cast<R_len_t>(captures.size()+1);
+    const R_len_t count = static_cast<R_len_t>(matches.size());
+    rows = count > 0 ? count : (omit_no_match ? 0 : 1);
+    const R_xlen_t size = matrix_size(rows, columns);
+    output.reset(size);
+    fill_na(output, size);
+
+    for (R_len_t row = 0; row < count; ++row) {
+        set_match_cell(
+            output, row, subject,
+            matches[static_cast<std::size_t>(row)], capture_missing
+        );
+        for (R_len_t column = 1; column < columns; ++column) {
+            set_match_cell(
+                output, row+static_cast<R_xlen_t>(column)*rows,
+                subject,
+                captures[static_cast<std::size_t>(column-1)][
+                    static_cast<std::size_t>(row)
+                ],
+                capture_missing
+            );
+        }
+    }
+}
+
+
+CHARR_R_HELPER SEXP capture_dimnames_r(
+    const std::vector<std::string>& names
+) noexcept
+{
+    if (!capture_names_present(names))
         return R_NilValue;
 
-    SEXP colnames, dimnames;
-    PROTECT(dimnames = Rf_allocVector(VECSXP, 2));
-    PROTECT(colnames = Rf_allocVector(STRSXP, names.size()+1));
-    SET_STRING_ELT(colnames, 0, Rf_mkChar(""));
-    for (size_t i=0; i<names.size(); ++i) {
+    SEXP dimnames = PROTECT(Rf_allocVector(VECSXP, 2));
+    SEXP columns = PROTECT(Rf_allocVector(STRSXP, names.size()+1));
+    SET_STRING_ELT(columns, 0, R_BlankString);
+    for (std::size_t i = 0; i < names.size(); ++i) {
         SET_STRING_ELT(
-            colnames, i+1,
+            columns, i+1,
             Rf_mkCharLenCE(
-                names[i].empty()?"":names[i].data(),
-                names[i].size(), CE_UTF8
+                names[i].size() == 0 ? "" : names[i].data(),
+                static_cast<int>(names[i].size()), CE_UTF8
             )
         );
     }
-    SET_VECTOR_ELT(dimnames, 1, colnames);
+    SET_VECTOR_ELT(dimnames, 1, columns);
     UNPROTECT(2);
     return dimnames;
 }
 
 
-SEXP ci__match_set_matrix_attributes(
-    SEXP matrix, R_len_t nrow, R_len_t ncol, SEXP dimnames
-)
+CHARR_R_HELPER void set_matrix_attributes_r(
+    SEXP matrix,
+    R_len_t rows,
+    R_len_t columns,
+    SEXP dimnames
+) noexcept
 {
-    SEXP dim;
-    PROTECT(dim = Rf_allocVector(INTSXP, 2));
-    INTEGER(dim)[0] = nrow;
-    INTEGER(dim)[1] = ncol;
-    Rf_setAttrib(matrix, R_DimSymbol, dim);
-    if (!Rf_isNull(dimnames))
+    SEXP dimensions = PROTECT(Rf_allocVector(INTSXP, 2));
+    INTEGER(dimensions)[0] = rows;
+    INTEGER(dimensions)[1] = columns;
+    Rf_setAttrib(matrix, R_DimSymbol, dimensions);
+    if (dimnames != R_NilValue)
         Rf_setAttrib(matrix, R_DimNamesSymbol, dimnames);
     UNPROTECT(1);
-    return matrix;
 }
 
 
-void ci__match_set_all_na(
-    charport::charvec::Builder& builder, R_xlen_t size
-)
+CHARR_R_HELPER void emit_warnings_r(
+    int empty_pattern_warnings
+) noexcept
 {
-    for (R_xlen_t i=0; i<size; ++i)
-        builder.set_na(i);
-}
-
-
-void ci__match_set_cg_missing(
-    charport::charvec::Builder& builder, R_xlen_t i,
-    const charport::StrView& value
-)
-{
-    if (value.is_na()) {
-        builder.set_na(i);
-        return;
-    }
-    ci::builder_set(
-        builder, i, value.ptr, value.len, value.enc
-    );
-}
-
-
-R_xlen_t ci__match_matrix_size(R_len_t nrow, R_len_t ncol)
-{
-    // Deviation from stringi: reject an unrepresentable flat Builder length
-    // before multiplying the copied matrix dimensions.
-    if (nrow < 0 || ncol < 0 ||
-            (nrow > 0 &&
-             static_cast<R_xlen_t>(ncol) > R_XLEN_T_MAX/nrow)) {
-        throw length_error("matrix length exceeds R's vector limit");
-    }
-    return static_cast<R_xlen_t>(nrow)*ncol;
-}
-
-
-class CiRegexMatchSubject {
-private:
-    UnicodeString text_;
-    vector<int32_t> byte_offsets_;
-    const char* data_;
-
-public:
-    CiRegexMatchSubject() : text_(), byte_offsets_(), data_(NULL)
-    {
-    }
-
-    UnicodeString& set(const charport::StrView& input)
-    {
-        data_ = input.ptr;
-        if (input.len <= 0) {
-            text_.remove();
-            byte_offsets_.assign(1, 0);
-            return text_;
-        }
-
-        UChar* output = text_.getBuffer(input.len);
-        if (!output)
-            throw StriException(MSG__MEM_ALLOC_ERROR);
-        byte_offsets_.resize(static_cast<size_t>(input.len)+1);
-
-        int32_t source_i = 0;
-        int32_t output_i = 0;
-        byte_offsets_[0] = 0;
-        if (input.enc == cetype_ext_t::CE_ASCII) {
-            for (; source_i<input.len; ++source_i) {
-                output[output_i++] =
-                    static_cast<unsigned char>(input.ptr[source_i]);
-                byte_offsets_[static_cast<size_t>(output_i)] = source_i+1;
-            }
-        }
-        else {
-            while (source_i < input.len) {
-                const int32_t source_begin = source_i;
-                UChar32 code_point;
-                U8_NEXT_OR_FFFD(
-                    input.ptr, source_i, input.len, code_point
-                );
-                if (code_point <= 0xffff) {
-                    output[output_i++] = static_cast<UChar>(code_point);
-                    byte_offsets_[static_cast<size_t>(output_i)] = source_i;
-                }
-                else {
-                    output[output_i++] = U16_LEAD(code_point);
-                    byte_offsets_[static_cast<size_t>(output_i)] = source_begin;
-                    output[output_i++] = U16_TRAIL(code_point);
-                    byte_offsets_[static_cast<size_t>(output_i)] = source_i;
-                }
-            }
-        }
-
-        text_.releaseBuffer(output_i);
-        byte_offsets_.resize(static_cast<size_t>(output_i)+1);
-        return text_;
-    }
-
-    charport::ByteView slice(int32_t start, int32_t end) const
-    {
-        if (start < 0 || end < start || end > text_.length())
-            throw StriException("invalid ICU regex match boundary");
-        const int32_t byte_start =
-            byte_offsets_[static_cast<size_t>(start)];
-        const int32_t byte_end = byte_offsets_[static_cast<size_t>(end)];
-        const char* output = data_ ? data_+byte_start : "";
-        return make_byteview(output, byte_end-byte_start);
-    }
-};
-
-
-charport::StrView ci__match_text(
-    const charr::altrep_backend::io::Utf8Input& inputs, R_len_t i
-)
-{
-    return inputs.text(i);
-}
-
-
-void ci__match_capture_offsets(
-    RegexMatcher* matcher, R_len_t groups, UErrorCode& status,
-    vector<pair<int32_t, int32_t> >& offsets
-)
-{
-    const int32_t match_start = matcher->start(status);
-    STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-    const int32_t match_end = matcher->end(status);
-    STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-    offsets[0] = make_pair(match_start, match_end);
-    for (R_len_t j=1; j<=groups; ++j) {
-        const int32_t group_start = matcher->start(j, status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-        const int32_t group_end = matcher->end(j, status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-        offsets[static_cast<size_t>(j)] = make_pair(
-            group_start, group_end
-        );
-    }
-}
-
-
-void ci__match_firstlast_scalar(
-    ci::ReaderContext& context, SEXP str, SEXP pattern,
-    R_len_t str_n, R_len_t pattern_n, R_len_t vectorize_length,
-    const regex::Options& pattern_opts, bool first,
-    const charport::StrView& cg_missing, CiMatchRegexMatrix& result
-)
-{
-    regex::PatternSet pattern_cont(
-        context, pattern,
-        str_n > 0 ? vectorize_length : pattern_n, pattern_opts
-    );
-    charr::altrep_backend::io::Utf8Input inputs(
-        context, str, vectorize_length
-    );
-    for (R_xlen_t i=0; i<inputs.source_size(); ++i) {
-        if (inputs.is_bytes(i))
-            throw StriException(MSG__BYTESENC);
-    }
-
-    const bool pattern_na = pattern_cont.isNA(0);
-    const bool pattern_empty = !pattern_na &&
-        pattern_cont.get(0).length() <= 0;
-    RegexMatcher* matcher = NULL;
-    R_len_t groups = 0;
-    if (!pattern_na && !pattern_empty) {
-        matcher = pattern_cont.getMatcher(0);
-        groups = matcher->groupCount();
-    }
-
-    result.nrow = vectorize_length;
-    result.ncol = groups+1;
-    const R_xlen_t output_size = ci__match_matrix_size(
-        result.nrow, result.ncol
-    );
-    charport::charvec::Builder output(output_size);
-    ci__match_set_all_na(output, output_size);
-    if (pattern_empty) {
-        const R_len_t warnings = vectorize_length > 0
-            ? vectorize_length : pattern_n;
-        for (R_len_t i=0; i<warnings; ++i)
-            context.warn(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
-    }
-    else if (!pattern_na) {
-        CiRegexMatchSubject subject;
-        vector<pair<int32_t, int32_t> > offsets(
-            static_cast<size_t>(groups+1)
-        );
-        for (R_len_t i=0; i<vectorize_length; ++i) {
-            const charport::StrView input = ci__match_text(inputs, i);
-            if (input.is_na())
-                continue;
-
-            matcher->reset(subject.set(input));
-            UErrorCode status = U_ZERO_ERROR;
-            int found = static_cast<int>(matcher->find(status));
-            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-            if (found) {
-                ci__match_capture_offsets(
-                    matcher, groups, status, offsets
-                );
-                if (!first) {
-                    while (matcher->find(status)) {
-                        STRI__CHECKICUSTATUS_THROW(
-                            status, {/* nothing special */}
-                        )
-                        ci__match_capture_offsets(
-                            matcher, groups, status, offsets
-                        );
-                    }
-                    STRI__CHECKICUSTATUS_THROW(
-                        status, {/* nothing special */}
-                    )
-                }
-            }
-
-            for (R_len_t j=0; j<=groups; ++j) {
-                const R_xlen_t output_i = i+
-                    static_cast<R_xlen_t>(j)*vectorize_length;
-                if (!found || offsets[static_cast<size_t>(j)].first < 0) {
-                    ci__match_set_cg_missing(
-                        output, output_i, cg_missing
-                    );
-                    continue;
-                }
-                const charport::ByteView value = subject.slice(
-                    offsets[static_cast<size_t>(j)].first,
-                    offsets[static_cast<size_t>(j)].second
-                );
-                ci::builder_set(
-                    output, output_i, value.ptr,
-                    static_cast<size_t>(value.len),
-                    cetype_ext_t::CE_ASCII_OR_UTF8
-                );
-            }
-        }
-    }
-
-    if (!pattern_na && !pattern_empty) {
-        const vector<string>& names = pattern_cont.getCaptureGroupNames(0);
-        if (ci__match_has_capture_names(names))
-            result.capture_names = names;
-    }
-    result.output = output.release_store();
-}
-
-
-void ci__match_all_scalar(
-    ci::ReaderContext& context, SEXP str, SEXP pattern,
-    R_len_t vectorize_length,
-    const regex::Options& pattern_opts, bool omit_no_match,
-    const charport::StrView& cg_missing,
-    vector<CiMatchRegexMatrix>& results
-)
-{
-    regex::PatternSet pattern_cont(
-        context, pattern, vectorize_length, pattern_opts
-    );
-    charr::altrep_backend::io::Utf8Input inputs(
-        context, str, vectorize_length
-    );
-    for (R_xlen_t i=0; i<inputs.source_size(); ++i) {
-        if (inputs.is_bytes(i))
-            throw StriException(MSG__BYTESENC);
-    }
-    if (vectorize_length <= 0)
-        return;
-
-    const bool pattern_na = pattern_cont.isNA(0);
-    const bool pattern_empty = !pattern_na &&
-        pattern_cont.get(0).length() <= 0;
-    charport::charvec::Builder output(0);
-    if (pattern_na || pattern_empty) {
-        for (R_len_t i=0; i<vectorize_length; ++i) {
-            if (pattern_empty)
-                context.warn(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
-            CiMatchRegexMatrix& result = results[static_cast<size_t>(i)];
-            result.nrow = 1;
-            result.ncol = 1;
-            output.reset(1);
-            output.set_na(0);
-            result.output = output.release_store();
-        }
-        return;
-    }
-
-    RegexMatcher* matcher = pattern_cont.getMatcher(0);
-    const R_len_t groups = matcher->groupCount();
-    const R_len_t width = groups+1;
-    vector<string> capture_names;
-    const vector<string>& names = pattern_cont.getCaptureGroupNames(0);
-    if (ci__match_has_capture_names(names))
-        capture_names = names;
-    CiRegexMatchSubject subject;
-    vector<pair<int32_t, int32_t> > offsets;
-
-    for (R_len_t i=0; i<vectorize_length; ++i) {
-        CiMatchRegexMatrix& result = results[static_cast<size_t>(i)];
-        result.ncol = width;
-        result.capture_names = capture_names;
-        const charport::StrView input = ci__match_text(inputs, i);
-        if (input.is_na()) {
-            result.nrow = 1;
-            output.reset(width);
-            ci__match_set_all_na(output, width);
-            result.output = output.release_store();
-            continue;
-        }
-
-        matcher->reset(subject.set(input));
-        UErrorCode status = U_ZERO_ERROR;
-        offsets.clear();
-        while (matcher->find(status)) {
-            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-            const size_t old_size = offsets.size();
-            offsets.resize(old_size+static_cast<size_t>(width));
-            vector<pair<int32_t, int32_t> >::iterator begin =
-                offsets.begin()+old_size;
-            const int32_t match_start = matcher->start(status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-            const int32_t match_end = matcher->end(status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-            begin[0] = make_pair(match_start, match_end);
-            for (R_len_t j=1; j<=groups; ++j) {
-                const int32_t group_start = matcher->start(j, status);
-                STRI__CHECKICUSTATUS_THROW(
-                    status, {/* nothing special */}
-                )
-                const int32_t group_end = matcher->end(j, status);
-                STRI__CHECKICUSTATUS_THROW(
-                    status, {/* nothing special */}
-                )
-                begin[j] = make_pair(group_start, group_end);
-            }
-        }
-        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-
-        const R_len_t count = static_cast<R_len_t>(
-            offsets.size()/static_cast<size_t>(width)
-        );
-        result.nrow = count > 0 ? count : (omit_no_match ? 0 : 1);
-        const R_xlen_t output_size = ci__match_matrix_size(
-            result.nrow, width
-        );
-        output.reset(output_size);
-        ci__match_set_all_na(output, output_size);
-        if (count <= 0) {
-            result.output = output.release_store();
-            continue;
-        }
-
-        for (R_len_t row=0; row<count; ++row) {
-            for (R_len_t column=0; column<width; ++column) {
-                const pair<int32_t, int32_t>& offset = offsets[
-                    static_cast<size_t>(row)*width+column
-                ];
-                const R_xlen_t output_i = row+
-                    static_cast<R_xlen_t>(column)*count;
-                if (offset.first < 0) {
-                    ci__match_set_cg_missing(
-                        output, output_i, cg_missing
-                    );
-                    continue;
-                }
-                const charport::ByteView value = subject.slice(
-                    offset.first, offset.second
-                );
-                ci::builder_set(
-                    output, output_i, value.ptr,
-                    static_cast<size_t>(value.len),
-                    cetype_ext_t::CE_ASCII_OR_UTF8
-                );
-            }
-        }
-        result.output = output.release_store();
-    }
+    for (int i = 0; i < empty_pattern_warnings; ++i)
+        Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
 }
 
 } // namespace search_regex_match
@@ -496,529 +463,552 @@ void ci__match_all_scalar(
 using namespace search_regex_match;
 
 
-/**
- * Extract all capture groups of the first/last occurrence
- * of a regex pattern in each string
- *
- * @param str character vector
- * @param pattern character vector
- * @param opts_regex list
- * @param first logical - search for the first or the last occurrence?
- * @param cg_missing single string
- * @return character matrix
- *
- * @version 0.1-??? (Marek Gagolewski, 2013-06-22)
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-12-06)
- *    new arg: cg_missing
- *
- * @version 1.0-2 (Marek Gagolewski, 2016-01-29)
- *    Issue #214: allow a regex pattern like `.*`  to match an empty string
- *
- * @version 1.1.8 (Marek Gagolewski, 2018-04-09)
- *    #288: ci_match did not return correct number of columns
- *    when input was empty
- *
- * @version 1.4.7 (Marek Gagolewski, 2020-08-24)
- *    Use regex::PatternSet::getRegexOptions
- *
- * @version 1.7.1 (Marek Gagolewski, 2021-06-19)
- *    #153: named capture groups
- */
-SEXP ci__match_firstlast_regex(SEXP str, SEXP pattern, SEXP cg_missing, SEXP opts_regex, bool first)
+/** Extract the first regular-expression match and its capture groups. */
+CHARR_ENTRYPOINT SEXP ci_match_first_regex(
+    SEXP str, SEXP pattern, SEXP cg_missing, SEXP opts_regex
+) noexcept
 {
-    // @TODO: capture_groups arg (integer vector/set - which capture groups to extract)
-    PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
-    PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern")); // prepare string argument
-    PROTECT(cg_missing = ci__prepare_arg_string_1(cg_missing, "cg_missing"));
-    UText* str_text = NULL; // may potentially be slower, but definitely is more convenient!
-    STRI__ERROR_HANDLER_BEGIN(3)
-    SEXP ret;
-    {
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    R_len_t str_n = ci::checked_r_len(
-        context.size(str), "character vectors"
+    CHARR_ENTRYPOINT_BEGIN();
+
+    str = entry_protections.protect_one(
+        ci__prepare_arg_string_r(str, "str")
     );
-    R_len_t pattern_n = ci::checked_r_len(
-        context.size(pattern), "character vectors"
+    pattern = entry_protections.protect_one(
+        ci__prepare_arg_string_r(pattern, "pattern")
     );
-    R_len_t vectorize_length = 0;
-    ci::unwind_protect([&]() -> SEXP {
-        vectorize_length = ci__recycling_rule(
-            false, 2, str_n, pattern_n
-        );
-        return R_NilValue;
-    });
-    // Deviation from stringi: queue the recycling warning until capture
-    // staging, regex/Reader/UText owners, and the output Builder are gone.
-    if (vectorize_length > 0 &&
-            (vectorize_length % str_n != 0 ||
-             vectorize_length % pattern_n != 0))
-        context.warn(MSG__WARN_RECYCLING_RULE);
+    cg_missing = entry_protections.protect_one(
+        ci__prepare_arg_string_1_r(
+            cg_missing, "cg_missing"
+        )
+    );
 
-    regex::Options pattern_opts;
-    ci::unwind_protect([&]() -> SEXP {
-        pattern_opts = regex::PatternSet::getRegexOptions(
-            STRI__DEFERRED_WARNINGS, opts_regex
-        );
-        return R_NilValue;
-    });
+    const R_xlen_t subject_xlength = XLENGTH(str);
+    const R_xlen_t pattern_xlength = XLENGTH(pattern);
+    if (subject_xlength > R_LEN_T_MAX || pattern_xlength > R_LEN_T_MAX)
+        Rf_error("long character vectors are not supported");
+    const R_len_t subject_length = static_cast<R_len_t>(subject_xlength);
+    const R_len_t pattern_length = static_cast<R_len_t>(pattern_xlength);
+    bool recycling_warning = false;
+    const R_len_t vectorize_length = recycling_length(
+        subject_length, pattern_length, recycling_warning
+    );
+    if (recycling_warning)
+        Rf_warning(MSG__WARN_RECYCLING_RULE);
+    const shared::RegexOptions options = regex::prepare_options(opts_regex);
 
-    CiMatchRegexMatrix result;
-    if (pattern_n == 1) {
-        io::Utf8Input cg_missing_cont(
-            context, cg_missing, 1
-        );
-        shared_ptr<ci::ReaderBorrow> cg_missing_borrow =
-            context.acquire(cg_missing);
-        const charport::StrView cg_missing_value =
-            cg_missing_borrow->views()[0];
-        ci__match_firstlast_scalar(
-            context, str, pattern, str_n, pattern_n,
-            vectorize_length, pattern_opts, first,
-            cg_missing_value, result
-        );
-    }
-    else {
-        io::Utf8Input str_cont(
-            context, str, vectorize_length
-        );
-        io::Utf8Input cg_missing_cont(
-            context, cg_missing, 1
-        );
-        // The copied container validates cg_missing as UTF-8 input, but
-        // stringi inserts the original value and therefore preserves its mark.
-        shared_ptr<ci::ReaderBorrow> cg_missing_borrow =
-            context.acquire(cg_missing);
-        const charport::StrView cg_missing_value =
-            cg_missing_borrow->views()[0];
 
-        // we don't know how many capture groups are there:
-        vector< vector< pair<const char*, const char*> > > occurrences(
-            static_cast<size_t>(vectorize_length)
-        );
-        R_len_t occurrences_max = 1;
+    int empty_pattern_warnings = 0;
+    R_len_t result_columns = 1;
 
-        regex::PatternSet pattern_cont(
-            context, pattern,
-            (str_n>0)?vectorize_length:pattern_n, pattern_opts
-        );
-        if (str_n == 0 && pattern_n > 0) {
-            // we need to determine the number of capture groups anyway
-            for (R_len_t i = pattern_cont.vectorize_init();
-                    i != pattern_cont.vectorize_end();
-                    i = pattern_cont.vectorize_next(i))
-            {
-                if ((pattern_cont).isNA(i) ||
-                        (pattern_cont).get(i).length() <= 0) {
-                    if (!(pattern_cont).isNA(i))
-                        context.warn(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
-                    continue;
+    try {
+        charport::Reader subject_reader;
+        charport::Reader pattern_reader;
+        charport::Reader missing_reader;
+        charport::StrViews subject_views;
+        charport::StrViews pattern_views;
+        charport::StrViews missing_views;
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::NativeToUtf8 missing_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        shared::SliceArena missing_storage;
+        std::vector<shared::StringView> subjects;
+        shared::RegexPatterns patterns;
+        shared::RegexMatcher matcher(options);
+        shared::RegexRange current_match{0, 0};
+        std::vector<shared::RegexRange> current_captures;
+        std::vector<shared::RegexRange> staged_matches;
+        std::vector<std::vector<shared::RegexRange> > staged_captures;
+        std::vector<std::string> capture_names;
+        io::OutputBuilder output(0);
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                missing_reader.reset(cg_missing);
+                if (missing_reader.size() != 1) {
+                    throw std::runtime_error(
+                        "Reader length changed for cg_missing"
+                    );
                 }
-
-                RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
-                int pattern_cur_groups = matcher->groupCount();
-                if (occurrences_max < pattern_cur_groups+1)
-                    occurrences_max=pattern_cur_groups+1;
-            }
-        }
-        else
-        {
-            for (R_len_t i = pattern_cont.vectorize_init();
-                    i != pattern_cont.vectorize_end();
-                    i = pattern_cont.vectorize_next(i))
-            {
-                if ((pattern_cont).isNA(i) ||
-                        (pattern_cont).get(i).length() <= 0) {
-                    if (!(pattern_cont).isNA(i))
-                        context.warn(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
-                    continue;
-                }
-
-                UErrorCode status = U_ZERO_ERROR;
-                RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
-                int pattern_cur_groups = matcher->groupCount();
-                if (occurrences_max < pattern_cur_groups+1)
-                    occurrences_max=pattern_cur_groups+1;
-
-                if ((str_cont).isNA(i)) {
-                    continue;
-                }
-
-                str_text = utext_openUTF8(
-                    str_text, str_cont.get(i).data(),
-                    str_cont.get(i).length(), &status
+                missing_views.resize(1);
+                missing_reader.views(
+                    0, 1,
+                    missing_views.ptrs(), missing_views.lengths(),
+                    missing_views.encodings()
                 );
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                const char* str_cur_s = str_cont.get(i).data();
-
-                occurrences[i] = vector< pair<const char*, const char*> >(
-                    pattern_cur_groups+1
+                const charport::StrView capture_missing = missing_views[0];
+                (void)normalize_subject(
+                    io::as_shared_view(capture_missing),
+                    missing_converter, missing_storage
                 );
-                matcher->reset(str_text);
-                while (1) {
-                    int m_res = (int)matcher->find(status);
-                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                    if (!m_res) break;
-                    occurrences[i][0].first  = str_cur_s+(int)matcher->start(status);
-                    occurrences[i][0].second = str_cur_s+(int)matcher->end(status);
-                    for (R_len_t j=1; j<=pattern_cur_groups; ++j) {
-                        int m_start = (int)matcher->start(j, status);
-                        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                        int m_end = (int)matcher->end(j, status);
-                        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                        if (m_start < 0 || m_end < 0) {
-                            occurrences[i][j].first  = NULL;
-                            occurrences[i][j].second = NULL;
-                        }
-                        else {
-                            occurrences[i][j].first  = str_cur_s+m_start;
-                            occurrences[i][j].second = str_cur_s+m_end;
+
+                if (vectorize_length > 0) {
+                    subject_reader.reset(str);
+                    if (subject_reader.size() != subject_length) {
+                        throw std::runtime_error(
+                            "Reader length changed during regex match"
+                        );
+                    }
+                    subject_views.resize(subject_length);
+                    subject_reader.views(
+                        0, subject_length,
+                        subject_views.ptrs(), subject_views.lengths(),
+                        subject_views.encodings()
+                    );
+                    normalize_subjects(
+                        subject_views, subject_converter,
+                        subject_storage, subjects
+                    );
+                }
+
+                patterns.resize(static_cast<std::size_t>(pattern_length));
+                if (pattern_length > 0) {
+                    pattern_reader.reset(pattern);
+                    if (pattern_reader.size() != pattern_length) {
+                        throw std::runtime_error(
+                            "Reader length changed during regex match"
+                        );
+                    }
+                    pattern_views.resize(pattern_length);
+                    pattern_reader.views(
+                        0, pattern_length,
+                        pattern_views.ptrs(), pattern_views.lengths(),
+                        pattern_views.encodings()
+                    );
+                    normalize_patterns(
+                        pattern_views, pattern_converter,
+                        pattern_storage, patterns
+                    );
+                }
+                empty_pattern_warnings = patterns.empty_count();
+
+                if (pattern_length == 1) {
+                    const std::size_t pattern_index = 0;
+                    const shared::RegexInput current_pattern =
+                        patterns.get(pattern_index);
+                    const bool pattern_empty =
+                        !current_pattern.missing &&
+                        current_pattern.length <= 0;
+                    int group_count = 0;
+                    if (!current_pattern.missing && !pattern_empty) {
+                        bind_pattern(
+                            matcher, current_pattern, patterns,
+                            pattern_index
+                        );
+                        group_count = matcher.group_count();
+                        read_capture_names(
+                            matcher, patterns, pattern_index,
+                            capture_names
+                        );
+                    }
+                    if (pattern_empty) {
+                        empty_pattern_warnings += vectorize_length > 0
+                            ? vectorize_length
+                            : 1;
+                    }
+
+                    result_columns = group_count+1;
+                    const R_xlen_t size = matrix_size(
+                        vectorize_length, result_columns
+                    );
+                    output.reset(size);
+                    fill_na(output, size);
+                    if (!current_pattern.missing && !pattern_empty) {
+                        for (R_len_t i = 0; i < vectorize_length; ++i) {
+                            const shared::StringView& subject = subjects[
+                                static_cast<std::size_t>(i)
+                            ];
+                            if (subject.is_na())
+                                continue;
+
+                            const bool found = find_first(
+                                matcher, subject, &subject,
+                                patterns, pattern_index,
+                                current_match, current_captures
+                            );
+                            if (!found) {
+                                current_match = shared::RegexRange{-1, -1};
+                                for (int column = 0;
+                                        column <= group_count; ++column) {
+                                    set_match_cell(
+                                        output,
+                                        i+static_cast<R_xlen_t>(column)*
+                                            vectorize_length,
+                                        subject, current_match,
+                                        capture_missing
+                                    );
+                                }
+                                continue;
+                            }
+
+                            set_match_cell(
+                                output, i, subject, current_match,
+                                capture_missing
+                            );
+                            for (int column = 0;
+                                    column < group_count; ++column) {
+                                set_match_cell(
+                                    output,
+                                    i+static_cast<R_xlen_t>(column+1)*
+                                        vectorize_length,
+                                    subject,
+                                    current_captures[
+                                        static_cast<std::size_t>(column)
+                                    ],
+                                    capture_missing
+                                );
+                            }
                         }
                     }
-                    if (first) break;
-                }
-            }
-        }
-
-        if (str_text) {
-            utext_close(str_text);
-            str_text = NULL;
-        }
-
-        result.nrow = vectorize_length;
-        result.ncol = occurrences_max;
-        R_xlen_t output_size = ci__match_matrix_size(
-            vectorize_length, occurrences_max
-        );
-        charport::charvec::Builder output(output_size);
-        ci__match_set_all_na(output, output_size);
-
-        // Deviation from stringi: native output storage owns captured bytes,
-        // and C++ owns capture names until the subject Reader ends.
-        for (R_len_t i=0; i<vectorize_length; ++i) {
-            R_len_t ni = static_cast<R_len_t>(occurrences[i].size());
-            for (R_len_t j=0; j<ni; ++j) {
-                pair<const char*, const char*> retij = occurrences[i][j];
-                R_xlen_t output_i =
-                    i+static_cast<R_xlen_t>(j)*vectorize_length;
-                if (retij.first != NULL && retij.second != NULL) {
-                    ci::builder_set(
-                        output, output_i, retij.first,
-                        static_cast<R_len_t>(retij.second-retij.first),
-                        cetype_ext_t::CE_ASCII_OR_UTF8
-                    );
                 }
                 else {
-                    ci__match_set_cg_missing(
-                        output, output_i, cg_missing_value
+                    staged_matches.assign(
+                        static_cast<std::size_t>(vectorize_length),
+                        shared::RegexRange{NA_INTEGER, NA_INTEGER}
+                    );
+
+                    for (R_len_t lane = 0; lane < pattern_length; ++lane) {
+                        const std::size_t pattern_index =
+                            static_cast<std::size_t>(lane);
+                        const shared::RegexInput current_pattern =
+                            patterns.get(pattern_index);
+                        const bool pattern_empty =
+                            !current_pattern.missing &&
+                            current_pattern.length <= 0;
+                        if (pattern_empty) {
+                            if (vectorize_length <= 0) {
+                                ++empty_pattern_warnings;
+                            }
+                            else {
+                                for (R_len_t i = lane;
+                                        i < vectorize_length;
+                                        i += pattern_length) {
+                                    ++empty_pattern_warnings;
+                                }
+                            }
+                            continue;
+                        }
+                        if (current_pattern.missing)
+                            continue;
+
+                        bind_pattern(
+                            matcher, current_pattern, patterns,
+                            pattern_index
+                        );
+                        const std::size_t group_count =
+                            static_cast<std::size_t>(
+                                matcher.group_count()
+                            );
+                        ensure_capture_columns(
+                            staged_captures, group_count,
+                            static_cast<std::size_t>(vectorize_length)
+                        );
+
+                        for (R_len_t i = lane;
+                                i < vectorize_length;
+                                i += pattern_length) {
+                            const std::size_t subject_index =
+                                static_cast<std::size_t>(
+                                    i % subject_length
+                                );
+                            const shared::StringView& subject =
+                                subjects[subject_index];
+                            if (subject.is_na())
+                                continue;
+
+                            const bool found = find_first(
+                                matcher, subject,
+                                &subjects[subject_index],
+                                patterns, pattern_index,
+                                current_match, current_captures
+                            );
+                            if (!found) {
+                                stage_no_match(
+                                    staged_matches, staged_captures,
+                                    group_count,
+                                    static_cast<std::size_t>(i)
+                                );
+                            }
+                            else {
+                                stage_match(
+                                    current_match, current_captures,
+                                    staged_matches, staged_captures,
+                                    static_cast<std::size_t>(i)
+                                );
+                            }
+                        }
+                    }
+
+                    result_columns = static_cast<R_len_t>(
+                        staged_captures.size()+1
+                    );
+                    const R_xlen_t size = matrix_size(
+                        vectorize_length, result_columns
+                    );
+                    output.reset(size);
+                    fill_na(output, size);
+                    fill_staged_first(
+                        output, vectorize_length, subject_length,
+                        subjects, staged_matches, staged_captures,
+                        capture_missing
                     );
                 }
-            }
-        }
 
-        if (pattern_cont.get_n() == 1 &&
-                !pattern_cont.isNA(0) &&
-                pattern_cont.get(0).length() > 0) {
-            const vector<string>& capture_names =
-                pattern_cont.getCaptureGroupNames(0);
-            if (ci__match_has_capture_names(capture_names))
-                result.capture_names = capture_names;
-        }
-        result.output = output.release_store();
-    }
-
-    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-        return charport::charvec::wrap(std::move(result.output));
-    }));
-    SEXP dimnames;
-    STRI__PROTECT(dimnames = ci::unwind_protect([&]() -> SEXP {
-        return ci__match_capture_dimnames(result.capture_names);
-    }));
-    ci::unwind_protect([&]() -> SEXP {
-        return ci__match_set_matrix_attributes(
-            ret, result.nrow, result.ncol, dimnames
-        );
-    });
-    STRI__UNPROTECT(1);
-    }
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(if (str_text) utext_close(str_text);)
-}
-
-
-/**
- * Extract all capture groups of the first occurrence of a regex pattern in each string
- *
- * @param str character vector
- * @param pattern character vector
- * @param cg_missing single string
- * @param opts_regex list
- * @return character matrix
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-22)
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-12-06)
- *    new arg: cg_missing
- */
-SEXP ci_match_first_regex(SEXP str, SEXP pattern, SEXP cg_missing, SEXP opts_regex)
-{
-    return ci__match_firstlast_regex(str, pattern, cg_missing, opts_regex, true);
-}
-
-
-/**
- * Extract all capture groups of  all occurrences of a regex pattern in each string
- *
- * @param str character vector
- * @param pattern character vector
- * @param opts_regex list
- * @param cg_missing single string
- * @return list of character matrices
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-22)
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-11-27)
- *    FR #117: omit_no_match arg added
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-12-06)
- *    new arg: cg_missing
- *
- * @version 1.0-2 (Marek Gagolewski, 2016-01-29)
- *    Issue #214: allow a regex pattern like `.*`  to match an empty string
- *
- * @version 1.7.1 (Marek Gagolewski, 2021-06-19)
- *    #153: named capture groups
- */
-SEXP ci_match_all_regex(SEXP str, SEXP pattern, SEXP omit_no_match, SEXP cg_missing, SEXP opts_regex)
-{
-    bool omit_no_match1 = ci__prepare_arg_logical_1_notNA(omit_no_match, "omit_no_match");
-    PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
-    PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern")); // prepare string argument
-    PROTECT(cg_missing = ci__prepare_arg_string_1(cg_missing, "cg_missing"));
-    UText* str_text = NULL; // may potentially be slower, but definitely is more convenient!
-    STRI__ERROR_HANDLER_BEGIN(3)
-    SEXP ret;
-    {
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    R_len_t str_n = ci::checked_r_len(
-        context.size(str), "character vectors"
-    );
-    R_len_t pattern_n = ci::checked_r_len(
-        context.size(pattern), "character vectors"
-    );
-    R_len_t vectorize_length = 0;
-    ci::unwind_protect([&]() -> SEXP {
-        vectorize_length = ci__recycling_rule(
-            false, 2, str_n, pattern_n
-        );
-        return R_NilValue;
-    });
-    // Deviation from stringi: queue the recycling warning until capture
-    // staging, regex/Reader/UText owners, and native output storage are gone.
-    if (vectorize_length > 0 &&
-            (vectorize_length % str_n != 0 ||
-             vectorize_length % pattern_n != 0))
-        context.warn(MSG__WARN_RECYCLING_RULE);
-
-    regex::Options pattern_opts;
-    ci::unwind_protect([&]() -> SEXP {
-        pattern_opts = regex::PatternSet::getRegexOptions(
-            STRI__DEFERRED_WARNINGS, opts_regex
-        );
-        return R_NilValue;
-    });
-
-    vector<CiMatchRegexMatrix> results(
-        static_cast<size_t>(vectorize_length)
-    );
-    if (pattern_n == 1) {
-        io::Utf8Input cg_missing_cont(
-            context, cg_missing, 1
-        );
-        shared_ptr<ci::ReaderBorrow> cg_missing_borrow =
-            context.acquire(cg_missing);
-        const charport::StrView cg_missing_value =
-            cg_missing_borrow->views()[0];
-        ci__match_all_scalar(
-            context, str, pattern, vectorize_length,
-            pattern_opts, omit_no_match1, cg_missing_value, results
-        );
-    }
-    else {
-        io::Utf8Input str_cont(
-            context, str, vectorize_length
-        );
-        regex::PatternSet pattern_cont(
-            context, pattern, vectorize_length, pattern_opts
-        );
-        io::Utf8Input cg_missing_cont(
-            context, cg_missing, 1
-        );
-        // The copied container validates cg_missing as UTF-8 input, but
-        // stringi inserts the original value and therefore preserves its mark.
-        shared_ptr<ci::ReaderBorrow> cg_missing_borrow =
-            context.acquire(cg_missing);
-        const charport::StrView cg_missing_value =
-            cg_missing_borrow->views()[0];
-        charport::charvec::Builder output(0);
-
-        for (R_len_t i = pattern_cont.vectorize_init();
-                i != pattern_cont.vectorize_end();
-                i = pattern_cont.vectorize_next(i))
-        {
-            CiMatchRegexMatrix& result = results[static_cast<size_t>(i)];
-            if ((pattern_cont).isNA(i) ||
-                    (pattern_cont).get(i).length() <= 0) {
-                if (!(pattern_cont).isNA(i))
-                    context.warn(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
-                result.nrow = 1;
-                result.ncol = 1;
-                output.reset(1);
-                output.set_na(0);
-                result.output = output.release_store();
-                continue;
-            }
-
-            UErrorCode status = U_ZERO_ERROR;
-            RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
-            R_len_t pattern_cur_groups = matcher->groupCount();
-            result.ncol = pattern_cur_groups+1;
-            const vector<string>& capture_names =
-                pattern_cont.getCaptureGroupNames(i);
-            if (ci__match_has_capture_names(capture_names))
-                result.capture_names = capture_names;
-
-            if ((str_cont).isNA(i)) {
-                result.nrow = 1;
-                output.reset(result.ncol);
-                ci__match_set_all_na(output, result.ncol);
-                result.output = output.release_store();
-                continue;
-            }
-
-            str_text = utext_openUTF8(
-                str_text, str_cont.get(i).data(),
-                str_cont.get(i).length(), &status
-            );
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-            matcher->reset(str_text);
-
-            deque< pair<R_len_t, R_len_t> > occurrences;
-            while (1) {
-                int m_res = (int)matcher->find(status);
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                if (!m_res) break;
-
-                occurrences.push_back(pair<R_len_t, R_len_t>(
-                    (R_len_t)matcher->start(status),
-                    (R_len_t)matcher->end(status)
-                ));
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                for (R_len_t j=0; j<pattern_cur_groups; ++j) {
-                    occurrences.push_back(pair<R_len_t, R_len_t>(
-                        (R_len_t)matcher->start(j+1, status),
-                        (R_len_t)matcher->end(j+1, status)
-                    ));
-                }
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-            }
-
-            R_len_t noccurrences = static_cast<R_len_t>(
-                occurrences.size()/(pattern_cur_groups+1)
-            );
-            result.nrow = (noccurrences <= 0)?
-                (omit_no_match1?0:1):noccurrences;
-            R_xlen_t output_size = ci__match_matrix_size(
-                result.nrow, result.ncol
-            );
-            output.reset(output_size);
-            ci__match_set_all_na(output, output_size);
-            if (noccurrences <= 0) {
-                result.output = output.release_store();
-                continue;
-            }
-
-            // Deviation from stringi: native output storage owns captured
-            // bytes, and C++ owns capture names until the subject Reader ends.
-            const char* str_cur_s = str_cont.get(i).data();
-            deque< pair<R_len_t, R_len_t> >::iterator iter = occurrences.begin();
-            for (R_len_t j = 0; iter != occurrences.end(); ++j) {
-                pair<R_len_t, R_len_t> curo = *iter;
-                ci::builder_set(
-                    output, j, str_cur_s+curo.first,
-                    curo.second-curo.first,
-                    cetype_ext_t::CE_ASCII_OR_UTF8
+                result = entry_protections.reprotect_one(
+                    output.to_sexp(), result_index
                 );
-                ++iter;
-                for (R_len_t k = 0;
-                        iter != occurrences.end() && k < pattern_cur_groups;
-                        ++iter, ++k) {
-                    curo = *iter;
-                    R_xlen_t output_i =
-                        j+static_cast<R_xlen_t>(k+1)*noccurrences;
-                    if (curo.first < 0 || curo.second < 0) {
-                        ci__match_set_cg_missing(
-                            output, output_i, cg_missing_value
+                SEXP dimnames = R_NilValue;
+                PROTECT_INDEX dimnames_index;
+                callback_protections.protect_with_index(
+                    dimnames, &dimnames_index
+                );
+                dimnames = callback_protections.reprotect_slot(
+                    capture_dimnames_r(capture_names),
+                    dimnames_index
+                );
+                set_matrix_attributes_r(
+                    result, vectorize_length, result_columns, dimnames
+                );
+
+                CHARR_UNWIND_RETURN();
+            }
+        );
+    }
+    CHARR_ENTRYPOINT_END(
+        emit_warnings_r(empty_pattern_warnings);
+    );
+}
+
+
+/** Extract every regular-expression match and its capture groups. */
+CHARR_ENTRYPOINT SEXP ci_match_all_regex(
+    SEXP str,
+    SEXP pattern,
+    SEXP omit_no_match,
+    SEXP cg_missing,
+    SEXP opts_regex
+) noexcept
+{
+    CHARR_ENTRYPOINT_BEGIN();
+
+    const bool omit = ci__prepare_arg_logical_1_notNA_r(
+        omit_no_match, "omit_no_match"
+    );
+    str = entry_protections.protect_one(
+        ci__prepare_arg_string_r(str, "str")
+    );
+    pattern = entry_protections.protect_one(
+        ci__prepare_arg_string_r(pattern, "pattern")
+    );
+    cg_missing = entry_protections.protect_one(
+        ci__prepare_arg_string_1_r(
+            cg_missing, "cg_missing"
+        )
+    );
+
+    const R_xlen_t subject_xlength = XLENGTH(str);
+    const R_xlen_t pattern_xlength = XLENGTH(pattern);
+    if (subject_xlength > R_LEN_T_MAX || pattern_xlength > R_LEN_T_MAX)
+        Rf_error("long character vectors are not supported");
+    const R_len_t subject_length = static_cast<R_len_t>(subject_xlength);
+    const R_len_t pattern_length = static_cast<R_len_t>(pattern_xlength);
+    bool recycling_warning = false;
+    const R_len_t vectorize_length = recycling_length(
+        subject_length, pattern_length, recycling_warning
+    );
+    if (recycling_warning)
+        Rf_warning(MSG__WARN_RECYCLING_RULE);
+    const shared::RegexOptions options = regex::prepare_options(opts_regex);
+
+
+    int empty_pattern_warnings = 0;
+
+    try {
+        charport::Reader subject_reader;
+        charport::Reader pattern_reader;
+        charport::Reader missing_reader;
+        charport::StrViews subject_views;
+        charport::StrViews pattern_views;
+        charport::StrViews missing_views;
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::NativeToUtf8 missing_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        shared::SliceArena missing_storage;
+        std::vector<shared::StringView> subjects;
+        shared::RegexPatterns patterns;
+        shared::RegexMatcher matcher(options);
+        std::vector<shared::RegexRange> matches;
+        std::vector<std::vector<shared::RegexRange> > captures;
+        std::vector<std::string> capture_names;
+        io::OutputBuilder output(0);
+
+        matches.reserve(8);
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                missing_reader.reset(cg_missing);
+                if (missing_reader.size() != 1) {
+                    throw std::runtime_error(
+                        "Reader length changed for cg_missing"
+                    );
+                }
+                missing_views.resize(1);
+                missing_reader.views(
+                    0, 1,
+                    missing_views.ptrs(), missing_views.lengths(),
+                    missing_views.encodings()
+                );
+                const charport::StrView capture_missing = missing_views[0];
+                (void)normalize_subject(
+                    io::as_shared_view(capture_missing),
+                    missing_converter, missing_storage
+                );
+
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(VECSXP, vectorize_length),
+                    result_index
+                );
+                if (vectorize_length > 0) {
+                    subject_reader.reset(str);
+                    if (subject_reader.size() != subject_length) {
+                        throw std::runtime_error(
+                            "Reader length changed during regex match"
                         );
                     }
-                    else {
-                        ci::builder_set(
-                            output, output_i,
-                            str_cur_s+curo.first, curo.second-curo.first,
-                            cetype_ext_t::CE_ASCII_OR_UTF8
+                    subject_views.resize(subject_length);
+                    subject_reader.views(
+                        0, subject_length,
+                        subject_views.ptrs(), subject_views.lengths(),
+                        subject_views.encodings()
+                    );
+                    normalize_subjects(
+                        subject_views, subject_converter,
+                        subject_storage, subjects
+                    );
+
+                    pattern_reader.reset(pattern);
+                    if (pattern_reader.size() != pattern_length) {
+                        throw std::runtime_error(
+                            "Reader length changed during regex match"
                         );
+                    }
+                    pattern_views.resize(pattern_length);
+                    pattern_reader.views(
+                        0, pattern_length,
+                        pattern_views.ptrs(), pattern_views.lengths(),
+                        pattern_views.encodings()
+                    );
+                    normalize_patterns(
+                        pattern_views, pattern_converter,
+                        pattern_storage, patterns
+                    );
+                    empty_pattern_warnings = patterns.empty_count();
+
+                    SEXP current = R_NilValue;
+                    PROTECT_INDEX current_index;
+                    callback_protections.protect_with_index(current, &current_index);
+                    SEXP dimnames = R_NilValue;
+                    PROTECT_INDEX dimnames_index;
+                    callback_protections.protect_with_index(
+                        dimnames, &dimnames_index
+                    );
+
+                    for (R_len_t lane = 0; lane < pattern_length; ++lane) {
+                        const std::size_t pattern_index =
+                            static_cast<std::size_t>(lane);
+                        const shared::RegexInput current_pattern =
+                            patterns.get(pattern_index);
+                        const bool pattern_empty =
+                            !current_pattern.missing &&
+                            current_pattern.length <= 0;
+                        int group_count = 0;
+
+                        if (!current_pattern.missing && !pattern_empty) {
+                            bind_pattern(
+                                matcher, current_pattern, patterns,
+                                pattern_index
+                            );
+                            group_count = matcher.group_count();
+                            read_capture_names(
+                                matcher, patterns, pattern_index,
+                                capture_names
+                            );
+                            dimnames = callback_protections.reprotect_slot(
+                                capture_dimnames_r(capture_names),
+                                dimnames_index
+                            );
+                        }
+                        else {
+                            capture_names.clear();
+                            dimnames = callback_protections.reprotect_slot(
+                                R_NilValue, dimnames_index
+                            );
+                        }
+
+                        for (R_len_t i = lane;
+                                i < vectorize_length;
+                                i += pattern_length) {
+                            R_len_t rows = 1;
+                            R_len_t columns = 1;
+                            if (current_pattern.missing || pattern_empty) {
+                                if (pattern_empty)
+                                    ++empty_pattern_warnings;
+                                output.reset(1);
+                                output.set_na(0);
+                            }
+                            else {
+                                columns = group_count+1;
+                                const std::size_t subject_index =
+                                    static_cast<std::size_t>(
+                                        i % subject_length
+                                    );
+                                const shared::StringView& subject =
+                                    subjects[subject_index];
+                                if (subject.is_na()) {
+                                    const R_xlen_t size = matrix_size(
+                                        1, columns
+                                    );
+                                    output.reset(size);
+                                    fill_na(output, size);
+                                }
+                                else {
+                                    find_all(
+                                        matcher, subject,
+                                        &subjects[subject_index],
+                                        patterns, pattern_index,
+                                        matches, captures
+                                    );
+                                    build_all_matches(
+                                        output, subject, matches, captures,
+                                        omit, capture_missing,
+                                        rows, columns
+                                    );
+                                }
+                            }
+
+                            current = callback_protections.reprotect_slot(
+                                output.to_sexp(), current_index
+                            );
+                            set_matrix_attributes_r(
+                                current, rows, columns, dimnames
+                            );
+                            SET_VECTOR_ELT(result, i, current);
+                        }
                     }
                 }
+
+                CHARR_UNWIND_RETURN();
             }
-            result.output = output.release_store();
-        }
-
-        if (str_text) {
-            utext_close(str_text);
-            str_text = NULL;
-        }
+        );
     }
-
-    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-        return Rf_allocVector(VECSXP, vectorize_length);
-    }));
-    // Deviation from stringi: one assembly-level unwind bridge releases the
-    // staged Stores and capture names if an R allocation fails. A bridge for
-    // every matrix and attribute assignment only adds per-result overhead.
-    ci::unwind_protect([&]() -> SEXP {
-      for (R_len_t i=0; i<vectorize_length; ++i) {
-          ci::UnwindCallbackProtector protector;
-          CiMatchRegexMatrix& result = results[static_cast<size_t>(i)];
-          SEXP cur_res;
-          cur_res = protector.hold(charport::charvec::wrap(
-              std::move(result.output)
-          ));
-          SEXP dimnames;
-          dimnames = protector.hold(ci__match_capture_dimnames(
-              result.capture_names
-          ));
-          ci__match_set_matrix_attributes(
-                cur_res, result.nrow, result.ncol, dimnames
-          );
-          SET_VECTOR_ELT(ret, i, cur_res);
-      }
-      return R_NilValue;
-    });
-    }
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(if (str_text) utext_close(str_text);)
+    CHARR_ENTRYPOINT_END(
+        emit_warnings_r(empty_pattern_warnings);
+    );
 }
 
 } } // namespace charr::altrep_backend

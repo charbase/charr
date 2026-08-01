@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+// Derived from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f.
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -32,191 +32,415 @@
 
 
 #include "ci_stringi.h"
-#include "io/utf16_input.h"
-#include "collation/pattern_set.h"
-#include "io/integer_input.h"
-#include "io/logical_input.h"
-#include <deque>
-#include <utility>
+#include "collator/options.h"
+#include "io/string_view.h"
+#include "../shared/collation_search.h"
+#include "../shared/collator.h"
+#include "../shared/entrypoint.h"
+#include "../shared/native_to_utf8.h"
+#include "../shared/protect.h"
+#include "../shared/slice_arena.h"
+#include "../shared/unwind.h"
+#include "../shared/utf8.h"
+
+#include <cstddef>
+#include <exception>
+#include <vector>
+
 namespace charr { namespace base_backend {
 
-using namespace std;
+namespace search_coll_split {
 
-
-/**
- * Split a string into parts [with collation]
- *
- * The pattern matches identify delimiters that separate the input into fields.
- * The input data between the matches becomes the fields themselves.
- *
- * @param str character vector
- * @param pattern character vector
- * @param n integer vector
- * @param omit_empty logical vector
- * @param opts_collator passed to ci__ucol_open(),
- * if \code{NA}, then \code{ci_detect_fixed_byte} is called
- * @param tokens_only single logical value
- * @param simplify single logical value
- *
- * @return list of character vectors or character matrix
- *
- *
- * @version 0.1-?? (Bartek Tartanus)
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-25)
- *          StriException friendly, use io::Utf16Input
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-07-10)
- *          BUGFIX: wrong behavior on empty str
- *
- * @version 0.2-3 (Marek Gagolewski, 2014-05-08)
- *          new fun: ci_split_coll (opts_collator == NA not allowed)
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-10-19)
- *          added tokens_only param
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-10-23)
- *          added split param
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-10-24)
- *          allow omit_empty=NA
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-12-04)
- *    allow `simplify=NA`; FR #126: pass n to ci_list2matrix
- */
-SEXP ci_split_coll(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
-                     SEXP tokens_only, SEXP simplify, SEXP opts_collator)
+CHARR_NEUTRAL_HELPER R_len_t recycling_length(
+    R_len_t subject_length,
+    R_len_t pattern_length,
+    R_len_t n_length,
+    R_len_t omit_empty_length,
+    bool& warning
+) noexcept
 {
-    bool tokens_only1 = ci__prepare_arg_logical_1_notNA(tokens_only, "tokens_only");
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
-    PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
-    PROTECT(n = ci__prepare_arg_integer(n, "n"));
-    PROTECT(omit_empty = ci__prepare_arg_logical(omit_empty, "omit_empty"));
-    PROTECT(simplify = ci__prepare_arg_logical_1(simplify, "simplify"));
+    warning = false;
+    if (subject_length <= 0 || pattern_length <= 0 || n_length <= 0 ||
+            omit_empty_length <= 0) {
+        return 0;
+    }
 
-    UCollator* collator = NULL;
-    collator = ci__ucol_open(opts_collator);
+    R_len_t result = subject_length;
+    if (pattern_length > result)
+        result = pattern_length;
+    if (n_length > result)
+        result = n_length;
+    if (omit_empty_length > result)
+        result = omit_empty_length;
+    warning = result % subject_length != 0 ||
+        result % pattern_length != 0 ||
+        result % n_length != 0 ||
+        result % omit_empty_length != 0;
+    return result;
+}
 
-    STRI__ERROR_HANDLER_BEGIN(5)
-    R_len_t vectorize_length = ci__recycling_rule(true, 4,
-                               LENGTH(str), LENGTH(pattern), LENGTH(n), LENGTH(omit_empty));
-    io::Utf16Input str_cont(str, vectorize_length);
-    collation::PatternSet pattern_cont(pattern, vectorize_length, collator);  // collator is not owned by pattern_cont
-    io::IntegerInput   n_cont(n, vectorize_length);
-    io::LogicalInput   omit_empty_cont(omit_empty, vectorize_length);
 
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(VECSXP, vectorize_length));
+CHARR_NEUTRAL_HELPER R_len_t minimum_columns(
+    const int* values, R_len_t size
+) noexcept
+{
+    R_len_t result = 0;
+    for (R_len_t i = 0; i < size; ++i) {
+        if (values[i] != NA_INTEGER && values[i] > result)
+            result = values[i];
+    }
+    return result;
+}
 
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
-    {
-        if (n_cont.isNA(i)) {
-            SET_VECTOR_ELT(ret, i, ci__vector_NA_strings(1));
-            continue;
+
+CHARR_CXX_HELPER void require_icu_success(UErrorCode status)
+{
+    if (U_FAILURE(status))
+        throw StriException(status);
+}
+
+
+CHARR_CXX_HELPER shared::StringView normalize_view(
+    const shared::StringView& source,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage
+)
+{
+    if (source.enc == shared::StringEncoding::bytes)
+        throw StriException(MSG__BYTESENC);
+    return shared::normalize_utf8_preserve_bom(
+        source, converter, storage
+    );
+}
+
+
+CHARR_CXX_HELPER R_len_t count_empty_patterns(
+    const shared::CollationInputs& patterns
+)
+{
+    R_len_t result = 0;
+    for (std::size_t i = 0; i < patterns.size(); ++i) {
+        const shared::CollationInput pattern = patterns.get(i);
+        if (!pattern.missing && pattern.length <= 0)
+            ++result;
+    }
+    return result;
+}
+
+
+CHARR_R_HELPER SEXP missing_strings_r(R_len_t size) noexcept
+{
+    SEXP result = Rf_allocVector(STRSXP, size);
+    for (R_len_t i = 0; i < size; ++i)
+        SET_STRING_ELT(result, i, NA_STRING);
+    return result;
+}
+
+
+CHARR_R_HELPER SEXP empty_strings_r(R_len_t size) noexcept
+{
+    SEXP result = Rf_allocVector(STRSXP, size);
+    for (R_len_t i = 0; i < size; ++i)
+        SET_STRING_ELT(result, i, R_BlankString);
+    return result;
+}
+
+
+CHARR_R_HELPER SEXP strings_r(R_len_t size) noexcept
+{
+    return Rf_allocVector(STRSXP, size);
+}
+
+
+CHARR_R_HELPER void set_utf8_slice_r(
+    SEXP output, R_len_t index,
+    const shared::CollationUtf8Slice& value
+) noexcept
+{
+    SET_STRING_ELT(
+        output, index,
+        Rf_mkCharLenCE(value.data, value.length, CE_UTF8)
+    );
+}
+
+
+CHARR_R_HELPER SEXP simplify_result_r(
+    SEXP input, R_len_t rows, R_len_t columns, bool pad_na
+) noexcept
+{
+    SEXP output = Rf_allocMatrix(STRSXP, rows, columns);
+    const SEXP fill = pad_na ? NA_STRING : R_BlankString;
+    for (R_len_t i = 0; i < rows; ++i) {
+        const SEXP current = VECTOR_ELT(input, i);
+        const R_len_t current_size = LENGTH(current);
+        R_len_t j = 0;
+        for (; j < current_size; ++j) {
+            SET_STRING_ELT(
+                output,
+                static_cast<R_xlen_t>(i) +
+                    static_cast<R_xlen_t>(j)*rows,
+                STRING_ELT(current, j)
+            );
         }
-
-        int  n_cur        = n_cont.get(i);
-        int  omit_empty_cur   = !omit_empty_cont.isNA(i) && omit_empty_cont.get(i);
-
-        STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-                SET_VECTOR_ELT(ret, i, ci__vector_NA_strings(1));,
-                SET_VECTOR_ELT(ret, i,
-                               (omit_empty_cont.isNA(i))?ci__vector_NA_strings(1):
-                               ci__vector_empty_strings((omit_empty_cur || n_cur == 0)?0:1));)
-
-        // getMatcher() has just installed this record's text, which restarts
-        // iteration on its own. A usearch_reset() here would only re-derive
-        // collator state that has not changed since the matcher was opened.
-        UStringSearch *matcher = pattern_cont.getMatcher(i, str_cont.get(i));
-
-
-        if (n_cur >= INT_MAX-1)
-            throw StriException(MSG__INCORRECT_NAMED_ARG "; " MSG__EXPECTED_SMALLER, "n");
-        else if (n_cur < 0)
-            n_cur = INT_MAX;
-        else if (n_cur == 0) {
-            SET_VECTOR_ELT(ret, i, Rf_allocVector(STRSXP, 0));
-            continue;
+        for (; j < columns; ++j) {
+            SET_STRING_ELT(
+                output,
+                static_cast<R_xlen_t>(i) +
+                    static_cast<R_xlen_t>(j)*rows,
+                fill
+            );
         }
-        else if (tokens_only1)
-            n_cur++; // we need to do one split ahead here
+    }
+    return output;
+}
 
-        R_len_t k;
-        deque< pair<R_len_t, R_len_t> > fields; // byte based-indices
-        fields.push_back(pair<R_len_t, R_len_t>(0,0));
-        UErrorCode status = U_ZERO_ERROR;
 
-        for (k=1; k < n_cur && USEARCH_DONE != usearch_next(matcher, &status) && !U_FAILURE(status); ) {
-            R_len_t s1 = (R_len_t)usearch_getMatchedStart(matcher);
-            R_len_t s2 = (R_len_t)usearch_getMatchedLength(matcher) + s1;
+CHARR_R_HELPER void emit_warnings_r(
+    bool root_fallback_warning,
+    bool recycling_warning,
+    R_len_t empty_pattern_warnings
+) noexcept
+{
+    if (root_fallback_warning) {
+        Rf_warning(
+            "%s", ICUError::getICUerrorName(U_USING_DEFAULT_WARNING)
+        );
+    }
+    if (recycling_warning)
+        Rf_warning(MSG__WARN_RECYCLING_RULE);
+    for (R_len_t i = 0; i < empty_pattern_warnings; ++i)
+        Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+}
 
-            if (omit_empty_cur && fields.back().first == s1)
-                fields.back().first = s2; // don't start any new field
-            else {
-                fields.back().second = s1;
-                fields.push_back(pair<R_len_t, R_len_t>(s2, s2)); // start a new field here
-                ++k; // another field
+} // namespace search_coll_split
+
+using namespace search_coll_split;
+
+
+/** Split strings around collation-aware pattern occurrences. */
+CHARR_ENTRYPOINT SEXP ci_split_coll(
+    SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
+    SEXP tokens_only, SEXP simplify, SEXP opts_collator
+) noexcept
+{
+    CHARR_ENTRYPOINT_BEGIN();
+
+    const bool tokens_only_value = ci__prepare_arg_logical_1_notNA_r(
+        tokens_only, "tokens_only"
+    );
+    str = entry_protections.protect_one(ci__prepare_arg_string_r(str, "str"));
+    pattern = entry_protections.protect_one(ci__prepare_arg_string_r(pattern, "pattern"));
+    n = entry_protections.protect_one(ci__prepare_arg_integer_r(n, "n"));
+    omit_empty = entry_protections.protect_one(ci__prepare_arg_logical_r(
+        omit_empty, "omit_empty"
+    ));
+    simplify = entry_protections.protect_one(ci__prepare_arg_logical_1_r(
+        simplify, "simplify"
+    ));
+    const shared::CollatorOptions options =
+        collator::prepare_options(opts_collator);
+
+    const R_len_t subject_length = LENGTH(str);
+    const R_len_t pattern_length = LENGTH(pattern);
+    const R_len_t n_length = LENGTH(n);
+    const R_len_t omit_empty_length = LENGTH(omit_empty);
+    bool recycling_needed = false;
+    const R_len_t vectorize_length = recycling_length(
+        subject_length, pattern_length, n_length,
+        omit_empty_length, recycling_needed
+    );
+    const int simplify_value = LOGICAL_RO(simplify)[0];
+    const int* n_values = nullptr;
+    const int* omit_empty_values = nullptr;
+    R_len_t max_columns = 0;
+
+    bool root_fallback_warning = false;
+    bool recycling_warning = false;
+    R_len_t empty_pattern_warnings = 0;
+
+    try {
+        shared::Collator collator_owner;
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        shared::CollationInputs subjects;
+        shared::CollationInputs patterns;
+        shared::CollationMatcher matcher;
+        std::vector<shared::CollationRange> fields;
+        std::vector<char> utf8_buffer;
+
+        fields.reserve(4);
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                const shared::CollatorOpenResult opened =
+                    collator_owner.reset(options);
+                root_fallback_warning = opened.root_fallback;
+                require_icu_success(opened.status);
+                recycling_warning = recycling_needed;
+
+                if (vectorize_length > 0) {
+                    subjects.resize(
+                        static_cast<std::size_t>(subject_length)
+                    );
+                    const SEXP* values = STRING_PTR_RO(str);
+                    for (R_len_t i = 0; i < subject_length; ++i) {
+                        subjects.set(
+                            static_cast<std::size_t>(i),
+                            normalize_view(
+                                io::as_shared_view(values[i]),
+                                subject_converter, subject_storage
+                            )
+                        );
+                    }
+
+                    patterns.resize(
+                        static_cast<std::size_t>(pattern_length)
+                    );
+                    values = STRING_PTR_RO(pattern);
+                    for (R_len_t i = 0; i < pattern_length; ++i) {
+                        patterns.set(
+                            static_cast<std::size_t>(i),
+                            normalize_view(
+                                io::as_shared_view(values[i]),
+                                pattern_converter, pattern_storage
+                            )
+                        );
+                    }
+                    empty_pattern_warnings =
+                        count_empty_patterns(patterns);
+                }
+
+                n_values = INTEGER_RO(n);
+                omit_empty_values = LOGICAL_RO(omit_empty);
+                max_columns = minimum_columns(n_values, n_length);
+
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(VECSXP, vectorize_length),
+                    result_index
+                );
+                SEXP child = R_NilValue;
+                PROTECT_INDEX child_index;
+                callback_protections.protect_with_index(child, &child_index);
+
+                for (R_len_t lane = 0;
+                        lane < (vectorize_length > 0
+                            ? pattern_length : 0);
+                        ++lane) {
+                    const shared::CollationInput prepared_pattern =
+                        patterns.get(static_cast<std::size_t>(lane));
+                    R_len_t i = lane;
+                    for (;;) {
+                        const int raw_n = n_values[i % n_length];
+                        const int raw_omit = omit_empty_values[
+                            i % omit_empty_length
+                        ];
+                        const bool omit = raw_omit != NA_LOGICAL &&
+                            raw_omit != 0;
+                        const shared::CollationInput subject = subjects.get(
+                            static_cast<std::size_t>(i % subject_length)
+                        );
+
+                        if (raw_n == NA_INTEGER || subject.missing ||
+                                prepared_pattern.missing ||
+                                prepared_pattern.length <= 0) {
+                            child = callback_protections.reprotect_slot(
+                                missing_strings_r(1), child_index
+                            );
+                        }
+                        else if (subject.length <= 0) {
+                            if (raw_omit == NA_LOGICAL) {
+                                child = callback_protections.reprotect_slot(
+                                    missing_strings_r(1), child_index
+                                );
+                            }
+                            else {
+                                const R_len_t child_size =
+                                    omit || raw_n == 0 ? 0 : 1;
+                                child = callback_protections.reprotect_slot(
+                                    empty_strings_r(child_size), child_index
+                                );
+                            }
+                        }
+                        else {
+                            UErrorCode status = U_ZERO_ERROR;
+                            const shared::CollationSplitResult split_result =
+                                matcher.split(
+                                    collator_owner.get(), subject,
+                                    prepared_pattern, raw_n, omit,
+                                    tokens_only_value, fields, status
+                                );
+                            require_icu_success(status);
+                            if (split_result ==
+                                    shared::CollationSplitResult::
+                                        limit_too_large) {
+                                throw StriException(
+                                    MSG__INCORRECT_NAMED_ARG "; "
+                                    MSG__EXPECTED_SMALLER,
+                                    "n"
+                                );
+                            }
+
+                            const R_len_t child_size =
+                                static_cast<R_len_t>(fields.size());
+                            child = callback_protections.reprotect_slot(
+                                strings_r(child_size), child_index
+                            );
+                            for (R_len_t j = 0; j < child_size; ++j) {
+                                const shared::CollationRange& field = fields[
+                                    static_cast<std::size_t>(j)
+                                ];
+                                if (raw_omit == NA_LOGICAL &&
+                                        field.start == field.end) {
+                                    SET_STRING_ELT(child, j, NA_STRING);
+                                }
+                                else {
+                                    status = U_ZERO_ERROR;
+                                    const shared::CollationUtf8Slice value =
+                                        shared::collation_utf8_slice(
+                                            subject, field,
+                                            utf8_buffer, status
+                                        );
+                                    require_icu_success(status);
+                                    set_utf8_slice_r(child, j, value);
+                                }
+                            }
+                        }
+
+                        SET_VECTOR_ELT(result, i, child);
+                        const R_len_t child_size = LENGTH(child);
+                        if (max_columns < child_size)
+                            max_columns = child_size;
+
+                        if (pattern_length >= vectorize_length-i)
+                            break;
+                        i += pattern_length;
+                    }
+                }
+
+                if (simplify_value == NA_LOGICAL || simplify_value) {
+                    result = entry_protections.reprotect_one(
+                        simplify_result_r(
+                            result, vectorize_length, max_columns,
+                            simplify_value == NA_LOGICAL
+                        ),
+                        result_index
+                    );
+                }
+
+                CHARR_UNWIND_RETURN();
             }
-        }
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-        fields.back().second = str_cont.get(i).length();
-        if (omit_empty_cur && fields.back().first == fields.back().second)
-            fields.pop_back();
-
-        if (tokens_only1 && n_cur < INT_MAX) {
-            n_cur--; // one split ahead could have been made, see above
-            while (fields.size() > (size_t)n_cur)
-                fields.pop_back(); // get rid of the remainder
-        }
-
-        R_len_t noccurrences = (R_len_t)fields.size();
-        io::Utf16Output out_cont(noccurrences);
-        deque< pair<R_len_t, R_len_t> >::iterator iter = fields.begin();
-        for (k = 0; iter != fields.end(); ++iter, ++k) {
-            pair<R_len_t, R_len_t> curoccur = *iter;
-            if (curoccur.second == curoccur.first && omit_empty_cont.isNA(i))
-                out_cont.setNA(k);
-            else
-                out_cont.getWritable(k).setTo(str_cont.get(i),
-                                              curoccur.first, curoccur.second-curoccur.first);
-        }
-        SET_VECTOR_ELT(ret, i, out_cont.toR());
+        );
     }
-
-    if (collator) {
-        ucol_close(collator);
-        collator=NULL;
-    }
-
-    if (LOGICAL(simplify)[0] == NA_LOGICAL || LOGICAL(simplify)[0]) {
-        R_len_t n_min = 0;
-        R_len_t n_length = LENGTH(n);
-        int* n_tab = INTEGER(n);
-        for (R_len_t i=0; i<n_length; ++i) {
-            if (n_tab[i] != NA_INTEGER && n_min < n_tab[i])
-                n_min = n_tab[i];
-        }
-        SEXP robj_TRUE, robj_n_min, robj_na_strings, robj_empty_strings;
-        STRI__PROTECT(robj_TRUE = Rf_ScalarLogical(TRUE));
-        STRI__PROTECT(robj_n_min = Rf_ScalarInteger(n_min));
-        STRI__PROTECT(robj_na_strings = ci__vector_NA_strings(1));
-        STRI__PROTECT(robj_empty_strings = ci__vector_empty_strings(1));
-        STRI__PROTECT(ret = ci_list2matrix(ret, robj_TRUE,
-                                             (LOGICAL(simplify)[0] == NA_LOGICAL)?robj_na_strings
-                                             :robj_empty_strings,
-                                             robj_n_min))
-    }
-
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(
-        if (collator) ucol_close(collator);
-    )
-    }
+    CHARR_ENTRYPOINT_END(
+        emit_warnings_r(
+            root_fallback_warning,
+            recycling_warning,
+            empty_pattern_warnings
+        );
+    );
+}
 
 } } // namespace charr::base_backend

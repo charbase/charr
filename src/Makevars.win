@@ -26,26 +26,42 @@ RUNTIME_SOURCES = \
 RUNTIME_OBJECTS = $(RUNTIME_SOURCES:.cpp=.o)
 
 SHARED_SOURCES = \
-  shared/native_to_utf8.cpp
+  shared/boundary_iterator.cpp \
+  shared/case_mapper.cpp \
+  shared/character_class.cpp \
+  shared/character_class_search.cpp \
+  shared/collation_ordering.cpp \
+  shared/collation_search.cpp \
+  shared/collator.cpp \
+  shared/encoding_info.cpp \
+  shared/fixed_search.cpp \
+  shared/join.cpp \
+  shared/line_split.cpp \
+  shared/native_to_utf8.cpp \
+  shared/nfc_normalizer.cpp \
+  shared/r_matrix.cpp \
+  shared/read_lines.cpp \
+  shared/regex_search.cpp \
+  shared/repeat.cpp \
+  shared/replacement.cpp \
+  shared/substring.cpp \
+  shared/title_case.cpp \
+  shared/utf8.cpp \
+  shared/wrap.cpp
 
 SHARED_OBJECTS = $(SHARED_SOURCES:.cpp=.o)
 
 BASE_FOUNDATION_SOURCES = \
-  base_backend/io/utf8_input.cpp \
-  base_backend/io/utf8_index.cpp
+  base_backend/boundary/options_r.cpp \
+  base_backend/collator/options.cpp \
+  base_backend/fixed/options.cpp \
+  base_backend/regex/options_r.cpp
 
 BASE_SOURCES = \
   base_backend/entrypoints.cpp \
-  base_backend/boundary/iterator.cpp \
-  base_backend/ci_collator.cpp \
-  base_backend/ci_common.cpp \
   base_backend/ci_compare.cpp \
-  base_backend/fixed/pattern_set.cpp \
-  base_backend/io/raw_list_input.cpp \
-  base_backend/io/utf8_list_input.cpp \
-  base_backend/regex/pattern_set.cpp \
-  base_backend/collation/pattern_set.cpp \
-  base_backend/io/utf16_input.cpp \
+  base_backend/ci_dup.cpp \
+  base_backend/ci_duplicated.cpp \
   base_backend/ci_encoding_conversion.cpp \
   base_backend/ci_encoding_management.cpp \
   base_backend/ci_escape.cpp \
@@ -55,6 +71,7 @@ BASE_SOURCES = \
   base_backend/ci_pad.cpp \
   base_backend/ci_prepare_arg.cpp \
   base_backend/ci_reverse.cpp \
+  base_backend/ci_split_lines.cpp \
   base_backend/ci_search_boundaries_count.cpp \
   base_backend/ci_search_boundaries_extract.cpp \
   base_backend/ci_search_boundaries_locate.cpp \
@@ -71,6 +88,7 @@ BASE_SOURCES = \
   base_backend/ci_search_common.cpp \
   base_backend/ci_search_fixed_count.cpp \
   base_backend/ci_search_fixed_detect.cpp \
+  base_backend/ci_search_fixed_extract_first.cpp \
   base_backend/ci_search_fixed_extract.cpp \
   base_backend/ci_search_fixed_locate.cpp \
   base_backend/ci_search_fixed_replace.cpp \
@@ -84,33 +102,27 @@ BASE_SOURCES = \
   base_backend/ci_search_regex_match.cpp \
   base_backend/ci_search_regex_replace.cpp \
   base_backend/ci_search_regex_split.cpp \
-  base_backend/ci_sort.cpp \
+  base_backend/ci_order_rank.cpp \
   base_backend/ci_sub.cpp \
   base_backend/ci_trans_casemap.cpp \
+  base_backend/ci_trans_title.cpp \
   base_backend/ci_trans_normalization.cpp \
   base_backend/ci_ucnv.cpp \
-  base_backend/ci_utils.cpp \
+  base_backend/ci_replace_na.cpp \
   base_backend/ci_wrap.cpp
 
 BASE_OBJECTS = $(BASE_FOUNDATION_SOURCES:.cpp=.o) \
   $(BASE_SOURCES:.cpp=.o)
 
 ALTREP_FOUNDATION_SOURCES = \
-  altrep_backend/io/utf8_input.cpp \
-  altrep_backend/io/utf8_index.cpp \
+  altrep_backend/boundary/options_r.cpp \
+  altrep_backend/collator/options.cpp \
+  altrep_backend/fixed/options.cpp \
+  altrep_backend/regex/options_r.cpp \
   altrep_backend/io/utf8_output.cpp
 
 ALTREP_SUPPORT_SOURCES = \
   altrep_backend/entrypoints.cpp \
-  altrep_backend/boundary/iterator.cpp \
-  altrep_backend/ci_collator.cpp \
-  altrep_backend/ci_common.cpp \
-  altrep_backend/fixed/pattern_set.cpp \
-  altrep_backend/io/raw_list_input.cpp \
-  altrep_backend/io/utf8_list_input.cpp \
-  altrep_backend/regex/pattern_set.cpp \
-  altrep_backend/collation/pattern_set.cpp \
-  altrep_backend/io/utf16_input.cpp \
   altrep_backend/ci_exception.cpp \
   altrep_backend/ci_prepare_arg.cpp \
   altrep_backend/ci_search_common.cpp \
@@ -118,6 +130,8 @@ ALTREP_SUPPORT_SOURCES = \
 
 ALTREP_OPERATION_SOURCES = \
   altrep_backend/ci_compare.cpp \
+  altrep_backend/ci_dup.cpp \
+  altrep_backend/ci_duplicated.cpp \
   altrep_backend/ci_encoding_conversion.cpp \
   altrep_backend/ci_encoding_management.cpp \
   altrep_backend/ci_escape.cpp \
@@ -125,6 +139,7 @@ ALTREP_OPERATION_SOURCES = \
   altrep_backend/ci_length.cpp \
   altrep_backend/ci_pad.cpp \
   altrep_backend/ci_reverse.cpp \
+  altrep_backend/ci_split_lines.cpp \
   altrep_backend/ci_search_boundaries_count.cpp \
   altrep_backend/ci_search_boundaries_extract.cpp \
   altrep_backend/ci_search_boundaries_locate.cpp \
@@ -140,6 +155,7 @@ ALTREP_OPERATION_SOURCES = \
   altrep_backend/ci_search_coll_startsendswith.cpp \
   altrep_backend/ci_search_fixed_count.cpp \
   altrep_backend/ci_search_fixed_detect.cpp \
+  altrep_backend/ci_search_fixed_extract_first.cpp \
   altrep_backend/ci_search_fixed_extract.cpp \
   altrep_backend/ci_search_fixed_locate.cpp \
   altrep_backend/ci_search_fixed_replace.cpp \
@@ -153,11 +169,12 @@ ALTREP_OPERATION_SOURCES = \
   altrep_backend/ci_search_regex_match.cpp \
   altrep_backend/ci_search_regex_replace.cpp \
   altrep_backend/ci_search_regex_split.cpp \
-  altrep_backend/ci_sort.cpp \
+  altrep_backend/ci_order_rank.cpp \
   altrep_backend/ci_sub.cpp \
   altrep_backend/ci_trans_casemap.cpp \
+  altrep_backend/ci_trans_title.cpp \
   altrep_backend/ci_trans_normalization.cpp \
-  altrep_backend/ci_utils.cpp \
+  altrep_backend/ci_replace_na.cpp \
   altrep_backend/ci_wrap.cpp
 
 ALTREP_SOURCES = $(ALTREP_FOUNDATION_SOURCES) \

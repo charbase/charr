@@ -4,8 +4,9 @@
 #ifndef CHARR_CI_BUILDER_H
 #define CHARR_CI_BUILDER_H
 
-#include "ci_reader.h"
-#include "ci_utf8.h"
+#include "ci_exception.h"
+#include "ci_macros.h"
+#include "io/reader_utils.h"
 
 #include <limits>
 #include <stdexcept>
@@ -34,7 +35,7 @@ inline cetype_ext_t output_encoding(
     // unresolved until the payload is exposed. Explicit marks are trusted.
     if (preferred != cetype_ext_t::CE_ASCII_OR_UTF8)
         return preferred;
-    return is_ascii(data, length)
+    return io::is_ascii(data, length)
         ? cetype_ext_t::CE_ASCII
         : cetype_ext_t::CE_UTF8;
 }
@@ -50,21 +51,6 @@ inline charport::charvec::Store scalar_store(
         data = "";
     return charport::charvec::Store::scalar(
         data, length, output_encoding(data, length, preferred)
-    );
-}
-
-
-inline charport::charvec::Store scalar_store(const io::Utf8Record& value)
-{
-    if (value.isNA())
-        return charport::charvec::Store::scalar(
-            NULL, 0, cetype_ext_t::CE_NA
-        );
-    return scalar_store(
-        value.data(), value.length(),
-        value.isASCII()
-            ? cetype_ext_t::CE_ASCII
-            : cetype_ext_t::CE_UTF8
     );
 }
 
@@ -106,24 +92,6 @@ inline void builder_set(
 }
 
 
-inline void builder_set(
-    charport::charvec::Builder& builder, R_xlen_t i,
-    const io::Utf8Record& value
-)
-{
-    if (value.isNA()) {
-        builder.set_na(i);
-        return;
-    }
-    builder_set(
-        builder, i, value.data(), value.length(),
-        value.isASCII()
-            ? cetype_ext_t::CE_ASCII
-            : cetype_ext_t::CE_UTF8
-    );
-}
-
-
 // Resolves to CE_ASCII or CE_UTF8 without scanning: u_strToUTF8 emits exactly
 // one byte per UTF-16 code unit only when every code point is below 0x80.
 // Anything higher costs strictly more UTF-8 bytes than UTF-16 code units
@@ -139,7 +107,7 @@ inline cetype_ext_t utf8_mark_from_lengths(
 }
 
 
-inline const char* unicode_to_utf8(
+CHARR_CXX_HELPER inline const char* unicode_to_utf8(
     const UnicodeString& value, std::vector<char>& utf8_buffer,
     int32_t& utf8_length, cetype_ext_t& utf8_mark
 )
@@ -243,23 +211,6 @@ inline void builder_append(
     // Keep an empty record distinct from NA under C++11.
     const char* data = value.empty() ? "" : value.data();
     builder_append(builder, data, value.size(), preferred);
-}
-
-
-inline void builder_append(
-    charport::charvec::GrowableBuilder& builder, const io::Utf8Record& value
-)
-{
-    if (value.isNA()) {
-        builder.append(NULL, 0, cetype_ext_t::CE_NA);
-        return;
-    }
-    builder_append(
-        builder, value.data(), value.length(),
-        value.isASCII()
-            ? cetype_ext_t::CE_ASCII
-            : cetype_ext_t::CE_UTF8
-    );
 }
 
 

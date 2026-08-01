@@ -9,6 +9,7 @@
 ^charr\.Rcheck($|/)
 ^LICENSE\.md$
 ^Makefile$
+^compile_commands\.json$
 ^inst/extra($|/)
 ^scratch($|/)
 ^tools($|/)

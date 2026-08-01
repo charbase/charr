@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+// Derived from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f.
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -32,235 +32,230 @@
 
 
 #include "ci_stringi.h"
-#include "ci_builder.h"
-#include "ci_utf8.h"
-#include "io/integer_input.h"
-#include "io/logical_input.h"
-#include "regex/pattern_set.h"
+#include "io/reader_utils.h"
+#include "io/string_view.h"
+#include "io/utf8_output.h"
+#include "regex/options_r.h"
+#include "../shared/entrypoint.h"
+#include "../shared/native_to_utf8.h"
+#include "../shared/protect.h"
+#include "../shared/regex_search.h"
+#include "../shared/slice_arena.h"
+#include "../shared/unwind.h"
+#include "../shared/utf8.h"
+
+#include <charport.h>
+
+#include <climits>
+#include <cstddef>
+#include <exception>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
-#include <unicode/utf8.h>
+
 
 namespace charr { namespace altrep_backend {
-using namespace std;
-
 
 namespace search_regex_split {
 
-typedef pair<R_len_t, R_len_t> CiRegexSplitField;
-
-
-class CiRegexSplitSubject {
-private:
-    UnicodeString text_;
-    vector<int32_t> byte_offsets_;
-    bool ascii_;
-
-public:
-    CiRegexSplitSubject() : text_(), byte_offsets_(), ascii_(true)
-    {
-    }
-
-    UnicodeString& set(const char* data, int32_t length, bool ascii)
-    {
-        ascii_ = ascii;
-        if (length <= 0) {
-            text_.remove();
-            byte_offsets_.clear();
-            return text_;
-        }
-
-        UChar* output = text_.getBuffer(length);
-        if (!output)
-            throw StriException(MSG__MEM_ALLOC_ERROR);
-
-        int32_t source_i = 0;
-        int32_t output_i = 0;
-        if (ascii_) {
-            for (; source_i < length; ++source_i)
-                output[output_i++] = static_cast<unsigned char>(data[source_i]);
-        }
-        else {
-            byte_offsets_.resize(static_cast<size_t>(length) + 1);
-            byte_offsets_[0] = 0;
-            while (source_i < length) {
-                const int32_t source_begin = source_i;
-                UChar32 code_point;
-                U8_NEXT_OR_FFFD(data, source_i, length, code_point);
-                if (code_point <= 0xffff) {
-                    output[output_i++] = static_cast<UChar>(code_point);
-                    byte_offsets_[static_cast<size_t>(output_i)] = source_i;
-                }
-                else {
-                    output[output_i++] = U16_LEAD(code_point);
-                    byte_offsets_[static_cast<size_t>(output_i)] = source_begin;
-                    output[output_i++] = U16_TRAIL(code_point);
-                    byte_offsets_[static_cast<size_t>(output_i)] = source_i;
-                }
-            }
-            byte_offsets_.resize(static_cast<size_t>(output_i) + 1);
-        }
-
-        text_.releaseBuffer(output_i);
-        return text_;
-    }
-
-    R_len_t byte_offset(int32_t utf16_offset) const
-    {
-        return ascii_
-            ? static_cast<R_len_t>(utf16_offset)
-            : static_cast<R_len_t>(
-                byte_offsets_[static_cast<size_t>(utf16_offset)]
-            );
-    }
-};
-
-
-inline void ci__collect_scalar_default_fields(
-    RegexMatcher* matcher, const CiRegexSplitSubject& subject,
-    R_len_t string_length, UErrorCode& status,
-    vector<CiRegexSplitField>& fields
-)
+CHARR_NEUTRAL_HELPER R_len_t recycling_length(
+    R_len_t subject_length,
+    R_len_t pattern_length,
+    R_len_t n_length,
+    R_len_t omit_empty_length,
+    bool& warning
+) noexcept
 {
-    fields.clear();
-    R_len_t field_start = 0;
-    while (matcher->find(status)) {
-        STRI__CHECKICUSTATUS_THROW(status, {})
-        const int32_t match_start_utf16 = matcher->start(status);
-        STRI__CHECKICUSTATUS_THROW(status, {})
-        const int32_t match_end_utf16 = matcher->end(status);
-        STRI__CHECKICUSTATUS_THROW(status, {})
-        const R_len_t match_start = subject.byte_offset(match_start_utf16);
-        const R_len_t match_end = subject.byte_offset(match_end_utf16);
-        fields.emplace_back(field_start, match_start);
-        field_start = match_end;
+    warning = false;
+    if (subject_length <= 0 || pattern_length <= 0 || n_length <= 0 ||
+            omit_empty_length <= 0) {
+        return 0;
     }
-    STRI__CHECKICUSTATUS_THROW(status, {})
-    fields.emplace_back(field_start, string_length);
+
+    R_len_t result = subject_length;
+    if (pattern_length > result)
+        result = pattern_length;
+    if (n_length > result)
+        result = n_length;
+    if (omit_empty_length > result)
+        result = omit_empty_length;
+    warning = result % subject_length != 0 ||
+        result % pattern_length != 0 ||
+        result % n_length != 0 ||
+        result % omit_empty_length != 0;
+    return result;
 }
 
 
-void ci__split_regex_scalar_default(
-    ci::ReaderContext& context, const io::Utf8Input& input, SEXP pattern,
-    R_len_t vectorize_length,
-    const regex::Options& pattern_opts,
-    vector<charport::charvec::Store>& stores
+CHARR_NEUTRAL_HELPER R_len_t requested_columns(
+    const int* values, R_len_t size
+) noexcept
+{
+    R_len_t result = 0;
+    for (R_len_t i = 0; i < size; ++i) {
+        if (values[i] != NA_INTEGER && values[i] > result)
+            result = values[i];
+    }
+    return result;
+}
+
+
+CHARR_CXX_HELPER void normalize_subjects(
+    const charport::StrViews& source,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage,
+    std::vector<shared::StringView>& output
 )
 {
-    regex::PatternSet pattern_cont(
-        context, pattern, vectorize_length, pattern_opts
+    output.clear();
+    output.reserve(static_cast<std::size_t>(source.size()));
+    for (R_xlen_t i = 0; i < source.size(); ++i) {
+        const shared::StringView value = io::as_shared_view(source[i]);
+        if (value.enc == shared::StringEncoding::bytes)
+            throw StriException(MSG__BYTESENC);
+        output.push_back(shared::normalize_utf8(
+            value, converter, storage
+        ));
+    }
+}
+
+
+CHARR_CXX_HELPER void normalize_patterns(
+    const charport::StrViews& source,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage,
+    shared::RegexPatterns& output
+)
+{
+    output.resize(static_cast<std::size_t>(source.size()));
+    for (R_xlen_t i = 0; i < source.size(); ++i) {
+        const shared::StringView value = io::as_shared_view(source[i]);
+        if (value.enc == shared::StringEncoding::bytes)
+            throw StriException(MSG__BYTESENC);
+        output.set(
+            static_cast<std::size_t>(i),
+            shared::normalize_utf8_preserve_bom(
+                value, converter, storage
+            )
+        );
+    }
+}
+
+
+CHARR_CXX_HELPER [[noreturn]] void throw_regex_error(
+    UErrorCode status,
+    bool pattern_compile_error,
+    const shared::RegexPatterns& patterns,
+    std::size_t pattern_index
+)
+{
+    if (pattern_compile_error) {
+        std::string context;
+        patterns.context(pattern_index, context);
+        throw StriException(status, context.c_str());
+    }
+    throw StriException(status);
+}
+
+
+CHARR_CXX_HELPER void bind_pattern(
+    shared::RegexMatcher& matcher,
+    const shared::RegexInput& pattern,
+    const shared::RegexPatterns& patterns,
+    std::size_t pattern_index
+)
+{
+    UErrorCode status = U_ZERO_ERROR;
+    bool pattern_compile_error = false;
+    if (!matcher.bind(pattern, status, pattern_compile_error) ||
+            U_FAILURE(status)) {
+        throw_regex_error(
+            status, pattern_compile_error, patterns, pattern_index
+        );
+    }
+}
+
+
+CHARR_NEUTRAL_HELPER CHARR_ALWAYS_INLINE cetype_ext_t field_encoding(
+    bool ascii
+) noexcept
+{
+    return ascii
+        ? cetype_ext_t::CE_ASCII
+        : cetype_ext_t::CE_ASCII_OR_UTF8;
+}
+
+
+CHARR_CXX_HELPER void set_scalar_missing(io::OutputStore& output)
+{
+    output = io::OutputStore::scalar(
+        nullptr, 0, cetype_ext_t::CE_NA
     );
-    if (vectorize_length <= 0)
+}
+
+
+CHARR_CXX_HELPER void set_scalar_empty(io::OutputStore& output)
+{
+    output = io::OutputStore::scalar(
+        "", 0, cetype_ext_t::CE_ASCII
+    );
+}
+
+
+CHARR_CXX_HELPER CHARR_ALWAYS_INLINE void build_store(
+    const shared::StringView& subject,
+    const std::vector<shared::RegexRange>& fields,
+    bool empty_is_missing,
+    bool ascii,
+    io::OutputBuilder& builder,
+    io::OutputStore& output
+)
+{
+    const R_xlen_t size = static_cast<R_xlen_t>(fields.size());
+    if (size <= 0)
         return;
 
-    const bool pattern_unusable = pattern_cont.isNA(0) ||
-        pattern_cont.get(0).length() <= 0;
-    RegexMatcher* matcher = NULL;
-    CiRegexSplitSubject subject;
-    vector<CiRegexSplitField> fields;
-    fields.reserve(16);
-    charport::charvec::Builder output(0);
-
-    for (R_len_t i = 0; i < vectorize_length; ++i) {
-        if (input.isNA(i) || pattern_unusable) {
-            stores[static_cast<size_t>(i)] =
-                charport::charvec::Store::scalar(
-                    nullptr, 0, cetype_ext_t::CE_NA
-                );
-            continue;
+    const cetype_ext_t encoding = field_encoding(ascii);
+    if (size == 1) {
+        const shared::RegexRange& field = fields[0];
+        if (empty_is_missing && field.start == field.end) {
+            set_scalar_missing(output);
         }
-
-        const io::Utf8Record& value = input.get(i);
-        const bool ascii = value.isASCII();
-        const char* data = value.data();
-        const R_len_t length = value.length();
-        const cetype_ext_t field_encoding = ascii
-            ? cetype_ext_t::CE_ASCII
-            : cetype_ext_t::CE_ASCII_OR_UTF8;
-        if (length <= 0) {
-            stores[static_cast<size_t>(i)] = ci::scalar_store(
-                "", 0, cetype_ext_t::CE_ASCII
-            );
-            continue;
-        }
-
-        if (!matcher)
-            matcher = pattern_cont.getMatcher(0);
-        matcher->reset(subject.set(data, length, ascii));
-        UErrorCode status = U_ZERO_ERROR;
-        ci__collect_scalar_default_fields(
-            matcher, subject, length, status, fields
-        );
-
-        if (fields.size() == 1) {
-            const CiRegexSplitField& field = fields.front();
-            stores[static_cast<size_t>(i)] = ci::scalar_store(
-                data+field.first,
-                static_cast<size_t>(field.second-field.first),
-                field_encoding
-            );
-            continue;
-        }
-
-        output.reset(static_cast<R_xlen_t>(fields.size()));
-        for (R_len_t j=0; j<static_cast<R_len_t>(fields.size()); ++j) {
-            const CiRegexSplitField& field =
-                fields[static_cast<size_t>(j)];
-            ci::builder_set(
-                output, j, data+field.first, field.second-field.first,
-                field_encoding
+        else {
+            const int length = field.end-field.start;
+            output = io::OutputStore::scalar(
+                length == 0 ? "" : subject.ptr+field.start,
+                static_cast<std::size_t>(length), encoding
             );
         }
-        stores[static_cast<size_t>(i)] = output.release_store();
+        return;
     }
+
+    builder.reset(size);
+    for (R_xlen_t i = 0; i < size; ++i) {
+        const shared::RegexRange& field = fields[
+            static_cast<std::size_t>(i)
+        ];
+        if (empty_is_missing && field.start == field.end) {
+            builder.set_na(i);
+        }
+        else {
+            const int length = field.end-field.start;
+            builder.set_validated(i, make_strview(
+                length == 0 ? "" : subject.ptr+field.start,
+                length, encoding
+            ));
+        }
+    }
+    output = builder.release_store();
 }
 
 
-inline void ci__collect_regex_split_fields(
-    RegexMatcher* matcher, R_len_t string_length, int n_cur,
-    bool omit_empty, bool tokens_only, UErrorCode& status,
-    vector<CiRegexSplitField>& fields
-)
+CHARR_R_HELPER void emit_empty_pattern_warnings_r(int count) noexcept
 {
-    fields.clear();
-    fields.emplace_back(0, 0);
-
-    int field_count = 1;
-    while (field_count < n_cur) {
-        const int found = static_cast<int>(matcher->find(status));
-        STRI__CHECKICUSTATUS_THROW(status, {})
-        if (!found)
-            break;
-
-        const R_len_t match_start = static_cast<R_len_t>(
-            matcher->start(status)
-        );
-        STRI__CHECKICUSTATUS_THROW(status, {})
-        const R_len_t match_end = static_cast<R_len_t>(
-            matcher->end(status)
-        );
-        STRI__CHECKICUSTATUS_THROW(status, {})
-
-        if (omit_empty && fields.back().first == match_start) {
-            fields.back().first = match_end;
-        }
-        else {
-            fields.back().second = match_start;
-            fields.emplace_back(match_end, match_end);
-            ++field_count;
-        }
-    }
-
-    fields.back().second = string_length;
-    if (omit_empty && fields.back().first == fields.back().second)
-        fields.pop_back();
-
-    if (tokens_only && n_cur < INT_MAX) {
-        --n_cur;
-        if (fields.size() > static_cast<size_t>(n_cur))
-            fields.resize(static_cast<size_t>(n_cur));
-    }
+    for (int i = 0; i < count; ++i)
+        Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
 }
 
 } // namespace search_regex_split
@@ -268,326 +263,386 @@ inline void ci__collect_regex_split_fields(
 using namespace search_regex_split;
 
 
-/**
- * Split a string into parts.
- *
- * The pattern matches identify delimiters that separate the input into fields.
- * The input data between the matches becomes the fields themselves.
- *
- * @param str character vector
- * @param pattern character vector
- * @param n integer vector
- * @param opts_regex
- * @param tokens_only single logical value
- * @param simplify single logical value
- *
- * @return list of character vectors  or character matrix
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-21)
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-07-10)
- *          BUGFIX: wrong behavior on empty str
- *
- * @version 0.1-24 (Marek Gagolewski, 2014-03-11)
- *          Added missing utext_close call to avoid memleaks
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-10-19)
- *          added tokens_only param
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-10-23)
- *          added split param
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-10-24)
- *          allow omit_empty=NA
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-12-04)
- *    allow `simplify=NA`; FR #126: pass n to ci_list2matrix
- *
- * @version 1.4.7 (Marek Gagolewski, 2020-08-24)
- *    Use regex::PatternSet::getRegexOptions
- */
-SEXP ci_split_regex(SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
-                      SEXP tokens_only, SEXP simplify, SEXP opts_regex)
+/** Split strings around regular-expression matches. */
+CHARR_ENTRYPOINT SEXP ci_split_regex(
+    SEXP str,
+    SEXP pattern,
+    SEXP n,
+    SEXP omit_empty,
+    SEXP tokens_only,
+    SEXP simplify,
+    SEXP opts_regex
+) noexcept
 {
-    bool tokens_only1 = ci__prepare_arg_logical_1_notNA(tokens_only, "tokens_only");
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
-    PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
-    PROTECT(n = ci__prepare_arg_integer(n, "n"));
-    PROTECT(omit_empty = ci__prepare_arg_logical(omit_empty, "omit_empty"));
-    PROTECT(simplify = ci__prepare_arg_logical_1(simplify, "simplify"));
-    const int simplify_1 = LOGICAL_RO(simplify)[0];
+    CHARR_ENTRYPOINT_BEGIN();
 
-    UText* str_text = NULL; // may potentially be slower, but definitely is more convenient!
-    STRI__ERROR_HANDLER_BEGIN(5)
-    SEXP ret;
-    {
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    R_len_t str_n = ci::checked_r_len(
-        context.size(str), "character vectors"
+    const bool tokens_only_value =
+        ci__prepare_arg_logical_1_notNA_r(
+            tokens_only, "tokens_only"
+        );
+    str = entry_protections.protect_one(
+        ci__prepare_arg_string_r(str, "str")
     );
-    R_len_t pattern_n = ci::checked_r_len(
-        context.size(pattern), "character vectors"
+    pattern = entry_protections.protect_one(
+        ci__prepare_arg_string_r(pattern, "pattern")
     );
-    R_len_t n_n = LENGTH(n);
-    R_len_t omit_empty_n = LENGTH(omit_empty);
-    R_len_t vectorize_length = 0;
-    ci::unwind_protect([&]() -> SEXP {
-        vectorize_length = ci__recycling_rule(
-            false, 4, str_n, pattern_n, n_n, omit_empty_n
-        );
-        return R_NilValue;
-    });
-    // Deviation from stringi: queue the recycling warning until regex/Reader,
-    // UText, Builder, Store, and split-result staging owners are released.
-    if (vectorize_length > 0 &&
-            (vectorize_length % str_n != 0 ||
-             vectorize_length % pattern_n != 0 ||
-             vectorize_length % n_n != 0 ||
-             vectorize_length % omit_empty_n != 0))
-        context.warn(MSG__WARN_RECYCLING_RULE);
+    n = entry_protections.protect_one(
+        ci__prepare_arg_integer_r(n, "n")
+    );
+    omit_empty = entry_protections.protect_one(
+        ci__prepare_arg_logical_r(
+            omit_empty, "omit_empty"
+        )
+    );
+    simplify = entry_protections.protect_one(
+        ci__prepare_arg_logical_1_r(
+            simplify, "simplify"
+        )
+    );
 
-    regex::Options pattern_opts;
-    // Deviation from stringi: preserve recycling-before-options order while
-    // routing option-parser R unwinds through the common error boundary.
-    ci::unwind_protect([&]() -> SEXP {
-        pattern_opts = regex::PatternSet::getRegexOptions(
-            STRI__DEFERRED_WARNINGS, opts_regex
-        );
-        return R_NilValue;
-    });
-
-    // Deviation from stringi: preinitialize lazy empty vectors because the
-    // vectorization order is not sequential, then replace each visited slot
-    // with a scalar or exact-size Store once its field count is known.
-    vector<charport::charvec::Store> stores;
-    stores.reserve(static_cast<size_t>(vectorize_length));
-    for (R_len_t i=0; i<vectorize_length; ++i)
-        stores.emplace_back(0, 0);
-    const bool scalar_default =
-        pattern_n == 1 && n_n == 1 && omit_empty_n == 1 &&
-        INTEGER_RO(n)[0] != NA_INTEGER && INTEGER_RO(n)[0] < 0 &&
-        LOGICAL_RO(omit_empty)[0] == FALSE &&
-        !tokens_only1 && simplify_1 == FALSE;
-    if (scalar_default) {
-        io::Utf8Input scalar_input(context, str, vectorize_length);
-        ci__split_regex_scalar_default(
-            context, scalar_input, pattern, vectorize_length,
-            pattern_opts, stores
-        );
+    const int simplify_value = LOGICAL_RO(simplify)[0];
+    const bool simplifying =
+        simplify_value == NA_LOGICAL || simplify_value != 0;
+    const R_xlen_t subject_xlength = XLENGTH(str);
+    const R_xlen_t pattern_xlength = XLENGTH(pattern);
+    const R_xlen_t n_xlength = XLENGTH(n);
+    const R_xlen_t omit_empty_xlength = XLENGTH(omit_empty);
+    if (subject_xlength > R_LEN_T_MAX ||
+            pattern_xlength > R_LEN_T_MAX ||
+            n_xlength > R_LEN_T_MAX ||
+            omit_empty_xlength > R_LEN_T_MAX) {
+        Rf_error("long vectors are not supported by regex splitting");
     }
-    else {
-        io::IntegerInput n_cont(n, vectorize_length);
-        io::LogicalInput omit_empty_cont(omit_empty, vectorize_length);
-        io::Utf8Input str_cont(context, str, vectorize_length);
-        regex::PatternSet pattern_cont(
-            context, pattern, vectorize_length, pattern_opts
-        );
-        charport::charvec::Builder output(0);
-        vector<CiRegexSplitField> fields;
+
+    const R_len_t subject_length = static_cast<R_len_t>(subject_xlength);
+    const R_len_t pattern_length = static_cast<R_len_t>(pattern_xlength);
+    const R_len_t n_length = static_cast<R_len_t>(n_xlength);
+    const R_len_t omit_empty_length =
+        static_cast<R_len_t>(omit_empty_xlength);
+    bool recycling_warning = false;
+    const R_len_t vectorize_length = recycling_length(
+        subject_length, pattern_length, n_length,
+        omit_empty_length, recycling_warning
+    );
+    if (recycling_warning)
+        Rf_warning(MSG__WARN_RECYCLING_RULE);
+
+    const bool scalar_default =
+        vectorize_length > 0 &&
+        pattern_length == 1 &&
+        n_length == 1 &&
+        omit_empty_length == 1 &&
+        INTEGER_RO(n)[0] != NA_INTEGER &&
+        INTEGER_RO(n)[0] < 0 &&
+        LOGICAL_RO(omit_empty)[0] == FALSE &&
+        !tokens_only_value &&
+        simplify_value == FALSE;
+
+    const shared::RegexOptions options =
+        regex::prepare_options(opts_regex);
+
+    SEXP temporary = R_NilValue;
+    PROTECT_INDEX temporary_index;
+
+    int empty_pattern_warnings = 0;
+    R_len_t max_columns = 0;
+
+    try {
+        charport::Reader subject_reader;
+        charport::Reader pattern_reader;
+        charport::StrViews subject_views;
+        charport::StrViews pattern_views;
+        std::vector<shared::StringView> subjects;
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        shared::RegexPatterns patterns;
+        shared::RegexMatcher matcher(options);
+        std::vector<shared::RegexRange> fields;
+        std::vector<io::OutputStore> stores;
+        io::OutputBuilder child_builder(0);
+        io::OutputBuilder matrix_builder(0);
+
         fields.reserve(16);
 
-        for (R_len_t i = pattern_cont.vectorize_init();
-                i != pattern_cont.vectorize_end();
-                i = pattern_cont.vectorize_next(i))
-        {
-            if (n_cont.isNA(i)) {
-                stores[i] = charport::charvec::Store::scalar(
-                    nullptr, 0, cetype_ext_t::CE_NA
-                );
-                continue;
-            }
-
-            int n_cur = n_cont.get(i);
-            const bool omit_empty_isna = omit_empty_cont.isNA(i);
-            const bool omit_empty_cur =
-                !omit_empty_isna && omit_empty_cont.get(i);
-
-            STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(
-                str_cont, pattern_cont,
-                stores[i] = charport::charvec::Store::scalar(
-                    nullptr, 0, cetype_ext_t::CE_NA
-                );,
-            {   if (omit_empty_isna)
-                    stores[i] = charport::charvec::Store::scalar(
-                        nullptr, 0, cetype_ext_t::CE_NA
-                    );
-                else if (!(omit_empty_cur || n_cur == 0))
-                    stores[i] = charport::charvec::Store::scalar(
-                        "", 0, cetype_ext_t::CE_ASCII
-                    );
-            })
-
-            const io::Utf8Record& str_cur = str_cont.get(i);
-            const R_len_t str_cur_n = str_cur.length();
-            const char* str_cur_s = str_cur.data();
-            const cetype_ext_t field_encoding = str_cur.isASCII()
-                ? cetype_ext_t::CE_ASCII
-                : cetype_ext_t::CE_ASCII_OR_UTF8;
-
-            if (n_cur >= INT_MAX-1)
-                throw StriException(MSG__INCORRECT_NAMED_ARG "; " MSG__EXPECTED_SMALLER, "n");
-            else if (n_cur < 0)
-                n_cur = INT_MAX;
-            else if (n_cur == 0) {
-                continue;
-            }
-            else if (tokens_only1)
-                n_cur++; // we need to do one split ahead here
-
-            UErrorCode status = U_ZERO_ERROR;
-            RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
-            str_text = utext_openUTF8(
-                str_text, str_cur_s, str_cur_n, &status
-            );
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-            matcher->reset(str_text);
-            ci__collect_regex_split_fields(
-                matcher, str_cur_n, n_cur, omit_empty_cur, tokens_only1,
-                status, fields
-            );
-
-            if (fields.size() == 1) {
-                const CiRegexSplitField& curoccur = fields.front();
-                if (curoccur.second == curoccur.first &&
-                        omit_empty_isna) {
-                    stores[i] = charport::charvec::Store::scalar(
-                        nullptr, 0, cetype_ext_t::CE_NA
-                    );
-                }
-                else {
-                    const char* value = str_cur_s+curoccur.first;
-                    size_t value_length = static_cast<size_t>(
-                        curoccur.second-curoccur.first
-                    );
-                    stores[i] = ci::scalar_store(
-                        value, value_length, field_encoding
-                    );
-                }
-            }
-            else if (!fields.empty()) {
-                output.reset(static_cast<R_xlen_t>(fields.size()));
-                for (R_len_t k = 0;
-                        k < static_cast<R_len_t>(fields.size()); ++k) {
-                    const CiRegexSplitField& curoccur = fields[
-                        static_cast<size_t>(k)
-                    ];
-                    if (curoccur.second == curoccur.first &&
-                            omit_empty_isna) {
-                        output.set_na(k);
-                    }
-                    else {
-                        ci::builder_set(
-                            output, k, str_cur_s+curoccur.first,
-                            curoccur.second-curoccur.first,
-                            field_encoding
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                if (vectorize_length > 0) {
+                    subject_reader.reset(str);
+                    if (subject_reader.size() != subject_length) {
+                        throw std::runtime_error(
+                            "Reader length changed during regex splitting"
                         );
                     }
-                }
-                stores[i] = output.release_store();
-            }
-        }
-
-        if (str_text) {
-            utext_close(str_text);
-            str_text = NULL;
-        }
-    }
-
-    if (simplify_1 != NA_LOGICAL && !simplify_1) {
-        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-            return Rf_allocVector(VECSXP, vectorize_length);
-        }));
-        ci::unwind_protect([&]() -> SEXP {
-            for (R_len_t i=0; i<vectorize_length; ++i) {
-                SEXP ans = PROTECT(charport::charvec::wrap(
-                    std::move(stores[i])
-                ));
-                SET_VECTOR_ELT(ret, i, ans);
-                UNPROTECT(1);
-            }
-            return R_NilValue;
-        });
-    }
-    else {
-        R_len_t n_min = 0;
-        ci::unwind_protect([&]() -> SEXP {
-            R_len_t n_length = LENGTH(n);
-            const int* n_tab = INTEGER_RO(n);
-            for (R_len_t i=0; i<n_length; ++i) {
-                if (n_tab[i] != NA_INTEGER && n_min < n_tab[i])
-                    n_min = n_tab[i];
-            }
-            return R_NilValue;
-        });
-
-        R_len_t matrix_ncol = n_min;
-        for (R_len_t i=0; i<vectorize_length; ++i) {
-            R_len_t current_size = ci::checked_r_len(
-                static_cast<R_xlen_t>(stores[i].size()),
-                "split results"
-            );
-            if (matrix_ncol < current_size)
-                matrix_ncol = current_size;
-        }
-
-        // Deviation from stringi: reject a matrix that cannot be represented
-        // before passing an overflowed product to the flat Builder.
-        if (vectorize_length > 0 &&
-                matrix_ncol > R_XLEN_T_MAX/vectorize_length)
-            throw length_error("matrix length exceeds R's vector limit");
-        R_xlen_t matrix_size =
-            static_cast<R_xlen_t>(vectorize_length) * matrix_ncol;
-        charport::charvec::Builder matrix(matrix_size);
-        for (R_len_t i=0; i<vectorize_length; ++i) {
-            R_len_t current_size = static_cast<R_len_t>(stores[i].size());
-            R_len_t j = 0;
-            for (; j<current_size; ++j) {
-                matrix.set(
-                    i+static_cast<R_xlen_t>(j)*vectorize_length,
-                    stores[i].view(static_cast<size_t>(j))
-                );
-            }
-            for (; j<matrix_ncol; ++j) {
-                R_xlen_t output_i =
-                    i+static_cast<R_xlen_t>(j)*vectorize_length;
-                if (simplify_1 == NA_LOGICAL)
-                    matrix.set_na(output_i);
-                else
-                    ci::builder_set(
-                        matrix, output_i, "", 0,
-                        cetype_ext_t::CE_ASCII
+                    subject_views.resize(subject_length);
+                    subject_reader.views(
+                        0, subject_length,
+                        subject_views.ptrs(), subject_views.lengths(),
+                        subject_views.encodings()
                     );
+                    normalize_subjects(
+                        subject_views, subject_converter, subject_storage,
+                        subjects
+                    );
+
+                    pattern_reader.reset(pattern);
+                    if (pattern_reader.size() != pattern_length) {
+                        throw std::runtime_error(
+                            "Reader length changed during regex splitting"
+                        );
+                    }
+                    pattern_views.resize(pattern_length);
+                    pattern_reader.views(
+                        0, pattern_length,
+                        pattern_views.ptrs(), pattern_views.lengths(),
+                        pattern_views.encodings()
+                    );
+                    normalize_patterns(
+                        pattern_views, pattern_converter, pattern_storage,
+                        patterns
+                    );
+                    empty_pattern_warnings = patterns.empty_count();
+                }
+
+                stores.reserve(
+                    static_cast<std::size_t>(vectorize_length)
+                );
+                for (R_len_t i = 0; i < vectorize_length; ++i)
+                    stores.emplace_back(0, 0);
+
+                const int* n_values = INTEGER_RO(n);
+                const int* omit_empty_values = LOGICAL_RO(omit_empty);
+                if (simplifying) {
+                    max_columns = requested_columns(
+                        n_values, n_length
+                    );
+                }
+
+                if (scalar_default) {
+                    const std::size_t pattern_index = 0;
+                    const shared::RegexInput prepared_pattern =
+                        patterns.get(0);
+                    const bool pattern_unusable =
+                        prepared_pattern.missing ||
+                        prepared_pattern.length <= 0;
+                    bool matcher_bound = false;
+                    for (R_len_t i = 0; i < vectorize_length; ++i) {
+                        io::OutputStore& output = stores[
+                            static_cast<std::size_t>(i)
+                        ];
+                        const std::size_t subject_index =
+                            static_cast<std::size_t>(i);
+                        const shared::StringView subject =
+                            subjects[subject_index];
+
+                        if (subject.is_na() || pattern_unusable) {
+                            set_scalar_missing(output);
+                        }
+                        else if (subject.len <= 0) {
+                            set_scalar_empty(output);
+                        }
+                        else {
+                            if (!matcher_bound) {
+                                bind_pattern(
+                                    matcher, prepared_pattern, patterns,
+                                    pattern_index
+                                );
+                                matcher_bound = true;
+                            }
+
+                            UErrorCode status = U_ZERO_ERROR;
+                            matcher.split_default(
+                                subject, &subjects[subject_index],
+                                fields, status
+                            );
+                            if (U_FAILURE(status))
+                                throw StriException(status);
+
+                            build_store(
+                                subject, fields, false,
+                                matcher.subject_is_ascii(),
+                                child_builder, output
+                            );
+                        }
+                    }
+                }
+                else {
+                    for (R_len_t lane = 0;
+                            lane < (vectorize_length > 0
+                                ? pattern_length : 0);
+                            ++lane) {
+                        const std::size_t pattern_index =
+                            static_cast<std::size_t>(lane);
+                        const shared::RegexInput prepared_pattern =
+                            patterns.get(pattern_index);
+                        const bool pattern_unusable =
+                            prepared_pattern.missing ||
+                            prepared_pattern.length <= 0;
+                        R_len_t i = lane;
+                        for (;;) {
+                            io::OutputStore& output = stores[
+                                static_cast<std::size_t>(i)
+                            ];
+                            const int raw_n = n_values[i % n_length];
+                            const int raw_omit = omit_empty_values[
+                                i % omit_empty_length
+                            ];
+                            const bool omit_missing =
+                                raw_omit == NA_LOGICAL;
+                            const bool omit =
+                                !omit_missing && raw_omit != 0;
+                            const std::size_t subject_index =
+                                static_cast<std::size_t>(
+                                    i % subject_length
+                                );
+                            const shared::StringView subject =
+                                subjects[subject_index];
+
+                            if (raw_n == NA_INTEGER || subject.is_na() ||
+                                    pattern_unusable) {
+                                set_scalar_missing(output);
+                            }
+                            else if (subject.len <= 0) {
+                                if (omit_missing) {
+                                    set_scalar_missing(output);
+                                }
+                                else if (!(omit || raw_n == 0)) {
+                                    set_scalar_empty(output);
+                                }
+                            }
+                            else if (raw_n == 0) {
+                                // The slot was preinitialized as an empty Store.
+                            }
+                            else {
+                                if (raw_n >= INT_MAX-1) {
+                                    throw StriException(
+                                        MSG__INCORRECT_NAMED_ARG "; "
+                                        MSG__EXPECTED_SMALLER,
+                                        "n"
+                                    );
+                                }
+
+                                bind_pattern(
+                                    matcher, prepared_pattern, patterns,
+                                    pattern_index
+                                );
+                                UErrorCode status = U_ZERO_ERROR;
+                                const shared::RegexSplitResult split =
+                                    matcher.split(
+                                        subject, &subjects[subject_index],
+                                        raw_n, omit, tokens_only_value,
+                                        fields, status
+                                    );
+                                if (split == shared::RegexSplitResult::
+                                        limit_too_large) {
+                                    throw StriException(
+                                        MSG__INCORRECT_NAMED_ARG "; "
+                                        MSG__EXPECTED_SMALLER,
+                                        "n"
+                                    );
+                                }
+                                if (U_FAILURE(status))
+                                    throw StriException(status);
+
+                                build_store(
+                                    subject, fields, omit_missing,
+                                    matcher.subject_is_ascii(),
+                                    child_builder, output
+                                );
+                            }
+
+                            if (simplifying) {
+                                const R_len_t current_size =
+                                    static_cast<R_len_t>(output.size());
+                                if (max_columns < current_size)
+                                    max_columns = current_size;
+                            }
+
+                            if (pattern_length >= vectorize_length-i)
+                                break;
+                            i += pattern_length;
+                        }
+                    }
+                }
+
+                callback_protections.protect_with_index(
+                    temporary, &temporary_index
+                );
+                if (!simplifying) {
+                    result = entry_protections.reprotect_one(
+                        Rf_allocVector(VECSXP, vectorize_length),
+                        result_index
+                    );
+                    for (R_len_t i = 0; i < vectorize_length; ++i) {
+                        temporary = callback_protections.reprotect_slot(
+                            io::finalize(std::move(stores[
+                                static_cast<std::size_t>(i)
+                            ])),
+                            temporary_index
+                        );
+                        SET_VECTOR_ELT(result, i, temporary);
+                    }
+                }
+                else {
+                    const R_xlen_t rows = vectorize_length;
+                    const R_xlen_t columns = max_columns;
+                    if (rows > 0 && columns > R_XLEN_T_MAX / rows) {
+                        throw std::length_error(
+                            "matrix length exceeds R's vector limit"
+                        );
+                    }
+
+                    matrix_builder.reset(rows * columns);
+                    for (R_xlen_t i = 0; i < rows; ++i) {
+                        const io::OutputStore& current = stores[
+                            static_cast<std::size_t>(i)
+                        ];
+                        const R_xlen_t current_size =
+                            static_cast<R_xlen_t>(current.size());
+                        R_xlen_t j = 0;
+                        for (; j < current_size; ++j) {
+                            matrix_builder.set_validated(
+                                i+j*rows, current.view(j)
+                            );
+                        }
+                        for (; j < columns; ++j) {
+                            if (simplify_value == NA_LOGICAL) {
+                                matrix_builder.set_na(i+j*rows);
+                            }
+                            else {
+                                matrix_builder.set(
+                                    i+j*rows, "", 0,
+                                    cetype_ext_t::CE_ASCII
+                                );
+                            }
+                        }
+                    }
+
+                    result = entry_protections.reprotect_one(
+                        matrix_builder.to_sexp(), result_index
+                    );
+                    temporary = callback_protections.reprotect_slot(
+                        Rf_allocVector(INTSXP, 2), temporary_index
+                    );
+                    INTEGER(temporary)[0] = vectorize_length;
+                    INTEGER(temporary)[1] = max_columns;
+                    result = entry_protections.reprotect_one(
+                        Rf_setAttrib(
+                            result, R_DimSymbol, temporary
+                        ),
+                        result_index
+                    );
+                }
+
+                CHARR_UNWIND_RETURN();
             }
-        }
-
-        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-            return matrix.to_sexp();
-        }));
-        ret = ci::unwind_protect([&]() -> SEXP {
-            SEXP dim;
-            PROTECT(dim = Rf_allocVector(INTSXP, 2));
-            INTEGER(dim)[0] = vectorize_length;
-            INTEGER(dim)[1] = matrix_ncol;
-            SEXP result = Rf_setAttrib(ret, R_DimSymbol, dim);
-            UNPROTECT(1);
-            return result;
-        });
+        );
     }
-
-    }
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END({
-        if (str_text) {
-            utext_close(str_text);
-            str_text = NULL;
-        }
-    })
+    CHARR_ENTRYPOINT_END(
+        emit_empty_pattern_warnings_r(empty_pattern_warnings);
+    );
 }
 
 } } // namespace charr::altrep_backend

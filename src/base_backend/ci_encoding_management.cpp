@@ -32,10 +32,110 @@
 
 
 #include "ci_stringi.h"
-#include "ci_ucnv.h"
+#include "../shared/encoding_info.h"
+#include "../shared/entrypoint.h"
+#include "../shared/protect.h"
+#include "../shared/unwind.h"
+
+#include <exception>
 
 
 namespace charr { namespace base_backend {
+
+namespace encoding_management {
+
+CHARR_R_HELPER void set_value_r(
+    SEXP result, int index, shared::EncodingInfoValue value
+) noexcept {
+    SEXP child = R_NilValue;
+    switch (value.kind) {
+    case shared::EncodingInfoValueKind::unset:
+        return;
+
+    case shared::EncodingInfoValueKind::character:
+        PROTECT(child = Rf_allocVector(STRSXP, 1));
+        SET_STRING_ELT(
+            child, 0,
+            value.missing
+                ? NA_STRING
+                : Rf_mkCharLenCE(value.data, value.length, CE_UTF8)
+        );
+        break;
+
+    case shared::EncodingInfoValueKind::logical:
+        PROTECT(child = Rf_ScalarLogical(
+            value.missing ? NA_LOGICAL : value.scalar
+        ));
+        break;
+
+    case shared::EncodingInfoValueKind::integer:
+        PROTECT(child = Rf_ScalarInteger(
+            value.missing ? NA_INTEGER : value.scalar
+        ));
+        break;
+    }
+
+    SET_VECTOR_ELT(result, index, child);
+    UNPROTECT(1);
+}
+
+
+CHARR_R_HELPER void emit_diagnostic_r(
+    shared::EncodingInfoDiagnostic diagnostic
+) noexcept {
+    switch (diagnostic.kind) {
+    case shared::EncodingInfoDiagnosticKind::standard_name:
+        Rf_warning(
+            "could not get standard name (StriUcnv::getStandards())"
+        );
+        return;
+
+    case shared::EncodingInfoDiagnosticKind::ascii_conversion:
+        Rf_warning(
+            "Cannot convert ASCII character 0x%02x (encoding=%s)",
+            diagnostic.input_byte, diagnostic.converter_name
+        );
+        return;
+
+    case shared::EncodingInfoDiagnosticKind::conversion:
+        Rf_warning(
+            "Cannot convert character 0x%02x (encoding=%s)",
+            diagnostic.input_byte, diagnostic.converter_name
+        );
+        return;
+
+    case shared::EncodingInfoDiagnosticKind::non_single_code_point:
+        Rf_warning(
+            "Problematic character 0x%02x -> \\u%08x (encoding=%s)",
+            diagnostic.input_byte,
+            static_cast<int>(diagnostic.code_point),
+            diagnostic.converter_name
+        );
+        return;
+
+    case shared::EncodingInfoDiagnosticKind::round_trip:
+        Rf_warning(
+            "Problematic character 0x%02x -> \\u%08x -> 0x%02x "
+            "(encoding=%s)",
+            diagnostic.input_byte,
+            static_cast<int>(diagnostic.code_point),
+            diagnostic.output_byte,
+            diagnostic.converter_name
+        );
+        return;
+    }
+}
+
+
+CHARR_CXX_HELPER void require_icu_success(UErrorCode status)
+{
+    if (U_FAILURE(status))
+        throw StriException(status);
+}
+
+} // namespace encoding_management
+
+using namespace encoding_management;
 
 // The stringr surface does not expose stringi's mutable ICU-default converter.
 // Charr resolves native encodings explicitly for each operation instead of
@@ -56,89 +156,55 @@ namespace charr { namespace base_backend {
  * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
  *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
  */
-SEXP ci_enc_info(SEXP enc)
+CHARR_ENTRYPOINT SEXP ci_enc_info(SEXP enc) noexcept
 {
-    const char* selected_enc = ci__prepare_arg_enc(enc, "enc", true/*default ok*/); /* this is R_alloc'ed */
+    CHARR_ENTRYPOINT_BEGIN();
 
-    STRI__ERROR_HANDLER_BEGIN(0)
-    StriUcnv uconv_obj(selected_enc);
-    //uconv_obj.setCallBackSubstitute(); // restore default callbacks (no warning)
-    UConverter* uconv = uconv_obj.getConverter(false);
-    UErrorCode status = U_ZERO_ERROR;
+    const char* selected_encoding = ci__prepare_arg_enc_r(
+        enc, "enc", true
+    );
 
-    // get the list of available standards
-    vector<const char*> standards = StriUcnv::getStandards();
-    R_len_t standards_n = (R_len_t)standards.size();
+    try {
+        shared::EncodingInfo info;
 
-    // alloc output list
-    SEXP vals;
-    SEXP names;
-    const int nval = standards_n+2+5;
-    STRI__PROTECT(names = Rf_allocVector(STRSXP, nval));
-    SET_STRING_ELT(names, 0, Rf_mkChar("Name.friendly"));
-    SET_STRING_ELT(names, 1, Rf_mkChar("Name.ICU"));
-    for (R_len_t i=0; i<standards_n; ++i) {
-        if (standards[i])
-            SET_STRING_ELT(names, i+2, Rf_mkChar((string("Name.")+standards[i]).c_str()));
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                require_icu_success(info.reset(selected_encoding));
+                info.inspect();
+
+                const int field_count = info.size();
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(VECSXP, field_count), result_index
+                );
+                SEXP names = callback_protections.protect_one(
+                    Rf_allocVector(STRSXP, field_count)
+                );
+
+                for (int i = 0; i < field_count; ++i) {
+                    if (info.has_name(i)) {
+                        SET_STRING_ELT(
+                            names, i,
+                            Rf_mkCharLenCE(
+                                info.name_data(i), info.name_length(i),
+                                CE_UTF8
+                            )
+                        );
+                    }
+                    set_value_r(result, i, info.value(i));
+                }
+                Rf_setAttrib(result, R_NamesSymbol, names);
+
+                for (int i = 0; i < info.diagnostic_count(); ++i)
+                    emit_diagnostic_r(info.diagnostic(i));
+                if (info.warn_get_name())
+                    Rf_warning("%s", MSG__ENC_ERROR_GETNAME);
+
+                CHARR_UNWIND_RETURN();
+            }
+        );
     }
-    SET_STRING_ELT(names, nval-5, Rf_mkChar("ASCII.subset"));
-    SET_STRING_ELT(names, nval-4, Rf_mkChar("Unicode.1to1"));
-    SET_STRING_ELT(names, nval-3, Rf_mkChar("CharSize.8bit"));
-    SET_STRING_ELT(names, nval-2, Rf_mkChar("CharSize.min"));
-    SET_STRING_ELT(names, nval-1, Rf_mkChar("CharSize.max"));
-
-    STRI__PROTECT(vals = Rf_allocVector(VECSXP, nval));
-
-
-    // get canonical (ICU) name
-    status = U_ZERO_ERROR;
-    const char* canname = ucnv_getName(uconv, &status);
-    if (U_FAILURE(status) || !canname) {
-        SET_VECTOR_ELT(vals, 1, Rf_ScalarString(NA_STRING));
-        r_warning(MSG__ENC_ERROR_GETNAME);
-    }
-    else {
-        SET_VECTOR_ELT(vals, 1, ci__make_character_vector_char_ptr(1, canname));
-
-        // friendly name
-        const char* frname = StriUcnv::getFriendlyName(canname);
-        if (frname)  SET_VECTOR_ELT(vals, 0, ci__make_character_vector_char_ptr(1, frname));
-        else         SET_VECTOR_ELT(vals, 0, Rf_ScalarString(NA_STRING));
-
-        // has ASCII as its subset?
-        SET_VECTOR_ELT(vals, nval-5, Rf_ScalarLogical((int)uconv_obj.hasASCIIsubset()));
-
-        // min,max character size, is 8bit?
-        int mincharsize = (int)ucnv_getMinCharSize(uconv);
-        int maxcharsize = (int)ucnv_getMaxCharSize(uconv);
-        int is8bit = (mincharsize==1 && maxcharsize == 1);
-        SET_VECTOR_ELT(vals, nval-3, Rf_ScalarLogical(is8bit));
-        SET_VECTOR_ELT(vals, nval-2, Rf_ScalarInteger(mincharsize));
-        SET_VECTOR_ELT(vals, nval-1, Rf_ScalarInteger(maxcharsize));
-
-        // is there a one-to-one correspondence with Unicode?
-        if (!is8bit)
-            SET_VECTOR_ELT(vals, nval-4, Rf_ScalarLogical(NA_LOGICAL));
-        else
-            SET_VECTOR_ELT(vals, nval-4, Rf_ScalarLogical((int)uconv_obj.is1to1Unicode()));
-
-        // other standard names
-        for (R_len_t i=0; i<standards_n; ++i) {
-            if (!standards[i]) continue;
-
-            status = U_ZERO_ERROR;
-            const char* stdname = ucnv_getStandardName(canname, standards[i], &status);
-            if (U_FAILURE(status) || !stdname)
-                SET_VECTOR_ELT(vals, i+2, Rf_ScalarString(NA_STRING));
-            else
-                SET_VECTOR_ELT(vals, i+2, ci__make_character_vector_char_ptr(1, stdname));
-        }
-    }
-    Rf_setAttrib(vals, R_NamesSymbol, names);
-    STRI__UNPROTECT_ALL
-    return vals;
-
-    STRI__ERROR_HANDLER_END({/* no special action on error */})
+    CHARR_ENTRYPOINT_END();
 }
 
 

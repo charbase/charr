@@ -31,7 +31,10 @@
  */
 
 #include "ci_stringi.h"
+#include "../shared/entrypoint.h"
 #include "../shared/native_to_utf8.h"
+#include "../shared/protect.h"
+#include "../shared/unwind.h"
 
 #include <clocale>
 #include <cstddef>
@@ -41,7 +44,9 @@
 
 namespace charr { namespace base_backend { namespace length {
 
-bool ci__length_utf8_fast(const char* str, int n, int& length) noexcept
+CHARR_NEUTRAL_HELPER bool ci__length_utf8_fast(
+    const char* str, int n, int& length
+) noexcept
 {
     std::int32_t i = 0;
     length = 0;
@@ -58,13 +63,17 @@ bool ci__length_utf8_fast(const char* str, int n, int& length) noexcept
 
 
 
-inline int ci__ascii_char_width(unsigned char value) noexcept
+CHARR_NEUTRAL_HELPER inline int ci__ascii_char_width(
+    unsigned char value
+) noexcept
 {
     return value >= 0x20 && value != 0x7f ? 1 : 0;
 }
 
 
-int ci__ascii_string_width(const char* data, int length) noexcept
+CHARR_NEUTRAL_HELPER int ci__ascii_string_width(
+    const char* data, int length
+) noexcept
 {
     int width = 0;
     for (int i = 0; i < length; ++i)
@@ -80,37 +89,6 @@ using namespace charr::base_backend::length;
 
 
 namespace charr { namespace base_backend {
-
-/**
- * Get the largest number of bytes amongst the strings in a character vector
- * (useful for allocating temporary buffers)
- *
- * If all strings are NA or an empty character vector is given, -1 is returned.
- * Prior to memory allocation, you should check for < 0!
- *
- * Note that ICU permits only strings of length < 2^31.
- * @param s character vector
- * @return maximal number of bytes
- *
- * @version 0.1-?? (Marek Gagolewski)
- */
-R_len_t ci__numbytes_max(SEXP str)
-{
-    // STRI_ASSERT - str is a character vector
-    R_len_t ns = LENGTH(str);
-    if (ns <= 0) return -1;
-    R_len_t maxlen = -1;
-    for (R_len_t i=0; i<ns; ++i) {
-        SEXP cs = STRING_ELT(str, i);
-        if (cs != NA_STRING) {
-            /* INPUT ENCODING CHECK: this function does not need this. */
-            R_len_t cns = LENGTH(cs);
-            if (cns > maxlen) maxlen = cns;
-        }
-    }
-    return maxlen;
-}
-
 
 /**
  * Count the number of characters/code points in a string
@@ -138,67 +116,78 @@ R_len_t ci__numbytes_max(SEXP str)
  * @version 1.6.3 (Marek Gagolewski, 2021-05-22)
  *    use ci__length_string for UTF-8
  */
-SEXP ci_length(SEXP str)
+CHARR_ENTRYPOINT SEXP ci_length(SEXP str) noexcept
 {
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
+    CHARR_ENTRYPOINT_BEGIN();
 
-    STRI__ERROR_HANDLER_BEGIN(1)
+    str = entry_protections.protect_one(ci__prepare_arg_string_r(str, "str"));
 
-    R_len_t str_n = LENGTH(str);
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(INTSXP, str_n));
-    int* retint = INTEGER(ret);
+    try {
+        shared::NativeToUtf8 native_to_utf8;
 
-    const SEXP* strings = str_n > 0 ? STRING_PTR_RO(str) : nullptr;
-    shared::NativeToUtf8 native_to_utf8;
-
-    for (R_len_t k = 0; k < str_n; k++) {
-        SEXP curs = strings[k];
-        if (curs == NA_STRING) {
-            retint[k] = NA_INTEGER;
-            continue;
-        }
-
-        R_len_t curs_n = LENGTH(curs);  // O(1) - stored in SEXPREC
-        if (IS_ASCII(curs)) {
-            retint[k] = curs_n;
-            continue;
-        }
-
-        const cetype_t encoding = Rf_getCharCE(curs);
-        if (encoding == CE_LATIN1) {
-            retint[k] = curs_n;
-        }
-        else if (encoding == CE_BYTES) {
-            throw StriException(MSG__BYTESENC);
-        }
-        // native_is_utf8() is queried lazily so that an all-ASCII or all-UTF-8
-        // vector never opens a converter.
-        else if (encoding == CE_UTF8 ||
-                (encoding == CE_NATIVE && native_to_utf8.native_is_utf8())) {
-            const char* curs_s = CHAR(curs);
-            if (!ci__length_utf8_fast(curs_s, curs_n, retint[k]))
-                throw StriException(MSG__INVALID_UTF8);
-        }
-        else { // native encoding
-            try {
-                const shared::ByteView converted = native_to_utf8.native(
-                    CHAR(curs), curs_n
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                const R_len_t str_n = LENGTH(str);
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(INTSXP, str_n), result_index
                 );
-                if (!ci__length_utf8_fast(
-                        converted.ptr, converted.len, retint[k]))
-                    throw StriException(MSG__INVALID_UTF8);
+                int* retint = INTEGER(result);
+
+                const SEXP* strings =
+                    str_n > 0 ? STRING_PTR_RO(str) : nullptr;
+
+                for (R_len_t k = 0; k < str_n; ++k) {
+                    SEXP curs = strings[k];
+                    if (curs == NA_STRING) {
+                        retint[k] = NA_INTEGER;
+                        continue;
+                    }
+
+                    const R_len_t curs_n = LENGTH(curs);
+                    if (IS_ASCII(curs)) {
+                        retint[k] = curs_n;
+                        continue;
+                    }
+
+                    const cetype_t encoding = Rf_getCharCE(curs);
+                    if (encoding == CE_LATIN1) {
+                        retint[k] = curs_n;
+                    }
+                    else if (encoding == CE_BYTES) {
+                        throw StriException(MSG__BYTESENC);
+                    }
+                    else if (encoding == CE_UTF8 ||
+                            (encoding == CE_NATIVE &&
+                             native_to_utf8.native_is_utf8())) {
+                        const char* curs_s = CHAR(curs);
+                        if (!ci__length_utf8_fast(
+                                curs_s, curs_n, retint[k])) {
+                            throw StriException(MSG__INVALID_UTF8);
+                        }
+                    }
+                    else {
+                        try {
+                            const shared::ByteView converted =
+                                native_to_utf8.native(CHAR(curs), curs_n);
+                            if (!ci__length_utf8_fast(
+                                    converted.ptr,
+                                    converted.len,
+                                    retint[k])) {
+                                throw StriException(MSG__INVALID_UTF8);
+                            }
+                        }
+                        catch (const std::exception& error) {
+                            throw StriException("%s", error.what());
+                        }
+                    }
+                }
+
+                CHARR_UNWIND_RETURN();
             }
-            catch (const std::exception& error) {
-                throw StriException("%s", error.what());
-            }
-        }
+        );
     }
-
-    STRI__UNPROTECT_ALL
-    return ret;
-
-    STRI__ERROR_HANDLER_END({ /* no special action on error */ })
+    CHARR_ENTRYPOINT_END();
 }
 
 
@@ -227,7 +216,7 @@ SEXP ci_length(SEXP str)
  * @param c code point
  * @return 0, 1, or 2
  */
-int ci__width_char(UChar32 c)
+CHARR_NEUTRAL_HELPER int ci__width_char(UChar32 c) noexcept
 {
     if (c >= 0 && c <= 0x7f)
         return ci__ascii_char_width(static_cast<unsigned char>(c));
@@ -338,7 +327,9 @@ int ci__width_char(UChar32 c)
  * @param p previous code point
  * @return int
  */
-int ci__width_char_with_context(UChar32 c, UChar32 p, bool& reset)
+CHARR_NEUTRAL_HELPER int ci__width_char_with_context(
+    UChar32 c, UChar32 p, bool& reset
+) noexcept
 {
     if (reset) {
         p = 0;
@@ -395,7 +386,9 @@ int ci__width_char_with_context(UChar32 c, UChar32 p, bool& reset)
  * @version 1.6.3 (Marek Gagolewski, 2021-05-22)
  *    extracted from ci_length
  */
-int ci__length_string(const char* str_cur_s, int str_cur_n, int max_length)
+CHARR_CXX_HELPER int ci__length_string(
+    const char* str_cur_s, int str_cur_n, int max_length
+)
 {
     // is string is in ASCII, then length == str_cur_n, but with
     // merely str_cur_s ptr we are unable to tell that here
@@ -438,7 +431,9 @@ int ci__length_string(const char* str_cur_s, int str_cur_n, int max_length)
  * @version 1.6.3 (Marek Gagolewski, 2021-05-22)
  *    max_width
  */
-int ci__width_string(const char* str_cur_s, int str_cur_n, int max_width)
+CHARR_CXX_HELPER int ci__width_string(
+    const char* str_cur_s, int str_cur_n, int max_width
+)
 {
     int cur_width = 0;
 
@@ -489,55 +484,66 @@ int ci__width_string(const char* str_cur_s, int str_cur_n, int max_width)
   *
   * @version 0.5-1 (Marek Gagolewski, 2015-04-22)
   */
-SEXP ci_width(SEXP str)
+CHARR_ENTRYPOINT SEXP ci_width(SEXP str) noexcept
 {
-    PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
+    CHARR_ENTRYPOINT_BEGIN();
 
-    STRI__ERROR_HANDLER_BEGIN(1)
-    R_len_t str_n = LENGTH(str);
+    str = entry_protections.protect_one(ci__prepare_arg_string_r(str, "str"));
 
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(INTSXP, str_n));
-    int* retint = INTEGER(ret);
+    try {
+        shared::NativeToUtf8 native_to_utf8;
 
-    const SEXP* strings = str_n > 0 ? STRING_PTR_RO(str) : nullptr;
-    shared::NativeToUtf8 native_to_utf8;
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                const R_len_t str_n = LENGTH(str);
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(INTSXP, str_n), result_index
+                );
+                int* retint = INTEGER(result);
 
-    for (R_len_t i = 0; i < str_n; ++i) {
-        SEXP value = strings[i];
-        if (value == NA_STRING) {
-            retint[i] = NA_INTEGER;
-            continue;
-        }
+                const SEXP* strings =
+                    str_n > 0 ? STRING_PTR_RO(str) : nullptr;
 
-        const char* data = CHAR(value);
-        int length = LENGTH(value);
-        if (IS_ASCII(value)) {
-            retint[i] = ci__ascii_string_width(data, length);
-            continue;
-        }
-        if (IS_BYTES(value))
-            throw StriException(MSG__BYTESENC);
+                for (R_len_t i = 0; i < str_n; ++i) {
+                    SEXP value = strings[i];
+                    if (value == NA_STRING) {
+                        retint[i] = NA_INTEGER;
+                        continue;
+                    }
 
-        if (IS_UTF8(value)) {
-            retint[i] = ci__width_string(data, length);
-            continue;
-        }
+                    const char* data = CHAR(value);
+                    const int length = LENGTH(value);
+                    if (IS_ASCII(value)) {
+                        retint[i] = ci__ascii_string_width(data, length);
+                        continue;
+                    }
+                    if (IS_BYTES(value))
+                        throw StriException(MSG__BYTESENC);
 
-        try {
-            const shared::ByteView converted = IS_LATIN1(value)
-                ? native_to_utf8.latin1(data, length)
-                : native_to_utf8.native(data, length);
-            retint[i] = ci__width_string(converted.ptr, converted.len);
-        }
-        catch (const std::exception& error) {
-            throw StriException("%s", error.what());
-        }
+                    if (IS_UTF8(value)) {
+                        retint[i] = ci__width_string(data, length);
+                        continue;
+                    }
+
+                    try {
+                        const shared::ByteView converted = IS_LATIN1(value)
+                            ? native_to_utf8.latin1(data, length)
+                            : native_to_utf8.native(data, length);
+                        retint[i] = ci__width_string(
+                            converted.ptr, converted.len
+                        );
+                    }
+                    catch (const std::exception& error) {
+                        throw StriException("%s", error.what());
+                    }
+                }
+
+                CHARR_UNWIND_RETURN();
+            }
+        );
     }
-
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END({ /* no special action on error */ })
+    CHARR_ENTRYPOINT_END();
 }
 
 } } // namespace charr::base_backend

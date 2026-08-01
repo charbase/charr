@@ -32,13 +32,18 @@
 
 
 #include "ci_stringi.h"
-#include "ci_builder.h"
-#include "ci_utf8.h"
-#include "io/integer_input.h"
-#include "io/utf8_list_input.h"
+#include "io/reader_utils.h"
+#include "io/string_view.h"
+#include "io/utf8_output.h"
+#include "../shared/entrypoint.h"
+#include "../shared/join.h"
 #include "../shared/native_to_utf8.h"
-#include <algorithm>
-#include <memory>
+#include "../shared/protect.h"
+#include "../shared/slice_arena.h"
+#include "../shared/unwind.h"
+#include "../shared/utf8.h"
+#include <exception>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -49,187 +54,111 @@ using namespace std;
 namespace join {
 
 
-struct ScalarStringInfo {
-    bool is_na;
-    bool is_empty;
-};
-
-
-struct DirectStringView {
-    const char* data;
-    R_len_t length;
-    bool is_na;
-    bool is_ascii;
-    bool is_direct;
-};
-
-
-class JoinStringNormalizer {
-private:
-    charr::shared::NativeToUtf8 converter_;
-
-public:
-    DirectStringView get(const charport::StrView& value)
-    {
-        if (value.is_na())
-            return DirectStringView{NULL, 0, true, false, true};
-        if (value.enc == cetype_ext_t::CE_BYTES)
-            throw StriException(MSG__BYTESENC);
-
-        const char* data = value.ptr;
-        R_len_t length = value.len;
-        if (value.enc == cetype_ext_t::CE_ASCII)
-            return DirectStringView{data, length, false, true, true};
-        if (value.enc == cetype_ext_t::CE_UTF8) {
-            if (STRI__ENC_HAS_BOM_UTF8(data, length)) {
-                data += 3;
-                length -= 3;
-            }
-            return DirectStringView{data, length, false, false, true};
-        }
-        if (value.enc == cetype_ext_t::CE_ASCII_OR_UTF8) {
-            if (STRI__ENC_HAS_BOM_UTF8(data, length)) {
-                data += 3;
-                length -= 3;
-            }
-            return DirectStringView{
-                data, length, false,
-                ci::is_ascii(data, static_cast<size_t>(length)), true
-            };
-        }
-        if (value.enc != cetype_ext_t::CE_NATIVE &&
-                value.enc != cetype_ext_t::CE_LATIN1) {
-            throw StriException("unknown charport string encoding");
-        }
-
-        const bool native_has_bom =
-            value.enc == cetype_ext_t::CE_NATIVE &&
-            STRI__ENC_HAS_BOM_UTF8(data, length);
-        const shared::ByteView converted =
-            value.enc == cetype_ext_t::CE_LATIN1
-            ? converter_.latin1(data, length)
-            : converter_.native(data, length);
-        data = converted.ptr;
-        length = converted.len;
-        if (native_has_bom && STRI__ENC_HAS_BOM_UTF8(data, length)) {
-            data += 3;
-            length -= 3;
-        }
-        return DirectStringView{data, length, false, false, false};
-    }
-};
-
-
-DirectStringView ci__direct_string_bytes(const charport::StrView& value);
-DirectStringView ci__direct_string_view(const charport::StrView& value);
-
-
-class JoinStringCache {
-private:
-    struct Entry {
-        DirectStringView view;
-        std::unique_ptr<char[]> owned;
-
-        explicit Entry(const DirectStringView& value) :
-            view(value), owned()
-        {
-            if (value.length > 0) {
-                owned.reset(new char[static_cast<size_t>(value.length)]);
-                memcpy(owned.get(), value.data, value.length);
-                view.data = owned.get();
-            }
-            else {
-                view.data = "";
-            }
-        }
-
-        Entry(Entry&&) noexcept = default;
-        Entry& operator=(Entry&&) noexcept = default;
-        Entry(const Entry&) = delete;
-        Entry& operator=(const Entry&) = delete;
-    };
-
-    const charport::StrViews& values_;
-    vector<size_t> slots_;
-    vector<Entry> entries_;
-
-    static size_t no_slot()
-    {
-        return static_cast<size_t>(-1);
-    }
-
-    void add(R_xlen_t i, const DirectStringView& value)
-    {
-        if (slots_.empty())
-            slots_.assign(static_cast<size_t>(values_.size()), no_slot());
-        slots_[static_cast<size_t>(i)] = entries_.size();
-        entries_.emplace_back(value);
-    }
-
-public:
-    explicit JoinStringCache(const charport::StrViews& values) :
-        values_(values), slots_(), entries_()
-    {
-        JoinStringNormalizer normalizer;
-        const R_xlen_t size = values.size();
-        for (R_xlen_t i=0; i<size; ++i) {
-            const charport::StrView value = values[i];
-            if (value.is_na() || value.enc == cetype_ext_t::CE_ASCII ||
-                    value.enc == cetype_ext_t::CE_UTF8 ||
-                    value.enc == cetype_ext_t::CE_ASCII_OR_UTF8) {
-                continue;
-            }
-            add(i, normalizer.get(value));
-        }
-    }
-
-    DirectStringView get(R_xlen_t i) const
-    {
-        if (!slots_.empty()) {
-            const size_t slot = slots_[static_cast<size_t>(i)];
-            if (slot != no_slot())
-                return entries_[slot].view;
-        }
-        return ci__direct_string_view(values_[i]);
-    }
-
-    DirectStringView get_bytes(R_xlen_t i) const
-    {
-        if (!slots_.empty()) {
-            const size_t slot = slots_[static_cast<size_t>(i)];
-            if (slot != no_slot())
-                return entries_[slot].view;
-        }
-        return ci__direct_string_bytes(values_[i]);
-    }
-};
-
-
-struct FlattenPlan {
-    size_t bytes;
-    bool has_na;
-    bool too_large;
-    bool is_ascii;
-};
-
-
-void ci__plan_add(FlattenPlan& plan, size_t bytes)
+CHARR_CXX_HELPER void normalize_flatten_inputs(
+    const charport::StrViews& input,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage,
+    vector<shared::StringView>& output
+)
 {
-    if (bytes > static_cast<size_t>(POW_2_31_M_1)-plan.bytes) {
-        plan.too_large = true;
-        return;
+    output.resize(static_cast<size_t>(input.size()));
+    for (R_xlen_t i = 0; i < input.size(); ++i) {
+        const shared::StringView value = io::as_shared_view(input[i]);
+        if (value.enc == shared::StringEncoding::bytes)
+            throw StriException(MSG__BYTESENC);
+        output[static_cast<size_t>(i)] = shared::normalize_utf8(
+            value, converter, storage
+        );
     }
-    plan.bytes += bytes;
 }
 
 
-bool ci__direct_string_views(const charport::StrViews& values)
+CHARR_CXX_HELPER shared::StringView normalize_flatten_separator(
+    const charport::StrView& input,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage
+)
 {
-    // Reader records that already contain UTF-8 bytes can feed the final
-    // Builder directly. Native and Latin-1 records retain the conversion
-    // containers used by the fallback paths.
+    const shared::StringView value = io::as_shared_view(input);
+    if (value.enc == shared::StringEncoding::bytes)
+        throw StriException(MSG__BYTESENC);
+    return shared::normalize_utf8(value, converter, storage);
+}
+
+
+} // namespace join
+
+using namespace join;
+
+
+namespace join_frame {
+
+CHARR_R_HELPER SEXP remove_empty_inputs_r(
+    SEXP input, bool remove
+) noexcept
+{
+    if (!remove)
+        return input;
+
+    const R_len_t size = LENGTH(input);
+    R_len_t output_size = 0;
+    for (R_len_t i = 0; i < size; ++i) {
+        if (XLENGTH(VECTOR_ELT(input, i)) > 0)
+            ++output_size;
+    }
+
+    SEXP output = PROTECT(Rf_allocVector(VECSXP, output_size));
+    for (R_len_t i = 0, j = 0; i < size; ++i) {
+        const SEXP value = VECTOR_ELT(input, i);
+        if (XLENGTH(value) > 0)
+            SET_VECTOR_ELT(output, j++, value);
+    }
+    UNPROTECT(1);
+    return output;
+}
+
+
+CHARR_NEUTRAL_HELPER R_len_t recycling_length(
+    const vector<R_len_t>& lengths,
+    bool& warning
+) noexcept
+{
+    warning = false;
+    R_len_t output = 0;
+    for (size_t i = 0; i < lengths.size(); ++i) {
+        if (lengths[i] <= 0)
+            return 0;
+        if (lengths[i] > output)
+            output = lengths[i];
+    }
+    for (size_t i = 0; i < lengths.size(); ++i) {
+        if (output % lengths[i] != 0) {
+            warning = true;
+            break;
+        }
+    }
+    return output;
+}
+
+
+CHARR_NEUTRAL_HELPER bool is_ascii(
+    const char* data, int length
+) noexcept
+{
+    for (int i = 0; i < length; ++i) {
+        if (static_cast<unsigned char>(data[i]) > 0x7fU)
+            return false;
+    }
+    return true;
+}
+
+
+CHARR_CXX_HELPER bool are_direct_inputs(
+    const charport::StrViews& values
+)
+{
     const R_xlen_t size = values.size();
-    for (R_xlen_t i=0; i<size; ++i) {
+    for (R_xlen_t i = 0; i < size; ++i) {
         const charport::StrView value = values[i];
         if (value.is_na())
             continue;
@@ -253,953 +182,596 @@ bool ci__direct_string_views(const charport::StrViews& values)
 }
 
 
-DirectStringView ci__direct_string_bytes(const charport::StrView& value)
+CHARR_NEUTRAL_HELPER shared::StringView direct_input(
+    const charport::StrView& value
+) noexcept
 {
-    if (value.is_na())
-        return DirectStringView{NULL, 0, true, false, true};
+    if (value.is_na()) {
+        return shared::StringView{
+            nullptr, shared::missing_string_length,
+            shared::StringEncoding::missing
+        };
+    }
 
     const char* data = value.ptr;
-    R_len_t length = value.len;
+    int length = value.len;
     if ((value.enc == cetype_ext_t::CE_UTF8 ||
             value.enc == cetype_ext_t::CE_ASCII_OR_UTF8) &&
-            STRI__ENC_HAS_BOM_UTF8(data, length)) {
+            length >= 3 &&
+            static_cast<unsigned char>(data[0]) == 0xefU &&
+            static_cast<unsigned char>(data[1]) == 0xbbU &&
+            static_cast<unsigned char>(data[2]) == 0xbfU) {
         data += 3;
         length -= 3;
     }
-    return DirectStringView{data, length, false, false, true};
-}
 
-
-DirectStringView ci__direct_string_view(const charport::StrView& value)
-{
-    DirectStringView output = ci__direct_string_bytes(value);
-    if (output.is_na)
-        return output;
-    const bool is_ascii = value.enc == cetype_ext_t::CE_ASCII ||
+    const bool ascii = value.enc == cetype_ext_t::CE_ASCII ||
         (value.enc == cetype_ext_t::CE_ASCII_OR_UTF8 &&
-            ci::is_ascii(output.data, output.length));
-    output.is_ascii = is_ascii;
-    return output;
+            is_ascii(data, length));
+    return shared::StringView{
+        data, length,
+        ascii
+            ? shared::StringEncoding::ascii
+            : shared::StringEncoding::utf8
+    };
 }
 
 
-void ci__repeat_bytes(
-    char* destination, const char* source,
-    size_t source_length, size_t total_length
+CHARR_CXX_HELPER shared::StringView normalize_input(
+    const shared::StringView& input,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage
 )
 {
-    memcpy(destination, source, source_length);
-    size_t written = source_length;
-    while (written < total_length) {
-        const size_t amount = std::min(written, total_length-written);
-        memcpy(destination+written, destination, amount);
-        written += amount;
+    if (input.enc == shared::StringEncoding::bytes)
+        throw StriException(MSG__BYTESENC);
+    return shared::normalize_utf8(input, converter, storage);
+}
+
+
+CHARR_NEUTRAL_HELPER void point_columns(
+    const vector<vector<shared::StringView>>& inputs,
+    vector<shared::join::Column>& columns
+) noexcept
+{
+    for (size_t i = 0; i < inputs.size(); ++i) {
+        columns[i] = shared::join::Column{
+            inputs[i].data(), inputs[i].size()
+        };
     }
 }
 
 
-// Deviation from stringi: inspect only scalar NA and byte length through a
-// short Reader borrow. Normalization, including bytes errors, stays deferred
-// to the copied container boundary instead of materializing a CHARSXP here.
-SEXP ci__inspect_scalar_string(SEXP source, ScalarStringInfo& info)
+CHARR_NEUTRAL_HELPER cetype_ext_t output_encoding(
+    bool ascii
+) noexcept
 {
-    STRI__ERROR_HANDLER_BEGIN(0)
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    {
-        std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(source);
-        if (borrow->size() != 1)
-            throw StriException(MSG__INTERNAL_ERROR);
-
-        const charport::StrView value = borrow->views()[0];
-        info.is_na = value.is_na();
-        info.is_empty = !info.is_na && value.len == 0;
-    }
-    context.emitWarnings();
-    return R_NilValue;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
+    return ascii ? cetype_ext_t::CE_ASCII : cetype_ext_t::CE_UTF8;
 }
 
-
-} // namespace join
-
-using namespace join;
-
-
-/**
- * Prepare list argument -- ignore empty vectors if needed, used by ci_paste
- *
- * @param x a list of strings
- * @param ignore_null FALSE to do nothing
- * @return a list vector
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-11-27)
- */
-SEXP ci__prepare_arg_list_ignore_null(SEXP x, bool ignore_null)
+} // namespace join_frame
+CHARR_ENTRYPOINT SEXP ci_join(
+    SEXP strlist, SEXP sep, SEXP collapse, SEXP ignore_null
+) noexcept
 {
-    if (!ignore_null)
-        return x;
+    CHARR_ENTRYPOINT_BEGIN();
 
-    PROTECT(x);
+    const bool collapse_output = !Rf_isNull(collapse);
+    const bool remove_empty = ci__prepare_arg_logical_1_notNA_r(
+        ignore_null, "ignore_null"
+    );
+    strlist = entry_protections.protect_one(
+        ci__prepare_arg_list_string_r(strlist, "...")
+    );
+    strlist = entry_protections.protect_one(
+        join_frame::remove_empty_inputs_r(
+                strlist, remove_empty
+            )
+    );
+    const R_len_t column_count = LENGTH(strlist);
 
-#ifndef NDEBUG
-    if (!Rf_isVectorList(x))
-        Rf_error("ci__prepare_arg_list_ignore_null:: !NDEBUG: not a list"); // error() allowed here
-#endif
-
-    R_len_t narg = LENGTH(x);
-    if (narg <= 0) {
-        UNPROTECT(1);
-        return x;
-    }
-//   else if (narg == 1 && LENGTH(VECTOR_ELT(x, 0)) == 0) {
-//      UNPROTECT(1);
-//      return Rf_allocVector(VECSXP, 0);
-//   }
-
-    SEXP ret;
-//   if (ignore_null != NA_INTEGER && ignore_null < 0) { // remove NULL elements
-    R_len_t nret = 0;
-    for (R_len_t i=0; i<narg; ++i) {
-#ifndef NDEBUG
-        if (!Rf_isVector(VECTOR_ELT(x, i)))
-            Rf_error("ci__prepare_arg_list_ignore_null:: !NDEBUG: not a vector element"); // error() allowed here
-#endif
-        if (LENGTH(VECTOR_ELT(x, i)) > 0)
-            ++nret;
-    }
-
-    PROTECT(ret = Rf_allocVector(VECSXP, nret));
-    for (R_len_t i=0, j=0; i<narg; ++i) {
-        if (LENGTH(VECTOR_ELT(x, i)) > 0)
-            SET_VECTOR_ELT(ret, j++, VECTOR_ELT(x, i));
-    }
-//   }
-//   else { // insert one empty string
-//      PROTECT(ret = Rf_allocVector(VECSXP, narg));
-//      for (R_len_t i=0; i<narg; ++i) {
-//         if (LENGTH(VECTOR_ELT(x, i)) > 0)
-//            SET_VECTOR_ELT(ret, i, VECTOR_ELT(x, i));
-//         else if (ignore_null != NA_INTEGER)
-//            SET_VECTOR_ELT(ret, i, ci__vector_empty_strings(1));
-////         else
-////            SET_VECTOR_ELT(ret, i, ci__vector_NA_strings(1));
-//      }
-//   }
-    UNPROTECT(2);
-    return ret;
-}
-
-
-/** Duplicate given strings
- *
- *
- *  @param str character vector
- *  @param times integer vector
- *  @return character vector
- *
- *  The function is vectorized over str and times
- *  if str is NA or times is NA the result will be NA
- *  if times < 0, the result will be NA
- *  if times==0, the result will be an empty string
- *  if str or times is an empty vector, then the result is an empty vector
- *
- * @version 0.1-?? (Marek Gagolewski)
- *
- * @version 0.1-?? (Marek Gagolewski)
- *     use io::Utf8Input's vectorization
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-15)
- *     use io::IntegerInput
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
- *     make StriException friendly
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 1.7.6.9001 (Marek Gagolewski, 2022-03-15)
- *    #473: use size_t
-*/
-SEXP ci_dup(SEXP str, SEXP times)
-{
-    PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
-    PROTECT(times = ci__prepare_arg_integer(times, "times")); // prepare string argument
-    R_len_t vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), LENGTH(times));
-
-    STRI__ERROR_HANDLER_BEGIN(2)
-    if (vectorize_length <= 0) {
-        charport::charvec::Builder builder(0);
-        SEXP ret;
-        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-            return builder.to_sexp();
-        }));
-        STRI__UNPROTECT_ALL
-        return ret;
-    }
-
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    charport::charvec::Builder builder(vectorize_length);
-    io::IntegerInput times_cont(times, vectorize_length);
-    {
-        std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(str);
-        const charport::StrViews& values = borrow->views();
-        const R_len_t str_length = ci::checked_r_len(
-            borrow->size(), "character vectors"
+    try {
+        vector<R_len_t> lengths(static_cast<size_t>(column_count), 0);
+        vector<charport::Reader> row_readers;
+        vector<charport::StrViews> row_views;
+        vector<charport::Reader> collapsed_readers;
+        vector<charport::StrViews> collapsed_views;
+        charport::Reader single_reader;
+        charport::StrViews single_views;
+        charport::Reader row_separator_reader;
+        charport::Reader collapsed_separator_reader;
+        charport::Reader single_collapse_reader;
+        charport::Reader collapsed_collapse_reader;
+        shared::NativeToUtf8 converter;
+        shared::SliceArena storage;
+        shared::NativeToUtf8 separator_converter;
+        shared::SliceArena separator_storage;
+        shared::NativeToUtf8 collapse_converter;
+        shared::SliceArena collapse_storage;
+        vector<vector<shared::StringView>> inputs(
+            static_cast<size_t>(column_count)
         );
-        JoinStringCache cache(values);
-        for (R_len_t i=0; i<vectorize_length; ++i) {
-            const DirectStringView value = cache.get(i%str_length);
-            const R_len_t times_cur = times_cont.getNAble(i);
-            if (value.is_na || times_cur == NA_INTEGER || times_cur < 0) {
-                builder.set_na(i);
-                continue;
-            }
-
-            const size_t length = static_cast<size_t>(value.length);
-            if (times_cur == 0 || length == 0) {
-                builder.set(i, "", 0, cetype_ext_t::CE_ASCII);
-                continue;
-            }
-            if (length > static_cast<size_t>(POW_2_31_M_1) /
-                    static_cast<size_t>(times_cur)) {
-                throw StriException(MSG__CHARSXP_2147483647);
-            }
-
-            const size_t total = length*static_cast<size_t>(times_cur);
-            char* destination = builder.reserve(
-                i, total,
-                value.is_ascii
-                    ? cetype_ext_t::CE_ASCII
-                    : cetype_ext_t::CE_UTF8
-            );
-            ci__repeat_bytes(destination, value.data, length, total);
-        }
-    }
-
-
-    // STEP 4.
-    // Clean up & finish
-
-    SEXP ret;
-    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-        return builder.to_sexp();
-    }));
-    context.emitWarnings();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-}
-
-
-/** Join two character vectors, element by element, no separator, no collapse
- *
- * Vectorized over e1 and e2. Optimized for |e1| >= |e2|
- * (but no harm otherwise)
- *
- * This is used by %s+% operator in stringi R code.
- *
- * @param e1 character vector
- * @param e2 character vector
- * @return character vector, res_i=s1_i + s2_i for |e1|==|e2|
- *  if e1 or e2 is NA then result is NA
- *  if e1 or e2 is empty, then the result is just e1 or e2
- *
- *
- * @version 0.1-?? (Marek Gagolewski)
- *
- * @version 0.1-?? (Marek Gagolewski)
- *    use io::Utf8Input's vectorization
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
- *    make StriException friendly
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
-*/
-SEXP ci_join2(SEXP e1, SEXP e2) // a.k.a. ci_join2_nocollapse
-{
-    PROTECT(e1 = ci__prepare_arg_string(e1, "e1")); // prepare string argument
-    PROTECT(e2 = ci__prepare_arg_string(e2, "e2")); // prepare string argument
-
-    R_len_t e1_length = LENGTH(e1);
-    R_len_t e2_length = LENGTH(e2);
-    R_len_t vectorize_length = ci__recycling_rule(true, 2, e1_length, e2_length);
-
-    if (e1_length <= 0) {
-        UNPROTECT(2);
-        return e1;
-    }
-    if (e2_length <= 0) {
-        UNPROTECT(2);
-        return e2;
-    }
-
-    STRI__ERROR_HANDLER_BEGIN(2)
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    charport::charvec::Builder builder(vectorize_length);
-    {
-        std::shared_ptr<ci::ReaderBorrow> first_borrow = context.acquire(e1);
-        std::shared_ptr<ci::ReaderBorrow> second_borrow = context.acquire(e2);
-        const charport::StrViews& first = first_borrow->views();
-        const charport::StrViews& second = second_borrow->views();
-        if (ci__direct_string_views(first) &&
-                ci__direct_string_views(second)) {
-            const bool first_scalar = e1_length == 1;
-            const bool second_scalar = e2_length == 1;
-            const bool first_aligned = e1_length == vectorize_length;
-            const bool second_aligned = e2_length == vectorize_length;
-            const DirectStringView first_scalar_view = first_scalar
-                ? ci__direct_string_view(first[0])
-                : DirectStringView{NULL, 0, false, false, false};
-            const DirectStringView second_scalar_view = second_scalar
-                ? ci__direct_string_view(second[0])
-                : DirectStringView{NULL, 0, false, false, false};
-
-            for (R_len_t i=0; i<vectorize_length; ++i) {
-                const DirectStringView a = first_scalar
-                    ? first_scalar_view
-                    : ci__direct_string_view(
-                        first[first_aligned ? i : i%e1_length]
-                    );
-                const DirectStringView b = second_scalar
-                    ? second_scalar_view
-                    : ci__direct_string_view(
-                        second[second_aligned ? i : i%e2_length]
-                    );
-                if (a.is_na || b.is_na) {
-                    builder.set_na(i);
-                    continue;
-                }
-
-                const size_t a_length = static_cast<size_t>(a.length);
-                const size_t b_length = static_cast<size_t>(b.length);
-                if (a_length > static_cast<size_t>(POW_2_31_M_1)-b_length)
-                    throw StriException(MSG__CHARSXP_2147483647);
-                const size_t total = a_length+b_length;
-                char* destination = builder.reserve(
-                    i, total,
-                    a.is_ascii && b.is_ascii
-                        ? cetype_ext_t::CE_ASCII
-                        : cetype_ext_t::CE_UTF8
-                );
-                if (a_length > 0)
-                    memcpy(destination, a.data, a_length);
-                if (b_length > 0)
-                    memcpy(destination+a_length, b.data, b_length);
-            }
-        }
-        else {
-            io::Utf8Input e1_cont(context, e1, vectorize_length);
-            io::Utf8Input e2_cont(context, e2, vectorize_length);
-            for (R_len_t i=0; i<vectorize_length; ++i) {
-                if (e1_cont.isNA(i) || e2_cont.isNA(i)) {
-                    builder.set_na(i);
-                    continue;
-                }
-
-                const io::Utf8Record& a = e1_cont.get(i);
-                const io::Utf8Record& b = e2_cont.get(i);
-                const size_t a_length = static_cast<size_t>(a.length());
-                const size_t b_length = static_cast<size_t>(b.length());
-                if (a_length > static_cast<size_t>(POW_2_31_M_1)-b_length)
-                    throw StriException(MSG__CHARSXP_2147483647);
-                const size_t total = a_length+b_length;
-                char* destination = builder.reserve(
-                    i, total,
-                    a.isASCII() && b.isASCII()
-                        ? cetype_ext_t::CE_ASCII
-                        : cetype_ext_t::CE_UTF8
-                );
-                if (a_length > 0)
-                    memcpy(destination, a.data(), a_length);
-                if (b_length > 0)
-                    memcpy(destination+a_length, b.data(), b_length);
-            }
-        }
-    }
-
-    // 4. Cleanup & finish
-    SEXP ret;
-    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-        return builder.to_sexp();
-    }));
-    context.emitWarnings();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-}
-
-
-/** Join and flatten two character vectors, no separator between elements but possibly with collapse
- *
- * Vectorized over e1 and e2.
- *
- * @param e1 character vector
- * @param e2 character vector
- * @param collapse single string or NULL
- * @return character vector
- *
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-03-18)
- *          first version;
- *          This is much faster than ci_flatten(ci_join2(...), ...)
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- *  @version 0.4-1 (Marek Gagolewski, 2014-11-26)
- *    #114: inconsistent behaviour w.r.t. paste()
-*/
-SEXP ci_join2_withcollapse(SEXP e1, SEXP e2, SEXP collapse)
-{
-    if (Rf_isNull(collapse)) {
-        // no collapse - used, e.g., by the %s+% operator
-        return ci_join2(e1, e2); // a.k.a. ci_join2_nocollapse
-    }
-
-    PROTECT(e1 = ci__prepare_arg_string(e1, "e1")); // prepare string argument
-    PROTECT(e2 = ci__prepare_arg_string(e2, "e2")); // prepare string argument
-    PROTECT(collapse = ci__prepare_arg_string_1(collapse, "collapse"));
-
-    ScalarStringInfo collapse_info = {false, false};
-    ci__inspect_scalar_string(collapse, collapse_info);
-    R_len_t e1_length = 0;
-    R_len_t e2_length = 0;
-    R_len_t vectorize_length = 0;
-    if (!collapse_info.is_na) {
-        e1_length = LENGTH(e1);
-        e2_length = LENGTH(e2);
-        vectorize_length = ci__recycling_rule(
-            true, 2, e1_length, e2_length
+        vector<shared::join::Column> columns(
+            static_cast<size_t>(column_count)
         );
-    }
+        vector<shared::join::FlattenPlan> row_plans;
+        io::OutputBuilder builder(0);
 
-    STRI__ERROR_HANDLER_BEGIN(3)
-    if (collapse_info.is_na) {
-        charport::charvec::Store output =
-            charport::charvec::Store::scalar(
-                NULL, 0, cetype_ext_t::CE_NA
-            );
-        SEXP ret;
-        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-            return charport::charvec::wrap(std::move(output));
-        }));
-        STRI__UNPROTECT_ALL
-        return ret;
-    }
-
-    if (e1_length <= 0 || e2_length <= 0) {
-        charport::charvec::Store output = ci::scalar_store(
-            "", 0, cetype_ext_t::CE_ASCII
-        );
-        SEXP ret;
-        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-            return charport::charvec::wrap(std::move(output));
-        }));
-        STRI__UNPROTECT_ALL
-        return ret;
-    }
-
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    charport::charvec::Store output(0, 0);
-    {
-        io::Utf8Input e1_cont(context, e1, vectorize_length);
-        io::Utf8Input e2_cont(context, e2, vectorize_length);
-        io::Utf8Input collapse_cont(context, collapse, 1);
-        R_len_t collapse_nbytes = collapse_cont.get(0).length();
-        const char* collapse_s = collapse_cont.get(0).data();
-
-
-        // Find the required length component by component so neither an
-        // R_len_t intermediate nor the running size can wrap.
-        FlattenPlan plan = {0, false, false, true};
-        if (vectorize_length > 1)
-            plan.is_ascii = collapse_cont.get(0).isASCII();
-        for (int i=0; i<vectorize_length; ++i) {
-            if (e1_cont.isNA(i) || e2_cont.isNA(i)) {
-                plan.has_na = true;
-                break;
-            }
-
-            ci__plan_add(
-                plan, static_cast<size_t>(e1_cont.get(i).length())
-            );
-            ci__plan_add(
-                plan, static_cast<size_t>(e2_cont.get(i).length())
-            );
-            if (i > 0)
-                ci__plan_add(plan, static_cast<size_t>(collapse_nbytes));
-            plan.is_ascii = plan.is_ascii && e1_cont.get(i).isASCII() &&
-                e2_cont.get(i).isASCII();
-        }
-
-
-        if (plan.has_na) {
-            output = charport::charvec::Store::scalar(
-                NULL, 0, cetype_ext_t::CE_NA
-            );
-        }
-        else {
-            if (plan.too_large)
-                throw StriException(MSG__CHARSXP_2147483647);
-            charport::charvec::Builder builder(1);
-            char* destination = builder.reserve(
-                0, plan.bytes,
-                plan.is_ascii
-                    ? cetype_ext_t::CE_ASCII
-                    : cetype_ext_t::CE_UTF8
-            );
-            size_t last_buf_idx = 0;
-            for (R_len_t i = 0; i < vectorize_length; ++i) // don't change this order, see #114
-            {
-                // no need to detect NAs - they already have been excluded
-                if (collapse_nbytes > 0 && i > 0) { // copy collapse (separator)
-                    memcpy(destination+last_buf_idx, collapse_s, (size_t)collapse_nbytes);
-                    last_buf_idx += collapse_nbytes;
-                }
-
-                const io::Utf8Record* cur_string_1 = &(e1_cont.get(i));
-                R_len_t  cur_len_1 = cur_string_1->length();
-                if (cur_len_1 > 0) {
-                    memcpy(
-                        destination+last_buf_idx,
-                        cur_string_1->data(), (size_t)cur_len_1
-                    );
-                }
-                last_buf_idx += cur_len_1;
-
-                const io::Utf8Record* cur_string_2 = &(e2_cont.get(i));
-                R_len_t  cur_len_2 = cur_string_2->length();
-                if (cur_len_2 > 0) {
-                    memcpy(
-                        destination+last_buf_idx,
-                        cur_string_2->data(), (size_t)cur_len_2
-                    );
-                }
-                last_buf_idx += cur_len_2;
-            }
-
-            output = builder.release_store();
-        }
-    }
-
-    SEXP ret;
-    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-        return charport::charvec::wrap(std::move(output));
-    }));
-    context.emitWarnings();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-}
-
-
-/**
- * Concatenate Character Vectors, with no collapse
- *
- * @param strlist list of character vectors
- * @param sep single string
- * @param ignore_null single integer
- * @return character vector
- *
- *
- * @version 0.1-?? (Marek Gagolewski)
- *
- * @version 0.1-?? (Marek Gagolewski)
- *          use io::Utf8Input's vectorization
- *
- * @version 0.1-12 (Marek Gagolewski, 2013-12-04)
- *          fixed bug #49
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-03-18)
- *          ci_join has been split to ci_join_nocollapse
- *          and ci_join_withcollapse (for efficiency reasons)
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-11-27)
- *    FR #116: ignore_null arg added
- */
-SEXP ci_join_nocollapse(SEXP strlist, SEXP sep, SEXP ignore_null)
-{
-    bool ignore_null1 = ci__prepare_arg_logical_1_notNA(ignore_null, "ignore_null");
-    PROTECT(strlist = ci__prepare_arg_list_ignore_null(
-                          ci__prepare_arg_list_string(strlist, "..."), ignore_null1
-                      ));
-    R_len_t strlist_length = LENGTH(strlist);
-    if (strlist_length <= 0) {
-        STRI__ERROR_HANDLER_BEGIN(1)
-        charport::charvec::Builder builder(0);
-        SEXP ret;
-        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-            return builder.to_sexp();
-        }));
-        STRI__UNPROTECT_ALL
-        return ret;
-        STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-    }
-
-    // get length of the longest character vector on the list, i.e., vectorize_length
-    R_len_t vectorize_length = 0;
-    for (R_len_t i=0; i<strlist_length; ++i) {
-        R_len_t strlist_cur_length = LENGTH(VECTOR_ELT(strlist, i));
-        if (strlist_cur_length <= 0) {
-            STRI__ERROR_HANDLER_BEGIN(1)
-            charport::charvec::Builder builder(0);
-            SEXP ret;
-            STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-                return builder.to_sexp();
-            }));
-            STRI__UNPROTECT_ALL
-            return ret;
-            STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-        }
-        if (strlist_cur_length > vectorize_length)
-            vectorize_length = strlist_cur_length;
-    }
-
-    PROTECT(sep = ci__prepare_arg_string_1(sep, "sep"));
-    ScalarStringInfo sep_info = {false, false};
-    ci__inspect_scalar_string(sep, sep_info);
-    if (sep_info.is_na) {
-        STRI__ERROR_HANDLER_BEGIN(2)
-        charport::charvec::Builder builder(vectorize_length);
-        for (R_len_t i=0; i<vectorize_length; ++i)
-            builder.set_na(i);
-        SEXP ret;
-        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-            return builder.to_sexp();
-        }));
-        STRI__UNPROTECT_ALL
-        return ret;
-        STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-    }
-
-
-    // * special case *
-    if (sep_info.is_empty && strlist_length == 2) {
-        // sep==empty string and 2 vectors --
-        // an often occurring case - we have some specialized functions for this :-)
-        SEXP ret;
-        PROTECT(ret = ci_join2(VECTOR_ELT(strlist, 0), VECTOR_ELT(strlist, 1))); // a.k.a. ci_join2_nocollapse
-        UNPROTECT(3);
-        return ret;
-    }
-
-    // note that if 1 vector is given
-    // we cannot return VECTOR_ELT(strlist, 0) directly
-    // -- it needs to be converted to UTF8
-    // so we proceed
-
-    STRI__ERROR_HANDLER_BEGIN(2)
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    charport::charvec::Builder builder(vectorize_length);
-    {
-        io::Utf8Input sep_cont(context, sep, 1);
-        const char* sep_char = sep_cont.get(0).data();
-        R_len_t     sep_len  = sep_cont.get(0).length();
-
-        io::Utf8ListInput strlist_cont(
-            context, strlist, vectorize_length
-        );
-
-
-        // 4. Get buf size and determine where NAs will occur
-        vector<FlattenPlan> plans(
-            static_cast<size_t>(vectorize_length),
-            FlattenPlan{0, false, false, true}
-        );
-        for (R_len_t i=0; i<vectorize_length; ++i) {
-            FlattenPlan& plan = plans[static_cast<size_t>(i)];
-            for (R_len_t j=0; j<strlist_length; ++j) {
-                if (strlist_cont.get(j).isNA(i)) {
-                    plan.has_na = true;
-                    break;
-                }
-                const io::Utf8Record& value = strlist_cont.get(j).get(i);
-                ci__plan_add(plan, static_cast<size_t>(value.length()));
-                plan.is_ascii = plan.is_ascii && value.isASCII();
-                if (j > 0) {
-                    ci__plan_add(plan, static_cast<size_t>(sep_len));
-                    plan.is_ascii = plan.is_ascii &&
-                        sep_cont.get(0).isASCII();
-                }
-            }
-            if (plan.too_large)
-                throw StriException(MSG__CHARSXP_2147483647);
-        }
-
-        for (R_len_t i=0; i<vectorize_length; ++i) {
-            const FlattenPlan& plan = plans[static_cast<size_t>(i)];
-            if (plan.has_na) {
-                builder.set_na(i);
-                continue;
-            }
-
-            char* destination = builder.reserve(
-                i, plan.bytes,
-                plan.is_ascii
-                    ? cetype_ext_t::CE_ASCII
-                    : cetype_ext_t::CE_UTF8
-            );
-            size_t cursize = 0;
-            for (R_len_t j=0; j<strlist_length; ++j) {
-
-                if (sep_len > 0 && j > 0) {
-                    memcpy(destination+cursize, sep_char, (size_t)sep_len);
-                    cursize += sep_len;
-                }
-
-                const io::Utf8Record* curstring = &(strlist_cont.get(j).get(i));
-                size_t curstring_n = curstring->length();
-                if (curstring_n > 0) {
-                    memcpy(
-                        destination+cursize,
-                        curstring->data(), curstring_n
-                    );
-                }
-                cursize += curstring_n;
-            }
-        }
-    }
-
-    // nothing more to do:
-    SEXP ret;
-    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-        return builder.to_sexp();
-    }));
-    context.emitWarnings();
-    STRI__UNPROTECT_ALL
-    return ret;
-
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-}
-
-
-/**
- * Concatenate Character Vectors, possibly with collapse
- *
- * @param strlist list of character vectors
- * @param sep single string
- * @param collapse single string or NULL
- * @param ignore_null single integer
- * @return character vector
- *
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-03-18)
- *          a specialized version of the original ci_join, which
- *          called ci_flatten at the end, if it was requested;
- *          now collapsing is done directly (for time and memory efficiency);
- *          Now calling specialized functions
- *          ci_join2_withcollapse and ci_flatten_withressep, if needed.
- *          If collapse!=NULL and sep=NA, then the result will be single NA
- *          (and not n*NA);
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-11-27)
- *    FR #116: ignore_null arg added
- */
-SEXP ci_join(SEXP strlist, SEXP sep, SEXP collapse, SEXP ignore_null)
-{
-    // no collapse-case is handled separately:
-    if (Rf_isNull(collapse))
-        return ci_join_nocollapse(strlist, sep, ignore_null);
-
-    // *result will surely be a single string*
-
-    bool ignore_null1 = ci__prepare_arg_logical_1_notNA(ignore_null, "ignore_null");
-    PROTECT(strlist = ci__prepare_arg_list_ignore_null(
-                          ci__prepare_arg_list_string(strlist, "..."), ignore_null1
-                      ));
-    R_len_t strlist_length = LENGTH(strlist);
-    if (strlist_length <= 0) {
-        STRI__ERROR_HANDLER_BEGIN(1)
-        charport::charvec::Store output = ci::scalar_store(
-            "", 0, cetype_ext_t::CE_ASCII
-        );
-        SEXP ret;
-        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-            return charport::charvec::wrap(std::move(output));
-        }));
-        STRI__UNPROTECT_ALL
-        return ret;
-        STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-    }
-    else if (strlist_length == 1) {
-        // one vector + collapse string -- another frequently occurring case
-        // sep is ignored here
-        SEXP ret;
-        PROTECT(ret = ci_flatten(VECTOR_ELT(strlist, 0), collapse)); // a.k.a. ci_flatten_withressep
-        UNPROTECT(2);
-        return ret;
-    }
-
-    PROTECT(sep = ci__prepare_arg_string_1(sep, "sep"));
-    PROTECT(collapse = ci__prepare_arg_string_1(collapse, "collapse"));
-    ScalarStringInfo sep_info = {false, false};
-    ScalarStringInfo collapse_info = {false, false};
-    ci__inspect_scalar_string(sep, sep_info);
-    if (!sep_info.is_na)
-        ci__inspect_scalar_string(collapse, collapse_info);
-    if (sep_info.is_na || collapse_info.is_na) {
-        STRI__ERROR_HANDLER_BEGIN(3)
-        charport::charvec::Store output =
-            charport::charvec::Store::scalar(
-                NULL, 0, cetype_ext_t::CE_NA
-            );
-        SEXP ret;
-        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-            return charport::charvec::wrap(std::move(output));
-        }));
-        STRI__UNPROTECT_ALL
-        return ret;
-        STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-    }
-    else if (sep_info.is_empty && strlist_length == 2) {
-        // sep==empty string and 2 vectors --
-        // an often occurring case - we have some specialized functions for this :-)
-        SEXP ret;
-        PROTECT(ret = ci_join2_withcollapse(VECTOR_ELT(strlist, 0), VECTOR_ELT(strlist, 1), collapse));
-        UNPROTECT(4);
-        return ret;
-    }
-
-    // get length of the longest character vector on the list, i.e., vectorize_length
-    R_len_t vectorize_length = 0;
-    for (R_len_t i=0; i<strlist_length; ++i) {
-        R_len_t strlist_cur_length = LENGTH(VECTOR_ELT(strlist, i));
-        if (strlist_cur_length <= 0) {
-            STRI__ERROR_HANDLER_BEGIN(3)
-            charport::charvec::Store output = ci::scalar_store(
-                "", 0, cetype_ext_t::CE_ASCII
-            );
-            SEXP ret;
-            STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-                return charport::charvec::wrap(std::move(output));
-            }));
-            STRI__UNPROTECT_ALL
-            return ret;
-            STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-        }
-        if (strlist_cur_length > vectorize_length)
-            vectorize_length = strlist_cur_length;
-    }
-
-
-    STRI__ERROR_HANDLER_BEGIN(3)
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    charport::charvec::Store output(0, 0);
-    {
-        io::Utf8ListInput strlist_cont(
-            context, strlist, vectorize_length
-        );
-
-        io::Utf8Input sep_cont(context, sep, 1); // definitely not NA
-        const char* sep_s = sep_cont.get(0).data();
-        R_len_t     sep_n = sep_cont.get(0).length();
-
-        io::Utf8Input collapse_cont(
-            context, collapse, 1
-        ); // definitely not NA
-        const char* collapse_s = collapse_cont.get(0).data();
-        R_len_t     collapse_n = collapse_cont.get(0).length();
-
-        // Get required buffer size
-        FlattenPlan plan = {0, false, false, true};
-        if (strlist_length > 1)
-            plan.is_ascii = sep_cont.get(0).isASCII();
-        if (vectorize_length > 1) {
-            plan.is_ascii = plan.is_ascii &&
-                collapse_cont.get(0).isASCII();
-        }
-        for (R_len_t i=0; i<vectorize_length; ++i) {   // for each vectorized string (vertically)
-            for (R_len_t j=0; j<strlist_length; ++j) {  // for each character vector  (horizontally)
-                if (strlist_cont.get(j).isNA(i)) {
-                    plan.has_na = true;
-                    break;
-                }
-
-                const io::Utf8Record& value = strlist_cont.get(j).get(i);
-                ci__plan_add(plan, static_cast<size_t>(value.length()));
-                plan.is_ascii = plan.is_ascii && value.isASCII();
-                if (j > 0)
-                    ci__plan_add(plan, static_cast<size_t>(sep_n));
-            }
-
-            if (plan.has_na)
-                break;
-            if (i > 0)
-                ci__plan_add(plan, static_cast<size_t>(collapse_n));
-        }
-
-        if (plan.has_na) {
-            output = charport::charvec::Store::scalar(
-                NULL, 0, cetype_ext_t::CE_NA
-            );
-        }
-        else {
-            // 5. Create ret val
-            if (plan.too_large)
-                throw StriException(MSG__CHARSXP_2147483647);
-            charport::charvec::Builder builder(1);
-            char* destination = builder.reserve(
-                0, plan.bytes,
-                plan.is_ascii
-                    ? cetype_ext_t::CE_ASCII
-                    : cetype_ext_t::CE_UTF8
-            );
-            size_t last_buf_idx = 0;
-
-            for (R_len_t i=0; i<vectorize_length; ++i) {
-                // there is no NA anywhere
-
-                if (collapse_n > 0 && i > 0) {
-                    memcpy(destination+last_buf_idx, collapse_s, (size_t)collapse_n);
-                    last_buf_idx += collapse_n;
-                }
-
-                for (R_len_t j=0; j<strlist_length; ++j) {
-
-                    if (sep_n > 0 && j > 0) {
-                        memcpy(destination+last_buf_idx, sep_s, (size_t)sep_n);
-                        last_buf_idx += sep_n;
-                    }
-
-                    const io::Utf8Record* curstring = &(strlist_cont.get(j).get(i));
-                    size_t curstring_n = curstring->length();
-                    if (curstring_n > 0) {
-                        memcpy(
-                            destination+last_buf_idx,
-                            curstring->data(), curstring_n
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                do {
+                if (column_count <= 0) {
+                    builder.reset(collapse_output ? 1 : 0);
+                    if (collapse_output) {
+                        builder.set(
+                            0, "", 0, cetype_ext_t::CE_ASCII
                         );
                     }
-                    last_buf_idx += curstring_n;
+                    result = entry_protections.reprotect_one(
+                        builder.to_sexp(), result_index
+                    );
+                    break;
                 }
+
+                if (!collapse_output) {
+                    for (R_len_t column = 0;
+                            column < column_count; ++column) {
+                        lengths[static_cast<size_t>(column)] =
+                            io::checked_r_len(
+                                XLENGTH(VECTOR_ELT(strlist, column)),
+                                "character vectors"
+                            );
+                    }
+                    bool recycling_warning = false;
+                    const R_len_t row_count =
+                        join_frame::recycling_length(
+                            lengths, recycling_warning
+                        );
+                    if (row_count <= 0) {
+                        builder.reset(0);
+                        result = entry_protections.reprotect_one(
+                            builder.to_sexp(), result_index
+                        );
+                        break;
+                    }
+
+                    sep = callback_protections.protect_one(
+                        ci__prepare_arg_string_1_r(sep, "sep")
+                    );
+                    row_separator_reader.reset(sep);
+                    if (row_separator_reader.size() != 1) {
+                        throw std::runtime_error(
+                            "separator length changed during string joining"
+                        );
+                    }
+                    const charport::StrView separator_raw =
+                        row_separator_reader.view(0);
+                    if (separator_raw.is_na()) {
+                        builder.reset(row_count);
+                        for (R_len_t row = 0; row < row_count; ++row)
+                            builder.set_na(row);
+                        result = entry_protections.reprotect_one(
+                            builder.to_sexp(), result_index
+                        );
+                        break;
+                    }
+
+                    const shared::StringView separator =
+                        join_frame::normalize_input(
+                            io::as_shared_view(separator_raw),
+                            separator_converter, separator_storage
+                        );
+                    if (recycling_warning)
+                        Rf_warning(MSG__WARN_RECYCLING_RULE);
+
+                    row_readers.resize(
+                        static_cast<size_t>(column_count)
+                    );
+                    row_views.resize(
+                        static_cast<size_t>(column_count)
+                    );
+                    for (R_len_t column = 0;
+                            column < column_count; ++column) {
+                        const size_t index = static_cast<size_t>(column);
+                        row_readers[index].reset(
+                            VECTOR_ELT(strlist, column)
+                        );
+                        if (row_readers[index].size() != lengths[index]) {
+                            throw std::runtime_error(
+                                "Reader length changed during string joining"
+                            );
+                        }
+                        row_views[index].resize(lengths[index]);
+                        row_readers[index].views(
+                            0, lengths[index],
+                            row_views[index].ptrs(),
+                            row_views[index].lengths(),
+                            row_views[index].encodings()
+                        );
+                    }
+
+                    const bool direct_pair = separator.len == 0 &&
+                        column_count == 2 &&
+                        join_frame::are_direct_inputs(row_views[0]) &&
+                        join_frame::are_direct_inputs(row_views[1]);
+                    if (direct_pair) {
+                        const R_len_t first_length = lengths[0];
+                        const R_len_t second_length = lengths[1];
+                        const bool first_scalar = first_length == 1;
+                        const bool second_scalar = second_length == 1;
+                        const bool first_aligned =
+                            first_length == row_count;
+                        const bool second_aligned =
+                            second_length == row_count;
+                        const shared::StringView first_scalar_value =
+                            first_scalar
+                                ? join_frame::direct_input(row_views[0][0])
+                                : shared::StringView{
+                                    nullptr, 0,
+                                    shared::StringEncoding::missing
+                                };
+                        const shared::StringView second_scalar_value =
+                            second_scalar
+                                ? join_frame::direct_input(row_views[1][0])
+                                : shared::StringView{
+                                    nullptr, 0,
+                                    shared::StringEncoding::missing
+                                };
+
+                        builder.reset(row_count);
+                        for (R_len_t row = 0; row < row_count; ++row) {
+                            const shared::StringView first_value =
+                                first_scalar
+                                    ? first_scalar_value
+                                    : join_frame::direct_input(
+                                        row_views[0][
+                                            first_aligned
+                                                ? row
+                                                : row % first_length
+                                        ]
+                                    );
+                            const shared::StringView second_value =
+                                second_scalar
+                                    ? second_scalar_value
+                                    : join_frame::direct_input(
+                                        row_views[1][
+                                            second_aligned
+                                                ? row
+                                                : row % second_length
+                                        ]
+                                    );
+                            if (first_value.is_na() ||
+                                    second_value.is_na()) {
+                                builder.set_na(row);
+                                continue;
+                            }
+
+                            const size_t first_bytes =
+                                static_cast<size_t>(first_value.len);
+                            const size_t second_bytes =
+                                static_cast<size_t>(second_value.len);
+                            if (first_bytes >
+                                    static_cast<size_t>(POW_2_31_M_1) -
+                                        second_bytes) {
+                                throw StriException(
+                                    MSG__CHARSXP_2147483647
+                                );
+                            }
+                            const size_t total =
+                                first_bytes + second_bytes;
+                            char* destination = builder.reserve(
+                                row, total,
+                                join_frame::output_encoding(
+                                    first_value.enc ==
+                                        shared::StringEncoding::ascii &&
+                                    second_value.enc ==
+                                        shared::StringEncoding::ascii
+                                )
+                            );
+                            if (first_bytes > 0) {
+                                memcpy(
+                                    destination,
+                                    first_value.ptr, first_bytes
+                                );
+                            }
+                            if (second_bytes > 0) {
+                                memcpy(
+                                    destination + first_bytes,
+                                    second_value.ptr, second_bytes
+                                );
+                            }
+                        }
+                        result = entry_protections.reprotect_one(
+                            builder.to_sexp(), result_index
+                        );
+                        break;
+                    }
+
+                    for (R_len_t column = 0;
+                            column < column_count; ++column) {
+                        const size_t index = static_cast<size_t>(column);
+                        vector<shared::StringView>& current = inputs[index];
+                        current.resize(static_cast<size_t>(lengths[index]));
+                        for (R_len_t i = 0; i < lengths[index]; ++i) {
+                            current[static_cast<size_t>(i)] =
+                                join_frame::normalize_input(
+                                    io::as_shared_view(
+                                        row_views[index][i]
+                                    ),
+                                    converter, storage
+                                );
+                        }
+                    }
+                    join_frame::point_columns(inputs, columns);
+
+                    row_plans.resize(static_cast<size_t>(row_count));
+                    for (R_len_t row = 0; row < row_count; ++row) {
+                        shared::join::FlattenPlan& plan =
+                            row_plans[static_cast<size_t>(row)];
+                        shared::join::plan_join_row(
+                            columns.data(), columns.size(),
+                            static_cast<size_t>(row),
+                            static_cast<size_t>(row_count),
+                            separator, plan
+                        );
+                        if (!plan.has_na && plan.too_large) {
+                            throw StriException(
+                                MSG__CHARSXP_2147483647
+                            );
+                        }
+                    }
+
+                    builder.reset(row_count);
+                    for (R_len_t row = 0; row < row_count; ++row) {
+                        const shared::join::FlattenPlan& plan =
+                            row_plans[static_cast<size_t>(row)];
+                        if (plan.has_na) {
+                            builder.set_na(row);
+                            continue;
+                        }
+                        char* destination = builder.reserve(
+                            row, plan.bytes,
+                            join_frame::output_encoding(plan.ascii)
+                        );
+                        shared::join::write_join_row(
+                            columns.data(), columns.size(),
+                            static_cast<size_t>(row),
+                            static_cast<size_t>(row_count),
+                            separator, destination
+                        );
+                    }
+                    result = entry_protections.reprotect_one(
+                        builder.to_sexp(), result_index
+                    );
+                    break;
+                }
+
+                shared::StringView separator{
+                    "", 0, shared::StringEncoding::ascii
+                };
+                shared::StringView collapse_value{
+                    "", 0, shared::StringEncoding::ascii
+                };
+                R_len_t row_count = 0;
+
+                if (column_count == 1) {
+                    collapse = callback_protections.protect_one(
+                        ci__prepare_arg_string_1_r(
+                            collapse, "collapse"
+                        )
+                    );
+                    single_collapse_reader.reset(collapse);
+                    if (single_collapse_reader.size() != 1) {
+                        throw std::runtime_error(
+                            "collapse length changed during string joining"
+                        );
+                    }
+                    const charport::StrView collapse_raw =
+                        single_collapse_reader.view(0);
+                    if (collapse_raw.is_na()) {
+                        builder.reset(1);
+                        builder.set_na(0);
+                        result = entry_protections.reprotect_one(
+                            builder.to_sexp(), result_index
+                        );
+                        break;
+                    }
+
+                    lengths[0] = io::checked_r_len(
+                        XLENGTH(VECTOR_ELT(strlist, 0)),
+                        "character vectors"
+                    );
+                    row_count = lengths[0];
+                    if (row_count <= 0) {
+                        builder.reset(1);
+                        builder.set(
+                            0, "", 0, cetype_ext_t::CE_ASCII
+                        );
+                        result = entry_protections.reprotect_one(
+                            builder.to_sexp(), result_index
+                        );
+                        break;
+                    }
+
+                    single_reader.reset(VECTOR_ELT(strlist, 0));
+                    if (single_reader.size() != row_count) {
+                        throw std::runtime_error(
+                            "Reader length changed during string joining"
+                        );
+                    }
+                    single_views.resize(row_count);
+                    single_reader.views(
+                        0, row_count,
+                        single_views.ptrs(), single_views.lengths(),
+                        single_views.encodings()
+                    );
+                    inputs[0].resize(static_cast<size_t>(row_count));
+                    for (R_len_t i = 0; i < row_count; ++i) {
+                        inputs[0][static_cast<size_t>(i)] =
+                            join_frame::normalize_input(
+                                io::as_shared_view(single_views[i]),
+                                converter, storage
+                            );
+                    }
+                    collapse_value = join_frame::normalize_input(
+                        io::as_shared_view(collapse_raw),
+                        collapse_converter, collapse_storage
+                    );
+                }
+                else {
+                    sep = callback_protections.protect_one(
+                        ci__prepare_arg_string_1_r(sep, "sep")
+                    );
+                    collapse = callback_protections.protect_one(
+                        ci__prepare_arg_string_1_r(
+                            collapse, "collapse"
+                        )
+                    );
+
+                    collapsed_separator_reader.reset(sep);
+                    if (collapsed_separator_reader.size() != 1) {
+                        throw std::runtime_error(
+                            "separator length changed during string joining"
+                        );
+                    }
+                    const charport::StrView separator_raw =
+                        collapsed_separator_reader.view(0);
+                    if (separator_raw.is_na()) {
+                        builder.reset(1);
+                        builder.set_na(0);
+                        result = entry_protections.reprotect_one(
+                            builder.to_sexp(), result_index
+                        );
+                        break;
+                    }
+
+                    collapsed_collapse_reader.reset(collapse);
+                    if (collapsed_collapse_reader.size() != 1) {
+                        throw std::runtime_error(
+                            "collapse length changed during string joining"
+                        );
+                    }
+                    const charport::StrView collapse_raw =
+                        collapsed_collapse_reader.view(0);
+                    if (collapse_raw.is_na()) {
+                        builder.reset(1);
+                        builder.set_na(0);
+                        result = entry_protections.reprotect_one(
+                            builder.to_sexp(), result_index
+                        );
+                        break;
+                    }
+
+                    for (R_len_t column = 0;
+                            column < column_count; ++column) {
+                        lengths[static_cast<size_t>(column)] =
+                            io::checked_r_len(
+                                XLENGTH(VECTOR_ELT(strlist, column)),
+                                "character vectors"
+                            );
+                    }
+                    bool recycling_warning = false;
+                    row_count = join_frame::recycling_length(
+                        lengths, recycling_warning
+                    );
+                    if (row_count <= 0) {
+                        builder.reset(1);
+                        builder.set(
+                            0, "", 0, cetype_ext_t::CE_ASCII
+                        );
+                        result = entry_protections.reprotect_one(
+                            builder.to_sexp(), result_index
+                        );
+                        break;
+                    }
+                    if (recycling_warning)
+                        Rf_warning(MSG__WARN_RECYCLING_RULE);
+
+                    collapsed_readers.resize(
+                        static_cast<size_t>(column_count)
+                    );
+                    collapsed_views.resize(
+                        static_cast<size_t>(column_count)
+                    );
+                    for (R_len_t column = 0;
+                            column < column_count; ++column) {
+                        const size_t index = static_cast<size_t>(column);
+                        collapsed_readers[index].reset(
+                            VECTOR_ELT(strlist, column)
+                        );
+                        if (collapsed_readers[index].size() != lengths[index]) {
+                            throw std::runtime_error(
+                                "Reader length changed during string joining"
+                            );
+                        }
+                        collapsed_views[index].resize(lengths[index]);
+                        collapsed_readers[index].views(
+                            0, lengths[index],
+                            collapsed_views[index].ptrs(),
+                            collapsed_views[index].lengths(),
+                            collapsed_views[index].encodings()
+                        );
+                        inputs[index].resize(
+                            static_cast<size_t>(lengths[index])
+                        );
+                        for (R_len_t i = 0; i < lengths[index]; ++i) {
+                            inputs[index][static_cast<size_t>(i)] =
+                                join_frame::normalize_input(
+                                    io::as_shared_view(
+                                        collapsed_views[index][i]
+                                    ),
+                                    converter, storage
+                                );
+                        }
+                    }
+                    separator = join_frame::normalize_input(
+                        io::as_shared_view(separator_raw),
+                        separator_converter, separator_storage
+                    );
+                    collapse_value = join_frame::normalize_input(
+                        io::as_shared_view(collapse_raw),
+                        collapse_converter, collapse_storage
+                    );
+                }
+
+                join_frame::point_columns(inputs, columns);
+                shared::join::FlattenPlan plan{
+                    0, 0, false, false, true
+                };
+                shared::join::plan_join_all(
+                    columns.data(), columns.size(),
+                    static_cast<size_t>(row_count),
+                    separator, collapse_value, plan
+                );
+
+                builder.reset(1);
+                if (plan.has_na) {
+                    builder.set_na(0);
+                }
+                else {
+                    if (plan.too_large)
+                        throw StriException(MSG__CHARSXP_2147483647);
+                    char* destination = builder.reserve(
+                        0, plan.bytes,
+                        join_frame::output_encoding(plan.ascii)
+                    );
+                    shared::join::write_join_all(
+                        columns.data(), columns.size(),
+                        static_cast<size_t>(row_count),
+                        separator, collapse_value, destination
+                    );
+                }
+                result = entry_protections.reprotect_one(
+                    builder.to_sexp(), result_index
+                );
+
+                } while (false);
+                CHARR_UNWIND_RETURN();
             }
-
-#ifndef NDEBUG
-            if (plan.bytes != last_buf_idx)
-                throw StriException("ci_join_withcollapse: buffer overrun");
-#endif
-
-            output = builder.release_store();
-        }
+        );
     }
-
-    // we are done
-    SEXP ret;
-    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-        return charport::charvec::wrap(std::move(output));
-    }));
-    context.emitWarnings();
-    STRI__UNPROTECT_ALL
-    return ret;
-
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
+    CHARR_ENTRYPOINT_END();
 }
 
 
@@ -1211,9 +783,6 @@ SEXP ci_join(SEXP strlist, SEXP sep, SEXP collapse, SEXP ignore_null)
  *  @return if s is not empty, then a character vector of length 1
  *
  * @version 0.1-?? (Marek Gagolewski)
- *
- * @version 0.1-?? (Marek Gagolewski)
- *          io::Utf8Input - any R Encoding
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
  *          make StriException friendly
@@ -1232,81 +801,6 @@ SEXP ci_join(SEXP strlist, SEXP sep, SEXP collapse, SEXP ignore_null)
  * @version 1.6.2 (Marek Gagolewski, 2021-05-10)
  *    #428 na_empty=NA support
  */
-SEXP ci_flatten_noressep(SEXP str, int na_empty)
-{
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
-    R_len_t str_length = LENGTH(str);
-    if (str_length <= 0) {
-        STRI__ERROR_HANDLER_BEGIN(1)
-        charport::charvec::Store output = ci::scalar_store(
-            "", 0, cetype_ext_t::CE_ASCII
-        );
-        SEXP ret;
-        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-            return charport::charvec::wrap(std::move(output));
-        }));
-        STRI__UNPROTECT_ALL
-        return ret;
-        STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-    }
-
-    STRI__ERROR_HANDLER_BEGIN(1)
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    charport::charvec::Store output(0, 0);
-    {
-        std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(str);
-        const charport::StrViews& values = borrow->views();
-        FlattenPlan plan = {0, false, false, true};
-        JoinStringCache cache(values);
-        for (R_len_t i=0; i<str_length; ++i) {
-            const DirectStringView value = cache.get(i);
-            if (value.is_na) {
-                if (na_empty != NA_LOGICAL && !na_empty)
-                    plan.has_na = true;
-                continue;
-            }
-            ci__plan_add(plan, static_cast<size_t>(value.length));
-            plan.is_ascii = plan.is_ascii && value.is_ascii;
-        }
-        if (plan.has_na) {
-            output = charport::charvec::Store::scalar(
-                NULL, 0, cetype_ext_t::CE_NA
-            );
-        }
-        else {
-            if (plan.too_large)
-                throw StriException(MSG__CHARSXP_2147483647);
-            charport::charvec::Builder builder(1);
-            char* destination = builder.reserve(
-                0, plan.bytes,
-                plan.is_ascii
-                    ? cetype_ext_t::CE_ASCII
-                    : cetype_ext_t::CE_UTF8
-            );
-            size_t cursor = 0;
-            for (R_len_t i=0; i<str_length; ++i) {
-                const DirectStringView value = cache.get_bytes(i);
-                if (!value.is_na && value.length > 0) {
-                    memcpy(destination+cursor, value.data, value.length);
-                    cursor += static_cast<size_t>(value.length);
-                }
-            }
-            output = builder.release_store();
-        }
-    }
-
-    // 3. Get ret val & good bye
-    SEXP ret;
-    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-        return charport::charvec::wrap(std::move(output));
-    }));
-    context.emitWarnings();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-}
-
-
 /** String vector flatten, with separator between each string
  *
  *  if any of str is NA, the result will be NA_character_
@@ -1319,9 +813,6 @@ SEXP ci_flatten_noressep(SEXP str, int na_empty)
  *
  * @version 0.1-?? (Bartek Tartanus)
  *          collapse arg added (1 sep supported)
- *
- * @version 0.1-?? (Marek Gagolewski)
- *          io::Utf8Input - any R Encoding
  *
  * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
  *          make StriException friendly
@@ -1339,144 +830,129 @@ SEXP ci_flatten_noressep(SEXP str, int na_empty)
  *    #428 na_empty=NA support
  *
  */
-SEXP ci_flatten(SEXP str, SEXP collapse, SEXP na_empty, SEXP omit_empty) // a.k.a. C_ci_flatten_withressep
+CHARR_ENTRYPOINT SEXP ci_flatten(
+    SEXP str, SEXP collapse, SEXP na_empty, SEXP omit_empty
+) noexcept
 {
-    PROTECT(collapse = ci__prepare_arg_string_1(collapse, "collapse"));
-    int na_empty_1 = ci__prepare_arg_logical_1_NA(na_empty, "na_empty");
-    bool omit_empty_1 = ci__prepare_arg_logical_1_notNA(omit_empty, "omit_empty");
+    CHARR_ENTRYPOINT_BEGIN();
 
-    ScalarStringInfo collapse_info = {false, false};
-    ci__inspect_scalar_string(collapse, collapse_info);
-    if (collapse_info.is_na) {
-        STRI__ERROR_HANDLER_BEGIN(1)
-        charport::charvec::Store output =
-            charport::charvec::Store::scalar(
-                NULL, 0, cetype_ext_t::CE_NA
-            );
-        SEXP ret;
-        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-            return charport::charvec::wrap(std::move(output));
-        }));
-        STRI__UNPROTECT_ALL
-        return ret;
-        STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-    }
+    collapse = entry_protections.protect_one(
+        ci__prepare_arg_string_1_r(
+            collapse, "collapse"
+        )
+    );
+    const int na_empty_value = ci__prepare_arg_logical_1_NA_r(
+        na_empty, "na_empty"
+    );
+    const bool omit_empty_value = ci__prepare_arg_logical_1_notNA_r(
+        omit_empty, "omit_empty"
+    );
 
-    // if collapse is an empty string, we may use the following
-    // specialized function:
-    if (collapse_info.is_empty) {
-        UNPROTECT(1);
-        return ci_flatten_noressep(str, na_empty_1);
-    }
 
-    PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
-    R_len_t str_length = LENGTH(str);
-    if (str_length <= 0) {
-        STRI__ERROR_HANDLER_BEGIN(2)
-        charport::charvec::Store output = ci::scalar_store(
-            "", 0, cetype_ext_t::CE_ASCII
-        );
-        SEXP ret;
-        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-            return charport::charvec::wrap(std::move(output));
-        }));
-        STRI__UNPROTECT_ALL
-        return ret;
-        STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-    }
+    R_len_t str_length = 0;
 
-    STRI__ERROR_HANDLER_BEGIN(2)
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    charport::charvec::Store output(0, 0);
-    {
-        std::shared_ptr<ci::ReaderBorrow> str_borrow = context.acquire(str);
-        std::shared_ptr<ci::ReaderBorrow> sep_borrow = context.acquire(collapse);
-        const charport::StrViews& values = str_borrow->views();
-        const charport::StrViews& separators = sep_borrow->views();
-        FlattenPlan plan = {0, false, false, true};
-        size_t pieces = 0;
-        JoinStringCache cache(values);
-        for (R_len_t i=0; i<str_length; ++i) {
-            const DirectStringView value = cache.get(i);
-            if (value.is_na && na_empty_1 != NA_LOGICAL && !na_empty_1) {
-                plan.has_na = true;
-                continue;
-            }
-            if (value.is_na && na_empty_1 == NA_LOGICAL)
-                continue;
-            if (omit_empty_1 && (value.is_na || value.length == 0))
-                continue;
-            if (!value.is_na) {
-                ci__plan_add(plan, static_cast<size_t>(value.length));
-                plan.is_ascii = plan.is_ascii && value.is_ascii;
-            }
-            ++pieces;
-        }
-        JoinStringCache separator_cache(separators);
-        const DirectStringView separator = separator_cache.get(0);
-        const size_t separator_count = pieces > 0 ? pieces-1 : 0;
-        const size_t separator_length = static_cast<size_t>(separator.length);
-        if (separator_count > 0 && separator_length >
-                (static_cast<size_t>(POW_2_31_M_1)-plan.bytes) /
-                    separator_count) {
-            plan.too_large = true;
-        }
-        else {
-            plan.bytes += separator_count*separator_length;
-        }
-        if (separator_count > 0)
-            plan.is_ascii = plan.is_ascii && separator.is_ascii;
-        if (plan.has_na) {
-            output = charport::charvec::Store::scalar(
-                NULL, 0, cetype_ext_t::CE_NA
-            );
-        }
-        else {
-            if (plan.too_large)
-                throw StriException(MSG__CHARSXP_2147483647);
-            charport::charvec::Builder builder(1);
-            char* destination = builder.reserve(
-                0, plan.bytes,
-                plan.is_ascii
-                    ? cetype_ext_t::CE_ASCII
-                    : cetype_ext_t::CE_UTF8
-            );
-            size_t cursor = 0;
-            bool started = false;
-            for (R_len_t i=0; i<str_length; ++i) {
-                const DirectStringView value = cache.get_bytes(i);
-                if (value.is_na && na_empty_1 == NA_LOGICAL)
-                    continue;
-                if (omit_empty_1 && (value.is_na || value.length == 0))
-                    continue;
-                if (started && separator.length > 0) {
-                    memcpy(
-                        destination+cursor, separator.data,
-                        static_cast<size_t>(separator.length)
+    try {
+        charport::Reader separator_reader;
+        charport::Reader value_reader;
+        charport::StrViews raw_values;
+        shared::NativeToUtf8 value_converter;
+        shared::NativeToUtf8 separator_converter;
+        shared::SliceArena value_storage;
+        shared::SliceArena separator_storage;
+        vector<shared::StringView> values;
+        shared::join::FlattenPlan plan{0, 0, false, false, true};
+        io::OutputBuilder output(1);
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                separator_reader.reset(collapse);
+                if (separator_reader.size() != 1) {
+                    throw std::runtime_error(
+                        "Reader length changed during flatten"
                     );
-                    cursor += static_cast<size_t>(separator.length);
                 }
-                else if (!started) {
-                    started = true;
-                }
-                if (!value.is_na && value.length > 0) {
-                    memcpy(destination+cursor, value.data, value.length);
-                    cursor += static_cast<size_t>(value.length);
-                }
-            }
-            output = builder.release_store();
-        }
-    }
+                const charport::StrView raw_separator =
+                    separator_reader.view(0);
+                const bool missing_separator = raw_separator.is_na();
+                const bool empty_separator =
+                    !missing_separator && raw_separator.len == 0;
 
-    // 3. Get ret val & return
-    SEXP ret;
-    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-        return charport::charvec::wrap(std::move(output));
-    }));
-    context.emitWarnings();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
+                if (!missing_separator) {
+                    str = callback_protections.protect_one(
+                        ci__prepare_arg_string_r(str, "str")
+                    );
+                    str_length = LENGTH(str);
+                }
+
+                if (missing_separator) {
+                    output.set_na(0);
+                }
+                else if (str_length <= 0) {
+                    (void)output.reserve(
+                        0, 0, cetype_ext_t::CE_ASCII
+                    );
+                }
+                else {
+                    value_reader.reset(str);
+                    if (value_reader.size() != str_length) {
+                        throw std::runtime_error(
+                            "Reader length changed during flatten"
+                        );
+                    }
+                    raw_values.resize(str_length);
+                    value_reader.views(
+                        0, str_length,
+                        raw_values.ptrs(), raw_values.lengths(),
+                        raw_values.encodings()
+                    );
+                    normalize_flatten_inputs(
+                        raw_values, value_converter, value_storage, values
+                    );
+
+                    shared::StringView separator{
+                        nullptr, 0, shared::StringEncoding::ascii
+                    };
+                    const shared::StringView* separator_ptr = nullptr;
+                    if (!empty_separator) {
+                        separator = normalize_flatten_separator(
+                            raw_separator, separator_converter,
+                            separator_storage
+                        );
+                        separator_ptr = &separator;
+                    }
+
+                    shared::join::plan_flatten(
+                        values.data(), values.size(), separator_ptr,
+                        na_empty_value, omit_empty_value, plan
+                    );
+                    if (plan.too_large)
+                        throw StriException(MSG__CHARSXP_2147483647);
+                    if (plan.has_na) {
+                        output.set_na(0);
+                    }
+                    else {
+                        char* destination = output.reserve(
+                            0, plan.bytes,
+                            plan.ascii
+                                ? cetype_ext_t::CE_ASCII
+                                : cetype_ext_t::CE_UTF8
+                        );
+                        shared::join::write_flatten(
+                            values.data(), values.size(), separator_ptr,
+                            na_empty_value, omit_empty_value, destination
+                        );
+                    }
+                }
+
+                result = entry_protections.reprotect_one(
+                    output.to_sexp(), result_index
+                );
+                CHARR_UNWIND_RETURN();
+            }
+        );
+    }
+    CHARR_ENTRYPOINT_END();
 }
 
 } } // namespace charr::altrep_backend

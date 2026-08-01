@@ -44,9 +44,8 @@ patch_registration <- function(path) {
   helpers <- c(
     '    STRI__MK_CALL("C_charr_abi_ok",                     C_charr_abi_ok,                   0),',
     '    STRI__MK_CALL("C_charr_icu_init",                   C_charr_icu_init,                 1),',
-    '    STRI__MK_CALL("C_charr_icu_version",                C_charr_icu_version,              0),',
-    '    STRI__MK_CALL("C_charr_icu_ok",                     C_charr_icu_ok,                   0),',
-    '    STRI__MK_CALL("C_charr_icu_smoke",                  C_charr_icu_smoke,                0),'
+    '    STRI__MK_CALL("C_charr_icu_info",                   C_charr_icu_info,                 0),',
+    '    STRI__MK_CALL("C_charr_icu_bundled",                C_charr_icu_bundled,              0),'
   )
   lines <- append(lines, helpers, after = null_at - 1L)
 

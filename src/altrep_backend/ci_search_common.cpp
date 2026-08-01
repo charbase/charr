@@ -31,16 +31,8 @@
  */
 
 #include "ci_stringi.h"
-#include "ci_stringi.h"
-#include "ci_builder.h"
-#include "ci_utf8.h"
-#include "collation/pattern_set.h"
-#include <unicode/uregex.h>
-#include "ci_string8buf.h"
-#include <deque>
 
 namespace charr { namespace altrep_backend {
-using namespace std;
 
 
 /**
@@ -51,9 +43,9 @@ using namespace std;
  *
  * @version 1.7.1 (Marek Gagolewski, 2021-06-29) name_col1, name_col2
  */
-void ci__locate_set_dimnames_matrix(
+CHARR_R_HELPER void ci__locate_set_dimnames_matrix(
     SEXP matrix, bool get_length
-) {
+) noexcept {
     SEXP dimnames;
     SEXP colnames;
     PROTECT(dimnames = Rf_allocVector(VECSXP, 2));
@@ -77,9 +69,9 @@ void ci__locate_set_dimnames_matrix(
  *
  * @version 1.7.1 (Marek Gagolewski, 2021-06-29) name_col1, name_col2
  */
-void ci__locate_set_dimnames_list(
+CHARR_R_HELPER void ci__locate_set_dimnames_list(
     SEXP list, bool get_length
-) {
+) noexcept {
     R_len_t n = LENGTH(list);
     if (n <= 0) return;
 
@@ -98,120 +90,5 @@ void ci__locate_set_dimnames_list(
     UNPROTECT(2);
 }
 
-
-/**
- * Copy a logical subset of str_cont to an exact-size charvec Store
- *
- * @param str_cont
- * @param which logical
- * @param result_counter
- * @return output Store
- *
- * @version 0.3-1 (Bartlomiej Tartanus, 2014-07-25)
- */
-charport::charvec::Store ci__subset_by_logical(
-    const io::Utf8Input& str_cont,
-    const std::vector<int>& which, int result_counter
-)
-{
-    if (result_counter <= 0)
-        return charport::charvec::Store(0, 0);
-
-    if (result_counter == 1) {
-        for (R_len_t j=0; j<static_cast<R_len_t>(which.size()); ++j) {
-            if (which[j] == NA_LOGICAL)
-                return charport::charvec::Store::scalar(
-                    NULL, 0, cetype_ext_t::CE_NA
-                );
-            if (which[j]) {
-                const io::Utf8Record& value = str_cont.get(j);
-                if (value.isNA())
-                    return charport::charvec::Store::scalar(
-                        NULL, 0, cetype_ext_t::CE_NA
-                    );
-                return ci::scalar_store(value);
-            }
-        }
-        throw std::logic_error("subset result count mismatch");
-    }
-
-    charport::charvec::Builder output(result_counter);
-    R_len_t j = 0;
-    R_len_t i = 0;
-    for (; i < result_counter &&
-            j < static_cast<R_len_t>(which.size()); ++j) {
-        if (which[j] == NA_LOGICAL) {
-            output.set_na(i);
-            i++;
-        }
-        else if (which[j]) {
-            ci::builder_set(output, i, str_cont.get(j));
-            i++;
-        }
-    }
-    if (i != result_counter)
-        throw std::logic_error("subset result count mismatch");
-    return output.release_store();
-}
-
-
-/**
- * Copy a logical subset of str_cont to an exact-size charvec Store
- *
- * @param str_cont
- * @param which logical
- * @param result_counter
- * @return output Store
- *
- * @version 0.3-1 (Bartlomiej Tartanus, 2014-07-25)
- */
-charport::charvec::Store ci__subset_by_logical(
-    const io::Utf16Input& str_cont,
-    const std::vector<int>& which, int result_counter
-)
-{
-    if (result_counter <= 0)
-        return charport::charvec::Store(0, 0);
-
-    std::vector<char> utf8_buffer;
-    if (result_counter == 1) {
-        for (R_len_t j=0; j<static_cast<R_len_t>(which.size()); ++j) {
-            if (which[j] == NA_LOGICAL)
-                return charport::charvec::Store::scalar(
-                    NULL, 0, cetype_ext_t::CE_NA
-                );
-            if (which[j]) {
-                if (str_cont.isNA(j))
-                    return charport::charvec::Store::scalar(
-                        NULL, 0, cetype_ext_t::CE_NA
-                    );
-                const UnicodeString& value = str_cont.get(j);
-                return ci::scalar_store(value, utf8_buffer);
-            }
-        }
-        throw std::logic_error("subset result count mismatch");
-    }
-
-    charport::charvec::Builder output(result_counter);
-    R_len_t j = 0;
-    R_len_t i = 0;
-    for (; i < result_counter &&
-            j < static_cast<R_len_t>(which.size()); ++j) {
-        if (which[j] == NA_LOGICAL) {
-            output.set_na(i);
-            i++;
-        }
-        else if (which[j]) {
-            if (str_cont.isNA(j))
-                output.set_na(i);
-            else
-                ci::builder_set(output, i, str_cont.get(j), utf8_buffer);
-            i++;
-        }
-    }
-    if (i != result_counter)
-        throw std::logic_error("subset result count mismatch");
-    return output.release_store();
-}
 
 } } // namespace charr::altrep_backend

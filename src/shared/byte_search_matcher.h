@@ -33,6 +33,8 @@
 #ifndef CHARR_SHARED_BYTE_SEARCH_MATCHER_H
 #define CHARR_SHARED_BYTE_SEARCH_MATCHER_H
 
+#include "lint.h"
+
 #include <unicode/uchar.h>
 #include <unicode/utf8.h>
 
@@ -44,7 +46,7 @@
 
 namespace charr { namespace shared {
 
-class ByteSearchMatcher {
+class CHARR_OWNER_TYPE ByteSearchMatcher {
 public:
     static constexpr int not_found = -1;
 
@@ -72,7 +74,7 @@ private:
     int folded_pattern_length_;
     std::unique_ptr<UChar32[]> folded_pattern_;
 
-    int find_from_pos_kmp(int start)
+    CHARR_CXX_HELPER int find_from_pos_kmp(int start)
     {
 #ifndef NDEBUG
         if (!search_)
@@ -99,7 +101,7 @@ private:
         return not_found;
     }
 
-    int find_from_pos_kmp_case_insensitive(int start)
+    CHARR_CXX_HELPER int find_from_pos_kmp_case_insensitive(int start)
     {
         int current = start;
         pattern_pos_ = 0;
@@ -133,7 +135,7 @@ private:
         return not_found;
     }
 
-    int find_from_pos_single_byte(int start)
+    CHARR_CXX_HELPER int find_from_pos_single_byte(int start)
     {
 #ifndef NDEBUG
         if (!search_)
@@ -159,7 +161,7 @@ private:
         return search_pos_;
     }
 
-    int find_from_pos_short(int start)
+    CHARR_CXX_HELPER int find_from_pos_short(int start)
     {
 #ifndef NDEBUG
         if (!search_)
@@ -198,7 +200,7 @@ private:
         return not_found;
     }
 
-    int find_from_pos(int start)
+    CHARR_CXX_HELPER int find_from_pos(int start)
     {
         switch (strategy_) {
         case Strategy::kmp:
@@ -213,7 +215,9 @@ private:
         throw std::logic_error("ByteSearchMatcher: invalid strategy");
     }
 
-    void prepare_kmp_forward(int length, const char* pattern)
+    CHARR_CXX_HELPER void prepare_kmp_forward(
+        int length, const char* pattern
+    )
     {
         if (kmp_next_[0] > -100)
             return;
@@ -227,7 +231,7 @@ private:
         }
     }
 
-    void prepare_folded_kmp_forward()
+    CHARR_CXX_HELPER void prepare_folded_kmp_forward()
     {
         if (kmp_next_[0] > -100)
             return;
@@ -242,13 +246,13 @@ private:
         }
     }
 
-    int find_first_kmp()
+    CHARR_CXX_HELPER int find_first_kmp()
     {
         prepare_kmp_forward(pattern_length_, pattern_);
         return find_from_pos_kmp(0);
     }
 
-    int find_last_kmp()
+    CHARR_CXX_HELPER int find_last_kmp()
     {
         if (kmp_next_[0] <= -100) {
             kmp_next_[0] = -1;
@@ -282,13 +286,13 @@ private:
         return not_found;
     }
 
-    int find_first_kmp_case_insensitive()
+    CHARR_CXX_HELPER int find_first_kmp_case_insensitive()
     {
         prepare_folded_kmp_forward();
         return find_from_pos_kmp_case_insensitive(0);
     }
 
-    int find_last_kmp_case_insensitive()
+    CHARR_CXX_HELPER int find_last_kmp_case_insensitive()
     {
         if (kmp_next_[0] <= -100) {
             kmp_next_[0] = -1;
@@ -336,7 +340,7 @@ private:
         return not_found;
     }
 
-    int find_last_single_byte()
+    CHARR_CXX_HELPER int find_last_single_byte()
     {
         if (search_length_ < pattern_length_) {
             search_pos_ = search_end_ = search_length_;
@@ -356,7 +360,7 @@ private:
         return not_found;
     }
 
-    int find_last_short()
+    CHARR_CXX_HELPER int find_last_short()
     {
         if (pattern_length_ <= 0) {
             search_pos_ = search_end_ = search_length_;
@@ -379,7 +383,7 @@ private:
     }
 
 public:
-    ByteSearchMatcher(
+    CHARR_CXX_HELPER ByteSearchMatcher(
         const char* pattern, int pattern_length, bool overlap,
         bool case_insensitive
     ) :
@@ -429,9 +433,12 @@ public:
     ByteSearchMatcher(const ByteSearchMatcher&) = delete;
     ByteSearchMatcher& operator=(const ByteSearchMatcher&) = delete;
 
-    const char* pattern_data() const noexcept { return pattern_; }
+    CHARR_NEUTRAL_HELPER const char* pattern_data() const noexcept
+    {
+        return pattern_;
+    }
 
-    void reset(const char* search, int search_length)
+    CHARR_CXX_HELPER void reset(const char* search, int search_length)
     {
         if (!search || search_length < 0)
             throw std::invalid_argument("ByteSearchMatcher: invalid subject");
@@ -442,7 +449,7 @@ public:
         pattern_pos_ = -1;
     }
 
-    int find_first()
+    CHARR_CXX_HELPER int find_first()
     {
         switch (strategy_) {
         case Strategy::kmp:
@@ -457,7 +464,7 @@ public:
         throw std::logic_error("ByteSearchMatcher: invalid strategy");
     }
 
-    int find_last()
+    CHARR_CXX_HELPER int find_last()
     {
         switch (strategy_) {
         case Strategy::kmp:
@@ -472,7 +479,7 @@ public:
         throw std::logic_error("ByteSearchMatcher: invalid strategy");
     }
 
-    int find_next()
+    CHARR_CXX_HELPER int find_next()
     {
         if (search_pos_ < 0)
             return find_first();
@@ -485,7 +492,7 @@ public:
         return find_from_pos(position);
     }
 
-    int matched_start() const
+    CHARR_CXX_HELPER int matched_start() const
     {
         if (!search_ || !pattern_)
             throw std::logic_error("ByteSearchMatcher: reset() has not been called");
@@ -499,7 +506,7 @@ public:
         return search_pos_;
     }
 
-    int matched_length() const
+    CHARR_CXX_HELPER int matched_length() const
     {
         (void) matched_start();
         return search_end_-search_pos_;

@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+// Derived from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f.
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -30,284 +30,174 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-
 #include "ci_stringi.h"
-#include "ci_utf8.h"
-#include "regex/pattern_set.h"
+#include "io/string_view.h"
+#include "regex/options_r.h"
+#include "../shared/entrypoint.h"
 #include "../shared/native_to_utf8.h"
-#include <cstdint>
-#include <cstring>
-#include <deque>
+#include "../shared/protect.h"
+#include "../shared/regex_search.h"
+#include "../shared/slice_arena.h"
+#include "../shared/unwind.h"
+#include "../shared/utf8.h"
+
+#include <cstddef>
 #include <exception>
 #include <string>
-#include <utility>
 #include <vector>
-#include <unicode/utf8.h>
+
+
 namespace charr { namespace base_backend {
-
-using namespace std;
-
 
 namespace search_regex_extract {
 
-struct CiRegexExtractInput {
-    const char* data;
-    int32_t length;
-    bool is_na;
-    bool is_ascii;
-    bool is_borrowed;
-};
+CHARR_NEUTRAL_HELPER R_len_t recycling_length(
+    R_len_t subject_length,
+    R_len_t pattern_length,
+    bool& warning
+) noexcept
+{
+    warning = false;
+    if (subject_length <= 0 || pattern_length <= 0)
+        return 0;
+
+    const R_len_t result = subject_length > pattern_length
+        ? subject_length
+        : pattern_length;
+    warning = result % subject_length != 0 ||
+        result % pattern_length != 0;
+    return result;
+}
 
 
-class CiRegexExtractUtf16Subject {
-private:
-    UnicodeString text_;
-    vector<int32_t> byte_offsets_;
-    const char* data_;
-    int32_t length_;
-    bool borrowed_;
-
-public:
-    CiRegexExtractUtf16Subject() :
-        text_(), byte_offsets_(), data_(NULL), length_(0), borrowed_(true)
-    {
-    }
-
-    UnicodeString& set(const io::Utf8Record& input, bool borrowed)
-    {
-        data_ = input.ptr;
-        length_ = input.len;
-        borrowed_ = borrowed;
-        if (length_ <= 0) {
-            text_.remove();
-            byte_offsets_.assign(1, 0);
-            return text_;
-        }
-
-        UChar* output = text_.getBuffer(length_);
-        if (!output)
-            throw StriException(MSG__MEM_ALLOC_ERROR);
-        byte_offsets_.resize(static_cast<size_t>(length_) + 1);
-
-        int32_t source_i = 0;
-        int32_t output_i = 0;
-        byte_offsets_[0] = 0;
-        if (input.isASCII()) {
-            for (; source_i < length_; ++source_i) {
-                output[output_i++] = static_cast<unsigned char>(data_[source_i]);
-                byte_offsets_[static_cast<size_t>(output_i)] = source_i + 1;
-            }
-        }
-        else {
-            while (source_i < length_) {
-                const int32_t source_begin = source_i;
-                UChar32 code_point;
-                U8_NEXT_OR_FFFD(data_, source_i, length_, code_point);
-                if (code_point <= 0xffff) {
-                    output[output_i++] = static_cast<UChar>(code_point);
-                    byte_offsets_[static_cast<size_t>(output_i)] = source_i;
-                }
-                else {
-                    output[output_i++] = U16_LEAD(code_point);
-                    byte_offsets_[static_cast<size_t>(output_i)] = source_begin;
-                    output[output_i++] = U16_TRAIL(code_point);
-                    byte_offsets_[static_cast<size_t>(output_i)] = source_i;
-                }
-            }
-        }
-
-        text_.releaseBuffer(output_i);
-        byte_offsets_.resize(static_cast<size_t>(output_i) + 1);
-        return text_;
-    }
-
-    CiRegexExtractInput slice(int32_t start, int32_t end) const
-    {
-        if (start < 0 || end < start || end > text_.length())
-            throw StriException("invalid ICU regex match boundary");
-        const int32_t byte_start = byte_offsets_[static_cast<size_t>(start)];
-        const int32_t byte_end = byte_offsets_[static_cast<size_t>(end)];
-        return CiRegexExtractInput{
-            data_ + byte_start, byte_end - byte_start,
-            false, false, borrowed_
-        };
-    }
-};
-
-
-struct CiRegexExtractSlice {
-    const char* borrowed;
-    size_t owned_offset;
-    R_len_t length;
-};
-
-
-class CiRegexExtractArena {
-private:
-    string owned_;
-    vector<CiRegexExtractSlice> slices_;
-
-public:
-    size_t size() const noexcept
-    {
-        return slices_.size();
-    }
-
-    void append(const CiRegexExtractInput& value)
-    {
-        if (value.is_borrowed) {
-            slices_.push_back(CiRegexExtractSlice{
-                value.data, 0, value.length
-            });
-            return;
-        }
-
-        const size_t offset = owned_.size();
-        owned_.append(value.data, static_cast<size_t>(value.length));
-        slices_.push_back(CiRegexExtractSlice{NULL, offset, value.length});
-    }
-
-    const CiRegexExtractSlice& slice(size_t i) const
-    {
-        return slices_[i];
-    }
-
-    const char* data(const CiRegexExtractSlice& value) const
-    {
-        if (value.borrowed)
-            return value.borrowed;
-        if (value.length == 0)
-            return "";
-        return owned_.data() + value.owned_offset;
-    }
-};
-
-
-enum class CiRegexExtractState : uint8_t {
-    argument_na,
-    no_match,
-    matches
-};
-
-
-struct CiRegexExtractElement {
-    CiRegexExtractState state;
-    size_t slices_begin;
-    R_len_t slices_count;
-
-    CiRegexExtractElement() :
-        state(CiRegexExtractState::argument_na),
-        slices_begin(0), slices_count(0)
-    {
-    }
-};
-
-
-void ci__regex_extract_firstlast_scalar(
-    SEXP str, SEXP pattern, R_len_t vectorize_length,
-    const regex::Options& pattern_opts, bool first,
-    vector<CiRegexExtractElement>& elements, CiRegexExtractArena& arena
+CHARR_CXX_HELPER shared::StringView normalize_subject(
+    const shared::StringView& source,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage
 )
 {
-    io::Utf8Input inputs(str, vectorize_length);
-    regex::PatternSet pattern_cont(
-        pattern, vectorize_length, pattern_opts
+    if (source.enc == shared::StringEncoding::bytes)
+        throw StriException(MSG__BYTESENC);
+    return shared::normalize_utf8(source, converter, storage);
+}
+
+
+CHARR_CXX_HELPER shared::StringView normalize_pattern(
+    const shared::StringView& source,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage
+)
+{
+    if (source.enc == shared::StringEncoding::bytes)
+        throw StriException(MSG__BYTESENC);
+    return shared::normalize_utf8_preserve_bom(
+        source, converter, storage
     );
-    if (vectorize_length <= 0)
-        return;
-    const bool pattern_unusable = pattern_cont.isNA(0) ||
-        pattern_cont.get(0).length() <= 0;
-    RegexMatcher* matcher = NULL;
-    CiRegexExtractUtf16Subject subject;
+}
 
-    for (R_len_t i = 0; i < vectorize_length; ++i) {
-        const io::Utf8Record input = inputs.record(i);
-        if (input.is_na() || pattern_unusable)
-            continue;
 
-        if (!matcher)
-            matcher = pattern_cont.getMatcher(0);
-        matcher->reset(subject.set(input, inputs.is_borrowed(i)));
-        UErrorCode status = U_ZERO_ERROR;
-        int found = static_cast<int>(matcher->find(status));
-        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-        if (!found) {
-            elements[static_cast<size_t>(i)].state =
-                CiRegexExtractState::no_match;
-            continue;
-        }
+CHARR_CXX_HELPER [[noreturn]] void throw_regex_error(
+    UErrorCode status,
+    bool pattern_compile_error,
+    const shared::RegexPatterns& patterns,
+    std::size_t pattern_index
+)
+{
+    if (pattern_compile_error) {
+        std::string context;
+        patterns.context(pattern_index, context);
+        throw StriException(status, context.c_str());
+    }
+    throw StriException(status);
+}
 
-        int32_t match_start = matcher->start(status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-        int32_t match_end = matcher->end(status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-        if (!first) {
-            while (true) {
-                found = static_cast<int>(matcher->find(status));
-                STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-                if (!found)
-                    break;
-                match_start = matcher->start(status);
-                STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-                match_end = matcher->end(status);
-                STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-            }
-        }
 
-        CiRegexExtractElement& element = elements[static_cast<size_t>(i)];
-        element.slices_begin = arena.size();
-        arena.append(subject.slice(match_start, match_end));
-        element.slices_count = 1;
-        element.state = CiRegexExtractState::matches;
+CHARR_CXX_HELPER void bind_pattern(
+    shared::RegexMatcher& matcher,
+    const shared::RegexInput& pattern,
+    const shared::RegexPatterns& patterns,
+    std::size_t pattern_index
+)
+{
+    UErrorCode status = U_ZERO_ERROR;
+    bool pattern_compile_error = false;
+    if (!matcher.bind(pattern, status, pattern_compile_error) ||
+            U_FAILURE(status)) {
+        throw_regex_error(
+            status, pattern_compile_error, patterns, pattern_index
+        );
     }
 }
 
 
-void ci__regex_extract_all_scalar(
-    SEXP str, SEXP pattern, R_len_t vectorize_length,
-    const regex::Options& pattern_opts,
-    vector<CiRegexExtractElement>& elements, CiRegexExtractArena& arena
-)
+CHARR_R_HELPER SEXP missing_strings_r(R_len_t size) noexcept
 {
-    io::Utf8Input inputs(str, vectorize_length);
-    regex::PatternSet pattern_cont(
-        pattern, vectorize_length, pattern_opts
+    SEXP result = Rf_allocVector(STRSXP, size);
+    for (R_len_t i = 0; i < size; ++i)
+        SET_STRING_ELT(result, i, NA_STRING);
+    return result;
+}
+
+
+CHARR_R_HELPER SEXP strings_r(R_len_t size) noexcept
+{
+    return Rf_allocVector(STRSXP, size);
+}
+
+
+CHARR_R_HELPER CHARR_ALWAYS_INLINE void set_match_r(
+    SEXP output,
+    R_len_t index,
+    const shared::StringView& subject,
+    const shared::RegexRange& match
+) noexcept
+{
+    const int length = match.end-match.start;
+    SET_STRING_ELT(
+        output, index,
+        Rf_mkCharLenCE(
+            length == 0 ? "" : subject.ptr+match.start,
+            length, CE_UTF8
+        )
     );
-    if (vectorize_length <= 0)
-        return;
-    const bool pattern_unusable = pattern_cont.isNA(0) ||
-        pattern_cont.get(0).length() <= 0;
-    RegexMatcher* matcher = NULL;
-    CiRegexExtractUtf16Subject subject;
+}
 
-    for (R_len_t i = 0; i < vectorize_length; ++i) {
-        const io::Utf8Record input = inputs.record(i);
-        if (input.is_na() || pattern_unusable)
-            continue;
 
-        if (!matcher)
-            matcher = pattern_cont.getMatcher(0);
-        matcher->reset(subject.set(input, inputs.is_borrowed(i)));
-        UErrorCode status = U_ZERO_ERROR;
-        CiRegexExtractElement& element = elements[static_cast<size_t>(i)];
-        element.slices_begin = arena.size();
-        while (matcher->find(status)) {
-            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-            const int32_t match_start = matcher->start(status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-            const int32_t match_end = matcher->end(status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-            arena.append(subject.slice(match_start, match_end));
+CHARR_R_HELPER SEXP simplify_result_r(
+    SEXP input, R_len_t rows, R_len_t columns, bool pad_na
+) noexcept
+{
+    SEXP output = Rf_allocMatrix(STRSXP, rows, columns);
+    const SEXP fill = pad_na ? NA_STRING : R_BlankString;
+    for (R_len_t i = 0; i < rows; ++i) {
+        const SEXP current = VECTOR_ELT(input, i);
+        const R_len_t current_size = LENGTH(current);
+        R_len_t j = 0;
+        for (; j < current_size; ++j) {
+            SET_STRING_ELT(
+                output,
+                static_cast<R_xlen_t>(i) +
+                    static_cast<R_xlen_t>(j)*rows,
+                STRING_ELT(current, j)
+            );
         }
-        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-
-        element.slices_count = static_cast<R_len_t>(
-            arena.size() - element.slices_begin
-        );
-        element.state = element.slices_count > 0
-            ? CiRegexExtractState::matches
-            : CiRegexExtractState::no_match;
+        for (; j < columns; ++j) {
+            SET_STRING_ELT(
+                output,
+                static_cast<R_xlen_t>(i) +
+                    static_cast<R_xlen_t>(j)*rows,
+                fill
+            );
+        }
     }
+    return output;
+}
+
+
+CHARR_R_HELPER void emit_empty_pattern_warnings_r(int count) noexcept
+{
+    for (int i = 0; i < count; ++i)
+        Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
 }
 
 } // namespace search_regex_extract
@@ -315,342 +205,370 @@ void ci__regex_extract_all_scalar(
 using namespace search_regex_extract;
 
 
-/**
- * Extract first occurrence of a regex pattern in each string
- *
- * @param str character vector
- * @param pattern character vector
- * @param opts_regex list
- * @param first logical - search for the first or the last occurrence?
- * @return character vector
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-20)
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 1.0-2 (Marek Gagolewski, 2016-01-29)
- *    Issue #214: allow a regex pattern like `.*`  to match an empty string
- *
- * @version 1.4.7 (Marek Gagolewski, 2020-08-24)
- *    Use regex::PatternSet::getRegexOptions
- */
-SEXP ci__extract_firstlast_regex(SEXP str, SEXP pattern, SEXP opts_regex, bool first)
+/** Extract the first regular-expression match from each string. */
+CHARR_ENTRYPOINT SEXP ci_extract_first_regex(
+    SEXP str, SEXP pattern, SEXP opts_regex
+) noexcept
 {
-    PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
-    PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern")); // prepare string argument
-    R_len_t vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
+    CHARR_ENTRYPOINT_BEGIN();
 
-    regex::Options pattern_opts =
-        regex::PatternSet::getRegexOptions(opts_regex);
+    str = entry_protections.protect_one(ci__prepare_arg_string_r(str, "str"));
+    pattern = entry_protections.protect_one(ci__prepare_arg_string_r(pattern, "pattern"));
 
-    UText* str_text = NULL; // may potentially be slower, but definitely is more convenient!
-    STRI__ERROR_HANDLER_BEGIN(2)
-    SEXP ret;
-    if (XLENGTH(pattern) == 1) {
-        try {
-            vector<CiRegexExtractElement> elements(
-                static_cast<size_t>(vectorize_length)
-            );
-            CiRegexExtractArena arena;
-            ci__regex_extract_firstlast_scalar(
-                str, pattern, vectorize_length, pattern_opts,
-                first, elements, arena
-            );
+    const R_len_t subject_length = LENGTH(str);
+    const R_len_t pattern_length = LENGTH(pattern);
+    bool recycling_warning = false;
+    const R_len_t vectorize_length = recycling_length(
+        subject_length, pattern_length, recycling_warning
+    );
+    if (recycling_warning)
+        Rf_warning(MSG__WARN_RECYCLING_RULE);
 
-            STRI__PROTECT(ret = Rf_allocVector(STRSXP, vectorize_length));
-            for (R_len_t i = 0; i < vectorize_length; ++i) {
-                const CiRegexExtractElement& element =
-                    elements[static_cast<size_t>(i)];
-                if (element.state != CiRegexExtractState::matches) {
-                    SET_STRING_ELT(ret, i, NA_STRING);
-                    continue;
+    const shared::RegexOptions options = regex::prepare_options(opts_regex);
+
+    int empty_pattern_warnings = 0;
+
+    try {
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        std::vector<shared::StringView> subjects;
+        shared::RegexPatterns patterns;
+        shared::RegexMatcher matcher(options);
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                if (vectorize_length > 0) {
+                    subjects.resize(
+                        static_cast<std::size_t>(subject_length)
+                    );
+                    const SEXP* values = STRING_PTR_RO(str);
+                    for (R_len_t i = 0; i < subject_length; ++i) {
+                        subjects[static_cast<std::size_t>(i)] =
+                            normalize_subject(
+                                io::as_shared_view(values[i]),
+                                subject_converter, subject_storage
+                            );
+                    }
+
+                    patterns.resize(
+                        static_cast<std::size_t>(pattern_length)
+                    );
+                    values = STRING_PTR_RO(pattern);
+                    for (R_len_t i = 0; i < pattern_length; ++i) {
+                        patterns.set(
+                            static_cast<std::size_t>(i),
+                            normalize_pattern(
+                                io::as_shared_view(values[i]),
+                                pattern_converter, pattern_storage
+                            )
+                        );
+                    }
+                    empty_pattern_warnings = patterns.empty_count();
                 }
-                const CiRegexExtractSlice& slice =
-                    arena.slice(element.slices_begin);
-                SET_STRING_ELT(
-                    ret, i,
-                    Rf_mkCharLenCE(
-                        arena.data(slice), slice.length, CE_UTF8
-                    )
+
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(STRSXP, vectorize_length),
+                    result_index
                 );
-            }
-        }
-        catch (const StriException&) {
-            throw;
-        }
-        catch (const exception& error) {
-            throw StriException("%s", error.what());
-        }
-    }
-    else {
-        io::Utf8Input str_cont(str, vectorize_length);
-        regex::PatternSet pattern_cont(
-            pattern, vectorize_length, pattern_opts
-        );
-        STRI__PROTECT(ret = Rf_allocVector(STRSXP, vectorize_length));
 
-        for (R_len_t i = pattern_cont.vectorize_init();
-                i != pattern_cont.vectorize_end();
-                i = pattern_cont.vectorize_next(i))
-        {
-            STRI__CONTINUE_ON_EMPTY_OR_NA_PATTERN(
-                str_cont, pattern_cont,
-                SET_STRING_ELT(ret, i, NA_STRING);
-            )
+                if (pattern_length == 1 && vectorize_length > 0) {
+                    const std::size_t pattern_index = 0;
+                    const shared::RegexInput current_pattern =
+                        patterns.get(pattern_index);
+                    const bool pattern_unusable =
+                        current_pattern.missing ||
+                        current_pattern.length <= 0;
+                    bool pattern_bound = false;
 
-            UErrorCode status = U_ZERO_ERROR;
-            RegexMatcher *matcher = pattern_cont.getMatcher(i);
-            str_text = utext_openUTF8(
-                str_text, str_cont.get(i).data(),
-                str_cont.get(i).length(), &status
-            );
-            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+                    for (R_len_t i = 0; i < vectorize_length; ++i) {
+                        const shared::StringView& subject = subjects[
+                            static_cast<std::size_t>(i)
+                        ];
+                        if (subject.is_na() || pattern_unusable) {
+                            SET_STRING_ELT(result, i, NA_STRING);
+                            continue;
+                        }
+                        if (!pattern_bound) {
+                            bind_pattern(
+                                matcher, current_pattern, patterns,
+                                pattern_index
+                            );
+                            pattern_bound = true;
+                        }
 
-            int m_start = -1;
-            int m_end = -1;
-            int m_res;
-            matcher->reset(str_text);
-            m_res = static_cast<int>(matcher->find(status));
-            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-            if (m_res) {
-                m_start = static_cast<int>(matcher->start(status));
-                STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-                m_end = static_cast<int>(matcher->end(status));
-                STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-            }
-            else {
-                SET_STRING_ELT(ret, i, NA_STRING);
-                continue;
-            }
-
-            if (!first) {
-                while (1) {
-                    m_res = static_cast<int>(matcher->find(status));
-                    STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-                    if (!m_res) break;
-                    m_start = static_cast<int>(matcher->start(status));
-                    m_end = static_cast<int>(matcher->end(status));
-                    STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+                        shared::RegexRange match{0, 0};
+                        UErrorCode status = U_ZERO_ERROR;
+                        const bool found = matcher.find_first(
+                            subject, &subject, match, status
+                        );
+                        if (U_FAILURE(status)) {
+                            throw_regex_error(
+                                status, false, patterns, pattern_index
+                            );
+                        }
+                        if (found)
+                            set_match_r(result, i, subject, match);
+                        else
+                            SET_STRING_ELT(result, i, NA_STRING);
+                    }
                 }
+                else {
+                    for (R_len_t lane = 0;
+                            lane < (vectorize_length > 0
+                                ? pattern_length : 0);
+                            ++lane) {
+                        const std::size_t pattern_index =
+                            static_cast<std::size_t>(lane);
+                        const shared::RegexInput current_pattern =
+                            patterns.get(pattern_index);
+                        const bool pattern_unusable =
+                            current_pattern.missing ||
+                            current_pattern.length <= 0;
+                        bool pattern_bound = false;
+
+                        R_len_t i = lane;
+                        for (;;) {
+                            const std::size_t subject_index =
+                                static_cast<std::size_t>(
+                                    i % subject_length
+                                );
+                            const shared::StringView& subject =
+                                subjects[subject_index];
+                            if (subject.is_na() || pattern_unusable) {
+                                SET_STRING_ELT(result, i, NA_STRING);
+                            }
+                            else {
+                                if (!pattern_bound) {
+                                    bind_pattern(
+                                        matcher, current_pattern,
+                                        patterns, pattern_index
+                                    );
+                                    pattern_bound = true;
+                                }
+
+                                shared::RegexRange match{0, 0};
+                                UErrorCode status = U_ZERO_ERROR;
+                                const bool found = matcher.find_first(
+                                    subject, &subjects[subject_index],
+                                    match, status
+                                );
+                                if (U_FAILURE(status)) {
+                                    throw_regex_error(
+                                        status, false, patterns,
+                                        pattern_index
+                                    );
+                                }
+                                if (found)
+                                    set_match_r(result, i, subject, match);
+                                else
+                                    SET_STRING_ELT(result, i, NA_STRING);
+                            }
+
+                            if (pattern_length >= vectorize_length-i)
+                                break;
+                            i += pattern_length;
+                        }
+                    }
+                }
+
+                CHARR_UNWIND_RETURN();
             }
-
-            SET_STRING_ELT(
-                ret, i,
-                Rf_mkCharLenCE(
-                    str_cont.get(i).data()+m_start,
-                    m_end-m_start, CE_UTF8
-                )
-            );
-        }
-
-        if (str_text) {
-            utext_close(str_text);
-            str_text = NULL;
-        }
+        );
     }
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(if (str_text) utext_close(str_text);)
-    }
-
-
-/**
- * Extract first occurrence of a regex pattern in each string
- *
- * @param str character vector
- * @param pattern character vector
- * @param opts_regex list
- * @return character vector
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-20)
- */
-SEXP ci_extract_first_regex(SEXP str, SEXP pattern, SEXP opts_regex)
-{
-    return ci__extract_firstlast_regex(str, pattern, opts_regex, true);
+    CHARR_ENTRYPOINT_END(
+        emit_empty_pattern_warnings_r(empty_pattern_warnings);
+    );
 }
 
 
-/**
- * Extract all occurrences of a regex pattern in each string
- *
- * @param str character vector
- * @param pattern character vector
- * @param opts_regex list
- * @param simplify single logical value
- *
- * @return list of character vectors  or character matrix
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-20)
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-10-24)
- *          added simplify param
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-11-27)
- *    FR #117: omit_no_match arg added
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-12-04)
- *    allow `simplify=NA`
- *
- * @version 1.0-2 (Marek Gagolewski, 2016-01-29)
- *    Issue #214: allow a regex pattern like `.*`  to match an empty string
- */
-SEXP ci_extract_all_regex(SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_match, SEXP opts_regex)
+/** Extract every regular-expression match from each string. */
+CHARR_ENTRYPOINT SEXP ci_extract_all_regex(
+    SEXP str,
+    SEXP pattern,
+    SEXP simplify,
+    SEXP omit_no_match,
+    SEXP opts_regex
+) noexcept
 {
-    regex::Options pattern_opts =
-        regex::PatternSet::getRegexOptions(opts_regex);
-    bool omit_no_match1 = ci__prepare_arg_logical_1_notNA(omit_no_match, "omit_no_match");
-    PROTECT(simplify = ci__prepare_arg_logical_1(simplify, "simplify"));
-    PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
-    PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern")); // prepare string argument
-    R_len_t vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
+    CHARR_ENTRYPOINT_BEGIN();
 
-    UText* str_text = NULL; // may potentially be slower, but definitely is more convenient!
-    STRI__ERROR_HANDLER_BEGIN(3)
-    SEXP ret;
-    if (XLENGTH(pattern) == 1) {
-        try {
-            vector<CiRegexExtractElement> elements(
-                static_cast<size_t>(vectorize_length)
-            );
-            CiRegexExtractArena arena;
-            ci__regex_extract_all_scalar(
-                str, pattern, vectorize_length, pattern_opts,
-                elements, arena
-            );
-
-            STRI__PROTECT(ret = Rf_allocVector(VECSXP, vectorize_length));
-            for (R_len_t i = 0; i < vectorize_length; ++i) {
-                const CiRegexExtractElement& element =
-                    elements[static_cast<size_t>(i)];
-                if (element.state == CiRegexExtractState::argument_na) {
-                    SET_VECTOR_ELT(ret, i, ci__vector_NA_strings(1));
-                    continue;
-                }
-                if (element.state == CiRegexExtractState::no_match) {
-                    SET_VECTOR_ELT(
-                        ret, i,
-                        ci__vector_NA_strings(omit_no_match1 ? 0 : 1)
-                    );
-                    continue;
-                }
-
-                SEXP current;
-                STRI__PROTECT(current = Rf_allocVector(
-                    STRSXP, element.slices_count
-                ));
-                for (R_len_t j = 0; j < element.slices_count; ++j) {
-                    const CiRegexExtractSlice& slice = arena.slice(
-                        element.slices_begin + static_cast<size_t>(j)
-                    );
-                    SET_STRING_ELT(
-                        current, j,
-                        Rf_mkCharLenCE(
-                            arena.data(slice), slice.length, CE_UTF8
-                        )
-                    );
-                }
-                SET_VECTOR_ELT(ret, i, current);
-                STRI__UNPROTECT(1);
-            }
-        }
-        catch (const StriException&) {
-            throw;
-        }
-        catch (const exception& error) {
-            throw StriException("%s", error.what());
-        }
-    }
-    else {
-        io::Utf8Input str_cont(str, vectorize_length);
-        regex::PatternSet pattern_cont(
-            pattern, vectorize_length, pattern_opts
+    const shared::RegexOptions options = regex::prepare_options(opts_regex);
+    const bool omit_no_match_value =
+        ci__prepare_arg_logical_1_notNA_r(
+            omit_no_match, "omit_no_match"
         );
-        STRI__PROTECT(ret = Rf_allocVector(VECSXP, vectorize_length));
+    simplify = entry_protections.protect_one(ci__prepare_arg_logical_1_r(
+        simplify, "simplify"
+    ));
+    str = entry_protections.protect_one(ci__prepare_arg_string_r(str, "str"));
+    pattern = entry_protections.protect_one(ci__prepare_arg_string_r(pattern, "pattern"));
 
-        for (R_len_t i = pattern_cont.vectorize_init();
-                i != pattern_cont.vectorize_end();
-                i = pattern_cont.vectorize_next(i))
-        {
-            STRI__CONTINUE_ON_EMPTY_OR_NA_PATTERN(
-                str_cont, pattern_cont,
-                SET_VECTOR_ELT(ret, i, ci__vector_NA_strings(1));
-            )
+    const int simplify_value = LOGICAL_RO(simplify)[0];
+    const bool simplifying =
+        simplify_value == NA_LOGICAL || simplify_value != 0;
+    const R_len_t subject_length = LENGTH(str);
+    const R_len_t pattern_length = LENGTH(pattern);
+    bool recycling_warning = false;
+    const R_len_t vectorize_length = recycling_length(
+        subject_length, pattern_length, recycling_warning
+    );
+    if (recycling_warning)
+        Rf_warning(MSG__WARN_RECYCLING_RULE);
 
-            UErrorCode status = U_ZERO_ERROR;
-            RegexMatcher *matcher = pattern_cont.getMatcher(i);
-            str_text = utext_openUTF8(
-                str_text, str_cont.get(i).data(),
-                str_cont.get(i).length(), &status
-            );
-            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-            matcher->reset(str_text);
+    int empty_pattern_warnings = 0;
+    R_len_t max_columns = 0;
 
-            deque< pair<R_len_t, R_len_t> > occurrences;
-            while (matcher->find(status)) {
-                STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-                occurrences.push_back(pair<R_len_t, R_len_t>(
-                    static_cast<R_len_t>(matcher->start(status)),
-                    static_cast<R_len_t>(matcher->end(status))
-                ));
-                STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-            }
-            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+    try {
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        std::vector<shared::StringView> subjects;
+        shared::RegexPatterns patterns;
+        shared::RegexMatcher matcher(options);
+        std::vector<shared::RegexRange> matches;
 
-            R_len_t noccurrences = static_cast<R_len_t>(occurrences.size());
-            if (noccurrences <= 0) {
-                SET_VECTOR_ELT(
-                    ret, i,
-                    ci__vector_NA_strings(omit_no_match1 ? 0 : 1)
+        matches.reserve(8);
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                if (vectorize_length > 0) {
+                    subjects.resize(
+                        static_cast<std::size_t>(subject_length)
+                    );
+                    const SEXP* values = STRING_PTR_RO(str);
+                    for (R_len_t i = 0; i < subject_length; ++i) {
+                        subjects[static_cast<std::size_t>(i)] =
+                            normalize_subject(
+                                io::as_shared_view(values[i]),
+                                subject_converter, subject_storage
+                            );
+                    }
+
+                    patterns.resize(
+                        static_cast<std::size_t>(pattern_length)
+                    );
+                    values = STRING_PTR_RO(pattern);
+                    for (R_len_t i = 0; i < pattern_length; ++i) {
+                        patterns.set(
+                            static_cast<std::size_t>(i),
+                            normalize_pattern(
+                                io::as_shared_view(values[i]),
+                                pattern_converter, pattern_storage
+                            )
+                        );
+                    }
+                    empty_pattern_warnings = patterns.empty_count();
+                }
+
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(VECSXP, vectorize_length),
+                    result_index
                 );
-                continue;
+
+                for (R_len_t lane = 0;
+                        lane < (vectorize_length > 0
+                            ? pattern_length : 0);
+                        ++lane) {
+                    const std::size_t pattern_index =
+                        static_cast<std::size_t>(lane);
+                    const shared::RegexInput current_pattern =
+                        patterns.get(pattern_index);
+                    const bool pattern_unusable =
+                        current_pattern.missing ||
+                        current_pattern.length <= 0;
+                    bool pattern_bound = false;
+
+                    R_len_t i = lane;
+                    for (;;) {
+                        const std::size_t subject_index =
+                            pattern_length == 1
+                                ? static_cast<std::size_t>(i)
+                                : static_cast<std::size_t>(
+                                    i % subject_length
+                                );
+                        const shared::StringView& subject =
+                            subjects[subject_index];
+                        SEXP child = R_NilValue;
+                        R_len_t child_size = 1;
+
+                        if (subject.is_na() || pattern_unusable) {
+                            child = missing_strings_r(1);
+                        }
+                        else {
+                            if (!pattern_bound) {
+                                bind_pattern(
+                                    matcher, current_pattern, patterns,
+                                    pattern_index
+                                );
+                                pattern_bound = true;
+                            }
+
+                            UErrorCode status = U_ZERO_ERROR;
+                            matcher.find_all(
+                                subject, &subjects[subject_index],
+                                matches, status
+                            );
+                            if (U_FAILURE(status)) {
+                                throw_regex_error(
+                                    status, false, patterns,
+                                    pattern_index
+                                );
+                            }
+
+                            child_size = static_cast<R_len_t>(
+                                matches.size()
+                            );
+                            if (child_size <= 0) {
+                                child_size = omit_no_match_value ? 0 : 1;
+                                child = missing_strings_r(child_size);
+                            }
+                            else {
+                                child = strings_r(child_size);
+                                SET_VECTOR_ELT(result, i, child);
+                                for (R_len_t j = 0;
+                                        j < child_size; ++j) {
+                                    set_match_r(
+                                        child, j, subject,
+                                        matches[
+                                            static_cast<std::size_t>(j)
+                                        ]
+                                    );
+                                }
+                            }
+                        }
+
+                        SET_VECTOR_ELT(result, i, child);
+                        if (simplifying && max_columns < child_size)
+                            max_columns = child_size;
+
+                        if (pattern_length >= vectorize_length-i)
+                            break;
+                        i += pattern_length;
+                    }
+                }
+
+                if (simplifying) {
+                    result = entry_protections.reprotect_one(
+                        simplify_result_r(
+                            result, vectorize_length, max_columns,
+                            simplify_value == NA_LOGICAL
+                        ),
+                        result_index
+                    );
+                }
+
+                CHARR_UNWIND_RETURN();
             }
-
-            const char* str_cur_s = str_cont.get(i).data();
-            SEXP current;
-            STRI__PROTECT(current = Rf_allocVector(
-                STRSXP, noccurrences
-            ));
-            deque< pair<R_len_t, R_len_t> >::iterator iter =
-                occurrences.begin();
-            for (R_len_t j = 0; iter != occurrences.end(); ++iter, ++j) {
-                pair<R_len_t, R_len_t> curo = *iter;
-                SET_STRING_ELT(
-                    current, j,
-                    Rf_mkCharLenCE(
-                        str_cur_s+curo.first,
-                        curo.second-curo.first, CE_UTF8
-                    )
-                );
-            }
-            SET_VECTOR_ELT(ret, i, current);
-            STRI__UNPROTECT(1);
-        }
-
-        if (str_text) {
-            utext_close(str_text);
-            str_text = NULL;
-        }
+        );
     }
-
-    if (LOGICAL(simplify)[0] == NA_LOGICAL || LOGICAL(simplify)[0]) {
-        SEXP robj_TRUE, robj_zero, robj_na_strings, robj_empty_strings;
-        STRI__PROTECT(robj_TRUE = Rf_ScalarLogical(TRUE));
-        STRI__PROTECT(robj_zero = Rf_ScalarInteger(0));
-        STRI__PROTECT(robj_na_strings = ci__vector_NA_strings(1));
-        STRI__PROTECT(robj_empty_strings = ci__vector_empty_strings(1));
-        STRI__PROTECT(ret = ci_list2matrix(ret, robj_TRUE,
-                                             (LOGICAL(simplify)[0] == NA_LOGICAL)?robj_na_strings
-                                             :robj_empty_strings,
-                                             robj_zero));
-    }
-
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(if (str_text) utext_close(str_text);)
-    }
+    CHARR_ENTRYPOINT_END(
+        emit_empty_pattern_warnings_r(empty_pattern_warnings);
+    );
+}
 
 } } // namespace charr::base_backend

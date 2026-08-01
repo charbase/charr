@@ -33,7 +33,10 @@
 
 #include "ci_stringi.h"
 #include "ci_string8buf.h"
+#include "../shared/entrypoint.h"
 #include "../shared/native_to_utf8.h"
+#include "../shared/protect.h"
+#include "../shared/unwind.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -50,7 +53,27 @@ struct ReverseInput {
     bool ascii;
 };
 
-bool has_utf8_bom(const char* ptr, int len) noexcept
+struct ReverseSource {
+    const char* ptr;
+    int len;
+    bool ascii;
+    bool bytes;
+    bool utf8;
+    bool latin1;
+};
+
+CHARR_R_HELPER ReverseSource read_source(SEXP value) noexcept
+{
+    return ReverseSource{
+        CHAR(value), LENGTH(value), IS_ASCII(value) != 0,
+        IS_BYTES(value) != 0, IS_UTF8(value) != 0,
+        IS_LATIN1(value) != 0
+    };
+}
+
+CHARR_NEUTRAL_HELPER bool has_utf8_bom(
+    const char* ptr, int len
+) noexcept
 {
     return len >= 3 &&
         static_cast<uint8_t>(ptr[0]) == UTF8_BOM_BYTE1 &&
@@ -58,18 +81,20 @@ bool has_utf8_bom(const char* ptr, int len) noexcept
         static_cast<uint8_t>(ptr[2]) == UTF8_BOM_BYTE3;
 }
 
-ReverseInput normalize_input(SEXP value, shared::NativeToUtf8& converter)
+CHARR_CXX_HELPER ReverseInput normalize_input(
+    const ReverseSource& value, shared::NativeToUtf8& converter
+)
 {
-    const char* ptr = CHAR(value);
-    int len = LENGTH(value);
+    const char* ptr = value.ptr;
+    int len = value.len;
 
-    if (IS_ASCII(value))
+    if (value.ascii)
         return ReverseInput{ptr, len, true};
-    if (IS_BYTES(value))
+    if (value.bytes)
         throw StriException(MSG__BYTESENC);
 
-    if (!IS_UTF8(value)) {
-        const shared::ByteView converted = IS_LATIN1(value)
+    if (!value.utf8) {
+        const shared::ByteView converted = value.latin1
             ? converter.latin1(ptr, len)
             : converter.native(ptr, len);
         ptr = converted.ptr;
@@ -83,7 +108,9 @@ ReverseInput normalize_input(SEXP value, shared::NativeToUtf8& converter)
     return ReverseInput{ptr, len, false};
 }
 
-void reverse_utf8(const ReverseInput& value, char* output)
+CHARR_CXX_HELPER void reverse_utf8(
+    const ReverseInput& value, char* output
+)
 {
     int32_t source_index = value.len;
     int32_t output_index = 0;
@@ -123,6 +150,20 @@ void reverse_utf8(const ReverseInput& value, char* output)
     }
 }
 
+CHARR_CXX_HELPER void reverse_input(
+    const ReverseInput& value, char* output
+)
+{
+    if (value.ascii) {
+        std::reverse_copy(
+            value.ptr, value.ptr + value.len, output
+        );
+    }
+    else {
+        reverse_utf8(value, output);
+    }
+}
+
 } // namespace reverse
 
 using namespace reverse;
@@ -147,54 +188,56 @@ using namespace reverse;
  * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
  *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
  */
-SEXP ci_reverse(SEXP str)
+CHARR_ENTRYPOINT SEXP ci_reverse(SEXP str) noexcept
 {
-    PROTECT(str = ci__prepare_arg_string(str, "str"));    // prepare string argument
+    CHARR_ENTRYPOINT_BEGIN();
 
-    STRI__ERROR_HANDLER_BEGIN(1)
-    SEXP ret;
+    str = entry_protections.protect_one(ci__prepare_arg_string_r(str, "str"));
+
     try {
-        const R_xlen_t str_len = XLENGTH(str);
-        const SEXP* values = str_len > 0 ? STRING_PTR_RO(str) : nullptr;
-        STRI__PROTECT(ret = Rf_allocVector(STRSXP, str_len));
         String8buf buffer;
         shared::NativeToUtf8 converter;
 
-        for (R_xlen_t i = 0; i < str_len; ++i) {
-            if (values[i] == NA_STRING) {
-                SET_STRING_ELT(ret, i, NA_STRING);
-                continue;
-            }
-
-            const ReverseInput value = normalize_input(values[i], converter);
-            buffer.resize(static_cast<std::size_t>(value.len), false);
-            char* output = buffer.data();
-            if (value.ascii) {
-                std::reverse_copy(
-                    value.ptr, value.ptr + value.len, output
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                const R_xlen_t str_len = XLENGTH(str);
+                const SEXP* values = str_len > 0
+                    ? STRING_PTR_RO(str)
+                    : nullptr;
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(STRSXP, str_len), result_index
                 );
-            }
-            else {
-                reverse_utf8(value, output);
-            }
-            SET_STRING_ELT(
-                ret, i,
-                Rf_mkCharLenCE(
-                    output, value.len, value.ascii ? CE_NATIVE : CE_UTF8
-                )
-            );
-        }
-    }
-    catch (const StriException&) {
-        throw;
-    }
-    catch (const std::exception& error) {
-        throw StriException("%s", error.what());
-    }
 
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
+                for (R_xlen_t i = 0; i < str_len; ++i) {
+                    if (values[i] == NA_STRING) {
+                        SET_STRING_ELT(result, i, NA_STRING);
+                        continue;
+                    }
+
+                    const ReverseSource source = read_source(values[i]);
+                    const ReverseInput value = normalize_input(
+                        source, converter
+                    );
+                    buffer.resize(
+                        static_cast<std::size_t>(value.len), false
+                    );
+                    char* output = buffer.data();
+                    reverse_input(value, output);
+                    SET_STRING_ELT(
+                        result, i,
+                        Rf_mkCharLenCE(
+                            output, value.len,
+                            value.ascii ? CE_NATIVE : CE_UTF8
+                        )
+                    );
+                }
+
+                CHARR_UNWIND_RETURN();
+            }
+        );
+    }
+    CHARR_ENTRYPOINT_END();
 }
 
 } } // namespace charr::base_backend

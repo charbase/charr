@@ -32,15 +32,24 @@
 
 
 #include "ci_stringi.h"
-#include "charclass/pattern_set.h"
+#include "io/reader_utils.h"
+#include "../shared/character_class.h"
+#include "../shared/entrypoint.h"
 #include "../shared/native_to_utf8.h"
+#include "../shared/protect.h"
+#include "../shared/slice_arena.h"
+#include "../shared/unwind.h"
+#include "../shared/utf8.h"
+#include "altrep_backend/io/string_view.h"
 #include "altrep_backend/io/utf8_output.h"
 
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace charr { namespace altrep_backend {
 
@@ -61,10 +70,10 @@ struct ScalarTrimPattern {
 };
 
 
-bool retained_contains(
+CHARR_NEUTRAL_HELPER bool retained_contains(
     const UnicodeSet& retained, const unsigned char* ascii_retained,
     UChar32 code_point
-)
+) noexcept
 {
     if (ascii_retained != nullptr && code_point <= 0x7f)
         return ascii_retained[code_point] != 0;
@@ -74,7 +83,7 @@ bool retained_contains(
 
 // Compile-time direction flags keep the hot edge scan branch-free.
 template<bool Left, bool Right>
-TrimSlice trim_slice(
+CHARR_CXX_HELPER TrimSlice trim_slice(
     const char* data, R_len_t length,
     const UnicodeSet& retained, const unsigned char* ascii_retained,
     bool strip_bom
@@ -126,46 +135,56 @@ TrimSlice trim_slice(
 }
 
 
-charport::StrView normalize_source(
-    const charport::StrView& value,
-    charr::shared::NativeToUtf8& converter
-)
+CHARR_NEUTRAL_HELPER R_len_t recycling_length(
+    R_len_t subject_length, R_len_t pattern_length, bool& warning
+) noexcept
 {
-    if (value.is_na())
-        return value;
-    if (value.ptr == nullptr || value.len < 0)
-        throw std::runtime_error("Reader returned an invalid string view");
+    warning = false;
+    if (subject_length <= 0 || pattern_length <= 0)
+        return 0;
 
-    shared::ByteView converted;
-    switch (value.enc) {
-    case cetype_ext_t::CE_ASCII:
-    case cetype_ext_t::CE_UTF8:
-    case cetype_ext_t::CE_ASCII_OR_UTF8:
-        return value;
-    case cetype_ext_t::CE_BYTES:
-        throw StriException(MSG__BYTESENC);
-    case cetype_ext_t::CE_LATIN1:
-        converted = converter.latin1(value.ptr, value.len);
-        break;
-    case cetype_ext_t::CE_NATIVE:
-        converted = converter.native(value.ptr, value.len);
-        break;
-    case cetype_ext_t::CE_NA:
-        throw std::logic_error("non-missing Reader record has NA encoding");
-    default:
-        throw std::runtime_error("Reader returned an unknown string encoding");
-    }
-
-    return make_strview(
-        converted.ptr, converted.len, cetype_ext_t::CE_UTF8
-    );
+    const R_len_t result = subject_length > pattern_length
+        ? subject_length
+        : pattern_length;
+    warning = result % subject_length != 0 ||
+        result % pattern_length != 0;
+    return result;
 }
 
 
-bool strip_input_bom(
-    const charport::StrView& original,
-    const charport::StrView& normalized
+CHARR_CXX_HELPER void normalize_views(
+    const charport::StrViews& source,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage,
+    std::vector<shared::StringView>& output,
+    bool preserve_bom
 )
+{
+    output.resize(static_cast<std::size_t>(source.size()));
+    for (R_xlen_t i = 0; i < source.size(); ++i) {
+        const shared::StringView value = io::as_shared_view(source[i]);
+        if (value.enc == shared::StringEncoding::bytes)
+            throw StriException(MSG__BYTESENC);
+        output[static_cast<std::size_t>(i)] = preserve_bom
+            ? shared::normalize_utf8_preserve_bom(
+                value, converter, storage
+            )
+            : shared::normalize_utf8(value, converter, storage);
+    }
+}
+
+
+CHARR_CXX_HELPER void require_icu_success(UErrorCode status)
+{
+    if (U_FAILURE(status))
+        throw StriException(status);
+}
+
+
+CHARR_NEUTRAL_HELPER bool strip_input_bom(
+    const charport::StrView& original,
+    const shared::StringView& normalized
+) noexcept
 {
     if (!STRI__ENC_HAS_BOM_UTF8(normalized.ptr, normalized.len))
         return false;
@@ -177,11 +196,11 @@ bool strip_input_bom(
 }
 
 
-cetype_ext_t trimmed_encoding(
+CHARR_NEUTRAL_HELPER cetype_ext_t trimmed_encoding(
     const charport::StrView& original,
-    const charport::StrView& normalized,
+    const shared::StringView& normalized,
     const TrimSlice& trimmed
-)
+) noexcept
 {
     if (trimmed.length == 0 ||
             original.enc == cetype_ext_t::CE_ASCII)
@@ -191,21 +210,21 @@ cetype_ext_t trimmed_encoding(
     // edge code points cannot invalidate that promise. Ambiguous marks and
     // converted records need one scan of the retained slice.
     if (original.enc == cetype_ext_t::CE_UTF8 &&
-            normalized.enc == cetype_ext_t::CE_UTF8 &&
+            normalized.enc == shared::StringEncoding::utf8 &&
             !trimmed.removed_non_ascii)
         return cetype_ext_t::CE_UTF8;
 
-    return ci::is_ascii(
+    return io::is_ascii(
         trimmed.data, static_cast<std::size_t>(trimmed.length)
     ) ? cetype_ext_t::CE_ASCII : cetype_ext_t::CE_UTF8;
 }
 
 
-ScalarTrimPattern make_scalar_pattern(
-    const charclass::PatternSet& patterns
+CHARR_CXX_HELPER ScalarTrimPattern make_scalar_pattern(
+    const shared::CharacterClassSet& patterns
 )
 {
-    ScalarTrimPattern scalar{nullptr, {}, patterns.isNA(0)};
+    ScalarTrimPattern scalar{nullptr, {}, patterns.is_na(0)};
     if (scalar.missing)
         return scalar;
 
@@ -219,7 +238,9 @@ ScalarTrimPattern make_scalar_pattern(
 }
 
 
-bool source_is_direct_utf8(const charport::StrViews& source)
+CHARR_CXX_HELPER bool source_is_direct_utf8(
+    const charport::StrViews& source
+)
 {
     for (R_xlen_t i = 0; i < source.size(); ++i) {
         const charport::StrView value = source[i];
@@ -252,7 +273,9 @@ bool source_is_direct_utf8(const charport::StrViews& source)
 }
 
 
-void add_payload_length(std::size_t& total, R_len_t length)
+CHARR_CXX_HELPER void add_payload_length(
+    std::size_t& total, R_len_t length
+)
 {
     const std::size_t amount = static_cast<std::size_t>(length);
     if (amount > std::numeric_limits<std::size_t>::max() - total)
@@ -262,8 +285,8 @@ void add_payload_length(std::size_t& total, R_len_t length)
 
 
 template<bool ScalarPattern>
-const UnicodeSet* select_pattern(
-    R_len_t index, const charclass::PatternSet& patterns,
+CHARR_CXX_HELPER const UnicodeSet* select_pattern(
+    R_len_t index, const shared::CharacterClassSet& patterns,
     const ScalarTrimPattern& scalar, bool& missing,
     const unsigned char*& ascii_retained
 )
@@ -274,103 +297,54 @@ const UnicodeSet* select_pattern(
         return scalar.retained;
     }
     else {
-        missing = patterns.isNA(index);
+        missing = patterns.is_na(static_cast<std::size_t>(index));
         ascii_retained = nullptr;
-        return missing ? nullptr : &patterns.get(index);
+        return missing
+            ? nullptr
+            : &patterns.get(static_cast<std::size_t>(index));
     }
 }
 
 
-template<bool Left, bool Right, bool ScalarPattern, bool RecycledSource>
-charr::altrep_backend::io::OutputStore trim_direct_records(
-    const charport::StrViews& source, R_len_t output_length,
-    const charclass::PatternSet& patterns,
-    const ScalarTrimPattern& scalar
+template<
+    bool Left, bool Right, bool NormalizedSource,
+    bool ScalarPattern, bool RecycledSource
+>
+CHARR_CXX_HELPER void trim_records(
+    const charport::StrViews& original_source,
+    const std::vector<shared::StringView>& source,
+    R_len_t output_length,
+    const shared::CharacterClassSet& patterns,
+    const ScalarTrimPattern& scalar,
+    charport::charvec::Store& output
 )
 {
-    charr::altrep_backend::io::OutputStore output(
-        static_cast<std::size_t>(output_length), 0
+    const R_len_t source_length = static_cast<R_len_t>(
+        original_source.size()
     );
-    const R_len_t source_length = static_cast<R_len_t>(source.size());
     std::size_t payload_length = 0;
 
     for (R_len_t i = 0; i < output_length; ++i) {
         const R_len_t source_index = RecycledSource
             ? i % source_length
             : i;
-        const charport::StrView original =
-            source[static_cast<std::size_t>(source_index)];
-        bool pattern_missing;
-        const unsigned char* ascii_retained;
-        const UnicodeSet* retained = select_pattern<ScalarPattern>(
-            i, patterns, scalar, pattern_missing, ascii_retained
-        );
-        if (original.is_na() || pattern_missing) {
-            output.records.set_na(static_cast<std::size_t>(i));
-            continue;
+        const charport::StrView original = original_source[source_index];
+        shared::StringView value = io::as_shared_view(original);
+        if constexpr (NormalizedSource) {
+            value = source[static_cast<std::size_t>(source_index)];
         }
-
-        const TrimSlice trimmed = trim_slice<Left, Right>(
-            original.ptr, original.len, *retained, ascii_retained,
-            strip_input_bom(original, original)
-        );
-        const cetype_ext_t encoding = trimmed_encoding(
-            original, original, trimmed
-        );
-        const char* record_data = trimmed.length == 0
-            ? charport::charvec::components::empty_data()
-            : trimmed.data;
-        output.records.set(
-            static_cast<std::size_t>(i), record_data,
-            trimmed.length, encoding
-        );
-        add_payload_length(payload_length, trimmed.length);
-    }
-
-    if (payload_length == 0)
-        return output;
-
-    char* destination = output.slices.push_front(payload_length);
-    for (R_len_t i = 0; i < output_length; ++i) {
-        const std::size_t index = static_cast<std::size_t>(i);
-        const charport::StrView record = output.records.view(index);
-        if (record.is_na() || record.len == 0)
-            continue;
-        std::memcpy(
-            destination, record.ptr, static_cast<std::size_t>(record.len)
-        );
-        output.records.set(index, destination, record.len, record.enc);
-        destination += record.len;
-    }
-    return output;
-}
-
-
-template<bool Left, bool Right, bool ScalarPattern, bool RecycledSource>
-charr::altrep_backend::io::OutputStore trim_converted_records(
-    const charport::StrViews& source, R_len_t output_length,
-    const charclass::PatternSet& patterns,
-    const ScalarTrimPattern& scalar
-)
-{
-    charport::charvec::Builder output(output_length);
-    charr::shared::NativeToUtf8 converter;
-    const R_len_t source_length = static_cast<R_len_t>(source.size());
-
-    for (R_len_t i = 0; i < output_length; ++i) {
-        const R_len_t source_index = RecycledSource
-            ? i % source_length
-            : i;
-        const charport::StrView original =
-            source[static_cast<std::size_t>(source_index)];
-        const charport::StrView value = normalize_source(original, converter);
         bool pattern_missing;
         const unsigned char* ascii_retained;
         const UnicodeSet* retained = select_pattern<ScalarPattern>(
             i, patterns, scalar, pattern_missing, ascii_retained
         );
         if (value.is_na() || pattern_missing) {
-            output.set_na(i);
+            const charport::StrView missing =
+                charport::charvec::components::na_record();
+            output.records.set(
+                static_cast<std::size_t>(i),
+                missing.ptr, missing.len, missing.enc
+            );
             continue;
         }
 
@@ -378,133 +352,137 @@ charr::altrep_backend::io::OutputStore trim_converted_records(
             value.ptr, value.len, *retained, ascii_retained,
             strip_input_bom(original, value)
         );
-        output.set(
-            i, trimmed.data, static_cast<std::size_t>(trimmed.length),
-            trimmed_encoding(original, value, trimmed)
+        const cetype_ext_t encoding = trimmed_encoding(
+            original, value, trimmed
         );
+        const char* record_data = trimmed.length == 0
+            ? charport::charvec::components::empty_data()
+            : trimmed.data;
+        output.records.set(
+            static_cast<std::size_t>(i),
+            record_data, trimmed.length, encoding
+        );
+        add_payload_length(payload_length, trimmed.length);
     }
-    return output.release_store();
+
+    if (payload_length > 0) {
+        char* destination = output.slices.push_front(payload_length);
+        for (R_len_t i = 0; i < output_length; ++i) {
+            const std::size_t index = static_cast<std::size_t>(i);
+            const charport::StrView record = output.records.view(index);
+            if (record.is_na() || record.len == 0)
+                continue;
+            std::memcpy(
+                destination, record.ptr,
+                static_cast<std::size_t>(record.len)
+            );
+            output.records.set(index, destination, record.len, record.enc);
+            destination += record.len;
+        }
+    }
 }
 
 
-template<bool Left, bool Right, bool ScalarPattern>
-charr::altrep_backend::io::OutputStore trim_dispatch_source(
-    const charport::StrViews& source, R_len_t output_length,
-    const charclass::PatternSet& patterns,
-    const ScalarTrimPattern& scalar, bool direct_source
+template<bool Left, bool Right, bool NormalizedSource>
+CHARR_CXX_HELPER void trim_dispatch(
+    const charport::StrViews& original_source,
+    const std::vector<shared::StringView>& source,
+    R_len_t output_length,
+    const shared::CharacterClassSet& patterns,
+    charport::charvec::Store& output
 )
 {
+    const bool scalar_pattern = patterns.size() == 1;
+    const ScalarTrimPattern scalar = scalar_pattern
+        ? make_scalar_pattern(patterns)
+        : ScalarTrimPattern{nullptr, {}, false};
     const bool recycled_source =
-        static_cast<R_len_t>(source.size()) != output_length;
-    if (direct_source) {
-        return recycled_source
-            ? trim_direct_records<Left, Right, ScalarPattern, true>(
-                source, output_length, patterns, scalar
-            )
-            : trim_direct_records<Left, Right, ScalarPattern, false>(
-                source, output_length, patterns, scalar
+        static_cast<R_len_t>(original_source.size()) != output_length;
+    if (scalar_pattern) {
+        if (recycled_source) {
+            trim_records<Left, Right, NormalizedSource, true, true>(
+                original_source, source, output_length,
+                patterns, scalar, output
             );
+        }
+        else {
+            trim_records<Left, Right, NormalizedSource, true, false>(
+                original_source, source, output_length,
+                patterns, scalar, output
+            );
+        }
     }
-    return recycled_source
-        ? trim_converted_records<Left, Right, ScalarPattern, true>(
-            source, output_length, patterns, scalar
-        )
-        : trim_converted_records<Left, Right, ScalarPattern, false>(
-            source, output_length, patterns, scalar
+    else if (recycled_source) {
+        trim_records<Left, Right, NormalizedSource, false, true>(
+            original_source, source, output_length,
+            patterns, scalar, output
         );
+    }
+    else {
+        trim_records<Left, Right, NormalizedSource, false, false>(
+            original_source, source, output_length,
+            patterns, scalar, output
+        );
+    }
+}
+
+
+template<bool Left, bool Right>
+CHARR_CXX_HELPER void compute_trim(
+    const charport::StrViews& subject_views,
+    const charport::StrViews& pattern_views,
+    R_len_t vectorize_length, bool negate,
+    shared::NativeToUtf8& subject_converter,
+    shared::NativeToUtf8& pattern_converter,
+    shared::SliceArena& subject_storage,
+    shared::SliceArena& pattern_storage,
+    std::vector<shared::StringView>& subjects,
+    std::vector<shared::StringView>& patterns,
+    shared::CharacterClassSet& pattern_set,
+    charport::charvec::Store& output
+)
+{
+    normalize_views(
+        pattern_views, pattern_converter, pattern_storage,
+        patterns, false
+    );
+    require_icu_success(pattern_set.reset(patterns, negate));
+
+    if (vectorize_length <= 0)
+        return;
+
+    const bool direct_source = source_is_direct_utf8(subject_views);
+    output = charport::charvec::Store(
+        static_cast<std::size_t>(vectorize_length), 0
+    );
+    if (direct_source) {
+        trim_dispatch<Left, Right, false>(
+            subject_views, subjects, vectorize_length,
+            pattern_set, output
+        );
+    }
+    else {
+        normalize_views(
+            subject_views, subject_converter, subject_storage,
+            subjects, true
+        );
+        trim_dispatch<Left, Right, true>(
+            subject_views, subjects, vectorize_length,
+            pattern_set, output
+        );
+    }
+}
+
+
+CHARR_R_HELPER void emit_warnings(bool recycling_warning) noexcept
+{
+    if (recycling_warning)
+        Rf_warning(MSG__WARN_RECYCLING_RULE);
 }
 
 } // namespace search_class_trim
 
 using namespace search_class_trim;
-
-
-/**
- * Trim characters from a charclass from left AND/OR right side of the string
- *
- * @param str character vector
- * @param pattern character vector
- * @return character vector
- *
- * @version 0.1-?? (Bartek Tartanus)
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-04)
- *          Use io::Utf8Input and CharClass
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-04-03)
- *          detects invalid UTF-8 byte stream
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-04-05)
- *          charclass::PatternSet now relies on UnicodeSet
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 1.6.3 (Marek Gagolewski, 2021-06-10) negate
-*/
-template<bool Left, bool Right>
-SEXP ci__trim_leftright(SEXP str, SEXP pattern, bool negate)
-{
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
-    PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
-    STRI__ERROR_HANDLER_BEGIN(2)
-    SEXP ret;
-    charr::altrep_backend::io::OutputStore output_store(0, 0);
-    {
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    charport::Reader source_reader(ci::protected_reader_resolve(str));
-    R_len_t str_n = ci::checked_r_len(
-        source_reader.size(), "character vectors"
-    );
-    R_len_t pattern_n = ci::checked_r_len(
-        context.size(pattern), "character vectors"
-    );
-    R_len_t vectorize_length = 0;
-    ci::unwind_protect([&]() -> SEXP {
-        vectorize_length = ci__recycling_rule(
-            STRI__DEFERRED_WARNINGS, 2, str_n, pattern_n
-        );
-        return R_NilValue;
-    });
-    charport::StrViews source_views(str_n);
-    if (str_n > 0)
-        source_reader.views(0, str_n, source_views);
-
-    {
-        charclass::PatternSet pattern_cont(
-            context, pattern, vectorize_length, negate
-        );
-        if (vectorize_length == 0) {
-            output_store = charr::altrep_backend::io::OutputStore(0, 0);
-        }
-        else {
-            const bool scalar_pattern = pattern_n == 1;
-            const ScalarTrimPattern scalar = scalar_pattern
-                ? make_scalar_pattern(pattern_cont)
-                : ScalarTrimPattern{nullptr, {}, false};
-            const bool direct_source = source_is_direct_utf8(source_views);
-            output_store = scalar_pattern
-                ? trim_dispatch_source<Left, Right, true>(
-                    source_views, vectorize_length, pattern_cont, scalar,
-                    direct_source
-                )
-                : trim_dispatch_source<Left, Right, false>(
-                    source_views, vectorize_length, pattern_cont, scalar,
-                    direct_source
-                );
-        }
-    }
-    }
-
-    ret = ci::unwind_protect([&]() -> SEXP {
-        return charr::altrep_backend::io::finalize(std::move(output_store));
-    });
-    STRI__PROTECT(ret);
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-}
 
 
 /**
@@ -524,10 +502,95 @@ SEXP ci__trim_leftright(SEXP str, SEXP pattern, bool negate)
  *
  * @version 1.6.3 (Marek Gagolewski, 2021-06-10) negate
 */
-SEXP ci_trim_both(SEXP str, SEXP pattern, SEXP negate)
+CHARR_ENTRYPOINT SEXP ci_trim_both(
+    SEXP str, SEXP pattern, SEXP negate
+) noexcept
 {
-    bool negate_val = ci__prepare_arg_logical_1_notNA(negate, "negate");
-    return ci__trim_leftright<true, true>(str, pattern, negate_val);
+    CHARR_ENTRYPOINT_BEGIN();
+
+    const bool negate_value = ci__prepare_arg_logical_1_notNA_r(
+        negate, "negate"
+    );
+    str = entry_protections.protect_one(
+        ci__prepare_arg_string_r(str, "str")
+    );
+    pattern = entry_protections.protect_one(
+        ci__prepare_arg_string_r(pattern, "pattern")
+    );
+
+
+    bool recycling_warning = false;
+
+    try {
+        charport::Reader subject_reader;
+        charport::Reader pattern_reader;
+        charport::StrViews subject_views;
+        charport::StrViews pattern_views;
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        std::vector<shared::StringView> subjects;
+        std::vector<shared::StringView> patterns;
+        shared::CharacterClassSet pattern_set;
+        charport::charvec::Store output;
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                subject_reader.reset(str);
+                const R_len_t subject_length = io::checked_r_len(
+                    subject_reader.size(), "character vectors"
+                );
+                const R_len_t pattern_length = io::checked_r_len(
+                    XLENGTH(pattern), "character vectors"
+                );
+                const R_len_t vectorize_length = recycling_length(
+                    subject_length, pattern_length, recycling_warning
+                );
+
+                subject_views.resize(subject_length);
+                if (subject_length > 0) {
+                    subject_reader.views(
+                        0, subject_length,
+                        subject_views.ptrs(), subject_views.lengths(),
+                        subject_views.encodings()
+                    );
+                }
+                if (pattern_length > 0) {
+                    pattern_reader.reset(pattern);
+                    if (pattern_reader.size() != pattern_length) {
+                        throw std::runtime_error(
+                            "Reader length changed during character-class trimming"
+                        );
+                    }
+
+                    pattern_views.resize(pattern_length);
+                    pattern_reader.views(
+                        0, pattern_length,
+                        pattern_views.ptrs(), pattern_views.lengths(),
+                        pattern_views.encodings()
+                    );
+
+                    compute_trim<true, true>(
+                        subject_views, pattern_views,
+                        vectorize_length, negate_value,
+                        subject_converter, pattern_converter,
+                        subject_storage, pattern_storage,
+                        subjects, patterns, pattern_set, output
+                    );
+                }
+
+                result = entry_protections.reprotect_one(
+                    io::finalize(std::move(output)), result_index
+                );
+                CHARR_UNWIND_RETURN();
+            }
+        );
+    }
+    CHARR_ENTRYPOINT_END(
+        emit_warnings(recycling_warning);
+    );
 }
 
 
@@ -545,10 +608,95 @@ SEXP ci_trim_both(SEXP str, SEXP pattern, SEXP negate)
  *
  * @version 1.6.3 (Marek Gagolewski, 2021-06-10) negate
 */
-SEXP ci_trim_left(SEXP str, SEXP pattern, SEXP negate)
+CHARR_ENTRYPOINT SEXP ci_trim_left(
+    SEXP str, SEXP pattern, SEXP negate
+) noexcept
 {
-    bool negate_val = ci__prepare_arg_logical_1_notNA(negate, "negate");
-    return ci__trim_leftright<true, false>(str, pattern, negate_val);
+    CHARR_ENTRYPOINT_BEGIN();
+
+    const bool negate_value = ci__prepare_arg_logical_1_notNA_r(
+        negate, "negate"
+    );
+    str = entry_protections.protect_one(
+        ci__prepare_arg_string_r(str, "str")
+    );
+    pattern = entry_protections.protect_one(
+        ci__prepare_arg_string_r(pattern, "pattern")
+    );
+
+
+    bool recycling_warning = false;
+
+    try {
+        charport::Reader subject_reader;
+        charport::Reader pattern_reader;
+        charport::StrViews subject_views;
+        charport::StrViews pattern_views;
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        std::vector<shared::StringView> subjects;
+        std::vector<shared::StringView> patterns;
+        shared::CharacterClassSet pattern_set;
+        charport::charvec::Store output;
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                subject_reader.reset(str);
+                const R_len_t subject_length = io::checked_r_len(
+                    subject_reader.size(), "character vectors"
+                );
+                const R_len_t pattern_length = io::checked_r_len(
+                    XLENGTH(pattern), "character vectors"
+                );
+                const R_len_t vectorize_length = recycling_length(
+                    subject_length, pattern_length, recycling_warning
+                );
+
+                subject_views.resize(subject_length);
+                if (subject_length > 0) {
+                    subject_reader.views(
+                        0, subject_length,
+                        subject_views.ptrs(), subject_views.lengths(),
+                        subject_views.encodings()
+                    );
+                }
+                if (pattern_length > 0) {
+                    pattern_reader.reset(pattern);
+                    if (pattern_reader.size() != pattern_length) {
+                        throw std::runtime_error(
+                            "Reader length changed during character-class trimming"
+                        );
+                    }
+
+                    pattern_views.resize(pattern_length);
+                    pattern_reader.views(
+                        0, pattern_length,
+                        pattern_views.ptrs(), pattern_views.lengths(),
+                        pattern_views.encodings()
+                    );
+
+                    compute_trim<true, false>(
+                        subject_views, pattern_views,
+                        vectorize_length, negate_value,
+                        subject_converter, pattern_converter,
+                        subject_storage, pattern_storage,
+                        subjects, patterns, pattern_set, output
+                    );
+                }
+
+                result = entry_protections.reprotect_one(
+                    io::finalize(std::move(output)), result_index
+                );
+                CHARR_UNWIND_RETURN();
+            }
+        );
+    }
+    CHARR_ENTRYPOINT_END(
+        emit_warnings(recycling_warning);
+    );
 }
 
 
@@ -566,10 +714,95 @@ SEXP ci_trim_left(SEXP str, SEXP pattern, SEXP negate)
  *
  * @version 1.6.3 (Marek Gagolewski, 2021-06-10) negate
 */
-SEXP ci_trim_right(SEXP str, SEXP pattern, SEXP negate)
+CHARR_ENTRYPOINT SEXP ci_trim_right(
+    SEXP str, SEXP pattern, SEXP negate
+) noexcept
 {
-    bool negate_val = ci__prepare_arg_logical_1_notNA(negate, "negate");
-    return ci__trim_leftright<false, true>(str, pattern, negate_val);
+    CHARR_ENTRYPOINT_BEGIN();
+
+    const bool negate_value = ci__prepare_arg_logical_1_notNA_r(
+        negate, "negate"
+    );
+    str = entry_protections.protect_one(
+        ci__prepare_arg_string_r(str, "str")
+    );
+    pattern = entry_protections.protect_one(
+        ci__prepare_arg_string_r(pattern, "pattern")
+    );
+
+
+    bool recycling_warning = false;
+
+    try {
+        charport::Reader subject_reader;
+        charport::Reader pattern_reader;
+        charport::StrViews subject_views;
+        charport::StrViews pattern_views;
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        std::vector<shared::StringView> subjects;
+        std::vector<shared::StringView> patterns;
+        shared::CharacterClassSet pattern_set;
+        charport::charvec::Store output;
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                subject_reader.reset(str);
+                const R_len_t subject_length = io::checked_r_len(
+                    subject_reader.size(), "character vectors"
+                );
+                const R_len_t pattern_length = io::checked_r_len(
+                    XLENGTH(pattern), "character vectors"
+                );
+                const R_len_t vectorize_length = recycling_length(
+                    subject_length, pattern_length, recycling_warning
+                );
+
+                subject_views.resize(subject_length);
+                if (subject_length > 0) {
+                    subject_reader.views(
+                        0, subject_length,
+                        subject_views.ptrs(), subject_views.lengths(),
+                        subject_views.encodings()
+                    );
+                }
+                if (pattern_length > 0) {
+                    pattern_reader.reset(pattern);
+                    if (pattern_reader.size() != pattern_length) {
+                        throw std::runtime_error(
+                            "Reader length changed during character-class trimming"
+                        );
+                    }
+
+                    pattern_views.resize(pattern_length);
+                    pattern_reader.views(
+                        0, pattern_length,
+                        pattern_views.ptrs(), pattern_views.lengths(),
+                        pattern_views.encodings()
+                    );
+
+                    compute_trim<false, true>(
+                        subject_views, pattern_views,
+                        vectorize_length, negate_value,
+                        subject_converter, pattern_converter,
+                        subject_storage, pattern_storage,
+                        subjects, patterns, pattern_set, output
+                    );
+                }
+
+                result = entry_protections.reprotect_one(
+                    io::finalize(std::move(output)), result_index
+                );
+                CHARR_UNWIND_RETURN();
+            }
+        );
+    }
+    CHARR_ENTRYPOINT_END(
+        emit_warnings(recycling_warning);
+    );
 }
 
 } } // namespace charr::altrep_backend

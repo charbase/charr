@@ -67,14 +67,11 @@ const R_CallMethodDef call_methods[] = {
     CHARR_CALL("C_charr_abi_ok", icu::C_charr_abi_ok, 0),
     CHARR_CALL("C_charr_icu_init", icu::C_charr_icu_init, 1),
     CHARR_CALL("C_charr_icu_info", icu::C_charr_icu_info, 0),
-    CHARR_CALL("C_charr_icu_version", icu::C_charr_icu_version, 0),
-    CHARR_CALL("C_charr_icu_ok", icu::C_charr_icu_ok, 0),
-    CHARR_CALL("C_charr_icu_smoke", icu::C_charr_icu_smoke, 0),
     CHARR_CALL("C_charr_icu_bundled", icu::C_charr_icu_bundled, 0),
     {NULL, NULL, 0}
 };
 
-extern "C" void R_init_charr(DllInfo* dll)
+extern "C" CHARR_R_HELPER void R_init_charr(DllInfo* dll) noexcept
 {
     R_registerRoutines(dll, NULL, call_methods, NULL, NULL);
     R_useDynamicSymbols(dll, (Rboolean)FALSE);

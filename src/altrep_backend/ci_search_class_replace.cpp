@@ -32,331 +32,468 @@
 
 
 #include "ci_stringi.h"
-#include "ci_builder.h"
-#include "ci_utf8.h"
-#include "charclass/pattern_set.h"
-#include "io/logical_input.h"
-#include "ci_string8buf.h"
-#include <deque>
+#include "io/reader_utils.h"
+#include "io/string_view.h"
+#include "io/utf8_output.h"
+#include "../shared/character_class.h"
+#include "../shared/character_class_search.h"
+#include "../shared/entrypoint.h"
+#include "../shared/native_to_utf8.h"
+#include "../shared/protect.h"
+#include "../shared/slice_arena.h"
+#include "../shared/unwind.h"
+#include "../shared/utf8.h"
+
+#include <cstddef>
+#include <exception>
+#include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace charr { namespace altrep_backend {
-using namespace std;
 
+namespace search_class_replace {
 
-/**
- * Replace all occurrences of a character class
- *
- * @param str character vector; strings to search in
- * @param pattern character vector; charclasses to search for
- * @param replacement character vector; strings to replace with
- * @param merge merge consecutive matches into a single one?
- *
- * @return character vector
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-07)
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
- *          make StriException-friendly
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-04-03)
- *          detects invalid UTF-8 byte stream;
- *          merge arg added (replacement of old ci_trim_both/double by BT)
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-04-05)
- *          charclass::PatternSet now relies on UnicodeSet
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-02)
- *          using String8buf::replaceAllAtPos and charclass::PatternSet::locateAll;
- *          no longer vectorized over merge
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 1.0-2 (Marek Gagolewski, 2016-01-30)
- *    Issue #210: Allow NA replacement
- */
-SEXP ci__replace_all_charclass_yes_vectorize_all(SEXP str, SEXP pattern, SEXP replacement, SEXP merge)
+CHARR_NEUTRAL_HELPER R_len_t recycling_length(
+    R_len_t subject_length,
+    R_len_t pattern_length,
+    R_len_t replacement_length,
+    bool& should_warn
+) noexcept
 {
-    PROTECT(str            = ci__prepare_arg_string(str, "str"));
-    PROTECT(pattern        = ci__prepare_arg_string(pattern, "pattern"));
-    PROTECT(replacement    = ci__prepare_arg_string(replacement, "replacement"));
-    bool merge_cur = ci__prepare_arg_logical_1_notNA(merge, "merge");
+    should_warn = false;
+    if (subject_length <= 0 || pattern_length <= 0 ||
+            replacement_length <= 0) {
+        return 0;
+    }
 
-    STRI__ERROR_HANDLER_BEGIN(3)
-    SEXP ret;
-    {
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    R_len_t str_n = ci::checked_r_len(
-        context.size(str), "character vectors"
-    );
-    R_len_t pattern_n = ci::checked_r_len(
-        context.size(pattern), "character vectors"
-    );
-    R_len_t replacement_n = ci::checked_r_len(
-        context.size(replacement), "character vectors"
-    );
-    R_len_t vectorize_length = 0;
-    ci::unwind_protect([&]() -> SEXP {
-        vectorize_length = ci__recycling_rule(
-            STRI__DEFERRED_WARNINGS, 3,
-            str_n, pattern_n, replacement_n
+    R_len_t result = subject_length;
+    if (pattern_length > result)
+        result = pattern_length;
+    if (replacement_length > result)
+        result = replacement_length;
+    should_warn = result % subject_length != 0 ||
+        result % pattern_length != 0 ||
+        result % replacement_length != 0;
+    return result;
+}
+
+
+CHARR_CXX_HELPER void normalize_views(
+    const charport::StrViews& source,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage,
+    std::vector<shared::StringView>& output
+)
+{
+    output.resize(static_cast<std::size_t>(source.size()));
+    for (R_xlen_t i = 0; i < source.size(); ++i) {
+        const shared::StringView value = io::as_shared_view(source[i]);
+        if (value.enc == shared::StringEncoding::bytes)
+            throw StriException(MSG__BYTESENC);
+        output[static_cast<std::size_t>(i)] = shared::normalize_utf8(
+            value, converter, storage
         );
-        return R_NilValue;
-    });
+    }
+}
 
-    charport::charvec::Builder builder(vectorize_length);
-    {
-        io::Utf8Input str_cont(context, str, vectorize_length);
-        io::Utf8Input replacement_cont(
-            context, replacement, vectorize_length
-        );
-        charclass::PatternSet pattern_cont(
-            context, pattern, vectorize_length
-        );
 
-        String8buf buf(0); // @TODO: calculate buf len a priori?
+CHARR_CXX_HELPER void compile_patterns(
+    const std::vector<shared::StringView>& patterns,
+    shared::CharacterClassSet& output
+)
+{
+    const UErrorCode status = output.reset(patterns, false);
+    if (U_FAILURE(status))
+        throw StriException(status);
+}
 
-        for (R_len_t i = pattern_cont.vectorize_init();
-                i != pattern_cont.vectorize_end();
-                i = pattern_cont.vectorize_next(i))
-        {
-            if (str_cont.isNA(i) || pattern_cont.isNA(i)) {
-                builder.set_na(i);
+
+CHARR_CXX_HELPER void replace_vectorized(
+    const std::vector<shared::StringView>& subjects,
+    const std::vector<shared::StringView>& replacements,
+    const shared::CharacterClassSet& patterns,
+    R_len_t output_length,
+    bool merge,
+    std::vector<shared::CharacterClassRange>& ranges,
+    io::OutputBuilder& output
+)
+{
+    output.reset(output_length);
+    const R_len_t subject_length = static_cast<R_len_t>(subjects.size());
+    const R_len_t pattern_length = static_cast<R_len_t>(patterns.size());
+    const R_len_t replacement_length =
+        static_cast<R_len_t>(replacements.size());
+
+    for (R_len_t pattern_offset = 0;
+            pattern_offset < pattern_length; ++pattern_offset) {
+        R_len_t i = pattern_offset;
+        while (i < output_length) {
+            const shared::StringView& subject = subjects[
+                static_cast<std::size_t>(i % subject_length)
+            ];
+            if (subject.is_na() || patterns.is_na(
+                    static_cast<std::size_t>(i)
+                )) {
+                output.set_na(i);
+            }
+            else {
+                const std::size_t matched_bytes =
+                    shared::find_character_class_ranges(
+                        subject,
+                        patterns.get(static_cast<std::size_t>(i)),
+                        merge, ranges
+                    );
+                if (ranges.size() == 0) {
+                    output.set(i, io::as_charport_view(subject));
+                }
+                else {
+                    const shared::StringView& replacement = replacements[
+                        static_cast<std::size_t>(
+                            i % replacement_length
+                        )
+                    ];
+                    if (replacement.is_na()) {
+                        output.set_na(i);
+                    }
+                    else {
+                        const std::size_t output_size =
+                            shared::checked_replacement_size(
+                                subject, matched_bytes, ranges, replacement
+                            );
+                        const bool ascii =
+                            shared::replacement_is_ascii(
+                                subject, ranges, replacement
+                            );
+                        char* destination = output.reserve(
+                            i, output_size,
+                            ascii
+                                ? cetype_ext_t::CE_ASCII
+                                : cetype_ext_t::CE_UTF8
+                        );
+                        shared::write_replacement(
+                            subject, ranges, replacement,
+                            destination, output_size
+                        );
+                    }
+                }
+            }
+
+            if (output_length-i <= pattern_length)
+                break;
+            i += pattern_length;
+        }
+    }
+}
+
+
+CHARR_NEUTRAL_HELPER bool sequential_subject_is_ascii(
+    const shared::StringView& value
+) noexcept
+{
+    if (value.enc == shared::StringEncoding::ascii)
+        return true;
+    if (value.enc != shared::StringEncoding::ascii_or_utf8)
+        return false;
+    return io::is_ascii(
+        value.ptr, static_cast<std::size_t>(value.len)
+    );
+}
+
+
+CHARR_CXX_HELPER void replace_sequential(
+    const std::vector<shared::StringView>& subjects,
+    const std::vector<shared::StringView>& replacements,
+    const shared::CharacterClassSet& patterns,
+    bool merge,
+    std::vector<shared::StringView>& working,
+    std::vector<shared::CharacterClassRange>& ranges,
+    shared::SliceArena& replacement_storage,
+    io::OutputBuilder& output
+)
+{
+    working.resize(subjects.size());
+    for (std::size_t i = 0; i < subjects.size(); ++i)
+        working[i] = subjects[i];
+
+    bool all_missing = false;
+    const std::size_t pattern_length = patterns.size();
+    const std::size_t replacement_length = replacements.size();
+    for (std::size_t pattern_index = 0;
+            pattern_index < pattern_length; ++pattern_index) {
+        if (patterns.is_na(pattern_index)) {
+            all_missing = true;
+            break;
+        }
+
+        const icu::UnicodeSet& pattern = patterns.get(pattern_index);
+        const shared::StringView& replacement = replacements[
+            pattern_index % replacement_length
+        ];
+        for (std::size_t subject_index = 0;
+                subject_index < working.size(); ++subject_index) {
+            const shared::StringView subject = working[subject_index];
+            if (subject.is_na())
+                continue;
+
+            const std::size_t matched_bytes =
+                shared::find_character_class_ranges(
+                    subject, pattern, merge, ranges
+                );
+            if (ranges.size() == 0)
+                continue;
+            if (replacement.is_na()) {
+                working[subject_index] = shared::StringView{
+                    nullptr, shared::missing_string_length,
+                    shared::StringEncoding::missing
+                };
                 continue;
             }
 
-            R_len_t str_cur_n     = str_cont.get(i).length();
-            const char* str_cur_s = str_cont.get(i).data();
-            deque< pair<R_len_t, R_len_t> > occurrences;
-            R_len_t sumbytes = charclass::PatternSet::locateAll(
-                                   occurrences, &pattern_cont.get(i),
-                                   str_cur_s, str_cur_n, merge_cur,
-                                   false /* byte-based indices */
-                               );
-
-            if (occurrences.size() == 0) {
-                ci::builder_set(builder, i, str_cont.get(i)); // no change
-                continue;
-            }
-
-            if (replacement_cont.isNA(i)) {
-                builder.set_na(i);
-                continue;
-            }
-
-            R_len_t replacement_cur_n = replacement_cont.get(i).length();
-            R_len_t buf_need = str_cur_n+
-                (R_len_t)occurrences.size()*replacement_cur_n-sumbytes;
-            buf.resize(buf_need, false/*destroy contents*/);
-
-            R_len_t buf_used = buf.replaceAllAtPos(
-                str_cur_s, str_cur_n,
-                replacement_cont.get(i).data(), replacement_cur_n,
-                occurrences
+            const std::size_t output_size =
+                shared::checked_replacement_size(
+                    subject, matched_bytes, ranges, replacement
+                );
+            const bool ascii = sequential_subject_is_ascii(subject) &&
+                io::is_ascii(
+                    replacement.ptr,
+                    static_cast<std::size_t>(replacement.len)
+                );
+            char* destination = output_size > 0
+                ? replacement_storage.allocate(output_size)
+                : nullptr;
+            shared::write_replacement(
+                subject, ranges, replacement, destination, output_size
             );
-
-#ifndef NDEBUG
-            if (buf_need != buf_used)
-                throw StriException("!NDEBUG: ci__replace_allfirstlast_fixed: (buf_need != buf_used)");
-#endif
-
-            ci::builder_set(
-                builder, i, buf.data(), buf_used,
-                cetype_ext_t::CE_ASCII_OR_UTF8
-            );
+            working[subject_index] = shared::StringView{
+                output_size > 0 ? destination : replacement.ptr,
+                static_cast<R_len_t>(output_size),
+                ascii
+                    ? shared::StringEncoding::ascii
+                    : shared::StringEncoding::utf8
+            };
         }
     }
 
-    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-        return builder.to_sexp();
-    }));
+    output.reset(static_cast<R_len_t>(subjects.size()));
+    for (std::size_t i = 0; i < subjects.size(); ++i) {
+        if (all_missing || working[i].is_na())
+            output.set_na(static_cast<R_len_t>(i));
+        else
+            output.set(
+                static_cast<R_len_t>(i),
+                io::as_charport_view(working[i])
+            );
     }
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
 }
+
+
+CHARR_R_HELPER void require_sequential_lengths(
+    R_len_t pattern_length,
+    R_len_t replacement_length
+) noexcept
+{
+    if (pattern_length < replacement_length || pattern_length <= 0 ||
+            replacement_length <= 0) {
+        Rf_error(MSG__WARN_RECYCLING_RULE2);
+    }
+}
+
+
+CHARR_R_HELPER void emit_recycling_warning(bool should_warn) noexcept
+{
+    if (should_warn)
+        Rf_warning(MSG__WARN_RECYCLING_RULE);
+}
+
+} // namespace search_class_replace
+
+using namespace search_class_replace;
+
+
 /**
  * Replace all occurrences of a character class
  *
  * @param str character vector; strings to search in
- * @param pattern character vector; charclasses to search for
+ * @param pattern character vector; character classes to search for
  * @param replacement character vector; strings to replace with
  * @param merge merge consecutive matches into a single one?
+ * @param vectorize_all apply all patterns sequentially or vectorize them?
  *
  * @return character vector
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-02)
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 1.0-2 (Marek Gagolewski, 2016-01-30)
- *    Issue #210: Allow NA replacement
  */
-SEXP ci__replace_all_charclass_no_vectorize_all(SEXP str, SEXP pattern, SEXP replacement, SEXP merge)
+CHARR_ENTRYPOINT SEXP ci_replace_all_charclass(
+    SEXP str,
+    SEXP pattern,
+    SEXP replacement,
+    SEXP merge,
+    SEXP vectorize_all
+) noexcept
 {
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
+    CHARR_ENTRYPOINT_BEGIN();
 
-    STRI__ERROR_HANDLER_BEGIN(1)
-    SEXP ret;
-    {
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    R_len_t str_n = ci::checked_r_len(
-        context.size(str), "character vectors"
+    const bool vectorize = ci__prepare_arg_logical_1_notNA_r(
+        vectorize_all, "vectorize_all"
+    );
+    str = entry_protections.protect_one(
+        ci__prepare_arg_string_r(str, "str")
+    );
+    const R_len_t subject_length = LENGTH(str);
+    const bool empty_sequential = !vectorize && subject_length <= 0;
+    pattern = entry_protections.protect_one(
+        empty_sequential
+                ? R_NilValue
+                : ci__prepare_arg_string_r(pattern, "pattern")
+    );
+    replacement = entry_protections.protect_one(
+        empty_sequential
+                ? R_NilValue
+                : ci__prepare_arg_string_r(replacement, "replacement")
     );
 
-    if (str_n <= 0) {
-        charport::charvec::Builder builder(0);
-        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-            return builder.to_sexp();
-        }));
-        STRI__UNPROTECT_ALL
-        return ret;
+    const R_len_t pattern_length = empty_sequential
+        ? 0
+        : LENGTH(pattern);
+    const R_len_t replacement_length = empty_sequential
+        ? 0
+        : LENGTH(replacement);
+    R_len_t vectorize_length = subject_length;
+    bool merge_value = false;
+    bool recycling_warning = false;
+    if (vectorize) {
+        merge_value = ci__prepare_arg_logical_1_notNA_r(
+            merge, "merge"
+        );
+        vectorize_length = recycling_length(
+            subject_length, pattern_length, replacement_length,
+            recycling_warning
+        );
+    }
+    else if (!empty_sequential) {
+        require_sequential_lengths(
+            pattern_length, replacement_length
+        );
+        recycling_warning = pattern_length % replacement_length != 0;
+        emit_recycling_warning(recycling_warning);
+        merge_value = ci__prepare_arg_logical_1_notNA_r(
+            merge, "merge"
+        );
     }
 
-    // Deviation from stringi: lazy preparation now runs inside the C++
-    // boundary, so queue its controlled warnings with the operation.
-    STRI__PROTECT(pattern = ci::unwind_protect([&]() -> SEXP {
-        return ci__prepare_arg_string(
-            pattern, "pattern", true, &STRI__DEFERRED_WARNINGS
-        );
-    }));
-    STRI__PROTECT(replacement = ci::unwind_protect([&]() -> SEXP {
-        return ci__prepare_arg_string(
-            replacement, "replacement", true,
-            &STRI__DEFERRED_WARNINGS
-        );
-    }));
-    R_len_t pattern_n = ci::checked_r_len(
-        context.size(pattern), "character vectors"
-    );
-    R_len_t replacement_n = ci::checked_r_len(
-        context.size(replacement), "character vectors"
-    );
-    // Deviation from stringi: signal this controlled validation failure only
-    // after the outer C++ boundary has released operation state.
-    ci::unwind_protect([&]() -> SEXP {
-        if (pattern_n < replacement_n || pattern_n <= 0 || replacement_n <= 0)
-            throw StriException(MSG__WARN_RECYCLING_RULE2);
-        return R_NilValue;
-    });
-    if (pattern_n % replacement_n != 0)
-        context.warn(MSG__WARN_RECYCLING_RULE);
+    try {
+        charport::Reader subject_reader;
+        charport::Reader pattern_reader;
+        charport::Reader replacement_reader;
+        charport::StrViews subject_views;
+        charport::StrViews pattern_views;
+        charport::StrViews replacement_views;
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::NativeToUtf8 replacement_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        shared::SliceArena replacement_storage;
+        shared::SliceArena sequential_replacement_storage;
+        std::vector<shared::StringView> subjects;
+        std::vector<shared::StringView> patterns;
+        std::vector<shared::StringView> replacements;
+        std::vector<shared::StringView> sequential_output;
+        shared::CharacterClassSet character_classes;
+        std::vector<shared::CharacterClassRange> ranges;
+        io::OutputBuilder output(0);
 
-    if (pattern_n == 1) {// this will be much faster:
-        // Deviation from stringi: replay outer preparation diagnostics before
-        // delegation, while no Reader or output owner is active.
-        context.emitWarnings();
-        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-            return ci__replace_all_charclass_yes_vectorize_all(
-                str, pattern, replacement, merge
-            );
-        }));
-        STRI__UNPROTECT_ALL
-        return ret;
-    }
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                if (!empty_sequential) {
+                    if (vectorize_length > 0) {
+                        subject_reader.reset(str);
+                        if (subject_reader.size() != subject_length) {
+                            throw std::runtime_error(
+                                "Reader length changed during character-class replacement"
+                            );
+                        }
+                        subject_views.resize(subject_length);
+                        subject_reader.views(
+                            0, subject_length,
+                            subject_views.ptrs(), subject_views.lengths(),
+                            subject_views.encodings()
+                        );
+                        normalize_views(
+                            subject_views, subject_converter,
+                            subject_storage, subjects
+                        );
 
-    bool merge_cur = false;
-    ci::unwind_protect([&]() -> SEXP {
-        merge_cur = ci__prepare_arg_logical_1_notNA(
-            merge, "merge", &STRI__DEFERRED_WARNINGS
-        );
-        return R_NilValue;
-    });
-    charport::charvec::Builder builder(str_n);
+                        replacement_reader.reset(replacement);
+                        if (replacement_reader.size() !=
+                                replacement_length) {
+                            throw std::runtime_error(
+                                "Reader length changed during character-class replacement"
+                            );
+                        }
+                        replacement_views.resize(replacement_length);
+                        replacement_reader.views(
+                            0, replacement_length,
+                            replacement_views.ptrs(),
+                            replacement_views.lengths(),
+                            replacement_views.encodings()
+                        );
+                        normalize_views(
+                            replacement_views, replacement_converter,
+                            replacement_storage, replacements
+                        );
+                    }
 
-    {
-        io::Utf8Workspace str_cont(context, str, str_n);
-        io::Utf8Input replacement_cont(
-            context, replacement, pattern_n
-        );
-        charclass::PatternSet pattern_cont(
-            context, pattern, pattern_n
-        );
-        bool return_all_na = false;
+                    if (pattern_length > 0) {
+                        pattern_reader.reset(pattern);
+                        if (pattern_reader.size() != pattern_length) {
+                            throw std::runtime_error(
+                                "Reader length changed during character-class replacement"
+                            );
+                        }
+                        pattern_views.resize(pattern_length);
+                        pattern_reader.views(
+                            0, pattern_length,
+                            pattern_views.ptrs(), pattern_views.lengths(),
+                            pattern_views.encodings()
+                        );
+                        normalize_views(
+                            pattern_views, pattern_converter,
+                            pattern_storage, patterns
+                        );
+                    }
+                    compile_patterns(patterns, character_classes);
 
-        String8buf buf(0); // @TODO: calculate buf len a priori?
-
-        for (R_len_t i = 0; i<pattern_n; ++i)
-        {
-            if (pattern_cont.isNA(i)) {
-                return_all_na = true;
-                break;
-            }
-
-            for (R_len_t j = 0; j<str_n; ++j) {
-                if (str_cont.isNA(j)) continue;
-
-                R_len_t str_cur_n     = str_cont.get(j).length();
-                const char* str_cur_s = str_cont.get(j).data();
-                deque< pair<R_len_t, R_len_t> > occurrences;
-                R_len_t sumbytes = charclass::PatternSet::locateAll(
-                                       occurrences, &pattern_cont.get(i),
-                                       str_cur_s, str_cur_n, merge_cur,
-                                       false /* byte-based indices */
-                                   );
-
-                if (occurrences.size() == 0)
-                    continue;
-
-                if (replacement_cont.isNA(i)) {
-                    str_cont.setNA(j);
-                    continue;
+                    if (vectorize || pattern_length == 1) {
+                        replace_vectorized(
+                            subjects, replacements, character_classes,
+                            vectorize_length, merge_value, ranges, output
+                        );
+                    }
+                    else {
+                        replace_sequential(
+                            subjects, replacements, character_classes,
+                            merge_value, sequential_output, ranges,
+                            sequential_replacement_storage, output
+                        );
+                    }
+                }
+                else {
+                    output.reset(0);
                 }
 
-                R_len_t replacement_cur_n = replacement_cont.get(i).length();
-                R_len_t buf_need = str_cur_n+
-                    (R_len_t)occurrences.size()*replacement_cur_n-sumbytes;
-                buf.resize(buf_need, false/*destroy contents*/);
-
-                str_cont.replaceAllAtPos(
-                    j, buf_need, replacement_cont.get(i).data(),
-                    replacement_cur_n, occurrences
+                result = entry_protections.reprotect_one(
+                    output.to_sexp(), result_index
                 );
+                CHARR_UNWIND_RETURN();
             }
-        }
-
-        for (R_len_t j=0; j<str_n; ++j) {
-            if (return_all_na)
-                builder.set_na(j);
-            else
-                ci::builder_set(builder, j, str_cont.getNAble(j));
-        }
+        );
     }
-
-    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-        return builder.to_sexp();
-    }));
-    }
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
+    CHARR_ENTRYPOINT_END(
+        if (vectorize)
+            emit_recycling_warning(recycling_warning);
+    );
 }
 
-
-/**
- * Replace all occurrences of a character class
- *
- * @param str character vector; strings to search in
- * @param pattern character vector; charclasses to search for
- * @param replacement character vector; strings to replace with
- * @param merge merge consecutive matches into a single one?
- * @param vectorize_all single logical value
- *
- * @return character vector
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-02)
- *          added `vectorize_all` arg
- */
-SEXP ci_replace_all_charclass(SEXP str, SEXP pattern, SEXP replacement, SEXP merge, SEXP vectorize_all)
-{
-    if (ci__prepare_arg_logical_1_notNA(vectorize_all, "vectorize_all"))
-        return ci__replace_all_charclass_yes_vectorize_all(str, pattern, replacement, merge);
-    else
-        return ci__replace_all_charclass_no_vectorize_all(str, pattern, replacement, merge);
-}
 
 } } // namespace charr::altrep_backend

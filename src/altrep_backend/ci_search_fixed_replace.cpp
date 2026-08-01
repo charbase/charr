@@ -32,54 +32,61 @@
 
 
 #include "ci_stringi.h"
-#include "ci_builder.h"
-#include "ci_utf8.h"
-#include "fixed/pattern_set.h"
-#include "ci_string8buf.h"
-#include "altrep_backend/io/utf8_output.h"
-//#include "ci_interval.h"
-#include <cstdint>
+#include "io/reader_utils.h"
+#include "fixed/options.h"
+#include "io/string_view.h"
+#include "io/utf8_output.h"
+#include "../shared/entrypoint.h"
+#include "../shared/fixed_search.h"
+#include "../shared/native_to_utf8.h"
+#include "../shared/protect.h"
+#include "../shared/replacement.h"
+#include "../shared/slice_arena.h"
+#include "../shared/unwind.h"
+#include "../shared/utf8.h"
+
+#include <charport.h>
+
+#include <cstddef>
 #include <cstring>
-#include <deque>
-#include <memory>
+#include <exception>
+#include <limits>
+#include <stdexcept>
+#include <vector>
 
 namespace charr { namespace altrep_backend {
-//#include <queue>
-//#include <algorithm>
-using namespace std;
-
 
 namespace search_fixed_replace {
 
-struct CiDirectView {
+struct DirectView {
     const char* data;
     R_len_t length;
-    bool is_na;
+    bool missing;
     cetype_ext_t encoding;
 };
 
 
-bool ci__direct_view(
-    const charport::StrView& value, CiDirectView& output
-)
+CHARR_NEUTRAL_HELPER bool direct_view(
+    const charport::StrView& value,
+    DirectView& output
+) noexcept
 {
     if (value.is_na()) {
-        output = {NULL, NA_INTEGER, true, cetype_ext_t::CE_NA};
+        output = DirectView{
+            nullptr, NA_INTEGER, true, cetype_ext_t::CE_NA
+        };
         return true;
     }
-    if (value.enc != cetype_ext_t::CE_ASCII &&
-            value.enc != cetype_ext_t::CE_UTF8 &&
-            value.enc != cetype_ext_t::CE_ASCII_OR_UTF8) {
+    if (value.len < 0 || (value.ptr == nullptr && value.len != 0) ||
+            (value.enc != cetype_ext_t::CE_ASCII &&
+             value.enc != cetype_ext_t::CE_UTF8 &&
+             value.enc != cetype_ext_t::CE_ASCII_OR_UTF8)) {
         return false;
     }
 
-    output.data = value.ptr;
-    output.length = value.len;
-    output.is_na = false;
-    output.encoding = value.enc;
-    const bool has_bom = value.enc != cetype_ext_t::CE_ASCII &&
-        STRI__ENC_HAS_BOM_UTF8(output.data, output.length);
-    if (has_bom) {
+    output = DirectView{value.ptr, value.len, false, value.enc};
+    if (value.enc != cetype_ext_t::CE_ASCII &&
+            STRI__ENC_HAS_BOM_UTF8(output.data, output.length)) {
         output.data += 3;
         output.length -= 3;
     }
@@ -87,336 +94,561 @@ bool ci__direct_view(
 }
 
 
-R_len_t ci__find_byte_first(
-    const char* data, R_len_t length, unsigned char pattern
-)
+CHARR_NEUTRAL_HELPER bool span_is_ascii(
+    const char* data,
+    R_len_t length
+) noexcept
 {
-    const void* found = std::memchr(
-        data, pattern, static_cast<size_t>(length)
-    );
-    return found == NULL
-        ? shared::ByteSearchMatcher::not_found
-        : static_cast<R_len_t>(static_cast<const char*>(found)-data);
-}
-
-
-R_len_t ci__find_byte_last(
-    const char* data, R_len_t length, unsigned char pattern
-)
-{
-    for (R_len_t i = length; i > 0; --i) {
-        if (static_cast<unsigned char>(data[i-1]) == pattern)
-            return i-1;
-    }
-    return shared::ByteSearchMatcher::not_found;
-}
-
-
-size_t ci__replacement_size(
-    R_len_t source_length, R_len_t replacement_length,
-    size_t count, size_t matched_bytes
-)
-{
-    const size_t source_size = static_cast<size_t>(source_length);
-    if (matched_bytes > source_size)
-        throw std::length_error(MSG__CHARSXP_2147483647);
-    const size_t unmatched = source_size-matched_bytes;
-    const size_t maximum = static_cast<size_t>(R_LEN_T_MAX);
-    if (replacement_length > 0 &&
-            count > (maximum-unmatched) /
-                static_cast<size_t>(replacement_length)) {
-        throw std::length_error(MSG__CHARSXP_2147483647);
-    }
-    return unmatched+count*static_cast<size_t>(replacement_length);
-}
-
-
-struct CiAllByteScan {
-    size_t count;
-    bool output_is_ascii;
-};
-
-
-CiAllByteScan ci__scan_all_byte_replacements(
-    const CiDirectView& source, unsigned char pattern,
-    bool replacement_is_ascii
-)
-{
-    CiAllByteScan result{0, replacement_is_ascii};
-    for (R_len_t i = 0; i < source.length; ++i) {
-        const unsigned char value = static_cast<unsigned char>(
-            source.data[i]
-        );
-        if (value == pattern)
-            ++result.count;
-        else if (value > 0x7fU)
-            result.output_is_ascii = false;
-    }
-    return result;
-}
-
-
-bool ci__one_byte_output_is_ascii(
-    const CiDirectView& source, R_len_t match,
-    bool replacement_is_ascii
-)
-{
-    if (!replacement_is_ascii)
-        return false;
-    for (R_len_t i = 0; i < source.length; ++i) {
-        if (i != match &&
-                static_cast<unsigned char>(source.data[i]) > 0x7fU) {
+    for (R_len_t i = 0; i < length; ++i) {
+        if (static_cast<unsigned char>(data[i]) > 0x7fU)
             return false;
-        }
     }
     return true;
 }
 
 
-void ci__write_one_byte_replacement(
-    char* output, const CiDirectView& source, R_len_t match,
-    const CiDirectView& replacement
+CHARR_CXX_HELPER std::size_t checked_direct_size(
+    R_len_t subject_length,
+    R_len_t replacement_length,
+    std::size_t count,
+    std::size_t matched_bytes
 )
 {
-    if (match > 0)
-        std::memcpy(output, source.data, static_cast<size_t>(match));
+    const std::size_t subject_size =
+        static_cast<std::size_t>(subject_length);
+    if (matched_bytes > subject_size)
+        throw std::length_error(MSG__CHARSXP_2147483647);
+
+    const std::size_t unmatched = subject_size-matched_bytes;
+    const std::size_t replacement_size =
+        static_cast<std::size_t>(replacement_length);
+    const std::size_t maximum = static_cast<std::size_t>(R_LEN_T_MAX);
+    if (replacement_size > 0 && count >
+            (maximum-unmatched)/replacement_size) {
+        throw std::length_error(MSG__CHARSXP_2147483647);
+    }
+    return unmatched+count*replacement_size;
+}
+
+
+CHARR_NEUTRAL_HELPER R_len_t find_first_byte(
+    const DirectView& subject,
+    unsigned char pattern
+) noexcept
+{
+    const void* found = std::memchr(
+        subject.data, pattern,
+        static_cast<std::size_t>(subject.length)
+    );
+    return found == nullptr
+        ? -1
+        : static_cast<R_len_t>(
+            static_cast<const char*>(found)-subject.data
+        );
+}
+
+
+CHARR_NEUTRAL_HELPER std::size_t scan_all_bytes(
+    const DirectView& subject,
+    unsigned char pattern,
+    bool& output_ascii
+) noexcept
+{
+    std::size_t count = 0;
+    for (R_len_t i = 0; i < subject.length; ++i) {
+        const unsigned char value =
+            static_cast<unsigned char>(subject.data[i]);
+        if (value == pattern)
+            ++count;
+        else if (value > 0x7fU)
+            output_ascii = false;
+    }
+    return count;
+}
+
+
+CHARR_NEUTRAL_HELPER void write_first_byte(
+    char* output,
+    const DirectView& subject,
+    R_len_t match,
+    const DirectView& replacement
+) noexcept
+{
+    if (match > 0) {
+        std::memcpy(
+            output, subject.data, static_cast<std::size_t>(match)
+        );
+    }
     if (replacement.length > 0) {
         std::memcpy(
             output+match, replacement.data,
-            static_cast<size_t>(replacement.length)
+            static_cast<std::size_t>(replacement.length)
         );
     }
-    const R_len_t suffix = source.length-match-1;
+    const R_len_t suffix = subject.length-match-1;
     if (suffix > 0) {
         std::memcpy(
-            output+match+replacement.length, source.data+match+1,
-            static_cast<size_t>(suffix)
+            output+match+replacement.length, subject.data+match+1,
+            static_cast<std::size_t>(suffix)
         );
     }
 }
 
 
-void ci__write_all_byte_replacements(
-    char* output, const CiDirectView& source, unsigned char pattern,
-    const CiDirectView& replacement
-)
+CHARR_NEUTRAL_HELPER void write_all_bytes(
+    char* output,
+    const DirectView& subject,
+    unsigned char pattern,
+    const DirectView& replacement
+) noexcept
 {
     if (replacement.length == 1) {
-        if (source.length > 0) {
+        if (subject.length > 0) {
             std::memcpy(
-                output, source.data, static_cast<size_t>(source.length)
+                output, subject.data,
+                static_cast<std::size_t>(subject.length)
             );
         }
-        for (R_len_t i = 0; i < source.length; ++i) {
+        for (R_len_t i = 0; i < subject.length; ++i) {
             if (static_cast<unsigned char>(output[i]) == pattern)
                 output[i] = replacement.data[0];
         }
         return;
     }
 
-    size_t used = 0;
+    std::size_t used = 0;
     R_len_t previous = 0;
-    for (R_len_t i = 0; i < source.length; ++i) {
-        if (static_cast<unsigned char>(source.data[i]) != pattern)
+    for (R_len_t i = 0; i < subject.length; ++i) {
+        if (static_cast<unsigned char>(subject.data[i]) != pattern)
             continue;
-        const size_t prefix = static_cast<size_t>(i-previous);
+
+        const std::size_t prefix =
+            static_cast<std::size_t>(i-previous);
         if (prefix > 0) {
-            std::memcpy(output+used, source.data+previous, prefix);
+            std::memcpy(output+used, subject.data+previous, prefix);
             used += prefix;
         }
         if (replacement.length > 0) {
-            std::memcpy(
-                output+used, replacement.data,
-                static_cast<size_t>(replacement.length)
-            );
-            used += static_cast<size_t>(replacement.length);
+            const std::size_t replacement_size =
+                static_cast<std::size_t>(replacement.length);
+            std::memcpy(output+used, replacement.data, replacement_size);
+            used += replacement_size;
         }
         previous = i+1;
     }
-    const size_t suffix = static_cast<size_t>(source.length-previous);
+
+    const std::size_t suffix =
+        static_cast<std::size_t>(subject.length-previous);
     if (suffix > 0)
-        std::memcpy(output+used, source.data+previous, suffix);
+        std::memcpy(output+used, subject.data+previous, suffix);
 }
 
 
-struct CiReplacementLayout {
-    size_t size;
-    bool is_ascii;
-};
-
-
-CiReplacementLayout ci__replacement_layout(
-    const char* source, R_len_t source_length,
-    const io::Utf8Record& replacement,
-    const deque<pair<R_len_t, R_len_t> >& occurrences,
-    size_t matched_bytes
-)
-{
-    CiReplacementLayout layout{
-        ci__replacement_size(
-            source_length, replacement.length(),
-            occurrences.size(), matched_bytes
-        ),
-        replacement.isASCII()
-    };
-    if (!layout.is_ascii)
-        return layout;
-
-    R_len_t previous = 0;
-    for (const pair<R_len_t, R_len_t>& occurrence : occurrences) {
-        if (!ci::is_ascii(
-                source+previous,
-                static_cast<size_t>(occurrence.first-previous))) {
-            layout.is_ascii = false;
-            return layout;
-        }
-        previous = occurrence.second;
-    }
-    layout.is_ascii = ci::is_ascii(
-        source+previous,
-        static_cast<size_t>(source_length-previous)
-    );
-    return layout;
-}
-
-
-void ci__write_replacements(
-    char* output, const char* source, R_len_t source_length,
-    const io::Utf8Record& replacement,
-    const deque<pair<R_len_t, R_len_t> >& occurrences
-)
-{
-    size_t used = 0;
-    R_len_t previous = 0;
-    for (const pair<R_len_t, R_len_t>& occurrence : occurrences) {
-        const size_t prefix = static_cast<size_t>(
-            occurrence.first-previous
-        );
-        if (prefix > 0) {
-            std::memcpy(output+used, source+previous, prefix);
-            used += prefix;
-        }
-        if (replacement.length() > 0) {
-            std::memcpy(
-                output+used, replacement.data(),
-                static_cast<size_t>(replacement.length())
-            );
-            used += static_cast<size_t>(replacement.length());
-        }
-        previous = occurrence.second;
-    }
-    const size_t suffix = static_cast<size_t>(source_length-previous);
-    if (suffix > 0)
-        std::memcpy(output+used, source+previous, suffix);
-}
-
-
-bool ci__replace_scalar_byte_direct(
-    const charport::StrViews& strings,
+CHARR_CXX_HELPER bool replace_scalar_byte_direct(
+    const charport::StrViews& subjects,
     const charport::StrView& pattern,
     const charport::StrView& replacement,
-    R_len_t vectorize_length, uint32_t pattern_flags, int type,
-    charr::altrep_backend::io::OutputBuilder& builder,
+    R_len_t output_length,
+    shared::FixedSearchOptions options,
+    bool replace_all,
+    io::OutputBuilder& output,
     R_len_t& general_start
 )
 {
-    if (vectorize_length == 0)
+    if (output_length <= 0)
         return true;
-    if (pattern_flags != 0 || strings.size() != vectorize_length)
-        return false;
-
-    CiDirectView pattern_value;
-    CiDirectView replacement_value;
-    if (!ci__direct_view(pattern, pattern_value) ||
-            pattern_value.is_na || pattern_value.length != 1 ||
-            !ci__direct_view(replacement, replacement_value)) {
+    if (options.case_insensitive || options.overlap ||
+            subjects.size() != output_length) {
         return false;
     }
 
-    const unsigned char pattern_byte = static_cast<unsigned char>(
-        pattern_value.data[0]
-    );
-    const bool replacement_is_ascii = !replacement_value.is_na &&
-        ci::is_ascii(
-            replacement_value.data,
-            static_cast<size_t>(replacement_value.length)
+    DirectView pattern_value;
+    DirectView replacement_value;
+    if (!direct_view(pattern, pattern_value) || pattern_value.missing ||
+            pattern_value.length != 1 ||
+            !direct_view(replacement, replacement_value)) {
+        return false;
+    }
+
+    const unsigned char pattern_byte =
+        static_cast<unsigned char>(pattern_value.data[0]);
+    const bool replacement_ascii = !replacement_value.missing &&
+        span_is_ascii(
+            replacement_value.data, replacement_value.length
         );
 
-    for (R_len_t i = 0; i < vectorize_length; ++i) {
-        CiDirectView source;
-        if (!ci__direct_view(strings[i], source)) {
+    for (R_len_t i = 0; i < output_length; ++i) {
+        DirectView subject;
+        if (!direct_view(subjects[i], subject)) {
             general_start = i;
             return false;
         }
-        if (source.is_na) {
-            builder.set_na(i);
+        if (subject.missing) {
+            output.set_na(i);
+            continue;
+        }
+        if (subject.length <= 0) {
+            output.set(
+                i, subject.data, 0,
+                subject.encoding
+            );
             continue;
         }
 
-        R_len_t match = shared::ByteSearchMatcher::not_found;
-        size_t count = 0;
-        bool output_is_ascii = false;
-        if (type == 0) {
-            const CiAllByteScan scan = ci__scan_all_byte_replacements(
-                source, pattern_byte, replacement_is_ascii
-            );
-            count = scan.count;
-            output_is_ascii = scan.output_is_ascii;
-            if (count > 0)
-                match = 0;
-        }
-        else if (type > 0) {
-            match = ci__find_byte_first(
-                source.data, source.length, pattern_byte
-            );
-        }
-        else {
-            match = ci__find_byte_last(
-                source.data, source.length, pattern_byte
-            );
-        }
+        if (!replace_all) {
+            const R_len_t match = find_first_byte(subject, pattern_byte);
+            if (match < 0) {
+                output.set(
+                    i, subject.data,
+                    static_cast<std::size_t>(subject.length),
+                    subject.encoding
+                );
+                continue;
+            }
+            if (replacement_value.missing) {
+                output.set_na(i);
+                continue;
+            }
 
-        if (match == shared::ByteSearchMatcher::not_found) {
-            builder.set(
-                i, source.data, static_cast<size_t>(source.length),
-                source.encoding
+            const bool ascii = replacement_ascii &&
+                span_is_ascii(subject.data, match) &&
+                span_is_ascii(
+                    subject.data+match+1,
+                    subject.length-match-1
+                );
+            const std::size_t size = checked_direct_size(
+                subject.length, replacement_value.length, 1, 1
+            );
+            char* destination = output.reserve(
+                i, size,
+                ascii ? cetype_ext_t::CE_ASCII : cetype_ext_t::CE_UTF8
+            );
+            write_first_byte(
+                destination, subject, match, replacement_value
             );
             continue;
         }
-        if (replacement_value.is_na) {
-            builder.set_na(i);
-            continue;
-        }
 
-        if (type != 0) {
-            output_is_ascii = ci__one_byte_output_is_ascii(
-                source, match, replacement_is_ascii
-            );
-        }
-        const size_t output_length = ci__replacement_size(
-            source.length, replacement_value.length,
-            type == 0 ? count : 1,
-            type == 0 ? count : 1
+        bool ascii = replacement_ascii;
+        const std::size_t count = scan_all_bytes(
+            subject, pattern_byte, ascii
         );
-        char* output = builder.reserve(
-            i, output_length,
-            output_is_ascii
-                ? cetype_ext_t::CE_ASCII
-                : cetype_ext_t::CE_UTF8
+        if (count == 0) {
+            output.set(
+                i, subject.data,
+                static_cast<std::size_t>(subject.length),
+                subject.encoding
+            );
+            continue;
+        }
+        if (replacement_value.missing) {
+            output.set_na(i);
+            continue;
+        }
+
+        const std::size_t size = checked_direct_size(
+            subject.length, replacement_value.length, count, count
         );
-        if (type == 0) {
-            ci__write_all_byte_replacements(
-                output, source, pattern_byte, replacement_value
+        char* destination = output.reserve(
+            i, size,
+            ascii ? cetype_ext_t::CE_ASCII : cetype_ext_t::CE_UTF8
+        );
+        write_all_bytes(
+            destination, subject, pattern_byte, replacement_value
+        );
+    }
+    return true;
+}
+
+
+CHARR_NEUTRAL_HELPER R_len_t recycling_length(
+    R_len_t subject_length,
+    R_len_t pattern_length,
+    R_len_t replacement_length,
+    bool& warning
+) noexcept
+{
+    warning = false;
+    if (subject_length <= 0 || pattern_length <= 0 ||
+            replacement_length <= 0) {
+        return 0;
+    }
+
+    R_len_t result = subject_length;
+    if (pattern_length > result)
+        result = pattern_length;
+    if (replacement_length > result)
+        result = replacement_length;
+    warning = result % subject_length != 0 ||
+        result % pattern_length != 0 ||
+        result % replacement_length != 0;
+    return result;
+}
+
+
+CHARR_CXX_HELPER void normalize_views(
+    const charport::StrViews& source,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage,
+    std::vector<shared::StringView>& output
+)
+{
+    output.resize(static_cast<std::size_t>(source.size()));
+    for (R_xlen_t i = 0; i < source.size(); ++i) {
+        output[static_cast<std::size_t>(i)] = shared::normalize_utf8(
+            io::as_shared_view(source[i]), converter, storage
+        );
+    }
+}
+
+
+CHARR_NEUTRAL_HELPER int count_empty_patterns(
+    const std::vector<shared::StringView>& patterns
+) noexcept
+{
+    int count = 0;
+    for (std::size_t i = 0; i < patterns.size(); ++i) {
+        if (!patterns[i].is_na() && patterns[i].len <= 0)
+            ++count;
+    }
+    return count;
+}
+
+
+CHARR_CXX_HELPER std::size_t matched_byte_count(
+    const std::vector<shared::FixedRange>& ranges
+)
+{
+    std::size_t result = 0;
+    for (std::size_t i = 0; i < ranges.size(); ++i) {
+        const std::size_t width = static_cast<std::size_t>(
+            ranges[i].end-ranges[i].start
+        );
+        if (width > std::numeric_limits<std::size_t>::max()-result)
+            throw std::length_error("fixed matched byte count overflow");
+        result += width;
+    }
+    return result;
+}
+
+
+CHARR_CXX_HELPER void replace_one(
+    const shared::StringView& subject,
+    const shared::StringView& pattern,
+    const shared::StringView& replacement,
+    shared::FixedSearchOptions options,
+    bool replace_all,
+    shared::FixedMatcher& matcher,
+    std::vector<shared::FixedRange>& ranges,
+    io::OutputBuilder& output,
+    R_len_t output_index
+)
+{
+    if (subject.is_na() || pattern.is_na() || pattern.len <= 0) {
+        output.set_na(output_index);
+        return;
+    }
+    if (subject.len <= 0) {
+        output.set(output_index, io::as_charport_view(subject));
+        return;
+    }
+
+    ranges.clear();
+    if (replace_all) {
+        matcher.find_all(subject, pattern, options, ranges);
+    }
+    else {
+        shared::FixedRange range;
+        if (matcher.find_first(subject, pattern, options, range))
+            ranges.push_back(range);
+    }
+
+    if (ranges.size() == 0) {
+        output.set(output_index, io::as_charport_view(subject));
+        return;
+    }
+    if (replacement.is_na()) {
+        output.set_na(output_index);
+        return;
+    }
+
+    const std::size_t matched_bytes = matched_byte_count(ranges);
+    const std::size_t size = shared::checked_replacement_size(
+        subject, matched_bytes, ranges, replacement
+    );
+    const bool ascii = shared::replacement_is_ascii(
+        subject, ranges, replacement
+    );
+    char* destination = output.reserve(
+        output_index, size,
+        ascii ? cetype_ext_t::CE_ASCII : cetype_ext_t::CE_UTF8
+    );
+    shared::write_replacement(
+        subject, ranges, replacement, destination, size
+    );
+}
+
+
+CHARR_CXX_HELPER void replace_vectorized(
+    const std::vector<shared::StringView>& subjects,
+    const std::vector<shared::StringView>& patterns,
+    const std::vector<shared::StringView>& replacements,
+    R_len_t output_length,
+    R_len_t general_start,
+    shared::FixedSearchOptions options,
+    bool replace_all,
+    shared::FixedMatcher& matcher,
+    std::vector<shared::FixedRange>& ranges,
+    io::OutputBuilder& output
+)
+{
+    const R_len_t subject_length =
+        static_cast<R_len_t>(subjects.size());
+    const R_len_t pattern_length =
+        static_cast<R_len_t>(patterns.size());
+    const R_len_t replacement_length =
+        static_cast<R_len_t>(replacements.size());
+
+    if (general_start > 0) {
+        if (pattern_length != 1 || replacement_length != 1)
+            throw std::logic_error("fixed replacement direct prefix mismatch");
+        for (R_len_t i = general_start; i < output_length; ++i) {
+            replace_one(
+                subjects[static_cast<std::size_t>(i)], patterns[0],
+                replacements[0], options, replace_all, matcher, ranges,
+                output, i
             );
         }
-        else {
-            ci__write_one_byte_replacement(
-                output, source, match, replacement_value
+        return;
+    }
+
+    for (R_len_t lane = 0; lane < pattern_length; ++lane) {
+        R_len_t i = lane;
+        while (i < output_length) {
+            replace_one(
+                subjects[static_cast<std::size_t>(i % subject_length)],
+                patterns[static_cast<std::size_t>(lane)],
+                replacements[
+                    static_cast<std::size_t>(i % replacement_length)
+                ],
+                options, replace_all, matcher, ranges, output, i
             );
+            if (output_length-i <= pattern_length)
+                break;
+            i += pattern_length;
+        }
+    }
+}
+
+
+CHARR_CXX_HELPER void replace_sequential(
+    const std::vector<shared::StringView>& subjects,
+    const std::vector<shared::StringView>& patterns,
+    const std::vector<shared::StringView>& replacements,
+    shared::FixedSearchOptions options,
+    std::vector<shared::StringView>& working,
+    shared::FixedMatcher& matcher,
+    std::vector<shared::FixedRange>& ranges,
+    shared::SliceArena& replacement_storage,
+    io::OutputBuilder& output,
+    int& additional_empty_warnings
+)
+{
+    working.resize(subjects.size());
+    for (std::size_t i = 0; i < subjects.size(); ++i)
+        working[i] = subjects[i];
+
+    bool all_missing = false;
+    for (std::size_t pattern_index = 0;
+            pattern_index < patterns.size(); ++pattern_index) {
+        const shared::StringView& pattern = patterns[pattern_index];
+        if (pattern.is_na()) {
+            all_missing = true;
+            break;
+        }
+        if (pattern.len <= 0) {
+            ++additional_empty_warnings;
+            all_missing = true;
+            break;
+        }
+
+        const shared::StringView& replacement = replacements[
+            pattern_index % replacements.size()
+        ];
+        for (std::size_t subject_index = 0;
+                subject_index < working.size(); ++subject_index) {
+            const shared::StringView subject = working[subject_index];
+            if (subject.is_na() || subject.len <= 0)
+                continue;
+
+            matcher.find_all(subject, pattern, options, ranges);
+            if (ranges.size() == 0)
+                continue;
+            if (replacement.is_na()) {
+                working[subject_index] = shared::StringView{
+                    nullptr, shared::missing_string_length,
+                    shared::StringEncoding::missing
+                };
+                continue;
+            }
+
+            const std::size_t matched_bytes = matched_byte_count(ranges);
+            const std::size_t size = shared::checked_replacement_size(
+                subject, matched_bytes, ranges, replacement
+            );
+            const bool ascii = shared::replacement_is_ascii(
+                subject, ranges, replacement
+            );
+            char* destination = size > 0
+                ? replacement_storage.allocate(size)
+                : nullptr;
+            shared::write_replacement(
+                subject, ranges, replacement, destination, size
+            );
+            working[subject_index] = shared::StringView{
+                size > 0 ? destination : replacement.ptr,
+                static_cast<R_len_t>(size),
+                ascii
+                    ? shared::StringEncoding::ascii
+                    : shared::StringEncoding::utf8
+            };
         }
     }
 
-    return true;
+    output.reset(static_cast<R_len_t>(subjects.size()));
+    for (std::size_t i = 0; i < working.size(); ++i) {
+        if (all_missing || working[i].is_na())
+            output.set_na(static_cast<R_len_t>(i));
+        else
+            output.set(
+                static_cast<R_len_t>(i),
+                io::as_charport_view(working[i])
+            );
+    }
+}
+
+
+CHARR_R_HELPER void require_sequential_lengths(
+    R_len_t pattern_length,
+    R_len_t replacement_length
+) noexcept
+{
+    if (pattern_length < replacement_length || pattern_length <= 0 ||
+            replacement_length <= 0) {
+        Rf_error(MSG__WARN_RECYCLING_RULE2);
+    }
+}
+
+
+CHARR_R_HELPER void emit_warnings(
+    bool recycling_warning,
+    int empty_pattern_warnings
+) noexcept
+{
+    if (recycling_warning)
+        Rf_warning(MSG__WARN_RECYCLING_RULE);
+    for (int i = 0; i < empty_pattern_warnings; ++i)
+        Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
 }
 
 } // namespace search_fixed_replace
@@ -424,661 +656,315 @@ bool ci__replace_scalar_byte_direct(
 using namespace search_fixed_replace;
 
 
-/**
- * Replace all/first/last occurrences of a fixed pattern
- *
- * @param str character vector
- * @param pattern character vector
- * @param replacement character vector
- * @return character vector
- *
- * @version 0.1-?? (Bartek Tartanus)
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-07-10)
- *          BUGFIX: wrong behavior on empty str
- *
- * @version 0.2-3 (Marek Gagolewski, 2014-05-08)
- *          ci_replace_fixed now uses byte search only
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-02)
- *          using String8buf::replaceAllAtPos, slightly faster
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-12-07)
- *    FR #110, #23: opts_fixed arg added
- *
- * @version 1.0-2 (Marek Gagolewski, 2016-01-30)
- *    Issue #210: Allow NA replacement
- */
-SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, SEXP opts_fixed, int type)
+/** Replace the first occurrence of a fixed pattern. */
+CHARR_ENTRYPOINT SEXP ci_replace_first_fixed(
+    SEXP str,
+    SEXP pattern,
+    SEXP replacement,
+    SEXP opts_fixed
+) noexcept
 {
-    uint32_t pattern_flags = fixed::PatternSet::getByteSearchFlags(opts_fixed);
-    PROTECT(str          = ci__prepare_arg_string(str, "str"));
-    PROTECT(pattern      = ci__prepare_arg_string(pattern, "pattern"));
-    PROTECT(replacement  = ci__prepare_arg_string(replacement, "replacement"));
+    CHARR_ENTRYPOINT_BEGIN();
 
-    STRI__ERROR_HANDLER_BEGIN(3)
-    SEXP ret;
-    {
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    R_len_t str_n = ci::checked_r_len(
-        context.size(str), "character vectors"
+    const shared::FixedSearchOptions options =
+        fixed::prepare_options(opts_fixed, false);
+    str = entry_protections.protect_one(
+        ci__prepare_arg_string_r(str, "str")
     );
-    R_len_t pattern_n = ci::checked_r_len(
-        context.size(pattern), "character vectors"
+    pattern = entry_protections.protect_one(
+        ci__prepare_arg_string_r(pattern, "pattern")
     );
-    R_len_t replacement_n = ci::checked_r_len(
-        context.size(replacement), "character vectors"
-    );
-    R_len_t vectorize_length = 0;
-    ci::unwind_protect([&]() -> SEXP {
-        vectorize_length = ci__recycling_rule(
-            STRI__DEFERRED_WARNINGS, 3,
-            str_n, pattern_n, replacement_n
-        );
-        return R_NilValue;
-    });
-
-    charr::altrep_backend::io::OutputBuilder builder(vectorize_length);
-    bool direct = vectorize_length == 0;
-    R_len_t general_start = 0;
-    std::shared_ptr<ci::ReaderBorrow> str_borrow;
-    std::shared_ptr<ci::ReaderBorrow> pattern_borrow;
-    std::shared_ptr<ci::ReaderBorrow> replacement_borrow;
-    if (!direct && pattern_flags == 0 && pattern_n == 1 &&
-            replacement_n == 1) {
-        str_borrow = context.acquire(str);
-        pattern_borrow = context.acquire(pattern);
-        replacement_borrow = context.acquire(replacement);
-        direct = ci__replace_scalar_byte_direct(
-            str_borrow->views(), pattern_borrow->views()[0],
-            replacement_borrow->views()[0], vectorize_length,
-            pattern_flags, type, builder, general_start
-        );
-    }
-
-    if (!direct) {
-        {
-        io::Utf8Input str_cont(context, str, vectorize_length);
-        io::Utf8Input replacement_cont(
-            context, replacement, vectorize_length
-        );
-        fixed::PatternSet pattern_cont(
-            context, pattern, vectorize_length, pattern_flags
-        );
-
-        for (R_len_t i = general_start > 0
-                    ? general_start
-                    : pattern_cont.vectorize_init();
-                i != pattern_cont.vectorize_end();
-                i = pattern_cont.vectorize_next(i))
-        {
-            STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-                    builder.set_na(i);,
-                    builder.set(
-                        i, "", 0, cetype_ext_t::CE_ASCII
-                    );)
-
-            shared::ByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
-            matcher->reset(str_cont.get(i).data(), str_cont.get(i).length());
-            R_len_t start;
-            if (type >= 0) { // first or all
-                start = matcher->find_first();
-            } else {
-                start = matcher->find_last();
-            }
-
-            if (start == shared::ByteSearchMatcher::not_found) {
-                const io::Utf8Record& source = str_cont.get(i);
-                builder.set(
-                    i, source.data(), source.length(),
-                    source.isASCII()
-                        ? cetype_ext_t::CE_ASCII
-                        : cetype_ext_t::CE_UTF8
-                );
-                continue;
-            }
-
-            if (replacement_cont.isNA(i)) {
-                builder.set_na(i);
-                continue;
-            }
-
-            R_len_t len = matcher->matched_length();
-            size_t matched_bytes = static_cast<size_t>(len);
-            deque< pair<R_len_t, R_len_t> > occurrences;
-            occurrences.push_back(pair<R_len_t, R_len_t>(start, start+len));
-
-            if (type == 0) {
-                while (shared::ByteSearchMatcher::not_found != matcher->find_next()) { // all
-                    start = matcher->matched_start();
-                    len = matcher->matched_length();
-                    occurrences.push_back(pair<R_len_t, R_len_t>(start, start+len));
-                    matched_bytes += static_cast<size_t>(len);
-                }
-            }
-
-            const io::Utf8Record& source = str_cont.get(i);
-            const io::Utf8Record& replacement_current = replacement_cont.get(i);
-            const CiReplacementLayout layout = ci__replacement_layout(
-                source.data(), source.length(), replacement_current,
-                occurrences, matched_bytes
-            );
-            char* output = builder.reserve(
-                i, layout.size,
-                layout.is_ascii
-                    ? cetype_ext_t::CE_ASCII
-                    : cetype_ext_t::CE_UTF8
-            );
-            ci__write_replacements(
-                output, source.data(), source.length(),
-                replacement_current, occurrences
-            );
-        }
-        }
-    }
-
-    replacement_borrow.reset();
-    pattern_borrow.reset();
-    str_borrow.reset();
-    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-        return builder.to_sexp();
-    }));
-    }
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-}
-
-
-// Version 2, 2014-11-02, using io::Utf8Record::replaceAllAtPos, slower
-//SEXP ci__replace_allfirstlast_fixed(SEXP str, SEXP pattern, SEXP replacement, int type)
-//{
-//   str          = ci__prepare_arg_string(str, "str");
-//   pattern      = ci__prepare_arg_string(pattern, "pattern");
-//   replacement  = ci__prepare_arg_string(replacement, "replacement");
-//   R_len_t vectorize_length = ci__recycling_rule(true, 3, LENGTH(str), LENGTH(pattern), LENGTH(replacement));
-//
-//   STRI__ERROR_HANDLER_BEGIN
-//   io::Utf8Input str_cont(str, vectorize_length, false); // writable);
-//   io::Utf8Input replacement_cont(replacement, vectorize_length);
-//   fixed::PatternSet pattern_cont(pattern, vectorize_length);
-//
-//   for (R_len_t i = pattern_cont.vectorize_init();
-//         i != pattern_cont.vectorize_end();
-//         i = pattern_cont.vectorize_next(i))
-//   {
-//      STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-//         str_cont.setNA(i),
-//         {/* zero-length string, just continue */})
-//
-//      if (replacement_cont.isNA(i)) {
-//         str_cont.setNA(i);
-//         continue;
-//      }
-//
-//      R_len_t start;
-//      if (type >= 0) { // first or all
-//         pattern_cont.setupMatcherFwd(i, str_cont.get(i).c_str(), str_cont.get(i).length());
-//         start = pattern_cont.findFirst();
-//      } else {
-//         pattern_cont.setupMatcherBack(i, str_cont.get(i).c_str(), str_cont.get(i).length());
-//         start = pattern_cont.findLast();
-//      }
-//
-//      if (start == shared::ByteSearchMatcher::not_found) {
-//         // nothing to do, no change, leave as-is
-//         continue;
-//      }
-//
-//      R_len_t len = pattern_cont.getMatchedLength();
-//      R_len_t sumbytes = len;
-//      deque< pair<R_len_t, R_len_t> > occurrences;
-//      occurrences.push_back(pair<R_len_t, R_len_t>(start, start+len));
-//
-//      if (type == 0) {
-//         while (shared::ByteSearchMatcher::not_found != pattern_cont.findNext()) { // all
-//            start = pattern_cont.getMatchedStart();
-//            len = pattern_cont.getMatchedLength();
-//            occurrences.push_back(pair<R_len_t, R_len_t>(start, start+len));
-//            sumbytes += len;
-//         }
-//      }
-//
-//      R_len_t str_cur_n     = str_cont.get(i).length();
-//      R_len_t     replacement_cur_n = replacement_cont.get(i).length();
-//      R_len_t buf_need =
-//         str_cur_n+replacement_cur_n*(R_len_t)occurrences.size()-sumbytes;
-//
-//      str_cont.getWritable(i).replaceAllAtPos(buf_need,
-//         replacement_cont.get(i).c_str(), replacement_cur_n,
-//         occurrences);
-//   }
-//
-//   STRI__UNPROTECT_ALL
-//   return str_cont.toR();
-//   STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-//}
-
-
-/**
- * Replace all occurrences of a fixed pattern; vectorize_all=FALSE
- *
- * @param str character vector
- * @param pattern character vector
- * @param replacement character vector
- * @return character vector
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-01)
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-02)
- *                Complete rewrite; faster
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-12-07)
- *    FR #110, #23: opts_fixed arg added
- *
- * @version 1.0-2 (Marek Gagolewski, 2016-01-30)
- *    Issue #210: Allow NA replacement
- */
-SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replacement, SEXP opts_fixed)
-{   // version gamma:
-    PROTECT(str          = ci__prepare_arg_string(str, "str"));
-
-    STRI__ERROR_HANDLER_BEGIN(1)
-    SEXP ret;
-    {
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    R_len_t str_n = ci::checked_r_len(
-        context.size(str), "character vectors"
+    replacement = entry_protections.protect_one(
+        ci__prepare_arg_string_r(
+            replacement, "replacement"
+        )
     );
 
-    if (str_n <= 0) {
-        charr::altrep_backend::io::OutputBuilder builder(0);
-        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-            return builder.to_sexp();
-        }));
-        STRI__UNPROTECT_ALL
-        return ret;
-    }
-
-    // Deviation from stringi: lazy preparation now runs inside the C++
-    // boundary, so queue its controlled warnings with the operation.
-    STRI__PROTECT(pattern = ci::unwind_protect([&]() -> SEXP {
-        return ci__prepare_arg_string(
-            pattern, "pattern", true, &STRI__DEFERRED_WARNINGS
-        );
-    }));
-    STRI__PROTECT(replacement = ci::unwind_protect([&]() -> SEXP {
-        return ci__prepare_arg_string(
-            replacement, "replacement", true,
-            &STRI__DEFERRED_WARNINGS
-        );
-    }));
-
-    R_len_t pattern_n = ci::checked_r_len(
-        context.size(pattern), "character vectors"
+    const R_len_t subject_length = LENGTH(str);
+    const R_len_t pattern_length = LENGTH(pattern);
+    const R_len_t replacement_length = LENGTH(replacement);
+    bool recycling_warning = false;
+    const R_len_t output_length = recycling_length(
+        subject_length, pattern_length, replacement_length,
+        recycling_warning
     );
-    R_len_t replacement_n = ci::checked_r_len(
-        context.size(replacement), "character vectors"
-    );
-    // Deviation from stringi: signal this controlled validation failure only
-    // after the outer C++ boundary has released operation state.
-    ci::unwind_protect([&]() -> SEXP {
-        if (pattern_n < replacement_n || pattern_n <= 0 || replacement_n <= 0)
-            throw StriException(MSG__WARN_RECYCLING_RULE2);
-        return R_NilValue;
-    });
-    if (pattern_n % replacement_n != 0)
-        context.warn(MSG__WARN_RECYCLING_RULE);
 
-    if (pattern_n == 1) { // this will be much faster:
-        // Deviation from stringi: replay outer preparation diagnostics before
-        // delegation, while no Reader or output owner is active.
-        context.emitWarnings();
-        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-            return ci__replace_allfirstlast_fixed(
-                str, pattern, replacement, opts_fixed, 0
-            );
-        }));
-        STRI__UNPROTECT_ALL
-        return ret;
-    }
 
-    uint32_t pattern_flags = 0;
-    ci::unwind_protect([&]() -> SEXP {
-        pattern_flags = fixed::PatternSet::getByteSearchFlags(
-            opts_fixed, false, &STRI__DEFERRED_WARNINGS
-        );
-        return R_NilValue;
-    });
-    charr::altrep_backend::io::OutputBuilder builder(str_n);
+    int empty_pattern_warnings = 0;
 
-    {
-        io::Utf8Workspace str_cont(context, str, str_n);
-        io::Utf8Input replacement_cont(
-            context, replacement, pattern_n
-        );
-        fixed::PatternSet pattern_cont(
-            context, pattern, pattern_n, pattern_flags
-        );
-        bool return_all_na = false;
+    try {
+        charport::Reader subject_reader;
+        charport::Reader pattern_reader;
+        charport::Reader replacement_reader;
+        charport::StrViews subject_views;
+        charport::StrViews pattern_views;
+        charport::StrViews replacement_views;
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::NativeToUtf8 replacement_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        shared::SliceArena replacement_storage;
+        std::vector<shared::StringView> subjects;
+        std::vector<shared::StringView> patterns;
+        std::vector<shared::StringView> replacements;
+        shared::FixedMatcher matcher;
+        std::vector<shared::FixedRange> ranges;
+        io::OutputBuilder output(0);
 
-        for (R_len_t i = 0; i<pattern_n; ++i)
-        {
-            if (pattern_cont.isNA(i)) {
-                return_all_na = true;
-                break;
-            }
-            else if (pattern_cont.get(i).length() <= 0) {
-                context.warn(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
-                return_all_na = true;
-                break;
-            }
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                output.reset(output_length);
+                if (output_length > 0) {
+                    subject_reader.reset(str);
+                    pattern_reader.reset(pattern);
+                    replacement_reader.reset(replacement);
+                    if (subject_reader.size() != subject_length ||
+                            pattern_reader.size() != pattern_length ||
+                            replacement_reader.size() != replacement_length) {
+                        throw std::runtime_error(
+                            "Reader length changed during fixed replacement"
+                        );
+                    }
 
-            shared::ByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
-            for (R_len_t j = 0; j<str_n; ++j) {
-                if (str_cont.isNA(j)) continue;
-                matcher->reset(str_cont.get(j).data(), str_cont.get(j).length());
-                R_len_t start = matcher->find_first();
-                if (start == shared::ByteSearchMatcher::not_found)  continue;  // nothing to do now
-
-                if (replacement_cont.isNA(i)) {
-                    str_cont.setNA(j);
-                    continue;
-                }
-
-                R_len_t len = matcher->matched_length();
-                size_t matched_bytes = static_cast<size_t>(len);
-                deque< pair<R_len_t, R_len_t> > occurrences;
-                occurrences.push_back(pair<R_len_t, R_len_t>(start, start+len));
-
-                while (shared::ByteSearchMatcher::not_found != matcher->find_next()) { // all
-                    start = matcher->matched_start();
-                    len = matcher->matched_length();
-                    occurrences.push_back(pair<R_len_t, R_len_t>(start, start+len));
-                    matched_bytes += static_cast<size_t>(len);
-                }
-
-                R_len_t str_cur_n         = str_cont.get(j).length();
-                R_len_t replacement_cur_n = replacement_cont.get(i).length();
-                const size_t output_size = ci__replacement_size(
-                    str_cur_n, replacement_cur_n,
-                    occurrences.size(), matched_bytes
-                );
-
-                str_cont.replaceAllAtPos(
-                    j, static_cast<R_len_t>(output_size),
-                    replacement_cont.get(i).data(),
-                    replacement_cur_n, occurrences
-                );
-            }
-        }
-
-        for (R_len_t j=0; j<str_n; ++j) {
-            if (return_all_na)
-                builder.set_na(j);
-            else {
-                const io::Utf8Record& value = str_cont.getNAble(j);
-                if (value.isNA()) {
-                    builder.set_na(j);
-                }
-                else {
-                    builder.set(
-                        j, value.data(), value.length(),
-                        value.isASCII()
-                            ? cetype_ext_t::CE_ASCII
-                            : cetype_ext_t::CE_UTF8
+                    subject_views.resize(subject_length);
+                    subject_reader.views(
+                        0, subject_length,
+                        subject_views.ptrs(), subject_views.lengths(),
+                        subject_views.encodings()
                     );
+                    pattern_views.resize(pattern_length);
+                    pattern_reader.views(
+                        0, pattern_length,
+                        pattern_views.ptrs(), pattern_views.lengths(),
+                        pattern_views.encodings()
+                    );
+                    replacement_views.resize(replacement_length);
+                    replacement_reader.views(
+                        0, replacement_length,
+                        replacement_views.ptrs(), replacement_views.lengths(),
+                        replacement_views.encodings()
+                    );
+
+                    R_len_t general_start = 0;
+                    const bool direct = pattern_length == 1 &&
+                        replacement_length == 1 &&
+                        replace_scalar_byte_direct(
+                            subject_views, pattern_views[0],
+                            replacement_views[0], output_length,
+                            options, false, output, general_start
+                        );
+                    if (!direct) {
+                        normalize_views(
+                            subject_views, subject_converter,
+                            subject_storage, subjects
+                        );
+                        normalize_views(
+                            replacement_views, replacement_converter,
+                            replacement_storage, replacements
+                        );
+                        normalize_views(
+                            pattern_views, pattern_converter,
+                            pattern_storage, patterns
+                        );
+                        empty_pattern_warnings =
+                            count_empty_patterns(patterns);
+                        replace_vectorized(
+                            subjects, patterns, replacements,
+                            output_length, general_start, options, false,
+                            matcher, ranges, output
+                        );
+                    }
                 }
+
+                result = entry_protections.reprotect_one(
+                    output.to_sexp(), result_index
+                );
+                CHARR_UNWIND_RETURN();
             }
-        }
+        );
     }
-
-    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-        return builder.to_sexp();
-    }));
-    }
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-}
-
-// ci__replace_all_fixed_no_vectorize_all
-//{  // version beta: for-loop like, 2014-11-01
-//   PROTECT(pattern      = ci__prepare_arg_string(pattern, "pattern"));
-//   PROTECT(replacement  = ci__prepare_arg_string(replacement, "replacement"));
-//
-//   R_len_t pattern_n = LENGTH(pattern);
-//   R_len_t replacement_n = LENGTH(replacement);
-//   if (pattern_n < replacement_n || pattern_n <= 0 || replacement_n <= 0)
-//      Rf_error(MSG__WARN_RECYCLING_RULE2);
-//   if (pattern_n % replacement_n != 0)
-//      Rf_warning(MSG__WARN_RECYCLING_RULE);
-//
-//   // no str_error_handlers needed here
-//   SEXP pattern_cur, replacement_cur;
-//   PROTECT(pattern_cur = Rf_allocVector(STRSXP, 1));
-//   PROTECT(replacement_cur = Rf_allocVector(STRSXP, 1));
-//
-//   PROTECT(str);
-//   for (R_len_t i=0; i<pattern_n; ++i) {
-//      SET_STRING_ELT(pattern_cur, 0, STRING_ELT(pattern, i));
-//      SET_STRING_ELT(replacement_cur, 0, STRING_ELT(replacement, i%replacement_n));
-//      str = ci__replace_allfirstlast_fixed(str, pattern_cur, replacement_cur, 0);
-//      UNPROTECT(1);
-//      PROTECT(str);
-//   }
-//
-//   UNPROTECT(5);
-//   return str;
-//}
-// ci__replace_all_fixed_no_vectorize_all
-// Version alpha: benchmarks: 32 ms vs 35 ms for the loop-version
-// Not worth fighting for..... :/, 2014-11-01
-//SEXP ci__replace_all_fixed_no_vectorize_all(SEXP str, SEXP pattern, SEXP replacement)
-//{
-//   str          = ci__prepare_arg_string(str, "str");
-//   pattern      = ci__prepare_arg_string(pattern, "pattern");
-//   replacement  = ci__prepare_arg_string(replacement, "replacement");
-//
-//   R_len_t str_n = LENGTH(str);
-//   R_len_t pattern_n = LENGTH(pattern);
-//   R_len_t replacement_n = LENGTH(replacement);
-//   if (pattern_n < replacement_n || pattern_n <= 0 || replacement_n <= 0)
-//      Rf_error(MSG__WARN_RECYCLING_RULE2);
-//   if (pattern_n % replacement_n != 0)
-//      Rf_warning(MSG__WARN_RECYCLING_RULE);
-//
-//   // if str_n is 0, then return an empty vector
-//   if (str_n <= 0)
-//      return ci__vector_empty_strings(0);
-//
-//   STRI__ERROR_HANDLER_BEGIN
-//   io::Utf8Input str_cont(str, str_n);
-//   io::Utf8Input replacement_cont(replacement, pattern_n);
-//   fixed::PatternSet pattern_cont(pattern, pattern_n);
-//
-//   // if any of the patterns is missing, then return an NA vector
-//   // if a pattern is empty, throw an error
-//   for (R_len_t i=0; i<pattern_n; ++i) {
-//      if (pattern_cont.isNA(i))
-//         return ci__vector_NA_strings(str_n);
-//      if (pattern_cont.get(i).length() <= 0)
-//         throw StriException(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
-//   }
-//
-//   vector< deque< StriInterval<R_len_t> > > queues(str_n); // matches
-//
-//   vector<bool> which_NA(str_n, false); // which str[i] will be NA
-//   for (R_len_t j=0; j<str_n; ++j)
-//      if (str_cont.isNA(j))
-//         which_NA[j] = true;
-//
-//   // get indices where we have a pattern match
-//   // for each pattern, for each search string
-//
-//   // THIS IS THE SLOWEST FOR LOOP IN THIS FUNCTION
-//   for (R_len_t i = 0; i < pattern_n; ++i)
-//   {
-//      // current pattern is not NA and is not empty
-//
-//      for (R_len_t j=0; j<str_n; ++j) {
-//         if (which_NA[j] || str_cont.get(j).length() <= 0)
-//            continue; // there's nothing interesting to play with here
-//
-//         R_len_t match_idx;
-//         pattern_cont.setupMatcherFwd(i, str_cont.get(j).c_str(), str_cont.get(j).length());
-//         match_idx = pattern_cont.findFirst();
-//         if (match_idx == shared::ByteSearchMatcher::not_found) continue; // no match at all
-//
-//         // otherwise, there is >= 1 match
-//         if (replacement_cont.isNA(i)) {
-//            which_NA[j] = true; // this string will be missing in result
-//            // it may have overlapping patterns BTW, but we won't check for that
-//            continue; // the same pattern, next string
-//         }
-//         do {
-//            queues[j].push_back(StriInterval<R_len_t>(match_idx, match_idx+pattern_cont.getMatchedLength(), i));
-//            match_idx = pattern_cont.findNext();
-//         }
-//         while (match_idx != shared::ByteSearchMatcher::not_found);
-//      }
-//   }
-//
-//   // check if there are overlapping patterns,
-//   // determine max buf size
-//   R_len_t bufsize = 0;
-//   for (R_len_t i=0; i<str_n; ++i) {
-//      if (which_NA[i] || str_cont.get(i).length() <= 0 || !queues[i].size())
-//         continue; // nothing interesting
-//
-//      // sort the i-th queue w.r.t. lower interval bound:
-//      sort(queues[i].begin(), queues[i].end());
-//
-//      R_len_t bufsize_cur = str_cont.get(i).length();
-//      deque< StriInterval<R_len_t> >::iterator iter = queues[i].begin();
-//
-//      StriInterval<R_len_t> last_int = *(iter++);
-//      bufsize_cur = bufsize_cur - pattern_cont.get(last_int.data).length()
-//                                + replacement_cont.get(last_int.data).length();
-//      for (; iter != queues[i].end(); ++iter) {
-//         StriInterval<R_len_t> cur_int = *iter;
-//         if (cur_int.a < last_int.b)
-//            throw StriException(MSG__OVERLAPPING_PATTERN_UNSUPPORTED);
-//         bufsize_cur = bufsize_cur - pattern_cont.get(cur_int.data).length()
-//                                   + replacement_cont.get(cur_int.data).length();
-//         last_int = cur_int;
-//      }
-//
-//      if (bufsize < bufsize_cur) bufsize = bufsize_cur;
-//   }
-//
-//   // construct the resulting vector
-//   SEXP ret;
-//   STRI__PROTECT(ret = Rf_allocVector(STRSXP, str_n));
-//   String8buf buf(bufsize);
-//   for (R_len_t i=0; i<str_n; ++i) {
-//      if (which_NA[i]) {
-//         SET_STRING_ELT(ret, i, NA_STRING);
-//         continue;
-//      }
-//      else if (str_cont.get(i).length() <= 0 || !queues[i].size()) {
-//         // copy as-is
-//         SET_STRING_ELT(ret, i, str_cont.toR(i));
-//         continue;
-//      }
-//
-//      // all right, at least one match - replace, captain!
-//      R_len_t bufused = 0;
-//      char* curbuf = buf.data();
-//      const char* str_cur_s = str_cont.get(i).c_str();
-//      R_len_t str_cur_n = str_cont.get(i).length();
-//
-//      R_len_t last_b = 0;
-//      for (deque< StriInterval<R_len_t> >::iterator iter = queues[i].begin();
-//               iter != queues[i].end(); ++iter) {
-//         StriInterval<R_len_t> cur_int = *iter;
-//         memcpy(curbuf+bufused, str_cur_s+last_b, cur_int.a-last_b);
-//         bufused += (cur_int.a-last_b);
-//         memcpy(curbuf+bufused, replacement_cont.get(cur_int.data).c_str(),
-//            replacement_cont.get(cur_int.data).length());
-//         bufused += replacement_cont.get(cur_int.data).length();
-//         last_b = cur_int.b;
-//      }
-//
-//      // the remainder
-//      memcpy(curbuf+bufused, str_cur_s+last_b, str_cur_n-last_b);
-//      bufused += (str_cur_n-last_b);
-//      SET_STRING_ELT(ret, i, Rf_mkCharLenCE(buf.data(), bufused, CE_UTF8));
-//   }
-//
-//   STRI__UNPROTECT_ALL
-//   return ret;
-//   STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-//}
-
-
-/**
- * Replace all occurrences of a fixed pattern
- *
- * @param str character vector
- * @param pattern character vector
- * @param replacement character vector
- * @param vectorize_all single logical value
- * @return character vector
- *
- * @version 0.1-?? (Bartek Tartanus)
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-26)
- *          use ci__replace_allfirstlast_fixed
- *
- * @version 0.2-3 (Marek Gagolewski, 2014-05-08)
- *          ci_replace_fixed now uses byte search only
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-01)
- *          vectorize_all argument added
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-12-07)
- *    FR #110, #23: opts_fixed arg added
- */
-SEXP ci_replace_all_fixed(SEXP str, SEXP pattern, SEXP replacement, SEXP vectorize_all, SEXP opts_fixed)
-{
-    if (ci__prepare_arg_logical_1_notNA(vectorize_all, "vectorize_all"))
-        return ci__replace_allfirstlast_fixed(str, pattern, replacement, opts_fixed, 0);
-    else
-        return ci__replace_all_fixed_no_vectorize_all(str, pattern, replacement, opts_fixed);
+    CHARR_ENTRYPOINT_END(
+        emit_warnings(recycling_warning, empty_pattern_warnings);
+    );
 }
 
 
-/**
- * Replace first occurrence of a fixed pattern
- *
- * @param str character vector
- * @param pattern character vector
- * @param replacement character vector
- * @return character vector
- *
- * @version 0.1-?? (Bartek Tartanus)
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-26)
- *          use ci__replace_allfirstlast_fixed
- *
- * @version 0.2-3 (Marek Gagolewski, 2014-05-08)
- *          ci_replace_fixed now uses byte search only
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-12-07)
- *    FR #110, #23: opts_fixed arg added
- */
-SEXP ci_replace_first_fixed(SEXP str, SEXP pattern, SEXP replacement, SEXP opts_fixed)
+/** Replace every occurrence of a fixed pattern. */
+CHARR_ENTRYPOINT SEXP ci_replace_all_fixed(
+    SEXP str,
+    SEXP pattern,
+    SEXP replacement,
+    SEXP vectorize_all,
+    SEXP opts_fixed
+) noexcept
 {
-    return ci__replace_allfirstlast_fixed(str, pattern, replacement, opts_fixed, 1);
+    CHARR_ENTRYPOINT_BEGIN();
+
+    const bool vectorize = ci__prepare_arg_logical_1_notNA_r(
+        vectorize_all, "vectorize_all"
+    );
+    shared::FixedSearchOptions options{false, false};
+    if (vectorize)
+        options = fixed::prepare_options(opts_fixed, false);
+
+    str = entry_protections.protect_one(
+        ci__prepare_arg_string_r(str, "str")
+    );
+    const R_len_t subject_length = LENGTH(str);
+    const bool empty_sequential = !vectorize && subject_length <= 0;
+    pattern = entry_protections.protect_one(
+        empty_sequential
+                ? R_NilValue
+                : ci__prepare_arg_string_r(pattern, "pattern")
+    );
+    replacement = entry_protections.protect_one(
+        empty_sequential
+                ? R_NilValue
+                : ci__prepare_arg_string_r(replacement, "replacement")
+    );
+
+    const R_len_t pattern_length = empty_sequential
+        ? 0
+        : LENGTH(pattern);
+    const R_len_t replacement_length = empty_sequential
+        ? 0
+        : LENGTH(replacement);
+    R_len_t output_length = subject_length;
+    bool recycling_warning = false;
+    if (vectorize) {
+        output_length = recycling_length(
+            subject_length, pattern_length, replacement_length,
+            recycling_warning
+        );
+    }
+    else if (!empty_sequential) {
+        require_sequential_lengths(
+            pattern_length, replacement_length
+        );
+        if (pattern_length % replacement_length != 0)
+            Rf_warning(MSG__WARN_RECYCLING_RULE);
+        options = fixed::prepare_options(opts_fixed, false);
+    }
+
+
+    int empty_pattern_warnings = 0;
+
+    try {
+        charport::Reader subject_reader;
+        charport::Reader pattern_reader;
+        charport::Reader replacement_reader;
+        charport::StrViews subject_views;
+        charport::StrViews pattern_views;
+        charport::StrViews replacement_views;
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::NativeToUtf8 replacement_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        shared::SliceArena replacement_storage;
+        shared::SliceArena sequential_replacement_storage;
+        std::vector<shared::StringView> subjects;
+        std::vector<shared::StringView> patterns;
+        std::vector<shared::StringView> replacements;
+        std::vector<shared::StringView> sequential_working;
+        shared::FixedMatcher matcher;
+        std::vector<shared::FixedRange> ranges;
+        io::OutputBuilder output(0);
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                output.reset(output_length);
+                if (!empty_sequential && output_length > 0) {
+                    subject_reader.reset(str);
+                    pattern_reader.reset(pattern);
+                    replacement_reader.reset(replacement);
+                    if (subject_reader.size() != subject_length ||
+                            pattern_reader.size() != pattern_length ||
+                            replacement_reader.size() != replacement_length) {
+                        throw std::runtime_error(
+                            "Reader length changed during fixed replacement"
+                        );
+                    }
+
+                    subject_views.resize(subject_length);
+                    subject_reader.views(
+                        0, subject_length,
+                        subject_views.ptrs(), subject_views.lengths(),
+                        subject_views.encodings()
+                    );
+                    pattern_views.resize(pattern_length);
+                    pattern_reader.views(
+                        0, pattern_length,
+                        pattern_views.ptrs(), pattern_views.lengths(),
+                        pattern_views.encodings()
+                    );
+                    replacement_views.resize(replacement_length);
+                    replacement_reader.views(
+                        0, replacement_length,
+                        replacement_views.ptrs(), replacement_views.lengths(),
+                        replacement_views.encodings()
+                    );
+
+                    R_len_t general_start = 0;
+                    const bool vectorized_core =
+                        vectorize || pattern_length == 1;
+                    const bool direct = vectorized_core &&
+                        pattern_length == 1 && replacement_length == 1 &&
+                        replace_scalar_byte_direct(
+                            subject_views, pattern_views[0],
+                            replacement_views[0], output_length,
+                            options, true, output, general_start
+                        );
+                    if (!direct) {
+                        normalize_views(
+                            subject_views, subject_converter,
+                            subject_storage, subjects
+                        );
+                        normalize_views(
+                            replacement_views, replacement_converter,
+                            replacement_storage, replacements
+                        );
+                        normalize_views(
+                            pattern_views, pattern_converter,
+                            pattern_storage, patterns
+                        );
+                        empty_pattern_warnings =
+                            count_empty_patterns(patterns);
+
+                        if (vectorized_core) {
+                            replace_vectorized(
+                                subjects, patterns, replacements,
+                                output_length, general_start, options, true,
+                                matcher, ranges, output
+                            );
+                        }
+                        else {
+                            int additional_empty_warnings = 0;
+                            replace_sequential(
+                                subjects, patterns, replacements, options,
+                                sequential_working, matcher, ranges,
+                                sequential_replacement_storage, output,
+                                additional_empty_warnings
+                            );
+                            empty_pattern_warnings +=
+                                additional_empty_warnings;
+                        }
+                    }
+                }
+
+                result = entry_protections.reprotect_one(
+                    output.to_sexp(), result_index
+                );
+                CHARR_UNWIND_RETURN();
+            }
+        );
+    }
+    CHARR_ENTRYPOINT_END(
+        emit_warnings(recycling_warning, empty_pattern_warnings);
+    );
 }
 
 } } // namespace charr::altrep_backend

@@ -32,14 +32,23 @@
 
 
 #include "ci_stringi.h"
-#include "ci_builder.h"
-#include "ci_utf8.h"
-#include "io/integer_input.h"
-#include "boundary/iterator.h"
-#include <array>
-#include <cstdint>
-#include <cstring>
-#include <memory>
+#include "io/reader_utils.h"
+#include "boundary/options_r.h"
+#include "io/string_view.h"
+#include "io/utf8_output.h"
+#include "../shared/boundary_iterator.h"
+#include "../shared/entrypoint.h"
+#include "../shared/native_to_utf8.h"
+#include "../shared/protect.h"
+#include "../shared/slice_arena.h"
+#include "../shared/unwind.h"
+#include "../shared/utf8.h"
+
+#include <charport.h>
+
+#include <climits>
+#include <cstddef>
+#include <exception>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -49,173 +58,86 @@ namespace charr { namespace altrep_backend {
 
 namespace search_boundaries_split {
 
-class BoundaryIterator {
-private:
-    boundary::Options options_;
-    BreakIterator* iterator_;
-    UText* text_;
-    R_len_t position_;
+CHARR_NEUTRAL_HELPER R_len_t recycling_length(
+    R_len_t first, R_len_t second, bool& warning
+) noexcept {
+    warning = false;
+    if (first <= 0 || second <= 0)
+        return 0;
 
-    void open(ci::DeferredWarnings& warnings)
-    {
-        UErrorCode status = U_ZERO_ERROR;
-        const Locale locale_value = Locale::createFromName(
-            options_.getLocale()
+    const R_len_t result = first > second ? first : second;
+    warning = result % first != 0 || result % second != 0;
+    return result;
+}
+
+
+CHARR_CXX_HELPER void require_icu_success(UErrorCode status)
+{
+    if (U_FAILURE(status))
+        throw StriException(status);
+}
+
+
+CHARR_CXX_HELPER void ensure_iterator(
+    shared::BoundaryIterator& iterator,
+    const shared::BoundaryOptions& options,
+    bool& opened,
+    bool& root_fallback
+)
+{
+    if (opened)
+        return;
+    const shared::BoundaryOpenResult result = iterator.reset(options);
+    root_fallback = result.root_fallback;
+    require_icu_success(result.status);
+    opened = true;
+}
+
+
+CHARR_CXX_HELPER void normalize_input(
+    const charport::StrViews& source,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage,
+    std::vector<shared::StringView>& output
+)
+{
+    output.resize(static_cast<std::size_t>(source.size()));
+    for (R_xlen_t i = 0; i < source.size(); ++i) {
+        const shared::StringView value = io::as_shared_view(source[i]);
+        if (value.enc == shared::StringEncoding::bytes)
+            throw StriException(MSG__BYTESENC);
+        output[static_cast<std::size_t>(i)] = shared::normalize_utf8(
+            value, converter, storage
         );
-        if (!options_.getRules().isEmpty()) {
-            UParseError parse_error;
-            iterator_ = new RuleBasedBreakIterator(
-                UnicodeString(options_.getRules()), parse_error, status
-            );
-        }
-        else {
-            switch (options_.getType()) {
-            case UBRK_CHARACTER:
-                iterator_ = BreakIterator::createCharacterInstance(
-                    locale_value, status
-                );
-                break;
-            case UBRK_LINE:
-                iterator_ = BreakIterator::createLineInstance(
-                    locale_value, status
-                );
-                break;
-            case UBRK_SENTENCE:
-                iterator_ = BreakIterator::createSentenceInstance(
-                    locale_value, status
-                );
-                break;
-            case UBRK_WORD:
-                iterator_ = BreakIterator::createWordInstance(
-                    locale_value, status
-                );
-                break;
-            default:
-                throw StriException(MSG__INTERNAL_ERROR);
-            }
-        }
-        STRI__CHECKICUSTATUS_THROW(status, {})
-
-        if (status == U_USING_DEFAULT_WARNING && iterator_ &&
-                options_.getLocale()) {
-            UErrorCode locale_status = U_ZERO_ERROR;
-            const char* valid_locale = iterator_->getLocaleID(
-                ULOC_VALID_LOCALE, locale_status
-            );
-            if (valid_locale && !std::strcmp(valid_locale, "root"))
-                warnings.push(ICUError::getICUerrorName(status));
-        }
     }
+}
 
-    bool skip() const
-    {
-        if (options_.getSkipSize() <= 0)
-            return false;
-        const int rule = iterator_->getRuleStatus();
-        for (R_len_t i = 0; i < options_.getSkipSize(); i += 2) {
-            if (rule >= options_.getSkipRules()[i] &&
-                    rule < options_.getSkipRules()[i+1])
-                return true;
-        }
-        return false;
-    }
 
-public:
-    explicit BoundaryIterator(const boundary::Options& options)
-        : options_(options), iterator_(nullptr), text_(nullptr),
-          position_(0)
-    {
-    }
+CHARR_NEUTRAL_HELPER io::OutputRecord boundary_record(
+    const shared::StringView& value,
+    const shared::BoundaryRange& range
+) noexcept {
+    const char* data = value.ptr + range.start;
+    const int length = range.end - range.start;
+    const cetype_ext_t encoding = io::is_ascii(
+        data, static_cast<std::size_t>(length)
+    ) ? cetype_ext_t::CE_ASCII : cetype_ext_t::CE_UTF8;
+    return charport::StrView{data, length, encoding};
+}
 
-    ~BoundaryIterator()
-    {
-        delete iterator_;
-        if (text_)
-            utext_close(text_);
-    }
 
-    void set_text(
-        const char* value, R_len_t length, ci::DeferredWarnings& warnings
-    )
-    {
-        if (!iterator_)
-            open(warnings);
+CHARR_R_HELPER void emit_recycling_warning_r() noexcept
+{
+    Rf_warning(MSG__WARN_RECYCLING_RULE);
+}
 
-        UErrorCode status = U_ZERO_ERROR;
-        text_ = utext_openUTF8(text_, value, length, &status);
-        STRI__CHECKICUSTATUS_THROW(status, {})
-        status = U_ZERO_ERROR;
-        iterator_->setText(text_, status);
-        STRI__CHECKICUSTATUS_THROW(status, {})
-        position_ = 0;
-    }
 
-    bool next(std::pair<R_len_t, R_len_t>& occurrence)
-    {
-        R_len_t start = position_;
-        for (;;) {
-            const R_len_t end = iterator_->next();
-            if (end == BreakIterator::DONE)
-                return false;
-            position_ = end;
-            if (!skip()) {
-                occurrence.first = start;
-                occurrence.second = end;
-                return true;
-            }
-            start = end;
-        }
-    }
-};
-
-class BoundaryRanges {
-private:
-    static constexpr R_len_t inline_capacity_ = 32;
-    std::array<std::pair<R_len_t, R_len_t>, inline_capacity_> inline_;
-    std::vector<std::pair<R_len_t, R_len_t> > overflow_;
-    R_len_t size_;
-
-public:
-    BoundaryRanges() : inline_(), overflow_(), size_(0)
-    {
-    }
-
-    void push_back(const std::pair<R_len_t, R_len_t>& value)
-    {
-        if (size_ < inline_capacity_ && overflow_.empty()) {
-            inline_[static_cast<std::size_t>(size_)] = value;
-        }
-        else {
-            if (overflow_.empty()) {
-                overflow_.reserve(inline_capacity_ * 2);
-                overflow_.insert(
-                    overflow_.end(), inline_.begin(), inline_.end()
-                );
-            }
-            overflow_.push_back(value);
-        }
-        ++size_;
-    }
-
-    R_len_t size() const noexcept
-    {
-        return size_;
-    }
-
-    std::pair<R_len_t, R_len_t>& back()
-    {
-        return overflow_.empty()
-            ? inline_[static_cast<std::size_t>(size_-1)]
-            : overflow_.back();
-    }
-
-    const std::pair<R_len_t, R_len_t>& operator[](R_len_t i) const
-    {
-        return overflow_.empty()
-            ? inline_[static_cast<std::size_t>(i)]
-            : overflow_[static_cast<std::size_t>(i)];
-    }
-};
+CHARR_R_HELPER void emit_fallback_warning_r() noexcept
+{
+    Rf_warning(
+        "%s", ICUError::getICUerrorName(U_USING_DEFAULT_WARNING)
+    );
+}
 
 } // namespace search_boundaries_split
 
@@ -252,225 +174,286 @@ using namespace search_boundaries_split;
  * @version 0.4-1 (Marek Gagolewski, 2014-12-04)
  *    allow `simplify=NA`; FR #126: pass n to ci_list2matrix
  */
-SEXP ci_split_boundaries(SEXP str, SEXP n, SEXP tokens_only, SEXP simplify, SEXP opts_brkiter)
-{
-    bool tokens_only1 = ci__prepare_arg_logical_1_notNA(tokens_only, "tokens_only");
-    PROTECT(simplify = ci__prepare_arg_logical_1(simplify, "simplify"));
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
-    PROTECT(n = ci__prepare_arg_integer(n, "n"));
-    int simplify1 = NA_LOGICAL;
+CHARR_ENTRYPOINT SEXP ci_split_boundaries(
+    SEXP str, SEXP n, SEXP tokens_only, SEXP simplify,
+    SEXP opts_brkiter
+) noexcept {
+    CHARR_ENTRYPOINT_BEGIN();
 
-    STRI__ERROR_HANDLER_BEGIN(3)
-    SEXP ret;
-    {
-    // Deviation from stringi: keep the option's ICU storage inside the
-    // unwind-safe staging scope so it is released before warning replay.
-    boundary::Options opts_brkiter2(
-        opts_brkiter, "line_break", STRI__DEFERRED_WARNINGS
+    const bool tokens_only_value = ci__prepare_arg_logical_1_notNA_r(
+        tokens_only, "tokens_only"
     );
-    ci::unwind_protect([&]() -> SEXP {
-        simplify1 = LOGICAL_RO(simplify)[0];
-        return R_NilValue;
-    });
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    R_len_t str_n = ci::checked_r_len(
-        context.size(str), "character vectors"
+    simplify = entry_protections.protect_one(
+        ci__prepare_arg_logical_1_r(
+            simplify, "simplify"
+        )
     );
-    R_len_t n_n = 0;
-    R_len_t vectorize_length = 0;
+    str = entry_protections.protect_one(
+        ci__prepare_arg_string_r(str, "str")
+    );
+    n = entry_protections.protect_one(
+        ci__prepare_arg_integer_r(n, "n")
+    );
+    const shared::BoundaryOptions options =
+        boundary::prepare_options_r(opts_brkiter, UBRK_LINE);
+
+    SEXP temporary = R_NilValue;
+    PROTECT_INDEX temporary_index;
+
+    bool recycling_warning = false;
+    bool root_fallback_warning = false;
+    bool iterator_open = false;
     bool scalar_unlimited_n = false;
-    ci::unwind_protect([&]() -> SEXP {
-        n_n = LENGTH(n);
-        vectorize_length = ci__recycling_rule(
-            false, 2, str_n, n_n
-        );
-        const int* n_values = INTEGER_RO(n);
-        scalar_unlimited_n = n_n == 1 &&
-            n_values[0] != NA_INTEGER && n_values[0] < 0;
-        return R_NilValue;
-    });
-    // Deviation from stringi: queue the controllable recycling warning until
-    // Reader, break-iterator, and lazy-output owners have been released.
-    if (vectorize_length > 0 &&
-            (vectorize_length % str_n != 0 ||
-             vectorize_length % n_n != 0))
-        context.warn(MSG__WARN_RECYCLING_RULE);
+    R_len_t vectorize_length = 0;
+    R_len_t max_columns = 0;
 
-    // Deviation from stringi: preinitialize lazy empty vectors, then replace
-    // each slot with a scalar or exact-size Store once its boundary count is
-    // known.
-    vector<charport::charvec::Store> stores;
-    stores.reserve(static_cast<size_t>(vectorize_length));
-    for (R_len_t i=0; i<vectorize_length; ++i)
-        stores.emplace_back(0, 0);
-    {
-        io::IntegerInput n_cont(n, vectorize_length);
-        io::Utf8Input str_cont(context, str, vectorize_length);
-        BoundaryIterator brkiter(opts_brkiter2);
-        charport::charvec::Builder output(0);
+    try {
+        charport::Reader reader;
+        charport::StrViews source_views;
+        shared::NativeToUtf8 converter;
+        shared::SliceArena storage;
+        std::vector<shared::StringView> normalized;
+        std::vector<shared::BoundaryRange> ranges;
+        shared::BoundaryIterator iterator;
+        std::vector<io::OutputStore> stores;
+        io::OutputBuilder child_builder(0);
+        io::OutputBuilder matrix_builder(0);
 
-        for (R_len_t i = 0; i < vectorize_length; ++i)
-        {
-            if (!scalar_unlimited_n && n_cont.isNA(i)) {
-                stores[i] = charport::charvec::Store::scalar(
-                    nullptr, 0, cetype_ext_t::CE_NA
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                const int simplify_value = LOGICAL_RO(simplify)[0];
+                const R_len_t source_length = io::checked_r_len(
+                    XLENGTH(str), "character vectors"
                 );
-                continue;
-            }
-            int n_cur = scalar_unlimited_n
-                ? INT_MAX
-                : n_cont.get(i);
-
-            if (str_cont.isNA(i)) {
-                stores[i] = charport::charvec::Store::scalar(
-                    nullptr, 0, cetype_ext_t::CE_NA
+                const R_len_t n_length = io::checked_r_len(
+                    XLENGTH(n), "integer vectors"
                 );
-                continue;
-            }
-
-            if (!scalar_unlimited_n && n_cur >= INT_MAX-1)
-                throw StriException(MSG__INCORRECT_NAMED_ARG "; " MSG__EXPECTED_SMALLER, "n");
-            else if (n_cur < 0)
-                n_cur = INT_MAX;
-            else if (n_cur == 0) {
-                continue;
-            }
-
-            const R_len_t str_cur_n = str_cont.get(i).length();
-            const char* str_cur_s = str_cont.get(i).data();
-            BoundaryRanges occurrences;
-            brkiter.set_text(
-                str_cur_s, str_cur_n, STRI__DEFERRED_WARNINGS
-            );
-
-            pair<R_len_t,R_len_t> curpair;
-            R_len_t k = 0;
-            while (k < n_cur && brkiter.next(curpair)) {
-                occurrences.push_back(curpair);
-                ++k; // another field
-            }
-
-            R_len_t noccurrences = occurrences.size();
-            if (noccurrences <= 0) {
-                continue; // @TODO: Should it be a NA? Hard to say...
-            }
-            if (k == n_cur && !tokens_only1)
-                occurrences.back().second = str_cur_n;
-
-            if (noccurrences == 1) {
-                const std::pair<R_len_t, R_len_t>& curoccur =
-                    occurrences[0];
-                const char* value = str_cur_s+curoccur.first;
-                size_t value_length = static_cast<size_t>(
-                    curoccur.second-curoccur.first
+                vectorize_length = recycling_length(
+                    source_length, n_length, recycling_warning
                 );
-                stores[i] = ci::scalar_store(
-                    value, value_length,
-                    cetype_ext_t::CE_ASCII_OR_UTF8
-                );
-            }
-            else {
-                output.reset(noccurrences);
-                for (R_len_t j=0; j<noccurrences; ++j) {
-                    const std::pair<R_len_t, R_len_t>& occurrence =
-                        occurrences[j];
-                    ci::builder_set(
-                        output, j, str_cur_s+occurrence.first,
-                        occurrence.second-occurrence.first,
-                        cetype_ext_t::CE_ASCII_OR_UTF8
+
+                const int* n_values = INTEGER_RO(n);
+                scalar_unlimited_n = n_length == 1 &&
+                    n_values[0] != NA_INTEGER && n_values[0] < 0;
+                if (simplify_value == NA_LOGICAL || simplify_value) {
+                    for (R_len_t i = 0; i < n_length; ++i) {
+                        const int value = n_values[i];
+                        if (value != NA_INTEGER && value > max_columns)
+                            max_columns = value;
+                    }
+                }
+
+                if (vectorize_length > 0) {
+                    reader.reset(str);
+                    if (reader.size() != source_length) {
+                        throw std::runtime_error(
+                            "Reader length changed during boundary splitting"
+                        );
+                    }
+                    source_views.resize(source_length);
+                    reader.views(
+                        0, source_length,
+                        source_views.ptrs(), source_views.lengths(),
+                        source_views.encodings()
+                    );
+                    normalize_input(
+                        source_views, converter, storage, normalized
                     );
                 }
-                stores[i] = output.release_store();
-            }
-        }
-    }
 
-    if (simplify1 != NA_LOGICAL && !simplify1) {
-        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-            return Rf_allocVector(VECSXP, vectorize_length);
-        }));
-        ci::unwind_protect([&]() -> SEXP {
-            for (R_len_t i=0; i<vectorize_length; ++i) {
-                SEXP ans = PROTECT(charport::charvec::wrap(
-                    std::move(stores[i])
-                ));
-                SET_VECTOR_ELT(ret, i, ans);
-                UNPROTECT(1);
-            }
-            return R_NilValue;
-        });
-    }
-    else {
-        R_len_t n_min = 0;
-        ci::unwind_protect([&]() -> SEXP {
-            R_len_t n_length = LENGTH(n);
-            const int* n_tab = INTEGER_RO(n);
-            for (R_len_t i=0; i<n_length; ++i) {
-                if (n_tab[i] != NA_INTEGER && n_min < n_tab[i])
-                    n_min = n_tab[i];
-            }
-            return R_NilValue;
-        });
-
-        R_len_t matrix_ncol = n_min;
-        for (R_len_t i=0; i<vectorize_length; ++i) {
-            R_len_t current_size = ci::checked_r_len(
-                static_cast<R_xlen_t>(stores[i].size()),
-                "split results"
-            );
-            if (matrix_ncol < current_size)
-                matrix_ncol = current_size;
-        }
-
-        // Deviation from stringi: reject a matrix that cannot be represented
-        // before passing an overflowed product to the flat Builder.
-        if (vectorize_length > 0 &&
-                matrix_ncol > R_XLEN_T_MAX/vectorize_length)
-            throw length_error("matrix length exceeds R's vector limit");
-        R_xlen_t matrix_size =
-            static_cast<R_xlen_t>(vectorize_length) * matrix_ncol;
-        charport::charvec::Builder matrix(matrix_size);
-        for (R_len_t i=0; i<vectorize_length; ++i) {
-            R_len_t current_size = static_cast<R_len_t>(stores[i].size());
-            R_len_t j = 0;
-            for (; j<current_size; ++j) {
-                matrix.set(
-                    i+static_cast<R_xlen_t>(j)*vectorize_length,
-                    stores[i].view(static_cast<size_t>(j))
+                stores.reserve(
+                    static_cast<std::size_t>(vectorize_length)
                 );
-            }
-            for (; j<matrix_ncol; ++j) {
-                R_xlen_t output_i =
-                    i+static_cast<R_xlen_t>(j)*vectorize_length;
-                if (simplify1 == NA_LOGICAL)
-                    matrix.set_na(output_i);
-                else
-                    ci::builder_set(
-                        matrix, output_i, "", 0,
-                        cetype_ext_t::CE_ASCII
+                for (R_len_t i = 0; i < vectorize_length; ++i)
+                    stores.emplace_back(0, 0);
+
+                R_len_t source_index = 0;
+                R_len_t n_index = 0;
+                for (R_len_t i = 0; i < vectorize_length; ++i) {
+                    io::OutputStore& output = stores[
+                        static_cast<std::size_t>(i)
+                    ];
+                    int n_current;
+                    if (scalar_unlimited_n) {
+                        n_current = INT_MAX;
+                    }
+                    else {
+                        n_current = n_values[n_index];
+                        if (++n_index == n_length)
+                            n_index = 0;
+                    }
+                    const R_len_t current_source_index = source_index;
+                    if (++source_index == source_length)
+                        source_index = 0;
+                    if (n_current == NA_INTEGER) {
+                        output = io::scalar_store(
+                            io::missing_output_record()
+                        );
+                        continue;
+                    }
+
+                    const shared::StringView& value = normalized[
+                        static_cast<std::size_t>(current_source_index)
+                    ];
+                    if (value.is_na()) {
+                        output = io::scalar_store(
+                            io::missing_output_record()
+                        );
+                        continue;
+                    }
+
+                    if (!scalar_unlimited_n && n_current >= INT_MAX-1) {
+                        throw StriException(
+                            MSG__INCORRECT_NAMED_ARG "; "
+                            MSG__EXPECTED_SMALLER, "n"
+                        );
+                    }
+                    if (n_current < 0)
+                        n_current = INT_MAX;
+                    if (n_current == 0)
+                        continue;
+
+                    ensure_iterator(
+                        iterator, options, iterator_open,
+                        root_fallback_warning
                     );
+                    require_icu_success(iterator.set_text(value));
+                    iterator.first();
+                    ranges.clear();
+                    shared::BoundaryRange range{0, 0};
+                    if (scalar_unlimited_n) {
+                        while (iterator.next(range))
+                            ranges.push_back(range);
+                    }
+                    else {
+                        while (ranges.size() <
+                                static_cast<std::size_t>(n_current) &&
+                                iterator.next(range)) {
+                            ranges.push_back(range);
+                        }
+                    }
+
+                    const R_len_t range_count = io::checked_r_len(
+                        static_cast<R_xlen_t>(ranges.size()),
+                        "split results"
+                    );
+                    if (range_count <= 0)
+                        continue;
+                    if (!scalar_unlimited_n &&
+                            range_count == n_current &&
+                            !tokens_only_value) {
+                        ranges[static_cast<std::size_t>(range_count-1)].end =
+                            value.len;
+                    }
+
+                    if (range_count == 1) {
+                        output = io::scalar_store(boundary_record(
+                            value, ranges[0]
+                        ));
+                        continue;
+                    }
+
+                    child_builder.reset(range_count);
+                    for (R_len_t j = 0; j < range_count; ++j) {
+                        child_builder.set_validated(
+                            j, boundary_record(
+                                value,
+                                ranges[static_cast<std::size_t>(j)]
+                            )
+                        );
+                    }
+                    output = child_builder.release_store();
+                }
+
+                callback_protections.protect_with_index(
+                    temporary, &temporary_index
+                );
+                if (simplify_value != NA_LOGICAL && !simplify_value) {
+                    result = entry_protections.reprotect_one(
+                        Rf_allocVector(VECSXP, vectorize_length),
+                        result_index
+                    );
+                    for (R_len_t i = 0; i < vectorize_length; ++i) {
+                        temporary = callback_protections.reprotect_slot(
+                            io::finalize(std::move(stores[
+                                static_cast<std::size_t>(i)
+                            ])),
+                            temporary_index
+                        );
+                        SET_VECTOR_ELT(result, i, temporary);
+                    }
+                }
+                else {
+                    for (R_len_t i = 0; i < vectorize_length; ++i) {
+                        const R_len_t current_size = io::checked_r_len(
+                            static_cast<R_xlen_t>(stores[
+                                static_cast<std::size_t>(i)
+                            ].size()),
+                            "split results"
+                        );
+                        if (max_columns < current_size)
+                            max_columns = current_size;
+                    }
+
+                    const R_xlen_t rows = vectorize_length;
+                    const R_xlen_t columns = max_columns;
+                    if (rows > 0 && columns > R_XLEN_T_MAX / rows) {
+                        throw std::length_error(
+                            "matrix length exceeds R's vector limit"
+                        );
+                    }
+
+                    matrix_builder.reset(rows * columns);
+                    for (R_xlen_t i = 0; i < rows; ++i) {
+                        const io::OutputStore& current = stores[
+                            static_cast<std::size_t>(i)
+                        ];
+                        const R_xlen_t current_size =
+                            static_cast<R_xlen_t>(current.size());
+                        R_xlen_t j = 0;
+                        for (; j < current_size; ++j) {
+                            matrix_builder.set(
+                                i+j*rows, current.view(j)
+                            );
+                        }
+                        for (; j < columns; ++j) {
+                            if (simplify_value == NA_LOGICAL) {
+                                matrix_builder.set_na(i+j*rows);
+                            }
+                            else {
+                                matrix_builder.set(
+                                    i+j*rows, "", 0,
+                                    cetype_ext_t::CE_ASCII
+                                );
+                            }
+                        }
+                    }
+
+                    result = entry_protections.reprotect_one(
+                        matrix_builder.to_sexp(), result_index
+                    );
+                    temporary = callback_protections.reprotect_slot(
+                        Rf_allocVector(INTSXP, 2), temporary_index
+                    );
+                    INTEGER(temporary)[0] = vectorize_length;
+                    INTEGER(temporary)[1] = max_columns;
+                    result = entry_protections.reprotect_one(
+                        Rf_setAttrib(result, R_DimSymbol, temporary),
+                        result_index
+                    );
+                }
+
+                CHARR_UNWIND_RETURN();
             }
-        }
-
-        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-            return matrix.to_sexp();
-        }));
-        ret = ci::unwind_protect([&]() -> SEXP {
-            SEXP dim;
-            PROTECT(dim = Rf_allocVector(INTSXP, 2));
-            INTEGER(dim)[0] = vectorize_length;
-            INTEGER(dim)[1] = matrix_ncol;
-            SEXP result = Rf_setAttrib(ret, R_DimSymbol, dim);
-            UNPROTECT(1);
-            return result;
-        });
+        );
     }
-    }
-    STRI__DEFERRED_WARNINGS.emit();
-
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END({ /* no action */ })
+    CHARR_ENTRYPOINT_END(
+        if (recycling_warning)
+            emit_recycling_warning_r();
+        if (root_fallback_warning)
+            emit_fallback_warning_r();
+    );
 }
 
 } } // namespace charr::altrep_backend

@@ -35,9 +35,9 @@
 #define __ci_ucnv_h
 
 #include "ci_stringi.h"
+#include "../shared/deferred_warnings.h"
+#include "../shared/lint.h"
 #include <unicode/ucnv.h>
-#include <string>
-#include <vector>
 
 namespace charr { namespace altrep_backend {
 
@@ -53,149 +53,92 @@ namespace charr { namespace altrep_backend {
  * @version 1.7.5.9001 (Marek Gagolewski, 2021-11-27)
  *    #467: R-win-ucrt not marking strings as latin1 #
  */
-class StriUcnv  {
+class CHARR_OWNER_TYPE StriUcnv  {
 
 private:
 
     UConverter* m_ucnv; // converter
     const char* m_name; // encoding, owned by caller
-    ci::DeferredWarnings* m_warnings; // optional queue, owned by caller
-    int m_isutf8;
-    int m_is8bit;
+    shared::DeferredWarnings* m_warnings; // optional queue, owned by caller
 
-    static void STRI__UCNV_FROM_U_CALLBACK_SUBSTITUTE_WARN (
+    CHARR_CXX_HELPER static void
+    STRI__UCNV_FROM_U_CALLBACK_SUBSTITUTE_WARN (
         const void* context,
         UConverterFromUnicodeArgs* fromArgs,
         const UChar* codeUnits,
         int32_t length,
         UChar32 codePoint,
         UConverterCallbackReason reason,
-        UErrorCode* err);
+        UErrorCode* err) noexcept;
 
-    static void STRI__UCNV_TO_U_CALLBACK_SUBSTITUTE_WARN (
+    CHARR_CXX_HELPER static void
+    STRI__UCNV_TO_U_CALLBACK_SUBSTITUTE_WARN (
         const void* context,
         UConverterToUnicodeArgs* toArgs,
         const char* codeUnits,
         int32_t length,
         UConverterCallbackReason reason,
-        UErrorCode* err);
+        UErrorCode* err) noexcept;
 
-    void openConverter();
+    CHARR_CXX_HELPER void openConverter();
 
 public:
 
 
-    StriUcnv(const char* name=NULL) {
+    CHARR_CXX_HELPER StriUcnv(const char* name=NULL) noexcept {
         m_name = name;
         m_ucnv = NULL; // lazy
         m_warnings = NULL;
-        m_isutf8 = NA_LOGICAL;
-        m_is8bit = NA_LOGICAL;
     }
 
     /** The warning queue must outlive this converter. */
-    StriUcnv(const char* name, ci::DeferredWarnings& warnings) {
+    CHARR_CXX_HELPER StriUcnv(
+        const char* name, shared::DeferredWarnings& warnings
+    ) noexcept {
         m_name = name;
         m_ucnv = NULL; // lazy
         m_warnings = &warnings;
-        m_isutf8 = NA_LOGICAL;
-        m_is8bit = NA_LOGICAL;
     }
 
-    ~StriUcnv()
+    CHARR_CXX_HELPER ~StriUcnv() noexcept
     {
         if (m_ucnv)
             ucnv_close(m_ucnv);
         m_ucnv = NULL;
     }
 
+    StriUcnv(const StriUcnv&) = delete;
+    StriUcnv& operator=(const StriUcnv&) = delete;
 
-    StriUcnv(const StriUcnv& obj) {
-        m_name = obj.m_name;
-        m_ucnv = NULL;
-        m_warnings = obj.m_warnings;
-        m_isutf8 = NA_LOGICAL;
-        m_is8bit = NA_LOGICAL;
-    }
-
-
-    StriUcnv& operator=(const StriUcnv& obj) {
+    CHARR_CXX_HELPER StriUcnv& operator=(StriUcnv&& obj) noexcept {
         if (this == &obj)
             return *this;
-        if (m_ucnv) {
+        if (m_ucnv)
             ucnv_close(m_ucnv);
-            m_ucnv = NULL;
-        }
+        m_ucnv = obj.m_ucnv;
         m_name = obj.m_name;
         m_warnings = obj.m_warnings;
-        m_isutf8 = NA_LOGICAL;
-        m_is8bit = NA_LOGICAL;
+        obj.m_ucnv = NULL;
+        obj.m_name = NULL;
+        obj.m_warnings = NULL;
         return *this;
     }
 
-
-    bool isUTF8() {
-        if (m_isutf8 != NA_LOGICAL) return m_isutf8;
-
-        openConverter();
-        UErrorCode status = U_ZERO_ERROR;
-        // get "official" encoder name
-        const char* ucnv_name = ucnv_getName(m_ucnv, &status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-        m_isutf8 = !strcmp(ucnv_name, "UTF-8");
-        return m_isutf8;
-    }
-
-
-    bool is8bit() {
-        if (m_is8bit != NA_LOGICAL) return m_is8bit;
-
-        openConverter();
-        m_is8bit = (ucnv_getMaxCharSize(m_ucnv) == 1);
-        return m_is8bit;
-    }
-
-
-    UConverter* getConverter();
-
-    bool hasASCIIsubset(ci::DeferredWarnings& warnings);
-    bool is1to1Unicode(ci::DeferredWarnings& warnings);
-
-    static vector<const char*> getStandards(ci::DeferredWarnings& warnings);
-    static const char* getFriendlyName(const char* canname);
-
-
-//      /** restores default ICU's substitute callbacks
-//       */
-//      void setCallBackSubstitute() {
-//         openConverter();
-//
-//         UErrorCode status = U_ZERO_ERROR;
-//         ucnv_setFromUCallBack(m_ucnv, UCNV_FROM_U_CALLBACK_SUBSTITUTE, NULL, NULL, NULL, &status);
-//         STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-//
-//         status = U_ZERO_ERROR;
-//         ucnv_setToUCallBack(m_ucnv, UCNV_TO_U_CALLBACK_SUBSTITUTE,   NULL, NULL, NULL, &status);
-//         STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-//      }
+    CHARR_CXX_HELPER UConverter* getConverter();
 
     /**
      * get R's cetype_t corresponding to this converter
      */
-    cetype_t getCE() {
+    CHARR_CXX_HELPER cetype_t getCE() {
         openConverter();
         UErrorCode status = U_ZERO_ERROR;
         const char* ucnv_name = ucnv_getName(m_ucnv, &status);
         STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
 
         if (!strcmp(ucnv_name, "US-ASCII")) {
-            m_is8bit = true;
-            m_isutf8 = true;
             return CE_UTF8;
         }
         else if (!strcmp(ucnv_name, "UTF-8")) {
-            m_isutf8 = true;
-            m_is8bit = false;
             return CE_UTF8;
         }
 #if defined(_WIN32) || defined(_WIN64)
@@ -214,8 +157,6 @@ public:
             !strcmp(ucnv_name, "latin1")
         ) {
 #endif
-            m_is8bit = true;
-            m_isutf8 = false;
             return CE_LATIN1;
         }
         return CE_BYTES;

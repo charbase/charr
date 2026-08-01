@@ -2,7 +2,6 @@
 
 #include <cerrno>
 #include <cstring>
-#include <sstream>
 #include <string>
 
 #include <R_ext/Riconv.h>
@@ -15,22 +14,28 @@ namespace native_to_utf8 {
 
 constexpr std::size_t initial_capacity = 64;
 
-std::string conversion_error_message(const char* conversion, int error)
+CHARR_CXX_HELPER std::string conversion_error_message(
+    const char* conversion, int error
+)
 {
-    std::ostringstream message;
-    message << "failed to convert " << conversion;
-    if (error != 0)
-        message << ": " << std::strerror(error);
-    return message.str();
+    std::string message;
+    message.append("failed to convert ", 18);
+    message.append(conversion, std::strlen(conversion));
+    if (error != 0) {
+        const char* detail = std::strerror(error);
+        message.append(": ", 2);
+        message.append(detail, std::strlen(detail));
+    }
+    return message;
 }
 
 } // namespace native_to_utf8
 
 using namespace native_to_utf8;
 
-class NativeToUtf8::Descriptor {
+class CHARR_OWNER_TYPE NativeToUtf8::Descriptor {
 public:
-    Descriptor(
+    CHARR_CXX_HELPER Descriptor(
         const char* target_name, const char* source_name,
         const char* conversion
     )
@@ -46,7 +51,7 @@ public:
         }
     }
 
-    ~Descriptor()
+    CHARR_CXX_HELPER ~Descriptor()
     {
         if (handle_ != nullptr)
             Riconv_close(handle_);
@@ -55,17 +60,17 @@ public:
     Descriptor(const Descriptor&) = delete;
     Descriptor& operator=(const Descriptor&) = delete;
 
-    void* handle() const noexcept
+    CHARR_NEUTRAL_HELPER void* handle() const noexcept
     {
         return handle_;
     }
 
-    const char* label() const noexcept
+    CHARR_NEUTRAL_HELPER const char* label() const noexcept
     {
         return label_;
     }
 
-    void reset() noexcept
+    CHARR_NEUTRAL_HELPER void reset() noexcept
     {
         Riconv(handle_, nullptr, nullptr, nullptr, nullptr);
     }
@@ -88,9 +93,9 @@ NativeToUtf8::Descriptor& NativeToUtf8::native_descriptor()
     // An empty source name asks R to resolve the active LC_CTYPE. ICU's
     // process default is not necessarily the same encoding.
     if (!native_)
-        native_ = std::make_unique<Descriptor>(
+        native_.reset(new Descriptor(
             "UTF-8", "", "R native encoding to UTF-8"
-        );
+        ));
     return *native_;
 }
 
@@ -98,13 +103,13 @@ NativeToUtf8::Descriptor& NativeToUtf8::latin1_descriptor()
 {
     if (!latin1_) {
 #if defined(_WIN32) || defined(_WIN64)
-        latin1_ = std::make_unique<Descriptor>(
+        latin1_.reset(new Descriptor(
             "UTF-8", "WINDOWS-1252", "Windows-1252 to UTF-8"
-        );
+        ));
 #else
-        latin1_ = std::make_unique<Descriptor>(
+        latin1_.reset(new Descriptor(
             "UTF-8", "ISO-8859-1", "ISO-8859-1 to UTF-8"
-        );
+        ));
 #endif
     }
     return *latin1_;
@@ -113,9 +118,9 @@ NativeToUtf8::Descriptor& NativeToUtf8::latin1_descriptor()
 NativeToUtf8::Descriptor& NativeToUtf8::utf8_to_native_descriptor()
 {
     if (!utf8_to_native_) {
-        utf8_to_native_ = std::make_unique<Descriptor>(
+        utf8_to_native_.reset(new Descriptor(
             "", "UTF-8", "UTF-8 to R native encoding"
-        );
+        ));
     }
     return *utf8_to_native_;
 }
@@ -164,6 +169,15 @@ bool NativeToUtf8::native_is_utf8()
 
     native_is_utf8_ = resolved ? Tristate::yes : Tristate::no;
     return resolved;
+}
+
+void NativeToUtf8::reset() noexcept
+{
+    native_.reset();
+    latin1_.reset();
+    utf8_to_native_.reset();
+    std::vector<char>().swap(scratch_);
+    native_is_utf8_ = Tristate::unresolved;
 }
 
 void NativeToUtf8::ensure_capacity(std::size_t required)

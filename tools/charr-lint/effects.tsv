@@ -1,0 +1,580 @@
+effect	qualified_name	canonical_type	inferred_effect	inference_basis	override_reason
+neutral	ALTREP	int (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	R inline accessor reads object metadata without allocating or signaling an R error.
+neutral	ANY_ATTRIB	int (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	R inline accessor reads object metadata without allocating or signaling an R error.
+r	INTEGER	int *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	INTEGER_RO	const int *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	LENGTH	int (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	LOGICAL	int *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	LOGICAL_RO	const int *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+neutral	NO_REFERENCES	int (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	R inline accessor reads object metadata without allocating or signaling an R error.
+neutral	PRINTNAME	struct SEXPREC *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	R inline accessor reads a symbol field without allocating or signaling an R error.
+r	RAW	unsigned char *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	REAL_RO	const double *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	R_CHAR	const char *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	R_ContinueUnwind	void (struct SEXPREC *) __attribute__((noreturn))	r	rule:r-header+rule:reviewed-c-api	
+r	R_ExpandFileName	const char *(const char *)	r	rule:r-header+rule:reviewed-c-api	
+neutral	R_IsNA	int (double)	r	rule:r-header+rule:reviewed-c-api	R numeric predicate does not allocate or signal an R error.
+r	R_MakeUnwindCont	struct SEXPREC *(void)	r	rule:r-header+rule:reviewed-c-api	
+r	R_ProtectWithIndex	void (struct SEXPREC *, int *)	r	rule:r-header+rule:reviewed-c-api	
+r	R_Reprotect	void (struct SEXPREC *, int)	r	rule:r-header+rule:reviewed-c-api	
+r	R_UnwindProtect	struct SEXPREC *(struct SEXPREC *(*)(void *), void *, void (*)(void *, Rboolean), void *, struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	R_alloc	char *(unsigned long, int)	r	rule:r-header+rule:reviewed-c-api	
+neutral	R_forceSymbols	Rboolean (struct _DllInfo *, Rboolean)	r	rule:r-header+rule:reviewed-c-api	R registration setter does not allocate or signal an R error.
+r	R_registerRoutines	int (struct _DllInfo *, const R_CMethodDef *, const R_CallMethodDef *, const R_CMethodDef *, const R_CallMethodDef *)	r	rule:r-header+rule:reviewed-c-api	
+r	R_tryCatchError	struct SEXPREC *(struct SEXPREC *(*)(void *), void *, struct SEXPREC *(*)(struct SEXPREC *, void *), void *)	r	rule:r-header+rule:reviewed-c-api	
+neutral	R_useDynamicSymbols	Rboolean (struct _DllInfo *, Rboolean)	r	rule:r-header+rule:reviewed-c-api	R registration setter does not allocate or signal an R error.
+r	Rf_ScalarInteger	struct SEXPREC *(int)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_ScalarLogical	struct SEXPREC *(int)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_ScalarString	struct SEXPREC *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_allocMatrix	struct SEXPREC *(unsigned int, int, int)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_allocVector	struct SEXPREC *(unsigned int, long)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_asInteger	int (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_charIsASCII	Rboolean (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_coerceVector	struct SEXPREC *(struct SEXPREC *, unsigned int)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_error	void (const char *, ...)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_eval	struct SEXPREC *(struct SEXPREC *, struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_getAttrib	struct SEXPREC *(struct SEXPREC *, struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_getCharCE	cetype_t (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_install	struct SEXPREC *(const char *)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_isFactor	Rboolean (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+neutral	Rf_isInteger	Rboolean (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	R type predicate does not allocate or signal an R error.
+neutral	Rf_isLogical	Rboolean (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	R type predicate does not allocate or signal an R error.
+r	Rf_isMatrix	Rboolean (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_isNull	Rboolean (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+neutral	Rf_isObject	Rboolean (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	R metadata predicate does not allocate or signal an R error.
+neutral	Rf_isReal	Rboolean (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	R type predicate does not allocate or signal an R error.
+neutral	Rf_isString	Rboolean (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	R type predicate does not allocate or signal an R error.
+neutral	Rf_isSymbol	Rboolean (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	R type predicate does not allocate or signal an R error.
+neutral	Rf_isVectorAtomic	Rboolean (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	R type predicate does not allocate or signal an R error.
+r	Rf_isVectorList	Rboolean (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_lang2	struct SEXPREC *(struct SEXPREC *, struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_mkChar	struct SEXPREC *(const char *)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_mkCharLenCE	struct SEXPREC *(const char *, int, cetype_t)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_mkString	struct SEXPREC *(const char *)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_protect	struct SEXPREC *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_setAttrib	struct SEXPREC *(struct SEXPREC *, struct SEXPREC *, struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_translateChar	const char *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	Rf_translateCharUTF8	const char *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+neutral	Rf_unprotect	void (int)	r	rule:r-header+rule:reviewed-c-api	With a valid count on R's main thread, this only decrements the protection stack.
+r	Rf_warning	void (const char *, ...)	r	rule:r-header+rule:reviewed-c-api	
+neutral	Riconv	unsigned long (void *, const char **, unsigned long *, char **, unsigned long *)	r	rule:r-header+rule:reviewed-c-api	Riconv reports conversion failure through its return value.
+neutral+raw-release	Riconv_close	int (void *)	r	rule:r-header+rule:reviewed-c-api	Riconv_close releases a converter and reports failure through its return value.
+neutral+raw-acquire	Riconv_open	void *(const char *, const char *)	r	rule:r-header+rule:reviewed-c-api	Riconv_open returns an owned converter or a failure sentinel.
+r	SETCAR	struct SEXPREC *(struct SEXPREC *, struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	SET_STRING_ELT	void (struct SEXPREC *, long, struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	SET_VECTOR_ELT	struct SEXPREC *(struct SEXPREC *, long, struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+r	STRING_ELT	struct SEXPREC *(struct SEXPREC *, long)	r	rule:r-header+rule:reviewed-c-api	
+r	STRING_PTR_RO	struct SEXPREC *const *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+neutral	TYPEOF	int (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	R inline accessor reads the object type without allocating or signaling an R error.
+neutral	UCNV_FROM_U_CALLBACK_SUBSTITUTE_78	void (const void *, UConverterFromUnicodeArgs *, const char16_t *, int, int, UConverterCallbackReason, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	UCNV_TO_U_CALLBACK_SUBSTITUTE_78	void (const void *, UConverterToUnicodeArgs *, const char *, int, UConverterCallbackReason, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	U_FAILURE	signed char (enum UErrorCode)	cxx	clang:not-noexcept	Inline ICU error predicate performs one integer comparison.
+neutral	U_SUCCESS	signed char (enum UErrorCode)	cxx	clang:not-noexcept	Inline ICU error predicate performs one integer comparison.
+r	VECTOR_ELT	struct SEXPREC *(struct SEXPREC *, long)	r	rule:r-header+rule:reviewed-c-api	
+r	XLENGTH	long (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
+neutral	__errno_location	int *(void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	_setjmp	int (struct __jmp_buf_tag *) noexcept	neutral	clang:no-cxx-propagation	
+owner	charport::Reader::Reader	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	charport::Reader::operator=	class charport::Reader &(class charport::Reader &&) noexcept	neutral	clang:no-cxx-propagation	
+r	charport::Reader::reset	void (struct SEXPREC *)	cxx	clang:not-noexcept	charport Reader initialization may raise an R error and does not propagate C++ exceptions.
+neutral	charport::Reader::size	long (void) const noexcept	neutral	clang:no-cxx-propagation	
+cxx	charport::Reader::view	struct charport_strview (long) const	cxx	clang:not-noexcept	
+cxx	charport::Reader::views	void (int, long, const char **, int *, enum cetype_ext_t *) const	cxx	clang:not-noexcept	
+owner	charport::StrViews::StrViews	void (long)	owner	clang:cleanup-construction	
+neutral	charport::StrViews::encodings	enum cetype_ext_t *(void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	charport::StrViews::lengths	int *(void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	charport::StrViews::operator[]	struct charport_strview (long) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	charport::StrViews::ptrs	const char **(void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	charport::StrViews::ptrs	const char *const *(void) const noexcept	neutral	clang:no-cxx-propagation	
+cxx	charport::StrViews::resize	void (long)	cxx	clang:not-noexcept	
+neutral	charport::StrViews::size	long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	charport::charvec::Builder::Builder	void (long)	owner	clang:cleanup-construction	
+owner	charport::charvec::Builder::release_store	class charport::charvec::Store (void) noexcept		legacy-unobserved	
+cxx	charport::charvec::Builder::reserve	char *(long, unsigned long, enum cetype_ext_t)	cxx	clang:not-noexcept	
+cxx	charport::charvec::Builder::reset	void (long)	cxx	clang:not-noexcept	
+cxx	charport::charvec::Builder::set	void (long, const struct charport_strview &)	cxx	clang:not-noexcept	
+cxx	charport::charvec::Builder::set_na	void (long)	cxx	clang:not-noexcept	
+r	charport::charvec::Builder::to_sexp	struct SEXPREC *(void) noexcept	neutral	clang:no-cxx-propagation	charport permits R errors during ALTREP wrapping and does not propagate C++ exceptions.
+owner	charport::charvec::GrowableBuilder::GrowableBuilder	void (void) noexcept	owner	clang:cleanup-construction	
+cxx	charport::charvec::GrowableBuilder::append	void (const char *, unsigned long, enum cetype_ext_t)	cxx	clang:not-noexcept	
+cxx	charport::charvec::GrowableBuilder::append	void (const struct charport_strview &)	cxx	clang:not-noexcept	
+cxx	charport::charvec::GrowableBuilder::append_reserve	char *(unsigned long, enum cetype_ext_t)	cxx	clang:not-noexcept	
+neutral	charport::charvec::GrowableBuilder::operator=	class charport::charvec::GrowableBuilder &(class charport::charvec::GrowableBuilder &&) noexcept	neutral	clang:no-cxx-propagation	
+owner	charport::charvec::GrowableBuilder::release_store	class charport::charvec::Store (void) noexcept	owner	clang:cleanup-return	
+neutral	charport::charvec::GrowableBuilder::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+r	charport::charvec::GrowableBuilder::to_sexp	struct SEXPREC *(void) noexcept	neutral	clang:no-cxx-propagation	charport permits R errors during ALTREP wrapping and does not propagate C++ exceptions.
+owner	charport::charvec::Store::Store	void (class charport::charvec::Store &&) noexcept	owner	clang:cleanup-construction	
+owner	charport::charvec::Store::Store	void (unsigned long, unsigned long)	owner	clang:cleanup-construction	
+owner	charport::charvec::Store::Store	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	charport::charvec::Store::operator=	class charport::charvec::Store &(class charport::charvec::Store &&) noexcept	neutral	clang:no-cxx-propagation	
+owner	charport::charvec::Store::scalar	class charport::charvec::Store (const char *, unsigned long, enum cetype_ext_t)	owner	clang:cleanup-return	
+neutral	charport::charvec::Store::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	charport::charvec::Store::view	struct charport_strview (unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+owner	charport::charvec::components::RecordTable::RecordTable	void (unsigned long)	owner	clang:cleanup-construction	
+neutral	charport::charvec::components::RecordTable::operator=	struct charport::charvec::components::RecordTable &(struct charport::charvec::components::RecordTable &&) noexcept	neutral	clang:no-cxx-propagation	
+cxx	charport::charvec::components::RecordTable::push_back	void (const struct charport_strview &)		legacy-unobserved	
+cxx	charport::charvec::components::RecordTable::reserve	void (unsigned long)		legacy-unobserved	
+neutral	charport::charvec::components::RecordTable::set	void (unsigned long, const char *, int, enum cetype_ext_t) noexcept	neutral	clang:no-cxx-propagation	
+neutral	charport::charvec::components::RecordTable::view	struct charport_strview (unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	charport::charvec::components::SliceChain::empty	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	charport::charvec::components::SliceChain::front_data	char *(void) noexcept	neutral	clang:no-cxx-propagation	
+cxx	charport::charvec::components::SliceChain::push_front	char *(unsigned long)	cxx	clang:not-noexcept	
+neutral	charport::charvec::components::empty_data	const char *(void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	charport::charvec::components::na_record	struct charport_strview (void) noexcept	neutral	clang:no-cxx-propagation	
+r	charport::charvec::wrap	struct SEXPREC *(class charport::charvec::Store &&) noexcept		legacy-unobserved	charport permits R errors during ALTREP wrapping and does not propagate C++ exceptions.
+r	charport::check_abi	_Bool (void)	cxx	clang:not-noexcept	The first ABI check may raise an R error while resolving charport through R_GetCCallable; it does not propagate C++ exceptions.
+neutral	charport_strview::is_na	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral+raw-release	fclose	int (struct _IO_FILE *)	neutral	rule:reviewed-c-api	Closes and releases an owned FILE handle.
+neutral+raw-acquire	fopen	struct _IO_FILE *(const char *, const char *)	neutral	rule:reviewed-c-api	Returns an owned FILE handle that fclose must release.
+neutral	fread	unsigned long (void *, unsigned long, unsigned long, struct _IO_FILE *)	neutral	rule:reviewed-c-api	
+neutral+raw-release	free	void (void *) noexcept		legacy-unobserved	Releases memory returned by a C allocation function.
+neutral	fseek	int (struct _IO_FILE *, long, int)	neutral	rule:reviewed-c-api	
+neutral	ftell	long (struct _IO_FILE *)	neutral	rule:reviewed-c-api	
+neutral+raw-acquire	icu_78::BreakIterator::createLineInstance	class icu_78::BreakIterator *(const class icu_78::Locale &, enum UErrorCode &)		legacy-unobserved	ICU returns an owned BreakIterator and reports failure through UErrorCode.
+neutral	icu_78::BreakIterator::first	int (void)		legacy-unobserved	
+neutral	icu_78::BreakIterator::getLocaleID	const char *(ULocDataLocaleType, enum UErrorCode &) const		legacy-unobserved	
+neutral	icu_78::BreakIterator::next	int (void)		legacy-unobserved	
+neutral	icu_78::BreakIterator::setText	void (struct UText *, enum UErrorCode &)		legacy-unobserved	
+neutral	icu_78::Locale::createFromName	class icu_78::Locale (const char *)		legacy-unobserved	
+cxx	icu_78::Normalizer2::getNFCInstance	const class icu_78::Normalizer2 *(enum UErrorCode &)	cxx	clang:not-noexcept	
+cxx	icu_78::Normalizer2::normalize	class icu_78::UnicodeString &(const class icu_78::UnicodeString &, class icu_78::UnicodeString &, enum UErrorCode &) const	cxx	clang:not-noexcept	
+cxx	icu_78::Normalizer2::normalizeUTF8	void (unsigned int, class icu_78::StringPiece, class icu_78::ByteSink &, class icu_78::Edits *, enum UErrorCode &) const	cxx	clang:not-noexcept	
+owner	icu_78::RegexMatcher::RegexMatcher	void (const class icu_78::UnicodeString &, unsigned int, enum UErrorCode &)	owner	clang:cleanup-construction	
+cxx	icu_78::RegexMatcher::appendReplacement	class icu_78::RegexMatcher &(class icu_78::UnicodeString &, const class icu_78::UnicodeString &, enum UErrorCode &)	cxx	clang:not-noexcept	
+cxx	icu_78::RegexMatcher::appendTail	class icu_78::UnicodeString &(class icu_78::UnicodeString &)	cxx	clang:not-noexcept	
+cxx	icu_78::RegexMatcher::end	int (enum UErrorCode &) const	cxx	clang:not-noexcept	
+cxx	icu_78::RegexMatcher::end	int (int, enum UErrorCode &) const	cxx	clang:not-noexcept	
+cxx	icu_78::RegexMatcher::find	signed char (enum UErrorCode &)	cxx	clang:not-noexcept	
+neutral	icu_78::RegexMatcher::groupCount	int (void) const	cxx	clang:not-noexcept	ICU accessor reads compiled regular-expression metadata without allocating.
+cxx	icu_78::RegexMatcher::pattern	const class icu_78::RegexPattern &(void) const	cxx	clang:not-noexcept	
+owner	icu_78::RegexMatcher::replaceAll	class icu_78::UnicodeString (const class icu_78::UnicodeString &, enum UErrorCode &)	owner	clang:cleanup-return	
+cxx	icu_78::RegexMatcher::reset	class icu_78::RegexMatcher &(const class icu_78::UnicodeString &)	cxx	clang:not-noexcept	
+cxx	icu_78::RegexMatcher::setStackLimit	void (int, enum UErrorCode &)	cxx	clang:not-noexcept	
+cxx	icu_78::RegexMatcher::setTimeLimit	void (int, enum UErrorCode &)	cxx	clang:not-noexcept	
+cxx	icu_78::RegexMatcher::start	int (enum UErrorCode &) const	cxx	clang:not-noexcept	
+cxx	icu_78::RegexMatcher::start	int (int, enum UErrorCode &) const	cxx	clang:not-noexcept	
+cxx	icu_78::RegexPattern::groupNumberFromName	int (const char *, int, enum UErrorCode &) const	cxx	clang:not-noexcept	
+cxx	icu_78::RegexPattern::patternText	struct UText *(enum UErrorCode &) const	cxx	clang:not-noexcept	
+owner	icu_78::StringByteSink<std::basic_string<char>>::StringByteSink	void (class std::basic_string<char> *)	owner	clang:cleanup-construction	
+cxx	icu_78::StringPiece::StringPiece	void (const char *)	cxx	clang:not-noexcept	
+cxx	icu_78::StringPiece::StringPiece	void (const char *, int)	cxx	clang:not-noexcept	
+owner	icu_78::UnicodeSet::UnicodeSet	void (void)	owner	clang:cleanup-construction	
+cxx	icu_78::UnicodeSet::applyPattern	class icu_78::UnicodeSet &(const class icu_78::UnicodeString &, enum UErrorCode &)	cxx	clang:not-noexcept	
+cxx	icu_78::UnicodeSet::complement	class icu_78::UnicodeSet &(void)	cxx	clang:not-noexcept	
+neutral	icu_78::UnicodeSet::contains	signed char (int) const	cxx	clang:not-noexcept	ICU membership test does not allocate or propagate C++ exceptions.
+cxx	icu_78::UnicodeSet::freeze	class icu_78::UnicodeSet *(void)	cxx	clang:not-noexcept	
+cxx	icu_78::UnicodeSet::isBogus	signed char (void) const	cxx	clang:not-noexcept	
+cxx	icu_78::UnicodeSet::setToBogus	void (void)	cxx	clang:not-noexcept	
+owner	icu_78::UnicodeString::UnicodeString	void (int, int, int)	owner	clang:cleanup-construction	
+owner	icu_78::UnicodeString::UnicodeString	void (void)	owner	clang:cleanup-construction	
+cxx	icu_78::UnicodeString::append	class icu_78::UnicodeString &(const char16_t *, int, int)	cxx	clang:not-noexcept	
+owner	icu_78::UnicodeString::fromUTF8	class icu_78::UnicodeString (class icu_78::StringPiece)	owner	clang:cleanup-return	
+neutral	icu_78::UnicodeString::getBuffer	char16_t *(int)	cxx	clang:not-noexcept	ICU uses a non-throwing allocator and records allocation failure in the string state.
+neutral	icu_78::UnicodeString::getBuffer	const char16_t *(void) const	cxx	clang:not-noexcept	ICU accessor returns the existing string buffer without allocating.
+cxx	icu_78::UnicodeString::isBogus	signed char (void) const	cxx	clang:not-noexcept	
+neutral	icu_78::UnicodeString::length	int (void) const	cxx	clang:not-noexcept	ICU accessor reads the stored string length without allocating.
+neutral	icu_78::UnicodeString::operator=	class icu_78::UnicodeString &(class icu_78::UnicodeString &&) noexcept	neutral	clang:no-cxx-propagation	
+cxx	icu_78::UnicodeString::releaseBuffer	void (int)	cxx	clang:not-noexcept	
+cxx	icu_78::UnicodeString::remove	class icu_78::UnicodeString &(void)	cxx	clang:not-noexcept	
+cxx	icu_78::UnicodeString::setTo	class icu_78::UnicodeString &(const class icu_78::UnicodeString &)	cxx	clang:not-noexcept	
+cxx	icu_78::UnicodeString::setToBogus	void (void)	cxx	clang:not-noexcept	
+neutral	icu_78::UnicodeString::swap	void (class icu_78::UnicodeString &) noexcept	neutral	clang:no-cxx-propagation	
+cxx	icu_78::UnicodeString::toUTF8String	class std::basic_string<char> &(class std::basic_string<char> &) const	cxx	clang:not-noexcept	
+neutral	longjmp	void (struct __jmp_buf_tag *, int) __attribute__((noreturn)) noexcept	neutral	clang:no-cxx-propagation	
+neutral	make_strview	struct charport_strview (const char *, int, enum cetype_ext_t) noexcept	neutral	clang:no-cxx-propagation	
+neutral+raw-acquire	malloc	void *(unsigned long) noexcept		legacy-unobserved	Returns owned memory that free must release.
+neutral	memchr	const void *(const void *, int, unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+neutral	memcmp	int (const void *, const void *, unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+neutral	memcpy	void *(void *, const void *, unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+neutral	memset	void *(void *, int, unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+neutral	pow	double (double, double) noexcept	neutral	clang:no-cxx-propagation	
+neutral+raw-acquire+raw-release	realloc	void *(void *, unsigned long) noexcept		legacy-unobserved	May replace and release the original allocation on success; preserves it on allocation failure.
+neutral	rewind	void (struct _IO_FILE *)	neutral	rule:reviewed-c-api	
+neutral	snprintf	int (char *, unsigned long, const char *, ...) noexcept	neutral	clang:no-cxx-propagation	
+neutral	stat	int (const char *, struct stat *) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::__detail::_Node_iterator<std::pair<const charr::base_backend::search_fixed_extract::DirectRepeatKey, SEXPREC *>, false, false>::operator->	struct std::pair<const struct charr::base_backend::search_fixed_extract::DirectRepeatKey, struct SEXPREC *> *(void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::__detail::_Node_iterator<std::pair<const charr::shared::FixedExtractRepeatKey, SEXPREC *>, false, false>::operator->	struct std::pair<const struct charr::shared::FixedExtractRepeatKey, struct SEXPREC *> *(void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::__detail::operator!=	_Bool (const struct std::__detail::_Node_iterator<struct std::pair<const struct charr::base_backend::search_fixed_extract::DirectRepeatKey, struct SEXPREC *>, false, false> &, const struct std::__detail::_Node_iterator<struct std::pair<const struct charr::base_backend::search_fixed_extract::DirectRepeatKey, struct SEXPREC *>, false, false> &) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::__detail::operator!=	_Bool (const struct std::__detail::_Node_iterator<struct std::pair<const struct charr::shared::FixedExtractRepeatKey, struct SEXPREC *>, false, false> &, const struct std::__detail::_Node_iterator<struct std::pair<const struct charr::shared::FixedExtractRepeatKey, struct SEXPREC *>, false, false> &) noexcept	neutral	clang:no-cxx-propagation	
+owner	std::__exception_ptr::exception_ptr::exception_ptr	void (const class std::__exception_ptr::exception_ptr &) noexcept	owner	clang:cleanup-construction	
+owner	std::__exception_ptr::exception_ptr::exception_ptr	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::__exception_ptr::exception_ptr::operator bool	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::__exception_ptr::exception_ptr::operator=	class std::__exception_ptr::exception_ptr &(class std::__exception_ptr::exception_ptr &&) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::array<unsigned char, 128>::data	const unsigned char *(void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::array<unsigned char, 128>::operator[]	unsigned char &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::array<unsigned char, 128>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::bad_alloc::bad_alloc	void (void) noexcept	owner	clang:cleanup-construction	
+cxx	std::basic_string<char>::append	class std::basic_string<char> &(const char *, unsigned long)	cxx	clang:not-noexcept	
+cxx	std::basic_string<char>::append	class std::basic_string<char> &(unsigned long, char)	cxx	clang:not-noexcept	
+cxx	std::basic_string<char>::assign	class std::basic_string<char> &(const char *, unsigned long)	cxx	clang:not-noexcept	
+owner	std::basic_string<char>::basic_string	void (class std::basic_string<char> &&) noexcept	owner	clang:cleanup-construction	
+owner	std::basic_string<char>::basic_string	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::basic_string<char>::c_str	const char *(void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::basic_string<char>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::basic_string<char>::data	char *(void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::basic_string<char>::data	const char *(void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::basic_string<char>::empty	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::basic_string<char>::operator=	class std::basic_string<char> &(const char *)	cxx	clang:not-noexcept	
+cxx	std::basic_string<char>::operator=	class std::basic_string<char> &(const class std::basic_string<char> &)	cxx	clang:not-noexcept	
+cxx	std::basic_string<char>::operator[]	char &(unsigned long)	cxx	clang:not-noexcept	
+cxx	std::basic_string<char>::push_back	void (char)	cxx	clang:not-noexcept	
+cxx	std::basic_string<char>::reserve	void (unsigned long)	cxx	clang:not-noexcept	
+cxx	std::basic_string<char>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+neutral	std::basic_string<char>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::basic_string_view<char>::basic_string_view	void (const char *) noexcept		legacy-unobserved	
+neutral	std::basic_string_view<char>::basic_string_view	void (const class std::basic_string_view<char> &) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::basic_string_view<char>::data	const char *(void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::basic_string_view<char>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::current_exception	class std::__exception_ptr::exception_ptr (void) noexcept	owner	clang:cleanup-return	
+neutral	std::exception::what	const char *(void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::invalid_argument::invalid_argument	void (const char *)	owner	clang:cleanup-construction	
+owner	std::length_error::length_error	void (const char *)	owner	clang:cleanup-construction	
+owner	std::logic_error::logic_error	void (const char *)	owner	clang:cleanup-construction	
+neutral	std::min	const int &(const int &, const int &)	cxx	clang:not-noexcept	Integer comparison and reference selection cannot throw.
+neutral	std::min	const unsigned long &(const unsigned long &, const unsigned long &)	cxx	clang:not-noexcept	Integer comparison and reference selection cannot throw.
+neutral	std::move	class charport::charvec::Store &&(class charport::charvec::Store &) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::numeric_limits<int>::max	int (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::numeric_limits<unsigned long>::max	unsigned long (void) noexcept	neutral	clang:no-cxx-propagation	
+owner	std::out_of_range::out_of_range	void (const char *)	owner	clang:cleanup-construction	
+cxx	std::rethrow_exception	void (class std::__exception_ptr::exception_ptr) __attribute__((noreturn))	cxx	clang:not-noexcept	
+cxx	std::reverse_copy	char *(const char *, const char *, char *)	cxx	clang:not-noexcept	
+owner	std::runtime_error::runtime_error	void (const char *)	owner	clang:cleanup-construction	
+owner	std::runtime_error::runtime_error	void (const class std::basic_string<char> &)	owner	clang:cleanup-construction	
+cxx	std::set<unsigned long, charr::shared::collation_ordering::IndexLess>::insert	struct std::pair<struct std::_Rb_tree_const_iterator<unsigned long>, _Bool> (const unsigned long &)	cxx	clang:not-noexcept	
+owner	std::set<unsigned long, charr::shared::collation_ordering::IndexLess>::set	void (const struct charr::shared::collation_ordering::IndexLess &, const class std::allocator<unsigned long> &)	owner	clang:cleanup-construction	
+cxx	std::stable_sort	void (class __gnu_cxx::__normal_iterator<int *, class std::vector<int> >, class __gnu_cxx::__normal_iterator<int *, class std::vector<int> >, struct charr::shared::collation_ordering::IndexLess)	cxx	clang:not-noexcept	
+neutral	std::unique_ptr<charr::shared::ByteSearchMatcher>::operator bool	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::unique_ptr<charr::shared::ByteSearchMatcher>::operator->	class charr::shared::ByteSearchMatcher *(void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::unique_ptr<charr::shared::ByteSearchMatcher>::reset	void (class charr::shared::ByteSearchMatcher *) noexcept	neutral	clang:no-cxx-propagation	
+owner	std::unique_ptr<charr::shared::ByteSearchMatcher>::unique_ptr	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::unique_ptr<charr::shared::NativeToUtf8::Descriptor>::operator bool	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::unique_ptr<charr::shared::NativeToUtf8::Descriptor>::operator*	class charr::shared::NativeToUtf8::Descriptor &(void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::unique_ptr<charr::shared::NativeToUtf8::Descriptor>::reset	void (class charr::shared::NativeToUtf8::Descriptor *) noexcept	neutral	clang:no-cxx-propagation	
+owner	std::unique_ptr<charr::shared::NativeToUtf8::Descriptor>::unique_ptr	void (void) noexcept	owner	clang:cleanup-construction	
+cxx	std::unordered_map<charr::base_backend::search_fixed_extract::DirectRepeatKey, SEXPREC *, charr::base_backend::search_fixed_extract::DirectRepeatHash>::emplace	struct std::pair<struct std::__detail::_Node_iterator<struct std::pair<const struct charr::base_backend::search_fixed_extract::DirectRepeatKey, struct SEXPREC *>, false, false>, _Bool> (const struct charr::base_backend::search_fixed_extract::DirectRepeatKey &, struct SEXPREC *&)	cxx	clang:not-noexcept	
+neutral	std::unordered_map<charr::base_backend::search_fixed_extract::DirectRepeatKey, SEXPREC *, charr::base_backend::search_fixed_extract::DirectRepeatHash>::end	struct std::__detail::_Node_iterator<struct std::pair<const struct charr::base_backend::search_fixed_extract::DirectRepeatKey, struct SEXPREC *>, false, false> (void) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::unordered_map<charr::base_backend::search_fixed_extract::DirectRepeatKey, SEXPREC *, charr::base_backend::search_fixed_extract::DirectRepeatHash>::find	struct std::__detail::_Node_iterator<struct std::pair<const struct charr::base_backend::search_fixed_extract::DirectRepeatKey, struct SEXPREC *>, false, false> (const struct charr::base_backend::search_fixed_extract::DirectRepeatKey &)	cxx	clang:not-noexcept	
+cxx	std::unordered_map<charr::base_backend::search_fixed_extract::DirectRepeatKey, SEXPREC *, charr::base_backend::search_fixed_extract::DirectRepeatHash>::reserve	void (unsigned long)	cxx	clang:not-noexcept	
+owner	std::unordered_map<charr::base_backend::search_fixed_extract::DirectRepeatKey, SEXPREC *, charr::base_backend::search_fixed_extract::DirectRepeatHash>::unordered_map	void (void) noexcept	owner	clang:cleanup-construction	
+cxx	std::unordered_map<charr::shared::FixedExtractRepeatKey, SEXPREC *, charr::shared::FixedExtractRepeatHash>::emplace	struct std::pair<struct std::__detail::_Node_iterator<struct std::pair<const struct charr::shared::FixedExtractRepeatKey, struct SEXPREC *>, false, false>, _Bool> (const struct charr::shared::FixedExtractRepeatKey &, struct SEXPREC *&)	cxx	clang:not-noexcept	
+neutral	std::unordered_map<charr::shared::FixedExtractRepeatKey, SEXPREC *, charr::shared::FixedExtractRepeatHash>::end	struct std::__detail::_Node_iterator<struct std::pair<const struct charr::shared::FixedExtractRepeatKey, struct SEXPREC *>, false, false> (void) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::unordered_map<charr::shared::FixedExtractRepeatKey, SEXPREC *, charr::shared::FixedExtractRepeatHash>::find	struct std::__detail::_Node_iterator<struct std::pair<const struct charr::shared::FixedExtractRepeatKey, struct SEXPREC *>, false, false> (const struct charr::shared::FixedExtractRepeatKey &)	cxx	clang:not-noexcept	
+cxx	std::unordered_map<charr::shared::FixedExtractRepeatKey, SEXPREC *, charr::shared::FixedExtractRepeatHash>::reserve	void (unsigned long)	cxx	clang:not-noexcept	
+owner	std::unordered_map<charr::shared::FixedExtractRepeatKey, SEXPREC *, charr::shared::FixedExtractRepeatHash>::unordered_map	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<cetype_ext_t>::operator[]	const enum cetype_ext_t &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<cetype_ext_t>::operator[]	enum cetype_ext_t &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<cetype_ext_t>::vector	void (unsigned long, const class std::allocator<enum cetype_ext_t> &)	owner	clang:cleanup-construction	
+neutral	std::vector<char>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<char>::data	char *(void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<char>::data	const char *(void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<char>::empty	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<char>::max_size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<char>::operator[]	char &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<char>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+neutral	std::vector<char>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<char>::swap	void (class std::vector<char> &) noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<char>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<charport::Reader>::operator[]	class charport::Reader &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<charport::Reader>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+owner	std::vector<charport::Reader>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<charport::StrViews>::operator[]	class charport::StrViews &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<charport::StrViews>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+owner	std::vector<charport::StrViews>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+cxx	std::vector<charport::charvec::Store>::emplace_back	class charport::charvec::Store &(int &&, int &&)	cxx	clang:not-noexcept	
+neutral	std::vector<charport::charvec::Store>::operator[]	class charport::charvec::Store &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<charport::charvec::Store>::push_back	void (class charport::charvec::Store &&)	cxx	clang:not-noexcept	
+cxx	std::vector<charport::charvec::Store>::reserve	void (unsigned long)	cxx	clang:not-noexcept	
+owner	std::vector<charport::charvec::Store>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<charport_strview>::operator[]	struct charport_strview &(unsigned long) noexcept		legacy-unobserved	
+cxx	std::vector<charport_strview>::resize	void (unsigned long)		legacy-unobserved	
+neutral	std::vector<charport_strview>::vector	void (void) noexcept		legacy-unobserved	
+neutral	std::vector<charr::altrep_backend::encoding_conversion::ByteRecord>::operator[]	struct charr::altrep_backend::encoding_conversion::ByteRecord &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<charr::altrep_backend::encoding_conversion::ByteRecord>::vector	void (unsigned long, const class std::allocator<struct charr::altrep_backend::encoding_conversion::ByteRecord> &)	owner	clang:cleanup-construction	
+neutral	std::vector<charr::altrep_backend::encoding_conversion::RawResult>::operator[]	const struct charr::altrep_backend::encoding_conversion::RawResult &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::altrep_backend::encoding_conversion::RawResult>::operator[]	struct charr::altrep_backend::encoding_conversion::RawResult &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::altrep_backend::encoding_conversion::RawResult>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<charr::altrep_backend::encoding_conversion::RawResult>::vector	void (unsigned long, const class std::allocator<struct charr::altrep_backend::encoding_conversion::RawResult> &)	owner	clang:cleanup-construction	
+neutral	std::vector<charr::altrep_backend::pad::PadInput>::operator[]	struct charr::altrep_backend::pad::PadInput &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<charr::altrep_backend::pad::PadInput>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+owner	std::vector<charr::altrep_backend::pad::PadInput>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<charr::altrep_backend::sub::CiSubFrameInput>::operator[]	struct charr::altrep_backend::sub::CiSubFrameInput &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<charr::altrep_backend::sub::CiSubFrameInput>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+owner	std::vector<charr::altrep_backend::sub::CiSubFrameInput>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<charr::base_backend::encoding_conversion::ByteRecord>::operator[]	struct charr::base_backend::encoding_conversion::ByteRecord &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<charr::base_backend::encoding_conversion::ByteRecord>::vector	void (unsigned long, const class std::allocator<struct charr::base_backend::encoding_conversion::ByteRecord> &)	owner	clang:cleanup-construction	
+neutral	std::vector<charr::base_backend::pad::PadInput>::operator[]	struct charr::base_backend::pad::PadInput &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<charr::base_backend::pad::PadInput>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+owner	std::vector<charr::base_backend::pad::PadInput>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<charr::base_backend::sub::CiSubInput>::operator[]	struct charr::base_backend::sub::CiSubInput &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<charr::base_backend::sub::CiSubInput>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+owner	std::vector<charr::base_backend::sub::CiSubInput>::vector	void (unsigned long, const class std::allocator<struct charr::base_backend::sub::CiSubInput> &)	owner	clang:cleanup-construction	
+owner	std::vector<charr::base_backend::sub::CiSubInput>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<charr::shared::BoundaryRange>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::BoundaryRange>::operator[]	struct charr::shared::BoundaryRange &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<charr::shared::BoundaryRange>::push_back	void (const struct charr::shared::BoundaryRange &)	cxx	clang:not-noexcept	
+cxx	std::vector<charr::shared::BoundaryRange>::reserve	void (unsigned long)		legacy-unobserved	
+neutral	std::vector<charr::shared::BoundaryRange>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<charr::shared::BoundaryRange>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<charr::shared::ByteRange>::back	struct charr::shared::ByteRange &(void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::ByteRange>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::ByteRange>::operator[]	const struct charr::shared::ByteRange &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::ByteRange>::operator[]	struct charr::shared::ByteRange &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::ByteRange>::pop_back	void (void) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<charr::shared::ByteRange>::push_back	void (const struct charr::shared::ByteRange &)	cxx	clang:not-noexcept	
+cxx	std::vector<charr::shared::ByteRange>::push_back	void (struct charr::shared::ByteRange &&)	cxx	clang:not-noexcept	
+cxx	std::vector<charr::shared::ByteRange>::reserve	void (unsigned long)	cxx	clang:not-noexcept	
+neutral	std::vector<charr::shared::ByteRange>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<charr::shared::ByteRange>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<charr::shared::CharacterClassRange>::clear	void (void) noexcept		legacy-unobserved	
+neutral	std::vector<charr::shared::CharacterClassRange>::operator[]	const struct charr::shared::CharacterClassRange &(unsigned long) const noexcept		legacy-unobserved	
+neutral	std::vector<charr::shared::CharacterClassRange>::operator[]	struct charr::shared::CharacterClassRange &(unsigned long) noexcept		legacy-unobserved	
+cxx	std::vector<charr::shared::CharacterClassRange>::push_back	void (struct charr::shared::CharacterClassRange &&)		legacy-unobserved	
+neutral	std::vector<charr::shared::CharacterClassRange>::size	unsigned long (void) const noexcept		legacy-unobserved	
+neutral	std::vector<charr::shared::CharacterClassRange>::vector	void (void) noexcept		legacy-unobserved	
+neutral	std::vector<charr::shared::CollationRange>::back	struct charr::shared::CollationRange &(void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::CollationRange>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::CollationRange>::operator[]	const struct charr::shared::CollationRange &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::CollationRange>::operator[]	struct charr::shared::CollationRange &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::CollationRange>::pop_back	void (void) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<charr::shared::CollationRange>::push_back	void (const struct charr::shared::CollationRange &)	cxx	clang:not-noexcept	
+cxx	std::vector<charr::shared::CollationRange>::push_back	void (struct charr::shared::CollationRange &&)	cxx	clang:not-noexcept	
+cxx	std::vector<charr::shared::CollationRange>::reserve	void (unsigned long)	cxx	clang:not-noexcept	
+cxx	std::vector<charr::shared::CollationRange>::resize	void (unsigned long)		legacy-unobserved	
+neutral	std::vector<charr::shared::CollationRange>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<charr::shared::CollationRange>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<charr::shared::EncodingInfoDiagnostic>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::EncodingInfoDiagnostic>::operator[]	const struct charr::shared::EncodingInfoDiagnostic &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::EncodingInfoDiagnostic>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<charr::shared::EncodingInfoDiagnostic>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+cxx	std::vector<charr::shared::EncodingInfoValue>::assign	void (unsigned long, const struct charr::shared::EncodingInfoValue &)	cxx	clang:not-noexcept	
+neutral	std::vector<charr::shared::EncodingInfoValue>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::EncodingInfoValue>::operator[]	const struct charr::shared::EncodingInfoValue &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::EncodingInfoValue>::operator[]	struct charr::shared::EncodingInfoValue &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::EncodingInfoValue>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<charr::shared::EncodingInfoValue>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<charr::shared::FixedExtractRow>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::FixedExtractRow>::operator[]	struct charr::shared::FixedExtractRow &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<charr::shared::FixedExtractRow>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+owner	std::vector<charr::shared::FixedExtractRow>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<charr::shared::FixedRange>::back	struct charr::shared::FixedRange &(void) noexcept		legacy-unobserved	
+neutral	std::vector<charr::shared::FixedRange>::clear	void (void) noexcept		legacy-unobserved	
+neutral	std::vector<charr::shared::FixedRange>::operator[]	const struct charr::shared::FixedRange &(unsigned long) const noexcept		legacy-unobserved	
+neutral	std::vector<charr::shared::FixedRange>::operator[]	struct charr::shared::FixedRange &(unsigned long) noexcept		legacy-unobserved	
+neutral	std::vector<charr::shared::FixedRange>::pop_back	void (void) noexcept		legacy-unobserved	
+cxx	std::vector<charr::shared::FixedRange>::push_back	void (struct charr::shared::FixedRange &&)		legacy-unobserved	
+cxx	std::vector<charr::shared::FixedRange>::reserve	void (unsigned long)		legacy-unobserved	
+neutral	std::vector<charr::shared::FixedRange>::size	unsigned long (void) const noexcept		legacy-unobserved	
+neutral	std::vector<charr::shared::FixedRange>::vector	void (void) noexcept		legacy-unobserved	
+cxx	std::vector<charr::shared::RegexRange>::assign	void (unsigned long, const struct charr::shared::RegexRange &)	cxx	clang:not-noexcept	
+neutral	std::vector<charr::shared::RegexRange>::back	struct charr::shared::RegexRange &(void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::RegexRange>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::RegexRange>::operator[]	const struct charr::shared::RegexRange &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::RegexRange>::operator[]	struct charr::shared::RegexRange &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::RegexRange>::pop_back	void (void) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<charr::shared::RegexRange>::push_back	void (const struct charr::shared::RegexRange &)	cxx	clang:not-noexcept	
+cxx	std::vector<charr::shared::RegexRange>::push_back	void (struct charr::shared::RegexRange &&)	cxx	clang:not-noexcept	
+cxx	std::vector<charr::shared::RegexRange>::reserve	void (unsigned long)	cxx	clang:not-noexcept	
+cxx	std::vector<charr::shared::RegexRange>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+neutral	std::vector<charr::shared::RegexRange>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<charr::shared::RegexRange>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<charr::shared::StringView>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::StringView>::data	const struct charr::shared::StringView *(void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::StringView>::data	struct charr::shared::StringView *(void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::StringView>::empty	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::StringView>::operator[]	const struct charr::shared::StringView &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::StringView>::operator[]	struct charr::shared::StringView &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<charr::shared::StringView>::push_back	void (const struct charr::shared::StringView &)	cxx	clang:not-noexcept	
+cxx	std::vector<charr::shared::StringView>::push_back	void (struct charr::shared::StringView &&)	cxx	clang:not-noexcept	
+cxx	std::vector<charr::shared::StringView>::reserve	void (unsigned long)	cxx	clang:not-noexcept	
+cxx	std::vector<charr::shared::StringView>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+neutral	std::vector<charr::shared::StringView>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<charr::shared::StringView>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<charr::shared::join::Column>::data	struct charr::shared::join::Column *(void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::join::Column>::operator[]	struct charr::shared::join::Column &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::join::Column>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<charr::shared::join::Column>::vector	void (unsigned long, const class std::allocator<struct charr::shared::join::Column> &)	owner	clang:cleanup-construction	
+neutral	std::vector<charr::shared::join::FlattenPlan>::operator[]	struct charr::shared::join::FlattenPlan &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<charr::shared::join::FlattenPlan>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+owner	std::vector<charr::shared::join::FlattenPlan>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<charr::shared::line_split::InvalidSequence>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::line_split::InvalidSequence>::empty	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::line_split::InvalidSequence>::operator[]	const struct charr::shared::line_split::InvalidSequence &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::line_split::InvalidSequence>::operator[]	struct charr::shared::line_split::InvalidSequence &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<charr::shared::line_split::InvalidSequence>::push_back	void (struct charr::shared::line_split::InvalidSequence &&)	cxx	clang:not-noexcept	
+neutral	std::vector<charr::shared::line_split::InvalidSequence>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::line_split::LineSlice>::capacity	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::line_split::LineSlice>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::line_split::LineSlice>::operator[]	const struct charr::shared::line_split::LineSlice &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::line_split::LineSlice>::operator[]	struct charr::shared::line_split::LineSlice &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<charr::shared::line_split::LineSlice>::push_back	void (struct charr::shared::line_split::LineSlice &&)	cxx	clang:not-noexcept	
+cxx	std::vector<charr::shared::line_split::LineSlice>::reserve	void (unsigned long)	cxx	clang:not-noexcept	
+neutral	std::vector<charr::shared::line_split::LineSlice>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::substring::ReplacementWarning>::operator[]	const enum charr::shared::substring::ReplacementWarning &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<charr::shared::substring::ReplacementWarning>::push_back	void (const enum charr::shared::substring::ReplacementWarning &)	cxx	clang:not-noexcept	
+cxx	std::vector<charr::shared::substring::ReplacementWarning>::push_back	void (enum charr::shared::substring::ReplacementWarning &&)	cxx	clang:not-noexcept	
+neutral	std::vector<charr::shared::substring::ReplacementWarning>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<charr::shared::substring::ReplacementWarning>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<const char *>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<const char *>::operator[]	const char *&(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<const char *>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+owner	std::vector<const char *>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<double>::max_size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<double>::operator[]	double &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<double>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+owner	std::vector<double>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<icu_78::UnicodeSet>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<icu_78::UnicodeSet>::operator[]	class icu_78::UnicodeSet &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<icu_78::UnicodeSet>::operator[]	const class icu_78::UnicodeSet &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<icu_78::UnicodeSet>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+neutral	std::vector<icu_78::UnicodeSet>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<icu_78::UnicodeSet>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<icu_78::UnicodeString>::operator[]	class icu_78::UnicodeString &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<icu_78::UnicodeString>::operator[]	const class icu_78::UnicodeString &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<icu_78::UnicodeString>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+neutral	std::vector<icu_78::UnicodeString>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<icu_78::UnicodeString>::vector	void (unsigned long, const class std::allocator<class icu_78::UnicodeString> &)	owner	clang:cleanup-construction	
+owner	std::vector<icu_78::UnicodeString>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<int>::back	const int &(void) const noexcept		legacy-unobserved	
+neutral	std::vector<int>::begin	class __gnu_cxx::__normal_iterator<int *, class std::vector<int> > (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<int>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<int>::empty	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<int>::end	class __gnu_cxx::__normal_iterator<int *, class std::vector<int> > (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<int>::operator[]	const int &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<int>::operator[]	int &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<int>::push_back	void (const int &)	cxx	clang:not-noexcept	
+cxx	std::vector<int>::push_back	void (int &&)	cxx	clang:not-noexcept	
+cxx	std::vector<int>::reserve	void (unsigned long)	cxx	clang:not-noexcept	
+cxx	std::vector<int>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+neutral	std::vector<int>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<int>::vector	void (unsigned long, const int &, const class std::allocator<int> &)	owner	clang:cleanup-construction	
+owner	std::vector<int>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+cxx	std::vector<std::basic_string<char>>::assign	void (unsigned long, const class std::basic_string<char> &)	cxx	clang:not-noexcept	
+neutral	std::vector<std::basic_string<char>>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<std::basic_string<char>>::operator[]	class std::basic_string<char> &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<std::basic_string<char>>::operator[]	const class std::basic_string<char> &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<std::basic_string<char>>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+neutral	std::vector<std::basic_string<char>>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<std::basic_string<char>>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<std::vector<charr::shared::RegexRange>>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<std::vector<charr::shared::RegexRange>>::operator[]	class std::vector<struct charr::shared::RegexRange> &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<std::vector<charr::shared::RegexRange>>::operator[]	const class std::vector<struct charr::shared::RegexRange> &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<std::vector<charr::shared::RegexRange>>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+neutral	std::vector<std::vector<charr::shared::RegexRange>>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<std::vector<charr::shared::RegexRange>>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<std::vector<charr::shared::StringView>>::operator[]	class std::vector<struct charr::shared::StringView> &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<std::vector<charr::shared::StringView>>::operator[]	const class std::vector<struct charr::shared::StringView> &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<std::vector<charr::shared::StringView>>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<std::vector<charr::shared::StringView>>::vector	void (unsigned long, const class std::allocator<class std::vector<struct charr::shared::StringView> > &)	owner	clang:cleanup-construction	
+cxx	std::vector<unsigned char>::assign	void (const unsigned char *, const unsigned char *)	cxx	clang:not-noexcept	
+cxx	std::vector<unsigned char>::assign	void (unsigned long, const unsigned char &)	cxx	clang:not-noexcept	
+neutral	std::vector<unsigned char>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<unsigned char>::data	const unsigned char *(void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<unsigned char>::empty	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<unsigned char>::max_size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<unsigned char>::operator[]	const unsigned char &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<unsigned char>::operator[]	unsigned char &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<unsigned char>::push_back	void (unsigned char &&)	cxx	clang:not-noexcept	
+cxx	std::vector<unsigned char>::reserve	void (unsigned long)	cxx	clang:not-noexcept	
+cxx	std::vector<unsigned char>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+neutral	std::vector<unsigned char>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<unsigned char>::vector	void (unsigned long, const unsigned char &, const class std::allocator<unsigned char> &)	owner	clang:cleanup-construction	
+owner	std::vector<unsigned char>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	std::vector<unsigned int>::back	const unsigned int &(void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<unsigned int>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<unsigned int>::operator[]	const unsigned int &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<unsigned int>::operator[]	unsigned int &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<unsigned int>::push_back	void (unsigned int &&)	cxx	clang:not-noexcept	
+neutral	std::vector<unsigned int>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<unsigned int>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+cxx	std::vector<unsigned long>::assign	void (unsigned long, const unsigned long &)	cxx	clang:not-noexcept	
+neutral	std::vector<unsigned long>::empty	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<unsigned long>::operator[]	const unsigned long &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<unsigned long>::operator[]	unsigned long &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<unsigned long>::push_back	void (const unsigned long &)	cxx	clang:not-noexcept	
+cxx	std::vector<unsigned long>::push_back	void (unsigned long &&)	cxx	clang:not-noexcept	
+cxx	std::vector<unsigned long>::reserve	void (unsigned long)	cxx	clang:not-noexcept	
+neutral	std::vector<unsigned long>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<unsigned long>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+neutral	strcmp	int (const char *, const char *) noexcept	neutral	clang:no-cxx-propagation	
+neutral	strerror	char *(int) noexcept	neutral	clang:no-cxx-propagation	
+neutral	strlen	unsigned long (const char *) noexcept	neutral	clang:no-cxx-propagation	
+neutral	u_charType_78	signed char (int)	neutral	rule:reviewed-c-api	
+neutral	u_errorName_78	const char *(enum UErrorCode)	neutral	rule:reviewed-c-api	
+neutral	u_getDataVersion_78	void (unsigned char *, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	u_getDataVersion_78_charr	void (unsigned char *, enum UErrorCode *)		legacy-unobserved	
+neutral	u_getIntPropertyValue_78	int (int, enum UProperty)	neutral	rule:reviewed-c-api	
+neutral	u_getUnicodeVersion_78	void (unsigned char *)	neutral	rule:reviewed-c-api	
+neutral	u_getUnicodeVersion_78_charr	void (unsigned char *)		legacy-unobserved	
+neutral	u_getVersion_78	void (unsigned char *)	neutral	rule:reviewed-c-api	
+neutral	u_getVersion_78_charr	void (unsigned char *)		legacy-unobserved	
+neutral	u_hasBinaryProperty_78	signed char (int, enum UProperty)	neutral	rule:reviewed-c-api	
+neutral	u_init_78	void (enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	u_init_78_charr	void (enum UErrorCode *)		legacy-unobserved	
+neutral	u_strFromUTF8WithSub_78	char16_t *(char16_t *, int, int *, const char *, int, int, int *, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	u_strToUTF8_78	char *(char *, int, int *, const char16_t *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	u_toupper_78	int (int)	neutral	rule:reviewed-c-api	
+neutral	u_versionToString_78	void (const unsigned char *, char *)	neutral	rule:reviewed-c-api	
+neutral	u_versionToString_78_charr	void (const unsigned char *, char *)		legacy-unobserved	
+neutral+raw-release	ubrk_close_78	void (struct UBreakIterator *)	neutral	rule:reviewed-c-api	Releases an ICU BreakIterator handle.
+neutral	ubrk_first_78	int (struct UBreakIterator *)		legacy-unobserved	
+neutral	ubrk_getLocaleByType_78	const char *(const struct UBreakIterator *, ULocDataLocaleType, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	ubrk_getRuleStatus_78	int (struct UBreakIterator *)		legacy-unobserved	
+neutral	ubrk_last_78	int (struct UBreakIterator *)		legacy-unobserved	
+neutral	ubrk_next_78	int (struct UBreakIterator *)		legacy-unobserved	
+neutral+raw-acquire	ubrk_openRules_78	struct UBreakIterator *(const char16_t *, int, const char16_t *, int, struct UParseError *, enum UErrorCode *)	neutral	rule:reviewed-c-api	Returns an owned ICU BreakIterator handle.
+neutral+raw-acquire	ubrk_open_78	struct UBreakIterator *(enum UBreakIteratorType, const char *, const char16_t *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	Returns an owned ICU BreakIterator handle.
+neutral	ubrk_previous_78	int (struct UBreakIterator *)		legacy-unobserved	
+neutral	ubrk_setUText_78	void (struct UBreakIterator *, struct UText *, enum UErrorCode *)		legacy-unobserved	
+neutral+raw-release	ucasemap_close_78	void (struct UCaseMap *)	neutral	rule:reviewed-c-api	Releases an ICU CaseMap handle.
+neutral	ucasemap_getLocale_78	const char *(const struct UCaseMap *)	neutral	rule:reviewed-c-api	
+neutral+raw-acquire	ucasemap_open_78	struct UCaseMap *(const char *, unsigned int, enum UErrorCode *)	neutral	rule:reviewed-c-api	Returns an owned ICU CaseMap handle.
+neutral	ucasemap_setBreakIterator_78	void (struct UCaseMap *, struct UBreakIterator *, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	ucasemap_utf8ToLower_78	int (const struct UCaseMap *, char *, int, const char *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	ucasemap_utf8ToTitle_78	int (struct UCaseMap *, char *, int, const char *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	ucasemap_utf8ToUpper_78	int (const struct UCaseMap *, char *, int, const char *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral+raw-release	ucnv_close_78	void (struct UConverter *)	neutral	rule:reviewed-c-api	Releases an ICU converter handle.
+neutral	ucnv_compareNames_78	int (const char *, const char *)	neutral	rule:reviewed-c-api	
+neutral	ucnv_convertEx_78	void (struct UConverter *, struct UConverter *, char **, const char *, const char **, const char *, char16_t *, char16_t **, char16_t **, const char16_t *, signed char, signed char, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	ucnv_countStandards_78	unsigned short (void)	neutral	rule:reviewed-c-api	
+neutral	ucnv_fromUChars_78	int (struct UConverter *, char *, int, const char16_t *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	ucnv_getMaxCharSize_78	signed char (const struct UConverter *)	neutral	rule:reviewed-c-api	
+neutral	ucnv_getMinCharSize_78	signed char (const struct UConverter *)	neutral	rule:reviewed-c-api	
+neutral	ucnv_getName_78	const char *(const struct UConverter *, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	ucnv_getNextUChar_78	int (struct UConverter *, const char **, const char *, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	ucnv_getStandardName_78	const char *(const char *, const char *, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	ucnv_getStandard_78	const char *(unsigned short, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral+raw-acquire	ucnv_open_78	struct UConverter *(const char *, enum UErrorCode *)	neutral	rule:reviewed-c-api	Returns an owned ICU converter handle.
+neutral	ucnv_resetFromUnicode_78	void (struct UConverter *)	neutral	rule:reviewed-c-api	
+neutral	ucnv_reset_78	void (struct UConverter *)	neutral	rule:reviewed-c-api	
+neutral	ucnv_setFromUCallBack_78	void (struct UConverter *, void (*)(const void *, UConverterFromUnicodeArgs *, const char16_t *, int, int, UConverterCallbackReason, enum UErrorCode *), const void *, void (**)(const void *, UConverterFromUnicodeArgs *, const char16_t *, int, int, UConverterCallbackReason, enum UErrorCode *), const void **, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	ucnv_setToUCallBack_78	void (struct UConverter *, void (*)(const void *, UConverterToUnicodeArgs *, const char *, int, UConverterCallbackReason, enum UErrorCode *), const void *, void (**)(const void *, UConverterToUnicodeArgs *, const char *, int, UConverterCallbackReason, enum UErrorCode *), const void **, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral+raw-release	ucol_close_78	void (struct UCollator *)	neutral	rule:reviewed-c-api	Releases an ICU collator handle.
+neutral	ucol_getLocaleByType_78	const char *(const struct UCollator *, ULocDataLocaleType, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral+raw-acquire	ucol_open_78	struct UCollator *(const char *, enum UErrorCode *)	neutral	rule:reviewed-c-api	Returns an owned ICU collator handle.
+neutral	ucol_setAttribute_78	void (struct UCollator *, UColAttribute, UColAttributeValue, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	ucol_strcollUTF8_78	UCollationResult (const struct UCollator *, const char *, int, const char *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	udata_setCommonData_78	void (const void *, enum UErrorCode *)		legacy-unobserved	
+neutral	udata_setCommonData_78_charr	void (const void *, enum UErrorCode *)		legacy-unobserved	
+neutral	uloc_canonicalize_78	int (const char *, char *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	uloc_getDefault_78	const char *(void)	neutral	rule:reviewed-c-api	
+neutral+raw-release	uregex_close_78	void (struct URegularExpression *)		legacy-unobserved	Releases an ICU regular-expression handle.
+neutral	uregex_findNext_78	signed char (struct URegularExpression *, enum UErrorCode *)		legacy-unobserved	
+neutral	uregex_find_78	signed char (struct URegularExpression *, int, enum UErrorCode *)		legacy-unobserved	
+neutral+raw-acquire	uregex_open_78	struct URegularExpression *(const char16_t *, int, unsigned int, struct UParseError *, enum UErrorCode *)		legacy-unobserved	Returns an owned ICU regular-expression handle.
+neutral	uregex_setStackLimit_78	void (struct URegularExpression *, int, enum UErrorCode *)		legacy-unobserved	
+neutral	uregex_setText_78	void (struct URegularExpression *, const char16_t *, int, enum UErrorCode *)		legacy-unobserved	
+neutral	uregex_setTimeLimit_78	void (struct URegularExpression *, int, enum UErrorCode *)		legacy-unobserved	
+neutral+raw-release	usearch_close_78	void (struct UStringSearch *)	neutral	rule:reviewed-c-api	Releases an ICU string-search handle.
+neutral	usearch_first_78	int (struct UStringSearch *, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	usearch_getMatchedLength_78	int (const struct UStringSearch *)	neutral	rule:reviewed-c-api	
+neutral	usearch_last_78	int (struct UStringSearch *, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	usearch_next_78	int (struct UStringSearch *, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral+raw-acquire	usearch_openFromCollator_78	struct UStringSearch *(const char16_t *, int, const char16_t *, int, const struct UCollator *, struct UBreakIterator *, enum UErrorCode *)	neutral	rule:reviewed-c-api	Returns an owned ICU string-search handle.
+neutral	usearch_setPattern_78	void (struct UStringSearch *, const char16_t *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	usearch_setText_78	void (struct UStringSearch *, const char16_t *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral+raw-release	utext_close_78	struct UText *(struct UText *)	neutral	rule:reviewed-c-api	Releases an ICU UText handle.
+neutral	utext_next32From_78	int (struct UText *, long)	neutral	rule:reviewed-c-api	
+neutral	utext_next32_78	int (struct UText *)	neutral	rule:reviewed-c-api	
+neutral+raw-acquire	utext_openUTF8_78	struct UText *(struct UText *, const char *, long, enum UErrorCode *)		legacy-unobserved	May allocate provider storage that creates a utext_close cleanup obligation; caller-supplied UText storage itself remains caller-owned.
+neutral	utf8_back1SafeBody_78	int (const unsigned char *, int, int)	neutral	rule:reviewed-c-api	
+neutral	utf8_prevCharSafeBody_78	int (const unsigned char *, int, int *, int, signed char)	neutral	rule:reviewed-c-api	

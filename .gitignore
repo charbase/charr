@@ -18,6 +18,7 @@ docs/
 pkgdown/index.md
 pkgdown/favicon/
 local
+compile_commands.json
 .DS_Store
 .vscode
 /src/.vscode

@@ -1,6 +1,8 @@
 #ifndef CHARR_SHARED_SLICE_ARENA_H
 #define CHARR_SHARED_SLICE_ARENA_H
 
+#include "lint.h"
+
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
@@ -11,9 +13,9 @@
 namespace charr {
 namespace shared {
 
-class SliceArena {
+class CHARR_OWNER_TYPE SliceArena {
 public:
-    SliceArena() noexcept
+    CHARR_CXX_HELPER SliceArena() noexcept
         : slices_(), current_(nullptr), current_capacity_(0), current_used_(0)
     {
     }
@@ -23,7 +25,7 @@ public:
     SliceArena(SliceArena&&) = delete;
     SliceArena& operator=(SliceArena&&) = delete;
 
-    char* allocate(std::size_t bytes)
+    CHARR_CXX_HELPER char* allocate(std::size_t bytes)
     {
         assert(bytes > 0);
         if (current_ == nullptr || bytes > current_capacity_ - current_used_)
@@ -35,7 +37,7 @@ public:
         return output;
     }
 
-    bool valid() const noexcept
+    CHARR_NEUTRAL_HELPER bool valid() const noexcept
     {
         return current_used_ <= current_capacity_ &&
             ((current_ == nullptr) == (current_capacity_ == 0));
@@ -50,7 +52,7 @@ private:
     std::size_t current_capacity_;
     std::size_t current_used_;
 
-    void start_slice(std::size_t required)
+    CHARR_CXX_HELPER void start_slice(std::size_t required)
     {
         std::size_t regular;
         if (current_capacity_ == 0) {

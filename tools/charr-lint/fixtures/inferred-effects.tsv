@@ -1,0 +1,5 @@
+effect	qualified_name	canonical_type	inferred_effect	inference_basis	override_reason
+cxx	inferred_c_call	void (void)	cxx	clang:not-noexcept	
+cxx	inferred_may_throw	void (void)	cxx	clang:not-noexcept	
+neutral	inferred_noexcept	void (void) noexcept	neutral	clang:no-cxx-propagation	
+owner	inferred_owner	struct InferredOwner (void) noexcept	owner	clang:cleanup-return	

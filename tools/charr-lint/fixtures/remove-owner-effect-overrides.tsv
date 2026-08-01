@@ -1,0 +1,2 @@
+add_effects	remove_effects	qualified_name	canonical_type	reason
+	owner	inferred_owner	struct InferredOwner (void) noexcept	Fixture attempts to suppress mechanical ownership inference.

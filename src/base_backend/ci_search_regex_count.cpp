@@ -32,99 +32,111 @@
 
 
 #include "ci_stringi.h"
-#include "regex/pattern_set.h"
-#include "io/utf8_input.h"
+#include "io/string_view.h"
+#include "regex/options_r.h"
+#include "../shared/entrypoint.h"
+#include "../shared/native_to_utf8.h"
+#include "../shared/protect.h"
+#include "../shared/regex_search.h"
+#include "../shared/slice_arena.h"
+#include "../shared/unwind.h"
+#include "../shared/utf8.h"
 
+#include <cstddef>
 #include <exception>
-#include <unicode/ustring.h>
+#include <string>
+#include <vector>
 
 
 namespace charr { namespace base_backend {
 
 namespace search_regex_count {
 
-class ReusableUtf16Text {
-private:
-    UnicodeString text_;
-
-public:
-    UnicodeString& set(const io::Utf8Record& value)
-    {
-        if (value.len <= 0) {
-            text_.remove();
-            return text_;
-        }
-
-        UChar* destination = text_.getBuffer(value.len);
-        if (!destination)
-            throw StriException(MSG__MEM_ALLOC_ERROR);
-
-        int32_t length = 0;
-        if (value.state == io::Utf8RecordState::ascii) {
-            for (int32_t i = 0; i < value.len; ++i)
-                destination[i] = static_cast<unsigned char>(value.ptr[i]);
-            length = value.len;
-        }
-        else {
-            UErrorCode status = U_ZERO_ERROR;
-            u_strFromUTF8WithSub(
-                destination, value.len, &length,
-                value.ptr, value.len, 0xfffd, nullptr, &status
-            );
-            text_.releaseBuffer(length);
-            STRI__CHECKICUSTATUS_THROW(status, {/* nothing to release */})
-            return text_;
-        }
-
-        text_.releaseBuffer(length);
-        return text_;
-    }
+enum class SubjectMode : unsigned char {
+    direct,
+    normalize,
+    bytes
 };
 
-bool can_borrow_plain_utf8(const SEXP* values, R_xlen_t size)
-{
-    for (R_xlen_t i = 0; i < size; ++i) {
+
+CHARR_NEUTRAL_HELPER R_len_t recycling_length(
+    R_len_t subject_length,
+    R_len_t pattern_length,
+    bool& warning
+) noexcept {
+    warning = false;
+    if (subject_length <= 0 || pattern_length <= 0)
+        return 0;
+
+    const R_len_t result = subject_length > pattern_length
+        ? subject_length
+        : pattern_length;
+    warning = result % subject_length != 0 ||
+        result % pattern_length != 0;
+    return result;
+}
+
+
+CHARR_R_HELPER SubjectMode subject_mode(
+    const SEXP* values, R_len_t size
+) noexcept {
+    for (R_len_t i = 0; i < size; ++i) {
         const SEXP value = values[i];
         if (value == NA_STRING)
             continue;
         if (IS_BYTES(value))
-            throw StriException(MSG__BYTESENC);
+            return SubjectMode::bytes;
         if (!IS_ASCII(value) && !IS_UTF8(value))
-            return false;
+            return SubjectMode::normalize;
     }
-    return true;
+    return SubjectMode::direct;
 }
 
-io::Utf8Record plain_record(SEXP value)
+
+CHARR_CXX_HELPER [[noreturn]] void throw_regex_error(
+    UErrorCode status,
+    bool pattern_compile_error,
+    const shared::RegexPatterns& patterns,
+    std::size_t pattern_index
+)
 {
-    if (value == NA_STRING) {
-        return io::Utf8Record{
-            nullptr, NA_INTEGER, io::Utf8RecordState::missing
-        };
+    if (pattern_compile_error) {
+        std::string context;
+        patterns.context(pattern_index, context);
+        throw StriException(status, context.c_str());
     }
-    return io::Utf8Record{
-        CHAR(value), LENGTH(value),
-        IS_ASCII(value) ? io::Utf8RecordState::ascii
-                        : io::Utf8RecordState::utf8
-    };
+    throw StriException(status);
 }
 
-int count_matches(RegexMatcher* matcher, UnicodeString& subject)
+
+CHARR_CXX_HELPER void bind_pattern(
+    shared::RegexMatcher& matcher,
+    const shared::RegexInput& pattern,
+    const shared::RegexPatterns& patterns,
+    std::size_t pattern_index
+)
 {
-    matcher->reset(subject);
     UErrorCode status = U_ZERO_ERROR;
-    int count = 0;
-    while (matcher->find(status)) {
-        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-        ++count;
+    bool pattern_compile_error = false;
+    if (!matcher.bind(pattern, status, pattern_compile_error) ||
+            U_FAILURE(status)) {
+        throw_regex_error(
+            status, pattern_compile_error, patterns, pattern_index
+        );
     }
-    STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-    return count;
+}
+
+
+CHARR_R_HELPER void emit_empty_pattern_warnings(int count) noexcept
+{
+    for (int i = 0; i < count; ++i)
+        Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
 }
 
 } // namespace search_regex_count
 
 using namespace search_regex_count;
+
 
 /**
  * Count the number of recurrences of \code{pattern} in \code{s}
@@ -134,118 +146,226 @@ using namespace search_regex_count;
  * @param opts_regex list
  *
  * @return integer vector
- * @version 0.1-?? (Bartek Tartanus)
- *
- * @version 0.1-?? (Marek Gagolewski)
- *          use io::Utf16Input's vectorization
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-16)
- *          make StriException-friendly
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-17)
- *          use regex::PatternSet + opts_regex
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 1.0-2 (Marek Gagolewski, 2016-01-29)
- *    Issue #214: allow a regex pattern like `.*`  to match an empty string
- *
- * @version 1.4.7 (Marek Gagolewski, 2020-08-24)
- *    Use regex::PatternSet::getRegexOptions
  */
-SEXP ci_count_regex(SEXP str, SEXP pattern, SEXP opts_regex)
+CHARR_ENTRYPOINT SEXP ci_count_regex(
+    SEXP str, SEXP pattern, SEXP opts_regex
+) noexcept
 {
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
-    PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
-    R_len_t vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
+    CHARR_ENTRYPOINT_BEGIN();
 
-    regex::Options pattern_opts =
-        regex::PatternSet::getRegexOptions(opts_regex);
+    str = entry_protections.protect_one(ci__prepare_arg_string_r(str, "str"));
+    pattern = entry_protections.protect_one(ci__prepare_arg_string_r(pattern, "pattern"));
 
-    STRI__ERROR_HANDLER_BEGIN(2)
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(INTSXP, vectorize_length));
-    int* ret_tab = INTEGER(ret);
+    const R_len_t subject_length = LENGTH(str);
+    const R_len_t pattern_length = LENGTH(pattern);
+    bool recycling_warning = false;
+    const R_len_t vectorize_length = recycling_length(
+        subject_length, pattern_length, recycling_warning
+    );
+    if (recycling_warning)
+        Rf_warning(MSG__WARN_RECYCLING_RULE);
+
+    const shared::RegexOptions options = regex::prepare_options(opts_regex);
+
+    int empty_pattern_warnings = 0;
 
     try {
-        if (vectorize_length > 0) {
-            // RegexMatcher is faster on UTF-16 than through a UTF-8 UText.
-            // Reuse one UTF-16 buffer, though, instead of converting and
-            // retaining the whole subject vector before matching begins.
-            regex::PatternSet pattern_cont(
-                pattern, vectorize_length, pattern_opts
-            );
-            ReusableUtf16Text subject_text;
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        std::vector<shared::StringView> normalized_subjects;
+        shared::RegexPatterns patterns;
+        shared::RegexMatcher matcher(options);
 
-            const R_xlen_t str_n = XLENGTH(str);
-            const SEXP* values = STRING_PTR_RO(str);
-            if (can_borrow_plain_utf8(values, str_n)) {
-                const bool scalar_pattern = XLENGTH(pattern) == 1;
-                if (scalar_pattern) {
-                    const bool pattern_unusable = pattern_cont.isNA(0) ||
-                        pattern_cont.get(0).length() <= 0;
-                    RegexMatcher* matcher = nullptr;
-                    for (R_len_t i = 0; i < vectorize_length; ++i) {
-                        const io::Utf8Record subject = plain_record(values[i]);
-                        if (subject.is_na() || pattern_unusable) {
-                            ret_tab[i] = NA_INTEGER;
-                            continue;
-                        }
-                        if (!matcher)
-                            matcher = pattern_cont.getMatcher(0);
-                        ret_tab[i] = count_matches(
-                            matcher, subject_text.set(subject)
-                        );
-                    }
-                }
-                else {
-                    for (R_len_t i = 0; i < vectorize_length; ++i) {
-                        const io::Utf8Record subject =
-                            plain_record(values[i % str_n]);
-                        if (subject.is_na() || pattern_cont.isNA(i) ||
-                                pattern_cont.get(i).length() <= 0) {
-                            ret_tab[i] = NA_INTEGER;
-                            continue;
-                        }
-                        ret_tab[i] = count_matches(
-                            pattern_cont.getMatcher(i),
-                            subject_text.set(subject)
-                        );
-                    }
-                }
-            }
-            else {
-                io::Utf8Input subjects(
-                    str, vectorize_length, io::Utf8BomPolicy::preserve
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(INTSXP, vectorize_length), result_index
                 );
+                int* output = INTEGER(result);
 
-                for (R_len_t i = pattern_cont.vectorize_init();
-                        i != pattern_cont.vectorize_end();
-                        i = pattern_cont.vectorize_next(i)) {
-                    if (subjects.is_na(i) || pattern_cont.isNA(i) ||
-                            pattern_cont.get(i).length() <= 0) {
-                        ret_tab[i] = NA_INTEGER;
-                        continue;
-                    }
-                    ret_tab[i] = count_matches(
-                        pattern_cont.getMatcher(i),
-                        subject_text.set(subjects.text(i))
+                if (vectorize_length > 0) {
+                    patterns.resize(
+                        static_cast<std::size_t>(pattern_length)
                     );
-                }
-            }
-        }
-    }
-    catch (const StriException&) {
-        throw;
-    }
-    catch (const std::exception& error) {
-        throw StriException("%s", error.what());
-    }
+                    const SEXP* pattern_values = STRING_PTR_RO(pattern);
+                    for (R_len_t i = 0; i < pattern_length; ++i) {
+                        const shared::StringView value =
+                            shared::normalize_utf8_preserve_bom(
+                                io::as_shared_view(pattern_values[i]),
+                                pattern_converter, pattern_storage
+                            );
+                        patterns.set(static_cast<std::size_t>(i), value);
+                    }
+                    const SEXP* subject_values = STRING_PTR_RO(str);
+                    const SubjectMode mode = subject_mode(
+                        subject_values, subject_length
+                    );
+                    if (mode == SubjectMode::bytes)
+                        throw StriException(MSG__BYTESENC);
 
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
+                    if (mode == SubjectMode::normalize) {
+                        normalized_subjects.resize(
+                            static_cast<std::size_t>(subject_length)
+                        );
+                        for (R_len_t i = 0; i < subject_length; ++i) {
+                            normalized_subjects[
+                                static_cast<std::size_t>(i)
+                            ] = shared::normalize_utf8_preserve_bom(
+                                io::as_shared_view(subject_values[i]),
+                                subject_converter, subject_storage
+                            );
+                        }
+                    }
+
+                    empty_pattern_warnings = patterns.empty_count();
+
+                    if (pattern_length == 1) {
+                        const std::size_t pattern_index = 0;
+                        const shared::RegexInput current_pattern =
+                            patterns.get(pattern_index);
+                        const bool pattern_unusable =
+                            current_pattern.missing ||
+                            current_pattern.length <= 0;
+                        bool pattern_bound = false;
+
+                        if (mode == SubjectMode::direct) {
+                            for (R_len_t i = 0;
+                                    i < vectorize_length; ++i) {
+                                const SEXP identity = subject_values[i];
+                                const shared::StringView current =
+                                    io::as_direct_utf8_view(identity);
+                                if (current.is_na() || pattern_unusable) {
+                                    output[i] = NA_INTEGER;
+                                    continue;
+                                }
+
+                                if (!pattern_bound) {
+                                    bind_pattern(
+                                        matcher, current_pattern, patterns,
+                                        pattern_index
+                                    );
+                                    pattern_bound = true;
+                                }
+                                UErrorCode status = U_ZERO_ERROR;
+                                output[i] = matcher.count(
+                                    current, identity, status
+                                );
+                                if (U_FAILURE(status)) {
+                                    throw_regex_error(
+                                        status, false,
+                                        patterns, pattern_index
+                                    );
+                                }
+                            }
+                        }
+                        else {
+                            for (R_len_t i = 0;
+                                    i < vectorize_length; ++i) {
+                                const shared::StringView& current =
+                                    normalized_subjects[
+                                        static_cast<std::size_t>(i)
+                                    ];
+                                if (current.is_na() || pattern_unusable) {
+                                    output[i] = NA_INTEGER;
+                                    continue;
+                                }
+
+                                if (!pattern_bound) {
+                                    bind_pattern(
+                                        matcher, current_pattern, patterns,
+                                        pattern_index
+                                    );
+                                    pattern_bound = true;
+                                }
+                                UErrorCode status = U_ZERO_ERROR;
+                                output[i] = matcher.count(
+                                    current, &current, status
+                                );
+                                if (U_FAILURE(status)) {
+                                    throw_regex_error(
+                                        status, false,
+                                        patterns, pattern_index
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    else {
+                        for (R_len_t lane = 0;
+                                lane < pattern_length; ++lane) {
+                            const std::size_t pattern_index =
+                                static_cast<std::size_t>(lane);
+                            const shared::RegexInput current_pattern =
+                                patterns.get(pattern_index);
+                            bool pattern_bound = false;
+
+                            R_len_t i = lane;
+                            for (;;) {
+                                const R_len_t subject_index =
+                                    i % subject_length;
+                                shared::StringView current;
+                                const void* identity;
+                                if (mode == SubjectMode::direct) {
+                                    const SEXP value = subject_values[
+                                        subject_index
+                                    ];
+                                    current = io::as_direct_utf8_view(value);
+                                    identity = value;
+                                }
+                                else {
+                                    const shared::StringView& value =
+                                        normalized_subjects[
+                                            static_cast<std::size_t>(
+                                                subject_index
+                                            )
+                                        ];
+                                    current = value;
+                                    identity = &value;
+                                }
+
+                                if (current.is_na() ||
+                                        current_pattern.missing ||
+                                        current_pattern.length <= 0) {
+                                    output[i] = NA_INTEGER;
+                                }
+                                else {
+                                    if (!pattern_bound) {
+                                        bind_pattern(
+                                            matcher, current_pattern,
+                                            patterns, pattern_index
+                                        );
+                                        pattern_bound = true;
+                                    }
+                                    UErrorCode status = U_ZERO_ERROR;
+                                    output[i] = matcher.count(
+                                        current, identity, status
+                                    );
+                                    if (U_FAILURE(status)) {
+                                        throw_regex_error(
+                                            status, false,
+                                            patterns, pattern_index
+                                        );
+                                    }
+                                }
+
+                                if (pattern_length >= vectorize_length-i)
+                                    break;
+                                i += pattern_length;
+                            }
+                        }
+                    }
+                }
+
+                CHARR_UNWIND_RETURN();
+            }
+        );
+    }
+    CHARR_ENTRYPOINT_END(
+        emit_empty_pattern_warnings(empty_pattern_warnings);
+    );
 }
 
 } } // namespace charr::base_backend

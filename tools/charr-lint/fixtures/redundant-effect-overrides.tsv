@@ -1,0 +1,2 @@
+add_effects	remove_effects	qualified_name	canonical_type	reason
+cxx		inferred_may_throw	void (void)	Fixture attempts to add an effect already inferred by Clang.

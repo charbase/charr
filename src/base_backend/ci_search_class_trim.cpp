@@ -32,12 +32,20 @@
 
 
 #include "ci_stringi.h"
-#include "charclass/pattern_set.h"
+#include "io/string_view.h"
+#include "../shared/character_class.h"
+#include "../shared/entrypoint.h"
 #include "../shared/native_to_utf8.h"
-#include "io/utf8_views.h"
+#include "../shared/protect.h"
+#include "../shared/slice_arena.h"
+#include "../shared/unwind.h"
+#include "../shared/utf8.h"
 
 #include <array>
+#include <cstddef>
 #include <exception>
+#include <stdexcept>
+#include <vector>
 
 
 namespace charr { namespace base_backend {
@@ -47,20 +55,22 @@ namespace search_class_trim {
 struct TrimSlice {
     const char* data;
     R_len_t length;
+    bool missing;
 };
 
 
 struct ScalarTrimPattern {
-    const UnicodeSet* retained;
+    const icu::UnicodeSet* retained;
     std::array<unsigned char, 128> ascii_retained;
     bool missing;
 };
 
 
-bool retained_contains(
-    const UnicodeSet& retained, const unsigned char* ascii_retained,
+CHARR_NEUTRAL_HELPER bool retained_contains(
+    const icu::UnicodeSet& retained,
+    const unsigned char* ascii_retained,
     UChar32 code_point
-)
+) noexcept
 {
     if (ascii_retained != nullptr && code_point <= 0x7f)
         return ascii_retained[code_point] != 0;
@@ -70,9 +80,10 @@ bool retained_contains(
 
 // Compile-time direction flags keep the hot edge scan branch-free.
 template<bool Left, bool Right>
-TrimSlice trim_slice(
+CHARR_CXX_HELPER TrimSlice trim_slice(
     const char* data, R_len_t length,
-    const UnicodeSet& retained, const unsigned char* ascii_retained
+    const icu::UnicodeSet& retained,
+    const unsigned char* ascii_retained
 )
 {
     R_len_t begin = 0;
@@ -106,15 +117,55 @@ TrimSlice trim_slice(
         }
     }
 
-    return TrimSlice{data + begin, end - begin};
+    return TrimSlice{data + begin, end - begin, false};
 }
 
 
-ScalarTrimPattern make_scalar_pattern(
-    const charclass::PatternSet& patterns
+CHARR_NEUTRAL_HELPER R_len_t recycling_length(
+    R_len_t subject_length, R_len_t pattern_length, bool& warning
+) noexcept
+{
+    warning = false;
+    if (subject_length <= 0 || pattern_length <= 0)
+        return 0;
+
+    const R_len_t result = subject_length > pattern_length
+        ? subject_length
+        : pattern_length;
+    warning = result % subject_length != 0 ||
+        result % pattern_length != 0;
+    return result;
+}
+
+
+CHARR_CXX_HELPER shared::StringView normalize_input(
+    const shared::StringView& source,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage
 )
 {
-    ScalarTrimPattern scalar{nullptr, {}, patterns.isNA(0)};
+    if (source.enc == shared::StringEncoding::bytes)
+        throw StriException(MSG__BYTESENC);
+    return shared::normalize_utf8(source, converter, storage);
+}
+
+
+CHARR_CXX_HELPER void compile_patterns(
+    const std::vector<shared::StringView>& patterns,
+    bool negate, shared::CharacterClassSet& output
+)
+{
+    const UErrorCode status = output.reset(patterns, negate);
+    if (U_FAILURE(status))
+        throw StriException(status);
+}
+
+
+CHARR_CXX_HELPER ScalarTrimPattern make_scalar_pattern(
+    const shared::CharacterClassSet& patterns
+)
+{
+    ScalarTrimPattern scalar{nullptr, {}, patterns.is_na(0)};
     if (scalar.missing)
         return scalar;
 
@@ -129,115 +180,64 @@ ScalarTrimPattern make_scalar_pattern(
 
 
 template<bool Left, bool Right, bool ScalarPattern>
-void trim_records(
-    SEXP output, const io::Utf8Input& input, R_len_t output_length,
-    const charclass::PatternSet& patterns,
+CHARR_CXX_HELPER TrimSlice trim_record(
+    const std::vector<shared::StringView>& subjects,
+    R_len_t index,
+    const shared::CharacterClassSet& patterns,
     const ScalarTrimPattern& scalar
 )
 {
-    for (R_len_t i = 0; i < output_length; ++i) {
-        const io::Utf8Record value = input.record(i);
+    const R_len_t subject_length = static_cast<R_len_t>(subjects.size());
+    const shared::StringView& value = subjects[
+        static_cast<std::size_t>(index % subject_length)
+    ];
 
-        const bool pattern_missing = ScalarPattern
-            ? scalar.missing
-            : patterns.isNA(i);
-        if (value.is_na() || pattern_missing) {
-            SET_STRING_ELT(output, i, NA_STRING);
-            continue;
-        }
+    const bool pattern_missing = ScalarPattern
+        ? scalar.missing
+        : patterns.is_na(static_cast<std::size_t>(index));
+    if (value.is_na() || pattern_missing)
+        return TrimSlice{nullptr, 0, true};
 
-        const UnicodeSet* retained;
-        const unsigned char* ascii_retained;
-        if constexpr (ScalarPattern) {
-            retained = scalar.retained;
-            ascii_retained = scalar.ascii_retained.data();
-        }
-        else {
-            retained = &patterns.get(i);
-            ascii_retained = nullptr;
-        }
-        const TrimSlice trimmed = trim_slice<Left, Right>(
-            value.ptr, value.len, *retained, ascii_retained
-        );
-        SET_STRING_ELT(
-            output, i,
-            Rf_mkCharLenCE(trimmed.data, trimmed.length, CE_UTF8)
-        );
+    const icu::UnicodeSet* retained;
+    const unsigned char* ascii_retained;
+    if constexpr (ScalarPattern) {
+        retained = scalar.retained;
+        ascii_retained = scalar.ascii_retained.data();
     }
+    else {
+        retained = &patterns.get(static_cast<std::size_t>(index));
+        ascii_retained = nullptr;
+    }
+    return trim_slice<Left, Right>(
+        value.ptr, value.len, *retained, ascii_retained
+    );
+}
+
+
+CHARR_R_HELPER void install_record(
+    SEXP output, R_len_t index, const TrimSlice& record
+) noexcept
+{
+    if (record.missing) {
+        SET_STRING_ELT(output, index, NA_STRING);
+        return;
+    }
+    SET_STRING_ELT(
+        output, index,
+        Rf_mkCharLenCE(record.data, record.length, CE_UTF8)
+    );
+}
+
+
+CHARR_R_HELPER void emit_recycling_warning(bool should_warn) noexcept
+{
+    if (should_warn)
+        Rf_warning(MSG__WARN_RECYCLING_RULE);
 }
 
 } // namespace search_class_trim
 
 using namespace search_class_trim;
-
-/**
- * Trim characters from a charclass from left AND/OR right side of the string
- *
- * @param str character vector
- * @param pattern character vector
- * @return character vector
- *
- * @version 0.1-?? (Bartek Tartanus)
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-04)
- *          Use UTF-8 input and CharClass
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-04-03)
- *          detects invalid UTF-8 byte stream
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-04-05)
- *          charclass::PatternSet now relies on UnicodeSet
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 1.6.3 (Marek Gagolewski, 2021-06-10) negate
-*/
-template<bool Left, bool Right>
-SEXP ci__trim_leftright(SEXP str, SEXP pattern, bool negate)
-{
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
-    PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
-    R_len_t vectorize_length =
-        ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
-
-    STRI__ERROR_HANDLER_BEGIN(2)
-    SEXP ret;
-    try {
-        charclass::PatternSet pattern_cont(
-            pattern, vectorize_length, negate
-        );
-        STRI__PROTECT(ret = Rf_allocVector(STRSXP, vectorize_length));
-        if (vectorize_length > 0) {
-            io::Utf8Input input(str, vectorize_length);
-            const bool scalar_pattern = LENGTH(pattern) == 1;
-            const ScalarTrimPattern scalar = scalar_pattern
-                ? make_scalar_pattern(pattern_cont)
-                : ScalarTrimPattern{nullptr, {}, false};
-
-            if (scalar_pattern) {
-                trim_records<Left, Right, true>(
-                    ret, input, vectorize_length, pattern_cont, scalar
-                );
-            }
-            else {
-                trim_records<Left, Right, false>(
-                    ret, input, vectorize_length, pattern_cont, scalar
-                );
-            }
-        }
-    }
-    catch (const StriException&) {
-        throw;
-    }
-    catch (const std::exception& error) {
-        throw StriException("%s", error.what());
-    }
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-}
-
 
 /**
  * Trim characters from a charclass from both sides of the string
@@ -256,10 +256,103 @@ SEXP ci__trim_leftright(SEXP str, SEXP pattern, bool negate)
  *
  * @version 1.6.3 (Marek Gagolewski, 2021-06-10) negate
 */
-SEXP ci_trim_both(SEXP str, SEXP pattern, SEXP negate)
+CHARR_ENTRYPOINT SEXP ci_trim_both(
+    SEXP str, SEXP pattern, SEXP negate
+) noexcept
 {
-    bool negate_val = ci__prepare_arg_logical_1_notNA(negate, "negate");
-    return ci__trim_leftright<true, true>(str, pattern, negate_val);
+    CHARR_ENTRYPOINT_BEGIN();
+
+    const bool negate_1 = ci__prepare_arg_logical_1_notNA_r(
+        negate, "negate"
+    );
+    str = entry_protections.protect_one(ci__prepare_arg_string_r(str, "str"));
+    pattern = entry_protections.protect_one(ci__prepare_arg_string_r(pattern, "pattern"));
+
+    const R_len_t subject_length = LENGTH(str);
+    const R_len_t pattern_length = LENGTH(pattern);
+    bool recycling_warning = false;
+    const R_len_t vectorize_length = recycling_length(
+        subject_length, pattern_length, recycling_warning
+    );
+
+    try {
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        std::vector<shared::StringView> subjects;
+        std::vector<shared::StringView> patterns;
+        shared::CharacterClassSet character_classes;
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                patterns.resize(
+                    static_cast<std::size_t>(pattern_length)
+                );
+                if (pattern_length > 0) {
+                    const SEXP* values = STRING_PTR_RO(pattern);
+                    for (R_len_t i = 0; i < pattern_length; ++i) {
+                        patterns[static_cast<std::size_t>(i)] =
+                            normalize_input(
+                                io::as_shared_view(values[i]),
+                                pattern_converter, pattern_storage
+                            );
+                    }
+                }
+                compile_patterns(
+                    patterns, negate_1, character_classes
+                );
+
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(STRSXP, vectorize_length), result_index
+                );
+
+                if (vectorize_length > 0) {
+                    subjects.resize(
+                        static_cast<std::size_t>(subject_length)
+                    );
+                    const SEXP* values = STRING_PTR_RO(str);
+                    for (R_len_t i = 0; i < subject_length; ++i) {
+                        subjects[static_cast<std::size_t>(i)] =
+                            normalize_input(
+                                io::as_shared_view(values[i]),
+                                subject_converter, subject_storage
+                            );
+                    }
+
+                    const bool scalar_pattern = pattern_length == 1;
+                    const ScalarTrimPattern scalar = scalar_pattern
+                        ? make_scalar_pattern(character_classes)
+                        : ScalarTrimPattern{nullptr, {}, false};
+                    if (scalar_pattern) {
+                        for (R_len_t i = 0; i < vectorize_length; ++i) {
+                            install_record(
+                                result, i,
+                                trim_record<true, true, true>(
+                                    subjects, i, character_classes, scalar
+                                )
+                            );
+                        }
+                    }
+                    else {
+                        for (R_len_t i = 0; i < vectorize_length; ++i) {
+                            install_record(
+                                result, i,
+                                trim_record<true, true, false>(
+                                    subjects, i, character_classes, scalar
+                                )
+                            );
+                        }
+                    }
+                }
+                CHARR_UNWIND_RETURN();
+            }
+        );
+    }
+    CHARR_ENTRYPOINT_END(
+        emit_recycling_warning(recycling_warning);
+    );
 }
 
 
@@ -277,10 +370,103 @@ SEXP ci_trim_both(SEXP str, SEXP pattern, SEXP negate)
  *
  * @version 1.6.3 (Marek Gagolewski, 2021-06-10) negate
 */
-SEXP ci_trim_left(SEXP str, SEXP pattern, SEXP negate)
+CHARR_ENTRYPOINT SEXP ci_trim_left(
+    SEXP str, SEXP pattern, SEXP negate
+) noexcept
 {
-    bool negate_val = ci__prepare_arg_logical_1_notNA(negate, "negate");
-    return ci__trim_leftright<true, false>(str, pattern, negate_val);
+    CHARR_ENTRYPOINT_BEGIN();
+
+    const bool negate_1 = ci__prepare_arg_logical_1_notNA_r(
+        negate, "negate"
+    );
+    str = entry_protections.protect_one(ci__prepare_arg_string_r(str, "str"));
+    pattern = entry_protections.protect_one(ci__prepare_arg_string_r(pattern, "pattern"));
+
+    const R_len_t subject_length = LENGTH(str);
+    const R_len_t pattern_length = LENGTH(pattern);
+    bool recycling_warning = false;
+    const R_len_t vectorize_length = recycling_length(
+        subject_length, pattern_length, recycling_warning
+    );
+
+    try {
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        std::vector<shared::StringView> subjects;
+        std::vector<shared::StringView> patterns;
+        shared::CharacterClassSet character_classes;
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                patterns.resize(
+                    static_cast<std::size_t>(pattern_length)
+                );
+                if (pattern_length > 0) {
+                    const SEXP* values = STRING_PTR_RO(pattern);
+                    for (R_len_t i = 0; i < pattern_length; ++i) {
+                        patterns[static_cast<std::size_t>(i)] =
+                            normalize_input(
+                                io::as_shared_view(values[i]),
+                                pattern_converter, pattern_storage
+                            );
+                    }
+                }
+                compile_patterns(
+                    patterns, negate_1, character_classes
+                );
+
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(STRSXP, vectorize_length), result_index
+                );
+
+                if (vectorize_length > 0) {
+                    subjects.resize(
+                        static_cast<std::size_t>(subject_length)
+                    );
+                    const SEXP* values = STRING_PTR_RO(str);
+                    for (R_len_t i = 0; i < subject_length; ++i) {
+                        subjects[static_cast<std::size_t>(i)] =
+                            normalize_input(
+                                io::as_shared_view(values[i]),
+                                subject_converter, subject_storage
+                            );
+                    }
+
+                    const bool scalar_pattern = pattern_length == 1;
+                    const ScalarTrimPattern scalar = scalar_pattern
+                        ? make_scalar_pattern(character_classes)
+                        : ScalarTrimPattern{nullptr, {}, false};
+                    if (scalar_pattern) {
+                        for (R_len_t i = 0; i < vectorize_length; ++i) {
+                            install_record(
+                                result, i,
+                                trim_record<true, false, true>(
+                                    subjects, i, character_classes, scalar
+                                )
+                            );
+                        }
+                    }
+                    else {
+                        for (R_len_t i = 0; i < vectorize_length; ++i) {
+                            install_record(
+                                result, i,
+                                trim_record<true, false, false>(
+                                    subjects, i, character_classes, scalar
+                                )
+                            );
+                        }
+                    }
+                }
+                CHARR_UNWIND_RETURN();
+            }
+        );
+    }
+    CHARR_ENTRYPOINT_END(
+        emit_recycling_warning(recycling_warning);
+    );
 }
 
 
@@ -298,10 +484,103 @@ SEXP ci_trim_left(SEXP str, SEXP pattern, SEXP negate)
  *
  * @version 1.6.3 (Marek Gagolewski, 2021-06-10) negate
 */
-SEXP ci_trim_right(SEXP str, SEXP pattern, SEXP negate)
+CHARR_ENTRYPOINT SEXP ci_trim_right(
+    SEXP str, SEXP pattern, SEXP negate
+) noexcept
 {
-    bool negate_val = ci__prepare_arg_logical_1_notNA(negate, "negate");
-    return ci__trim_leftright<false, true>(str, pattern, negate_val);
+    CHARR_ENTRYPOINT_BEGIN();
+
+    const bool negate_1 = ci__prepare_arg_logical_1_notNA_r(
+        negate, "negate"
+    );
+    str = entry_protections.protect_one(ci__prepare_arg_string_r(str, "str"));
+    pattern = entry_protections.protect_one(ci__prepare_arg_string_r(pattern, "pattern"));
+
+    const R_len_t subject_length = LENGTH(str);
+    const R_len_t pattern_length = LENGTH(pattern);
+    bool recycling_warning = false;
+    const R_len_t vectorize_length = recycling_length(
+        subject_length, pattern_length, recycling_warning
+    );
+
+    try {
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        std::vector<shared::StringView> subjects;
+        std::vector<shared::StringView> patterns;
+        shared::CharacterClassSet character_classes;
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                patterns.resize(
+                    static_cast<std::size_t>(pattern_length)
+                );
+                if (pattern_length > 0) {
+                    const SEXP* values = STRING_PTR_RO(pattern);
+                    for (R_len_t i = 0; i < pattern_length; ++i) {
+                        patterns[static_cast<std::size_t>(i)] =
+                            normalize_input(
+                                io::as_shared_view(values[i]),
+                                pattern_converter, pattern_storage
+                            );
+                    }
+                }
+                compile_patterns(
+                    patterns, negate_1, character_classes
+                );
+
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(STRSXP, vectorize_length), result_index
+                );
+
+                if (vectorize_length > 0) {
+                    subjects.resize(
+                        static_cast<std::size_t>(subject_length)
+                    );
+                    const SEXP* values = STRING_PTR_RO(str);
+                    for (R_len_t i = 0; i < subject_length; ++i) {
+                        subjects[static_cast<std::size_t>(i)] =
+                            normalize_input(
+                                io::as_shared_view(values[i]),
+                                subject_converter, subject_storage
+                            );
+                    }
+
+                    const bool scalar_pattern = pattern_length == 1;
+                    const ScalarTrimPattern scalar = scalar_pattern
+                        ? make_scalar_pattern(character_classes)
+                        : ScalarTrimPattern{nullptr, {}, false};
+                    if (scalar_pattern) {
+                        for (R_len_t i = 0; i < vectorize_length; ++i) {
+                            install_record(
+                                result, i,
+                                trim_record<false, true, true>(
+                                    subjects, i, character_classes, scalar
+                                )
+                            );
+                        }
+                    }
+                    else {
+                        for (R_len_t i = 0; i < vectorize_length; ++i) {
+                            install_record(
+                                result, i,
+                                trim_record<false, true, false>(
+                                    subjects, i, character_classes, scalar
+                                )
+                            );
+                        }
+                    }
+                }
+                CHARR_UNWIND_RETURN();
+            }
+        );
+    }
+    CHARR_ENTRYPOINT_END(
+        emit_recycling_warning(recycling_warning);
+    );
 }
 
 } } // namespace charr::base_backend

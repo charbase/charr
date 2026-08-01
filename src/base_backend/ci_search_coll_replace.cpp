@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+// Derived from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f.
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -32,324 +32,691 @@
 
 
 #include "ci_stringi.h"
-#include "io/utf16_input.h"
-#include "collation/pattern_set.h"
-#include "ci_string8buf.h"
+#include "collator/options.h"
+#include "io/string_view.h"
+#include "../shared/collation_search.h"
+#include "../shared/collator.h"
+#include "../shared/entrypoint.h"
+#include "../shared/native_to_utf8.h"
+#include "../shared/protect.h"
+#include "../shared/slice_arena.h"
+#include "../shared/unwind.h"
+#include "../shared/utf8.h"
+
+#include <cstddef>
+#include <exception>
 #include <vector>
+
 namespace charr { namespace base_backend {
 
-using namespace std;
+namespace search_coll_replace {
+
+enum class ReplaceMode : unsigned char {
+    first,
+    all
+};
 
 
-/**
- * Replace all/first/last occurrences of a fixed pattern [with collation]
- *
- * @param str character vector
- * @param pattern character vector
- * @param replacement character vector
- * @param opts_collator list
- * @return character vector
- *
- * @version 0.1-?? (Bartek Tartanus)
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-07-10)
- *          BUGFIX: wrong behavior on empty str
- *
- * @version 0.2-3 (Marek Gagolewski, 2014-05-08)
- *          new fun: ci__replace_allfirstlast_coll (opts_collator == NA not allowed)
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 1.0-2 (Marek Gagolewski, 2016-01-30)
- *    Issue #210: Allow NA replacement
- */
-SEXP ci__replace_allfirstlast_coll(SEXP str, SEXP pattern, SEXP replacement, SEXP opts_collator, int type)
+struct ReplacementResult {
+    shared::CollationInput value;
+    bool changed;
+};
+
+
+CHARR_NEUTRAL_HELPER R_len_t recycling_length(
+    R_len_t subject_length,
+    R_len_t pattern_length,
+    R_len_t replacement_length,
+    bool& warning
+) noexcept
 {
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
-    PROTECT(replacement = ci__prepare_arg_string(replacement, "replacement"));
-    PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
-
-    UCollator* collator = NULL;
-    collator = ci__ucol_open(opts_collator);
-
-    STRI__ERROR_HANDLER_BEGIN(3)
-    R_len_t vectorize_length = ci__recycling_rule(true, 3, LENGTH(str), LENGTH(pattern), LENGTH(replacement));
-    io::Utf16Output str_cont(str, vectorize_length); // writable
-    collation::PatternSet pattern_cont(pattern, vectorize_length, collator);  // collator is not owned by pattern_cont
-    io::Utf16Input replacement_cont(replacement, vectorize_length);
-    vector< pair<R_len_t, R_len_t> > occurrences;
-    occurrences.reserve(4);
-
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
-    {
-        STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-                str_cont.setNA(i);,
-                /*just skip on empty str*/;)
-
-        UStringSearch *matcher = pattern_cont.getMatcher(i, str_cont.get(i));
-        usearch_reset(matcher);
-
-        UErrorCode status = U_ZERO_ERROR;
-        R_len_t remUChars = 0;
-        occurrences.clear();
-
-        if (type >= 0) { // first or all
-            int start = (int)usearch_first(matcher, &status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-            if (start == USEARCH_DONE) // no match
-                continue; // no change in str_cont[i] at all
-
-            if (replacement_cont.isNA(i)) {
-                str_cont.setNA(i);
-                continue;
-            }
-
-            while (start != USEARCH_DONE) {
-                R_len_t mlen = usearch_getMatchedLength(matcher);
-                remUChars += mlen;
-                occurrences.emplace_back(start, start+mlen);
-                if (type > 0) break; // break if first and not all
-                start = usearch_next(matcher, &status);
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-            }
-        }
-        else { // if last
-            int start = (int)usearch_last(matcher, &status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-            if (start == USEARCH_DONE) // no match
-                continue; // no change in str_cont[i] at all
-
-            if (replacement_cont.isNA(i)) {
-                str_cont.setNA(i);
-                continue;
-            }
-            R_len_t mlen = usearch_getMatchedLength(matcher);
-            remUChars += mlen;
-            occurrences.emplace_back(start, start+mlen);
-        }
-
-        R_len_t replacement_cur_n = replacement_cont.get(i).length();
-        R_len_t noccurrences = (R_len_t)occurrences.size();
-        UnicodeString ans(str_cont.get(i).length()-remUChars+noccurrences*replacement_cur_n, (UChar)0xfffd, 0);
-        R_len_t jlast = 0;
-        vector< pair<R_len_t, R_len_t> >::const_iterator iter = occurrences.begin();
-        for (; iter != occurrences.end(); ++iter) {
-            const pair<R_len_t, R_len_t>& match = *iter;
-            ans.append(str_cont.get(i), jlast, match.first-jlast);
-            jlast = match.second;
-            ans.append(replacement_cont.get(i));
-        }
-        ans.append(
-            str_cont.get(i), jlast,
-            str_cont.get(i).length()-jlast
-        );
-        str_cont.getWritable(i) = ans;
+    warning = false;
+    if (subject_length <= 0 || pattern_length <= 0 ||
+            replacement_length <= 0) {
+        return 0;
     }
 
-    if (collator) {
-        ucol_close(collator);
-        collator=NULL;
-    }
-    STRI__UNPROTECT_ALL
-    return str_cont.toR();
-    STRI__ERROR_HANDLER_END(
-        if (collator) ucol_close(collator);
-    )
-    }
-
-
-/**
- * Replace all occurrences of a coll pattern; vectorize_all=FALSE
- *
- * @param str character vector
- * @param pattern character vector
- * @param replacement character vector
- * @param opts_collator a named list
- * @return character vector
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-06)
- *    Added missing ucol_close
- *
- * @version 1.0-2 (Marek Gagolewski, 2016-01-30)
- *    Issue #210: Allow NA replacement
- */
-SEXP ci__replace_all_coll_no_vectorize_all(SEXP str, SEXP pattern, SEXP replacement, SEXP opts_collator)
-{   // version beta
-    PROTECT(str          = ci__prepare_arg_string(str, "str"));
-
-    // if str_n is 0, then return an empty vector
-    R_len_t str_n = LENGTH(str);
-    if (str_n <= 0) {
-        UNPROTECT(1);
-        return ci__vector_empty_strings(0);
-    }
-
-    PROTECT(pattern      = ci__prepare_arg_string(pattern, "pattern"));
-    PROTECT(replacement  = ci__prepare_arg_string(replacement, "replacement"));
-    R_len_t pattern_n = LENGTH(pattern);
-    R_len_t replacement_n = LENGTH(replacement);
-    if (pattern_n < replacement_n || pattern_n <= 0 || replacement_n <= 0) {
-        UNPROTECT(3);
-        Rf_error(MSG__WARN_RECYCLING_RULE2);
-    }
-    if (pattern_n % replacement_n != 0) {
-        r_warning(MSG__WARN_RECYCLING_RULE);
-    }
-
-    if (pattern_n == 1) {// this will be much faster:
-        SEXP ret;
-        PROTECT(ret = ci__replace_allfirstlast_coll(str, pattern, replacement, opts_collator, 0));
-        UNPROTECT(4);
-        return ret;
-    }
-
-    UCollator* collator = NULL;
-    collator = ci__ucol_open(opts_collator);
-
-    STRI__ERROR_HANDLER_BEGIN(3)
-    io::Utf16Output str_cont(str, str_n); // writable
-    collation::PatternSet pattern_cont(pattern, pattern_n, collator);  // collator is not owned by pattern_cont
-    io::Utf16Input replacement_cont(replacement, pattern_n);
-    vector< pair<R_len_t, R_len_t> > occurrences;
-    occurrences.reserve(4);
-
-    for (R_len_t i = 0; i<pattern_n; ++i)
-    {
-        if (pattern_cont.isNA(i)) {
-            if (collator) {
-                ucol_close(collator);
-                collator=NULL;
-            }
-            STRI__UNPROTECT_ALL
-            return ci__vector_NA_strings(str_n);
-        }
-        else if (pattern_cont.get(i).length() <= 0) {
-            if (collator) {
-                ucol_close(collator);
-                collator=NULL;
-            }
-            r_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
-            STRI__UNPROTECT_ALL
-            return ci__vector_NA_strings(str_n);
-        }
-
-        for (R_len_t j = 0; j<str_n; ++j) {
-            if (str_cont.isNA(j) || str_cont.get(j).length() <= 0) continue;
-
-            UStringSearch *matcher = pattern_cont.getMatcher(i, str_cont.get(j));
-            usearch_reset(matcher);
-            UErrorCode status = U_ZERO_ERROR;
-            R_len_t remUChars = 0;
-            occurrences.clear();
-
-            int start = (int)usearch_first(matcher, &status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-            if (start == USEARCH_DONE) // no match
-                continue; // no change in str_cont[j] at all
-
-            if (replacement_cont.isNA(i)) {
-                str_cont.setNA(j);
-                continue;
-            }
-
-            while (start != USEARCH_DONE) {
-                R_len_t mlen = usearch_getMatchedLength(matcher);
-                remUChars += mlen;
-                occurrences.emplace_back(start, start+mlen);
-                start = usearch_next(matcher, &status);
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-            }
-
-            R_len_t replacement_cur_n = replacement_cont.get(i).length();
-            R_len_t noccurrences = (R_len_t)occurrences.size();
-            UnicodeString ans(str_cont.get(j).length()-remUChars+noccurrences*replacement_cur_n, (UChar)0xfffd, 0);
-            R_len_t jlast = 0;
-            vector< pair<R_len_t, R_len_t> >::const_iterator iter = occurrences.begin();
-            for (; iter != occurrences.end(); ++iter) {
-                const pair<R_len_t, R_len_t>& match = *iter;
-                ans.append(str_cont.get(j), jlast, match.first-jlast);
-                jlast = match.second;
-                ans.append(replacement_cont.get(i));
-            }
-            ans.append(
-                str_cont.get(j), jlast,
-                str_cont.get(j).length()-jlast
-            );
-            str_cont.getWritable(j) = ans;
-        }
-    }
-
-    if (collator) {
-        ucol_close(collator);
-        collator=NULL;
-    }
-    STRI__UNPROTECT_ALL
-    return str_cont.toR();
-    STRI__ERROR_HANDLER_END(
-        if (collator) ucol_close(collator);
-    )
-    }
-
-
-/**
- * Replace all occurrences of a fixed pattern [with collation]
- *
- * @param str character vector
- * @param pattern character vector
- * @param replacement character vector
- * @param opts_collator list
- * @return character vector
- *
- * @version 0.1-?? (Bartek Tartanus)
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-26)
- *          use ci__replace_allfirstlast_fixed
- *
- * @version 0.2-3 (Marek Gagolewski, 2014-05-08)
- *          new fun: ci_replace_all_coll (opts_collator == NA not allowed)
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *          vectorize_all arg added
- */
-SEXP ci_replace_all_coll(SEXP str, SEXP pattern, SEXP replacement, SEXP vectorize_all, SEXP opts_collator)
-{
-    if (ci__prepare_arg_logical_1_notNA(vectorize_all, "vectorize_all"))
-        return ci__replace_allfirstlast_coll(str, pattern, replacement, opts_collator, 0);
-    else
-        return ci__replace_all_coll_no_vectorize_all(str, pattern, replacement, opts_collator);
+    R_len_t result = subject_length;
+    if (pattern_length > result)
+        result = pattern_length;
+    if (replacement_length > result)
+        result = replacement_length;
+    warning = result % subject_length != 0 ||
+        result % pattern_length != 0 ||
+        result % replacement_length != 0;
+    return result;
 }
 
 
-/**
- * Replace first occurrence of a fixed pattern [with collation]
- *
- * @param str character vector
- * @param pattern character vector
- * @param replacement character vector
- * @param opts_collator list
- * @return character vector
- *
- * @version 0.1-?? (Bartek Tartanus)
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-26)
- *          use ci__replace_allfirstlast_fixed
- *
- * @version 0.2-3 (Marek Gagolewski, 2014-05-08)
- *          new fun: ci_replace_first_coll (opts_collator == NA not allowed)
- */
-SEXP ci_replace_first_coll(SEXP str, SEXP pattern, SEXP replacement, SEXP opts_collator)
+CHARR_CXX_HELPER void require_icu_success(UErrorCode status)
 {
-    return ci__replace_allfirstlast_coll(str, pattern, replacement, opts_collator, 1);
+    if (U_FAILURE(status))
+        throw StriException(status);
+}
+
+
+CHARR_CXX_HELPER shared::StringView normalize_view(
+    const shared::StringView& source,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage
+)
+{
+    if (source.enc == shared::StringEncoding::bytes)
+        throw StriException(MSG__BYTESENC);
+    return shared::normalize_utf8_preserve_bom(
+        source, converter, storage
+    );
+}
+
+
+CHARR_CXX_HELPER R_len_t count_empty_patterns(
+    const shared::CollationInputs& patterns
+)
+{
+    R_len_t result = 0;
+    for (std::size_t i = 0; i < patterns.size(); ++i) {
+        const shared::CollationInput pattern = patterns.get(i);
+        if (!pattern.missing && pattern.length <= 0)
+            ++result;
+    }
+    return result;
+}
+
+
+CHARR_CXX_HELPER ReplacementResult replace_record(
+    const shared::CollationInput& subject,
+    const shared::CollationInput& pattern,
+    const shared::CollationInput& replacement,
+    ReplaceMode mode,
+    UCollator* collator,
+    shared::CollationMatcher& matcher,
+    std::vector<shared::CollationRange>& ranges,
+    icu::UnicodeString& output
+)
+{
+    ranges.clear();
+    UErrorCode status = U_ZERO_ERROR;
+    if (mode == ReplaceMode::first) {
+        shared::CollationRange range{0, 0};
+        if (matcher.find_first(
+                collator, subject, pattern, range, status)) {
+            ranges.push_back(range);
+        }
+    }
+    else {
+        matcher.find_all(
+            collator, subject, pattern, ranges, status
+        );
+    }
+    require_icu_success(status);
+
+    if (ranges.size() == 0)
+        return ReplacementResult{subject, false};
+    if (replacement.missing) {
+        return ReplacementResult{
+            shared::CollationInput{nullptr, nullptr, -1, true}, true
+        };
+    }
+
+    shared::write_collation_replacement(
+        subject, replacement, ranges, output
+    );
+    return ReplacementResult{
+        shared::CollationInput{
+            &output, output.getBuffer(), output.length(), false
+        },
+        true
+    };
+}
+
+
+CHARR_CXX_HELPER shared::CollationUtf8Slice utf8_value(
+    const shared::CollationInput& value,
+    std::vector<char>& buffer
+)
+{
+    UErrorCode status = U_ZERO_ERROR;
+    const shared::CollationUtf8Slice result =
+        shared::collation_utf8_slice(
+            value,
+            shared::CollationRange{0, value.length},
+            buffer,
+            status
+        );
+    require_icu_success(status);
+    return result;
+}
+
+
+CHARR_CXX_HELPER void replace_sequential(
+    shared::CollationInputs& subjects,
+    const shared::CollationInputs& patterns,
+    const shared::CollationInputs& replacements,
+    UCollator* collator,
+    shared::CollationMatcher& matcher,
+    std::vector<shared::CollationRange>& ranges,
+    icu::UnicodeString& output,
+    bool& all_missing,
+    R_len_t& extra_empty_warnings
+)
+{
+    all_missing = false;
+    extra_empty_warnings = 0;
+
+    for (std::size_t pattern_index = 0;
+            pattern_index < patterns.size(); ++pattern_index) {
+        const shared::CollationInput pattern = patterns.get(pattern_index);
+        if (pattern.missing) {
+            all_missing = true;
+            return;
+        }
+        if (pattern.length <= 0) {
+            all_missing = true;
+            extra_empty_warnings = 1;
+            return;
+        }
+
+        const shared::CollationInput replacement = replacements.get(
+            pattern_index % replacements.size()
+        );
+        for (std::size_t subject_index = 0;
+                subject_index < subjects.size(); ++subject_index) {
+            const shared::CollationInput subject =
+                subjects.get(subject_index);
+            if (subject.missing || subject.length <= 0)
+                continue;
+
+            const ReplacementResult replaced = replace_record(
+                subject, pattern, replacement, ReplaceMode::all,
+                collator, matcher, ranges, output
+            );
+            if (!replaced.changed)
+                continue;
+            if (replaced.value.missing)
+                subjects.set_missing(subject_index);
+            else
+                subjects.swap_value(subject_index, output);
+        }
+    }
+}
+
+
+CHARR_R_HELPER void set_missing_r(
+    SEXP output, R_len_t index
+) noexcept
+{
+    SET_STRING_ELT(output, index, NA_STRING);
+}
+
+
+CHARR_R_HELPER void set_utf8_slice_r(
+    SEXP output,
+    R_len_t index,
+    const shared::CollationUtf8Slice& value
+) noexcept
+{
+    SET_STRING_ELT(
+        output, index,
+        Rf_mkCharLenCE(value.data, value.length, CE_UTF8)
+    );
+}
+
+
+CHARR_R_HELPER void emit_warnings(
+    bool root_fallback_warning,
+    bool recycling_warning,
+    R_len_t empty_pattern_warnings
+) noexcept
+{
+    if (root_fallback_warning) {
+        Rf_warning(
+            "%s", ICUError::getICUerrorName(U_USING_DEFAULT_WARNING)
+        );
+    }
+    if (recycling_warning)
+        Rf_warning(MSG__WARN_RECYCLING_RULE);
+    for (R_len_t i = 0; i < empty_pattern_warnings; ++i)
+        Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+}
+
+
+CHARR_R_HELPER void require_sequential_lengths(
+    R_len_t pattern_length,
+    R_len_t replacement_length
+) noexcept
+{
+    if (pattern_length < replacement_length || pattern_length <= 0 ||
+            replacement_length <= 0) {
+        Rf_error(MSG__WARN_RECYCLING_RULE2);
+    }
+}
+
+} // namespace search_coll_replace
+
+using namespace search_coll_replace;
+
+
+/** Replace the first collation-aware pattern occurrence. */
+CHARR_ENTRYPOINT SEXP ci_replace_first_coll(
+    SEXP str,
+    SEXP pattern,
+    SEXP replacement,
+    SEXP opts_collator
+) noexcept
+{
+    CHARR_ENTRYPOINT_BEGIN();
+
+    str = entry_protections.protect_one(ci__prepare_arg_string_r(str, "str"));
+    replacement = entry_protections.protect_one(ci__prepare_arg_string_r(
+        replacement, "replacement"
+    ));
+    pattern = entry_protections.protect_one(ci__prepare_arg_string_r(pattern, "pattern"));
+    const shared::CollatorOptions options =
+        collator::prepare_options(opts_collator);
+
+    const R_len_t subject_length = LENGTH(str);
+    const R_len_t pattern_length = LENGTH(pattern);
+    const R_len_t replacement_length = LENGTH(replacement);
+    bool recycling_needed = false;
+    const R_len_t vectorize_length = recycling_length(
+        subject_length, pattern_length, replacement_length,
+        recycling_needed
+    );
+
+    bool root_fallback_warning = false;
+    bool recycling_warning = false;
+    R_len_t empty_pattern_warnings = 0;
+
+    try {
+        shared::Collator collator_owner;
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::NativeToUtf8 replacement_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        shared::SliceArena replacement_storage;
+        shared::CollationInputs subjects;
+        shared::CollationInputs patterns;
+        shared::CollationInputs replacements;
+        shared::CollationMatcher matcher;
+        std::vector<shared::CollationRange> ranges;
+        icu::UnicodeString replacement_output;
+        std::vector<char> utf8_buffer;
+
+        ranges.reserve(4);
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                const shared::CollatorOpenResult opened =
+                    collator_owner.reset(options);
+                root_fallback_warning = opened.root_fallback;
+                require_icu_success(opened.status);
+                recycling_warning = recycling_needed;
+
+                if (vectorize_length > 0) {
+                    subjects.resize(
+                        static_cast<std::size_t>(subject_length)
+                    );
+                    const SEXP* values = STRING_PTR_RO(str);
+                    for (R_len_t i = 0; i < subject_length; ++i) {
+                        subjects.set(
+                            static_cast<std::size_t>(i),
+                            normalize_view(
+                                io::as_shared_view(values[i]),
+                                subject_converter, subject_storage
+                            )
+                        );
+                    }
+
+                    patterns.resize(
+                        static_cast<std::size_t>(pattern_length)
+                    );
+                    values = STRING_PTR_RO(pattern);
+                    for (R_len_t i = 0; i < pattern_length; ++i) {
+                        patterns.set(
+                            static_cast<std::size_t>(i),
+                            normalize_view(
+                                io::as_shared_view(values[i]),
+                                pattern_converter, pattern_storage
+                            )
+                        );
+                    }
+                    empty_pattern_warnings =
+                        count_empty_patterns(patterns);
+
+                    replacements.resize(
+                        static_cast<std::size_t>(replacement_length)
+                    );
+                    values = STRING_PTR_RO(replacement);
+                    for (R_len_t i = 0; i < replacement_length; ++i) {
+                        replacements.set(
+                            static_cast<std::size_t>(i),
+                            normalize_view(
+                                io::as_shared_view(values[i]),
+                                replacement_converter,
+                                replacement_storage
+                            )
+                        );
+                    }
+                }
+
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(STRSXP, vectorize_length),
+                    result_index
+                );
+                for (R_len_t lane = 0;
+                        lane < (vectorize_length > 0
+                            ? pattern_length : 0);
+                        ++lane) {
+                    const shared::CollationInput prepared_pattern =
+                        patterns.get(static_cast<std::size_t>(lane));
+                    R_len_t i = lane;
+                    for (;;) {
+                        const shared::CollationInput subject = subjects.get(
+                            static_cast<std::size_t>(i % subject_length)
+                        );
+                        shared::CollationInput output = subject;
+                        bool missing = subject.missing ||
+                            prepared_pattern.missing ||
+                            prepared_pattern.length <= 0;
+                        if (!missing && subject.length > 0) {
+                            const ReplacementResult replaced =
+                                replace_record(
+                                    subject, prepared_pattern,
+                                    replacements.get(
+                                        static_cast<std::size_t>(
+                                            i % replacement_length
+                                        )
+                                    ),
+                                    ReplaceMode::first,
+                                    collator_owner.get(), matcher,
+                                    ranges, replacement_output
+                                );
+                            output = replaced.value;
+                            missing = output.missing;
+                        }
+
+                        if (missing) {
+                            set_missing_r(result, i);
+                        }
+                        else {
+                            const shared::CollationUtf8Slice utf8 =
+                                utf8_value(output, utf8_buffer);
+                            set_utf8_slice_r(result, i, utf8);
+                        }
+
+                        if (pattern_length >= vectorize_length-i)
+                            break;
+                        i += pattern_length;
+                    }
+                }
+
+                CHARR_UNWIND_RETURN();
+            }
+        );
+    }
+    CHARR_ENTRYPOINT_END(
+        emit_warnings(
+            root_fallback_warning,
+            recycling_warning,
+            empty_pattern_warnings
+        );
+    );
+}
+
+
+/** Replace every collation-aware pattern occurrence. */
+CHARR_ENTRYPOINT SEXP ci_replace_all_coll(
+    SEXP str,
+    SEXP pattern,
+    SEXP replacement,
+    SEXP vectorize_all,
+    SEXP opts_collator
+) noexcept
+{
+    CHARR_ENTRYPOINT_BEGIN();
+
+    const bool vectorize = ci__prepare_arg_logical_1_notNA_r(
+        vectorize_all, "vectorize_all"
+    );
+
+    str = entry_protections.protect_one(ci__prepare_arg_string_r(str, "str"));
+    R_len_t subject_length = 0;
+    bool empty_sequential = false;
+    if (!vectorize) {
+        subject_length = LENGTH(str);
+        empty_sequential = subject_length <= 0;
+    }
+    SEXP first_followup = entry_protections.protect_one(empty_sequential
+        ? R_NilValue
+        : ci__prepare_arg_string_r(
+            vectorize ? replacement : pattern,
+            vectorize ? "replacement" : "pattern"
+        ));
+    SEXP second_followup = entry_protections.protect_one(empty_sequential
+        ? R_NilValue
+        : ci__prepare_arg_string_r(
+            vectorize ? pattern : replacement,
+            vectorize ? "pattern" : "replacement"
+        ));
+    if (vectorize) {
+        replacement = first_followup;
+        pattern = second_followup;
+    }
+    else {
+        pattern = first_followup;
+        replacement = second_followup;
+    }
+
+    shared::CollatorOptions options{};
+    R_len_t pattern_length = 0;
+    R_len_t replacement_length = 0;
+    R_len_t vectorize_length = subject_length;
+    bool recycling_needed = false;
+    if (vectorize) {
+        options = collator::prepare_options(opts_collator);
+        subject_length = LENGTH(str);
+        pattern_length = LENGTH(pattern);
+        replacement_length = LENGTH(replacement);
+        vectorize_length = recycling_length(
+            subject_length, pattern_length, replacement_length,
+            recycling_needed
+        );
+    }
+    else if (!empty_sequential) {
+        pattern_length = LENGTH(pattern);
+        replacement_length = LENGTH(replacement);
+        require_sequential_lengths(
+            pattern_length, replacement_length
+        );
+        if (pattern_length % replacement_length != 0)
+            Rf_warning(MSG__WARN_RECYCLING_RULE);
+        options = collator::prepare_options(opts_collator);
+    }
+    const bool vectorized_core = vectorize || pattern_length == 1;
+
+    bool root_fallback_warning = false;
+    bool recycling_warning = false;
+    R_len_t empty_pattern_warnings = 0;
+    R_len_t extra_empty_warnings = 0;
+
+    try {
+        shared::Collator collator_owner;
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::NativeToUtf8 replacement_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        shared::SliceArena replacement_storage;
+        shared::CollationInputs subjects;
+        shared::CollationInputs patterns;
+        shared::CollationInputs replacements;
+        shared::CollationMatcher matcher;
+        std::vector<shared::CollationRange> ranges;
+        icu::UnicodeString replacement_output;
+        std::vector<char> utf8_buffer;
+        bool sequential_all_missing = false;
+
+        ranges.reserve(4);
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                if (!empty_sequential) {
+                    const shared::CollatorOpenResult opened =
+                        collator_owner.reset(options);
+                    root_fallback_warning = opened.root_fallback;
+                    require_icu_success(opened.status);
+                    recycling_warning = vectorize && recycling_needed;
+                }
+
+                if (!empty_sequential && vectorize_length > 0) {
+                    subjects.resize(
+                        static_cast<std::size_t>(subject_length)
+                    );
+                    const SEXP* values = STRING_PTR_RO(str);
+                    for (R_len_t i = 0; i < subject_length; ++i) {
+                        subjects.set(
+                            static_cast<std::size_t>(i),
+                            normalize_view(
+                                io::as_shared_view(values[i]),
+                                subject_converter, subject_storage
+                            )
+                        );
+                    }
+
+                    patterns.resize(
+                        static_cast<std::size_t>(pattern_length)
+                    );
+                    values = STRING_PTR_RO(pattern);
+                    for (R_len_t i = 0; i < pattern_length; ++i) {
+                        patterns.set(
+                            static_cast<std::size_t>(i),
+                            normalize_view(
+                                io::as_shared_view(values[i]),
+                                pattern_converter, pattern_storage
+                            )
+                        );
+                    }
+                    empty_pattern_warnings =
+                        count_empty_patterns(patterns);
+
+                    replacements.resize(
+                        static_cast<std::size_t>(replacement_length)
+                    );
+                    values = STRING_PTR_RO(replacement);
+                    for (R_len_t i = 0; i < replacement_length; ++i) {
+                        replacements.set(
+                            static_cast<std::size_t>(i),
+                            normalize_view(
+                                io::as_shared_view(values[i]),
+                                replacement_converter,
+                                replacement_storage
+                            )
+                        );
+                    }
+
+                    if (!vectorized_core) {
+                        replace_sequential(
+                            subjects, patterns, replacements,
+                            collator_owner.get(), matcher, ranges,
+                            replacement_output,
+                            sequential_all_missing,
+                            extra_empty_warnings
+                        );
+                    }
+                }
+
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(STRSXP, vectorize_length),
+                    result_index
+                );
+                if (vectorized_core) {
+                    for (R_len_t lane = 0;
+                            lane < (vectorize_length > 0
+                                ? pattern_length : 0);
+                            ++lane) {
+                        const shared::CollationInput prepared_pattern =
+                            patterns.get(static_cast<std::size_t>(lane));
+                        R_len_t i = lane;
+                        for (;;) {
+                            const shared::CollationInput subject =
+                                subjects.get(
+                                    static_cast<std::size_t>(
+                                        i % subject_length
+                                    )
+                                );
+                            shared::CollationInput output = subject;
+                            bool missing = subject.missing ||
+                                prepared_pattern.missing ||
+                                prepared_pattern.length <= 0;
+                            if (!missing && subject.length > 0) {
+                                const ReplacementResult replaced =
+                                    replace_record(
+                                        subject, prepared_pattern,
+                                        replacements.get(
+                                            static_cast<std::size_t>(
+                                                i % replacement_length
+                                            )
+                                        ),
+                                        ReplaceMode::all,
+                                        collator_owner.get(), matcher,
+                                        ranges, replacement_output
+                                    );
+                                output = replaced.value;
+                                missing = output.missing;
+                            }
+
+                            if (missing) {
+                                set_missing_r(result, i);
+                            }
+                            else {
+                                const shared::CollationUtf8Slice utf8 =
+                                    utf8_value(output, utf8_buffer);
+                                set_utf8_slice_r(result, i, utf8);
+                            }
+
+                            if (pattern_length >= vectorize_length-i)
+                                break;
+                            i += pattern_length;
+                        }
+                    }
+                }
+                else {
+                    for (R_len_t i = 0; i < subject_length; ++i) {
+                        if (sequential_all_missing) {
+                            set_missing_r(result, i);
+                            continue;
+                        }
+
+                        const shared::CollationInput output = subjects.get(
+                            static_cast<std::size_t>(i)
+                        );
+                        if (output.missing) {
+                            set_missing_r(result, i);
+                        }
+                        else {
+                            const shared::CollationUtf8Slice utf8 =
+                                utf8_value(output, utf8_buffer);
+                            set_utf8_slice_r(result, i, utf8);
+                        }
+                    }
+                }
+
+                CHARR_UNWIND_RETURN();
+            }
+        );
+    }
+    CHARR_ENTRYPOINT_END(
+        const R_len_t deferred_empty_warnings =
+            empty_pattern_warnings+extra_empty_warnings;
+        emit_warnings(
+            root_fallback_warning,
+            recycling_warning,
+            deferred_empty_warnings
+        );
+    );
 }
 
 } } // namespace charr::base_backend

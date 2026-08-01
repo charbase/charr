@@ -1,0 +1,4 @@
+effect	qualified_name	canonical_type	inferred_effect	inference_basis	override_reason
+neutral+raw-release	raw_close	void (void *) noexcept	neutral	clang:no-cxx-propagation	Test fixture models explicit raw resource release.
+neutral+raw-acquire	raw_open	void *(void) noexcept	neutral	clang:no-cxx-propagation	Test fixture models explicit raw resource acquisition.
+neutral+raw-acquire+raw-release	raw_replace	void *(void *, unsigned long) noexcept	neutral	clang:no-cxx-propagation	Test fixture models a call that may replace and release a raw allocation.

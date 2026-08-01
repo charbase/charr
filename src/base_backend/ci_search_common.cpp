@@ -31,15 +31,7 @@
  */
 
 #include "ci_stringi.h"
-#include "ci_stringi.h"
-#include "ci_utf8.h"
-#include "collation/pattern_set.h"
-#include <unicode/uregex.h>
-#include "ci_string8buf.h"
-#include <deque>
 namespace charr { namespace base_backend {
-
-using namespace std;
 
 
 /**
@@ -50,9 +42,9 @@ using namespace std;
  *
  * @version 1.7.1 (Marek Gagolewski, 2021-06-29) name_col1, name_col2
  */
-void ci__locate_set_dimnames_matrix(
+CHARR_R_HELPER void ci__locate_set_dimnames_matrix(
     SEXP matrix, bool get_length
-) {
+) noexcept {
     SEXP dimnames;
     SEXP colnames;
     PROTECT(dimnames = Rf_allocVector(VECSXP, 2));
@@ -76,9 +68,9 @@ void ci__locate_set_dimnames_matrix(
  *
  * @version 1.7.1 (Marek Gagolewski, 2021-06-29) name_col1, name_col2
  */
-void ci__locate_set_dimnames_list(
+CHARR_R_HELPER void ci__locate_set_dimnames_list(
     SEXP list, bool get_length
-) {
+) noexcept {
     R_len_t n = LENGTH(list);
     if (n <= 0) return;
 
@@ -97,108 +89,5 @@ void ci__locate_set_dimnames_list(
     UNPROTECT(2);
 }
 
-
-/**
- * Copy a logical subset of str_cont to an exact-size R character vector
- *
- * @param str_cont
- * @param which logical
- * @param result_counter
- * @return exact-size character vector
- *
- * @version 0.3-1 (Bartlomiej Tartanus, 2014-07-25)
- */
-SEXP ci__subset_by_logical(const io::Utf8Input& str_cont,
-                             const std::vector<int>& which, int result_counter)
-{
-    if (result_counter <= 0)
-        return Rf_allocVector(STRSXP, 0);
-
-    SEXP output;
-    PROTECT(output = Rf_allocVector(STRSXP, result_counter));
-    R_len_t j = 0;
-    R_len_t i = 0;
-    for (; i < result_counter &&
-            j < static_cast<R_len_t>(which.size()); ++j) {
-        if (which[j] == NA_LOGICAL) {
-            SET_STRING_ELT(output, i, NA_STRING);
-            i++;
-        }
-        else if (which[j]) {
-            const io::Utf8Record value = str_cont.record(j);
-            if (value.is_na()) {
-                SET_STRING_ELT(output, i, NA_STRING);
-            }
-            else {
-                SET_STRING_ELT(
-                    output, i,
-                    Rf_mkCharLenCE(
-                        value.data(), value.length(),
-                        value.isASCII() ? CE_NATIVE : CE_UTF8
-                    )
-                );
-            }
-            i++;
-        }
-    }
-    if (i != result_counter) {
-        UNPROTECT(1);
-        throw std::logic_error("subset result count mismatch");
-    }
-    UNPROTECT(1);
-    return output;
-}
-
-
-/**
- * Copy a logical subset of str_cont to an exact-size R character vector
- *
- * @param str_cont
- * @param which logical
- * @param result_counter
- * @return exact-size character vector
- *
- * @version 0.3-1 (Bartlomiej Tartanus, 2014-07-25)
- */
-SEXP ci__subset_by_logical(const io::Utf16Input& str_cont,
-                             const std::vector<int>& which, int result_counter)
-{
-    if (result_counter <= 0)
-        return Rf_allocVector(STRSXP, 0);
-
-    SEXP output;
-    PROTECT(output = Rf_allocVector(STRSXP, result_counter));
-    R_len_t j = 0;
-    R_len_t i = 0;
-    for (; i < result_counter &&
-            j < static_cast<R_len_t>(which.size()); ++j) {
-        if (which[j] == NA_LOGICAL) {
-            SET_STRING_ELT(output, i, NA_STRING);
-            i++;
-        }
-        else if (which[j]) {
-            if (str_cont.isNA(j)) {
-                SET_STRING_ELT(output, i, NA_STRING);
-            }
-            else {
-                std::string utf8;
-                str_cont.get(j).toUTF8String(utf8);
-                SET_STRING_ELT(
-                    output, i,
-                    Rf_mkCharLenCE(
-                        utf8.data(), static_cast<int>(utf8.size()), CE_UTF8
-                    )
-                );
-            }
-            i++;
-        }
-    }
-    if (i != result_counter) {
-        UNPROTECT(1);
-        throw std::logic_error("subset result count mismatch");
-    }
-    UNPROTECT(1);
-    return output;
-}
 
 } } // namespace charr::base_backend

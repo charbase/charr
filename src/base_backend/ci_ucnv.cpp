@@ -33,7 +33,6 @@
 #include "ci_stringi.h"
 #include "ci_ucnv.h"
 
-#include <cstdarg>
 #include <cstdio>
 #include <stdexcept>
 
@@ -42,20 +41,15 @@ namespace charr { namespace base_backend {
 
 namespace ucnv {
 
-void queue_converter_warning(
-    DeferredWarnings* warnings, UErrorCode* status, const char* format, ...
+CHARR_CXX_HELPER static void queue_converter_warning(
+    shared::DeferredWarnings* warnings, UErrorCode* status,
+    const char* message
 ) noexcept
 {
     if (!warnings) {
         *status = U_INTERNAL_PROGRAM_ERROR;
         return;
     }
-
-    char message[StriException_BUFSIZE];
-    va_list args;
-    va_start(args, format);
-    vsnprintf(message, StriException_BUFSIZE, format, args);
-    va_end(args);
 
     try {
         warnings->push(message);
@@ -163,7 +157,7 @@ void StriUcnv::STRI__UCNV_TO_U_CALLBACK_SUBSTITUTE_WARN (
     const char* codeUnits,
     int32_t length,
     UConverterCallbackReason reason,
-    UErrorCode * err)
+    UErrorCode * err) noexcept
 {
     bool wasSubstitute = reason <= UCNV_IRREGULAR;
 
@@ -173,41 +167,44 @@ void StriUcnv::STRI__UCNV_TO_U_CALLBACK_SUBSTITUTE_WARN (
     );
 
     if (*err == U_ZERO_ERROR && wasSubstitute) {
-        // substitute char was induced
+        char message[StriException_BUFSIZE];
         switch (length) {
         case 1:
-            queue_converter_warning(
-                (DeferredWarnings*)context, err,
+            snprintf(
+                message, sizeof(message),
                 MSG__UNCONVERTIBLE_BINARY_1, codeUnits[0]
             );
             break;
         case 2:
-            queue_converter_warning(
-                (DeferredWarnings*)context, err,
+            snprintf(
+                message, sizeof(message),
                 MSG__UNCONVERTIBLE_BINARY_2, codeUnits[0], codeUnits[1]
             );
             break;
         case 3:
-            queue_converter_warning(
-                (DeferredWarnings*)context, err,
+            snprintf(
+                message, sizeof(message),
                 MSG__UNCONVERTIBLE_BINARY_3,
                 codeUnits[0], codeUnits[1], codeUnits[2]
             );
             break;
         case 4:
-            queue_converter_warning(
-                (DeferredWarnings*)context, err,
+            snprintf(
+                message, sizeof(message),
                 MSG__UNCONVERTIBLE_BINARY_4,
                 codeUnits[0], codeUnits[1], codeUnits[2], codeUnits[3]
             );
             break;
         default:
-            queue_converter_warning(
-                (DeferredWarnings*)context, err,
+            snprintf(
+                message, sizeof(message), "%s",
                 MSG__UNCONVERTIBLE_BINARY_n
             );
             break;
         }
+        queue_converter_warning(
+            (shared::DeferredWarnings*)context, err, message
+        );
     }
 }
 
@@ -237,7 +234,7 @@ void StriUcnv::STRI__UCNV_FROM_U_CALLBACK_SUBSTITUTE_WARN (
     int32_t length,
     UChar32 codePoint,
     UConverterCallbackReason reason,
-    UErrorCode * err)
+    UErrorCode * err) noexcept
 {
     bool wasSubstitute = reason <= UCNV_IRREGULAR;
 
@@ -247,240 +244,17 @@ void StriUcnv::STRI__UCNV_FROM_U_CALLBACK_SUBSTITUTE_WARN (
     );
 
     if (*err == U_ZERO_ERROR && wasSubstitute) {
-        // substitute char was induced
-        queue_converter_warning(
-            (DeferredWarnings*)context, err,
+        char message[StriException_BUFSIZE];
+        snprintf(
+            message, sizeof(message),
             MSG__UNCONVERTIBLE_CODE_POINT, codePoint
+        );
+        queue_converter_warning(
+            (shared::DeferredWarnings*)context, err, message
         );
     }
 }
 
 
-/**
- * Get ICU ucnv standard names and their count
- *
- * @return vector of strings owned by ICU (don't delete them)
- *
- * @version 0.1-?? (Marek Gagolewski)
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-03-28)
- *          moved to StriUcnv;
- *          don't use R_alloc;
- *          return vector<const char*>
- */
-vector<const char*> StriUcnv::getStandards()
-{
-    UErrorCode status = U_ZERO_ERROR;
-    R_len_t std_n = (R_len_t)ucnv_countStandards()-1; // -1 - this is not documented in ICU4C
-    if (std_n <= 0)
-        throw StriException(MSG__ENC_ERROR_SET); // error() allowed here
-    vector<const char*> standards(std_n);
-
-    for (R_len_t i=0; i<std_n; ++i) {
-        status = U_ZERO_ERROR;
-        standards[i] = ucnv_getStandard(i, &status);
-        if (U_FAILURE(status)) {
-#ifndef NDEBUG
-            r_warning("could not get standard name (StriUcnv::getStandards())");
-#endif
-            standards[i] = NULL;
-        }
-    }
-
-    return standards;
-}
-
-
-/**
- * Get friendly encoding name
- *
- * @param canname Canonical (ICU) encoding name
- * @return First existing of: MIME name or JAVA name or Canonical
- *
- * @version 0.1-?? (Marek Gagolewski)
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-03-28)
- *          moved to StriUcnv
- */
-const char* StriUcnv::getFriendlyName(const char* canname)
-{
-    if (!canname) return NULL;
-
-    UErrorCode status;
-    const char* frname;
-
-    status = U_ZERO_ERROR;
-    frname = ucnv_getStandardName(canname, "MIME", &status);
-    if (!U_FAILURE(status) && frname)
-        return frname;
-
-    status = U_ZERO_ERROR;
-    frname = ucnv_getStandardName(canname, "JAVA", &status);
-    if (!U_FAILURE(status) && frname)
-        return frname;
-
-    return canname;
-}
-
-
-/**
- * Convert each ASCII character (1..127) to UTF-8
- * and checks whether it gets the same result
- *
- * This should be used only on 8-bit converters
- *
- * @param conv ICU charset converter
- *
- * @version 0.1-?? (Marek Gagolewski)
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-03-28)
- *          moved to StriUcnv
- */
-bool StriUcnv::hasASCIIsubset()
-{
-    openConverter(false);
-
-    // minCharSize, not maxCharSize, as we want to include UTF-8
-    if (ucnv_getMinCharSize(m_ucnv) != 1) return false;
-
-    const int ascii_from = 1;
-    const int ascii_to   = 127;
-    unsigned char ascii[ascii_to-ascii_from+2]; // + \0
-    for (int i=ascii_from; i<=ascii_to; ++i)
-        ascii[i-ascii_from] = (unsigned char)i;
-    ascii[ascii_to-ascii_from+1] = '\0';
-
-    UChar32 c;
-
-    const char* ascii_last = (const char*)ascii;
-    const char* ascii1 = (const char*)ascii;
-    const char* ascii2 = (const char*)(ascii+(ascii_to-ascii_from)+1);
-
-    ucnv_reset(m_ucnv);
-
-    while (ascii1 < ascii2) {
-        UErrorCode status = U_ZERO_ERROR;
-        c = ucnv_getNextUChar(m_ucnv, &ascii1, ascii2, &status);
-        if (U_FAILURE(status)) {
-#ifndef NDEBUG
-            r_warning("Cannot convert ASCII character 0x%02x (encoding=%s)",
-                       (int)ascii_last[0],
-                       ucnv_getName(m_ucnv, &status));
-#endif
-            return false;
-        }
-
-        // Has just one byte been consumed? (??is that necessary??)
-        // How many code units (bytes) are used for the UTF-8 encoding
-        // of this Unicode code point? Does this code unit (byte)
-        // encode a code point by itself (US-ASCII 0..0x7f)?
-        // Is that the same ASCII char?
-        if (ascii_last != ascii1-1
-                || U8_LENGTH(c) != 1
-                || c != (int)(unsigned char)ascii_last[0]) {
-            return false;
-        }
-        ascii_last = ascii1;
-    }
-
-    return true;
-}
-
-
-/**
- * Converts each character (23..255) to UTF-8 and then back to original enc
- * and checks whether it gets the same result
- *
- * This should be used only on 8-bit converters
- *
- * @param conv ICU charset converter
- *
- * @version 0.1-?? (Marek Gagolewski)
- *
- * @version 0.2-1 (Marek Gagolewski, 2014-03-28)
- *          moved to StriUcnv
- */
-bool StriUcnv::is1to1Unicode()
-{
-    openConverter(false);
-    if (ucnv_getMinCharSize(m_ucnv) != 1) return false;
-
-    const int ascii_from = 32;
-    const int ascii_to = 255;
-    unsigned char ascii[ascii_to-ascii_from+2]; // + \0
-    for (int i=ascii_from; i<=ascii_to; ++i)
-        ascii[i-ascii_from] = (unsigned char)i;
-    ascii[ascii_to-ascii_from+1] = '\0';
-
-    UChar32 c;
-    const int buflen =  UCNV_GET_MAX_BYTES_FOR_STRING(1, 1); /* const size */
-    char buf[buflen];
-
-    const char* ascii_last = (const char*)(ascii);
-    const char* ascii1 = (const char*)(ascii);
-    const char* ascii2 = (const char*)(ascii+(ascii_to-ascii_from)+1);
-
-    UErrorCode status = U_ZERO_ERROR;
-    ucnv_reset(m_ucnv);
-
-    while (ascii1 < ascii2) {
-        status = U_ZERO_ERROR;
-        c = ucnv_getNextUChar(m_ucnv, &ascii1, ascii2, &status);
-        if (U_FAILURE(status)) {
-#ifndef NDEBUG
-            r_warning("Cannot convert character 0x%02x (encoding=%s)",
-                       (int)(unsigned char)ascii_last[0],
-                       ucnv_getName(m_ucnv, &status));
-#endif
-            return false;
-        }
-
-        if (ascii_last != ascii1-1) // one byte should be consumed
-            return false;
-
-        // check whether the character is represented
-        // by a single UTF-16 code point
-        UChar lead = U16_LEAD(c); //, trail = U16_TRAIL(c);
-        if (!U16_IS_SINGLE(lead)) {
-#ifndef NDEBUG
-            r_warning("Problematic character 0x%02x -> \\u%08x (encoding=%s)",
-                       (int)ascii_last[0],
-                       c,
-                       ucnv_getName(m_ucnv, &status));
-#endif
-            return false;
-        }
-
-        // character not convertible => ignore
-        status = U_ZERO_ERROR;
-        if (c != UCHAR_REPLACEMENT) {
-            ucnv_fromUChars(m_ucnv, buf, buflen, (UChar*)&c, 1, &status);
-            if (U_FAILURE(status)) {
-#ifndef NDEBUG
-                r_warning("Cannot convert character 0x%02x (encoding=%s)",
-                           (int)(unsigned char)ascii_last[0],
-                           ucnv_getName(m_ucnv, &status));
-#endif
-                return false;
-            }
-
-            if (buf[1] != '\0' || buf[0] != ascii_last[0]) {
-#ifndef NDEBUG
-                r_warning("Problematic character 0x%02x -> \\u%08x -> 0x%02x (encoding=%s)",
-                           (int)(unsigned char)ascii_last[0],
-                           c,
-                           (int)buf[0],
-                           ucnv_getName(m_ucnv, &status));
-#endif
-                return false;
-            }
-        }
-        // @TODO: check tolower, toupper etc. (???)
-
-        ascii_last = ascii1;
-    }
-
-    return true;
-}
 
 } } // namespace charr::base_backend

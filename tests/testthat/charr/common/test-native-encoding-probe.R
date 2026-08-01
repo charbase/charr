@@ -113,8 +113,8 @@ test_that("BOM handling matches stringi for native-marked input", {
 
   Sys.setlocale("LC_CTYPE", utf8_locale)
   # A BOM carried in native bytes. Because the native encoding is UTF-8 here,
-  # stringi strips it in container-building operations; native_is_utf8() is
-  # what tells Utf8Input that.
+  # stringi strips it in container-building operations; native_is_utf8()
+  # supplies the locale fact needed by the input normalization path.
   value <- rawToChar(as.raw(c(0xef, 0xbb, 0xbf, 0x61, 0x62, 0x63)))
   Encoding(value) <- "unknown"
 

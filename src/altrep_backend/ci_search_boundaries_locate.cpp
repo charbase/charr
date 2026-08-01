@@ -26,197 +26,82 @@
  * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
  * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
  * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
- * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+ * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-
 #include "ci_stringi.h"
-#include "io/integer_input.h"
-#include "boundary/iterator.h"
-#include "ci_reader.h"
-#include "altrep_backend/io/utf8_input.h"
+#include "io/reader_utils.h"
+#include "boundary/options_r.h"
+#include "io/string_view.h"
+#include "../shared/boundary_iterator.h"
+#include "../shared/entrypoint.h"
+#include "../shared/native_to_utf8.h"
+#include "../shared/protect.h"
+#include "../shared/r_matrix.h"
+#include "../shared/slice_arena.h"
+#include "../shared/unwind.h"
+#include "../shared/utf8.h"
 
-#include <cstring>
-#include <utility>
+#include <charport.h>
+
+#include <cstddef>
+#include <exception>
+#include <stdexcept>
 #include <vector>
 
 namespace charr { namespace altrep_backend {
 
-
 namespace search_boundaries_locate {
 
-class Utf8PositionCursor {
-public:
-    Utf8PositionCursor(
-        const char* data, R_len_t length, bool ascii
-    ) noexcept
-        : data_(data), length_(length), byte_(0), position_(0),
-          ascii_(ascii)
-    {
-    }
-
-    R_len_t at(R_len_t target) noexcept
-    {
-        if (ascii_)
-            return target;
-        while (byte_ < target) {
-            U8_FWD_1(data_, byte_, length_);
-            ++position_;
-        }
-        return position_;
-    }
-
-private:
-    const char* data_;
-    R_len_t length_;
-    R_len_t byte_;
-    R_len_t position_;
-    bool ascii_;
-};
-
-bool first_ascii_word(
-    const char* data, R_len_t length, R_len_t& word_end
-) noexcept
+CHARR_CXX_HELPER void require_icu_success(UErrorCode status)
 {
-    // This is deliberately narrower than ICU word iteration. A plain ASCII
-    // letter run followed by ASCII whitespace (or the end) has the same first
-    // boundary in the root and English rules; everything else stays on ICU.
-    if (length <= 0)
-        return false;
-
-    const auto is_letter = [](unsigned char value) {
-        return (value >= 'A' && value <= 'Z') ||
-            (value >= 'a' && value <= 'z');
-    };
-    const auto is_whitespace = [](unsigned char value) {
-        return value == ' ' || (value >= '\t' && value <= '\r');
-    };
-
-    if (!is_letter(static_cast<unsigned char>(data[0])))
-        return false;
-
-    R_len_t i = 1;
-    while (i < length && is_letter(static_cast<unsigned char>(data[i])))
-        ++i;
-    if (i < length && !is_whitespace(static_cast<unsigned char>(data[i])))
-        return false;
-
-    word_end = i;
-    return true;
+    if (U_FAILURE(status))
+        throw StriException(status);
 }
 
-struct LocaleOptionState {
-    bool reject_fast = false;
-    bool warn_default = false;
-};
 
-// ICU canonicalizes root and a few malformed locale IDs to the same null
-// pointer. Keep just enough of the raw option to distinguish an intentional
-// root/default request from a fallback that must still warn.
-LocaleOptionState locale_option_state(SEXP options, const char* locale)
+CHARR_CXX_HELPER void ensure_iterator(
+    shared::BoundaryIterator& iterator,
+    const shared::BoundaryOptions& options,
+    bool& opened,
+    bool& root_fallback
+)
 {
-    LocaleOptionState state;
-    if (locale || !Rf_isVectorList(options))
-        return state;
-
-    SEXP names = Rf_getAttrib(options, R_NamesSymbol);
-    for (R_len_t i = 0; i < LENGTH(options); ++i) {
-        if (std::strcmp(CHAR(STRING_ELT(names, i)), "locale"))
-            continue;
-
-        SEXP value = VECTOR_ELT(options, i);
-        if (Rf_isNull(value))
-            return state;
-        state.reject_fast = true;
-        if (TYPEOF(value) != STRSXP || XLENGTH(value) <= 0 ||
-                STRING_ELT(value, 0) == NA_STRING) {
-            return state;
-        }
-
-        const char* begin = CHAR(STRING_ELT(value, 0));
-        const char* end = begin+std::strlen(begin);
-        while (begin < end && (*begin == ' ' || *begin == '\t' ||
-                *begin == '\n' || *begin == '\r')) {
-            ++begin;
-        }
-        while (begin < end && (end[-1] == ' ' || end[-1] == '\t' ||
-                end[-1] == '\n' || end[-1] == '\r')) {
-            --end;
-        }
-        const bool is_root = end-begin == 4 &&
-            (begin[0] == 'r' || begin[0] == 'R') &&
-            (begin[1] == 'o' || begin[1] == 'O') &&
-            (begin[2] == 'o' || begin[2] == 'O') &&
-            (begin[3] == 't' || begin[3] == 'T');
-        if (begin == end || is_root)
-            state.reject_fast = false;
-        else
-            state.warn_default = true;
-        return state;
-    }
-    return state;
+    if (opened)
+        return;
+    const shared::BoundaryOpenResult result = iterator.reset(options);
+    root_fallback = result.root_fallback;
+    require_icu_success(result.status);
+    opened = true;
 }
 
-class BoundaryLocateOptions {
-public:
-    template <std::size_t N>
-    BoundaryLocateOptions(
-        SEXP options, const char (&default_type)[N],
-        ci::DeferredWarnings& warnings
-    ) : options_(options, default_type, warnings)
-    {
-        locale_state_ = locale_option_state(options, options_.getLocale());
-    }
 
-    bool can_use_first_ascii_word() const noexcept
-    {
-        if (options_.getType() != UBRK_WORD ||
-                !options_.getRules().isEmpty() ||
-                options_.getSkipSize() != 0 ||
-                (options_.getLocale() &&
-                 std::strchr(options_.getLocale(), '@'))) {
-            return false;
-        }
-
-        if (!options_.getLocale() && locale_state_.reject_fast)
-            return false;
-        const char* locale_id = options_.getLocale()
-            ? options_.getLocale()
-            : uloc_getDefault();
-        if (!locale_id)
-            return false;
-        if (ci__is_C_locale(locale_id))
-            locale_id = "en_US_POSIX";
-        if (!std::strcmp(locale_id, "root"))
-            return true;
-
-        char language[ULOC_LANG_CAPACITY];
-        UErrorCode status = U_ZERO_ERROR;
-        const int32_t size = uloc_getLanguage(
-            locale_id, language, ULOC_LANG_CAPACITY, &status
+CHARR_CXX_HELPER void normalize_input(
+    const charport::StrViews& source,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage,
+    std::vector<shared::StringView>& output
+)
+{
+    output.reserve(static_cast<std::size_t>(source.size()));
+    for (R_xlen_t i = 0; i < source.size(); ++i) {
+        const shared::StringView value = io::as_shared_view(source[i]);
+        if (value.enc == shared::StringEncoding::bytes)
+            throw StriException(MSG__BYTESENC);
+        output.push_back(
+            shared::normalize_utf8(value, converter, storage)
         );
-        return U_SUCCESS(status) && size > 0 &&
-            !std::strcmp(language, "en");
     }
+}
 
-    bool warn_default_locale() const noexcept
-    {
-        return locale_state_.warn_default;
-    }
 
-    const boundary::Options& options() const noexcept { return options_; }
-
-private:
-    boundary::Options options_;
-    LocaleOptionState locale_state_;
-};
-
-struct BoundaryLocateElement {
-    bool argument_na = true;
-    std::size_t offset = 0;
-    R_len_t count = 0;
-};
+CHARR_R_HELPER void emit_fallback_warning_r() noexcept
+{
+    Rf_warning(
+        "%s", ICUError::getICUerrorName(U_USING_DEFAULT_WARNING)
+    );
+}
 
 } // namespace search_boundaries_locate
 
@@ -224,12 +109,11 @@ using namespace search_boundaries_locate;
 
 
 /**
- * Locate first or last boundaries
+ * Locate the first boundary.
  *
  * @param str character vector
  * @param opts_brkiter list
- * @param first looking for first or last match?
- *
+ * @param get_length logical
  * @return integer matrix (2 columns)
  *
  * @version 0.4-1 (Marek Gagolewski, 2014-12-05)
@@ -237,131 +121,119 @@ using namespace search_boundaries_locate;
  * @version 1.7.1 (Marek Gagolewski, 2021-06-29)
  *     get_length
  */
-SEXP ci__locate_firstlast_boundaries(
-    SEXP str, SEXP opts_brkiter, bool first, bool get_length1
-) {
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
-
-    STRI__ERROR_HANDLER_BEGIN(1)
-    SEXP ret;
-    {
-    // Deviation from stringi: keep the option's ICU storage inside the
-    // unwind-safe scope so it is released before warning replay.
-    BoundaryLocateOptions opts_brkiter2(
-        opts_brkiter, "line_break", STRI__DEFERRED_WARNINGS
-    );
-    const bool use_first_ascii_word = first &&
-        opts_brkiter2.can_use_first_ascii_word();
-    bool warn_default_locale = opts_brkiter2.warn_default_locale();
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    R_len_t str_length = ci::checked_r_len(
-        context.size(str), "character vectors"
-    );
-
-    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-        return Rf_allocMatrix(INTSXP, str_length, 2);
-    }));
-    int* ret_tab = INTEGER(ret);
-
-    auto process = [&](auto record) {
-        boundary::Utf8Iterator brkiter(opts_brkiter2.options());
-        for (R_len_t i = 0; i < str_length; ++i)
-        {
-            ret_tab[i]            = NA_INTEGER;
-            ret_tab[i+str_length] = NA_INTEGER;
-
-            charport::StrView value = record(i);
-            if (value.is_na())
-                continue;
-            if (value.enc == cetype_ext_t::CE_BYTES)
-                throw StriException(MSG__BYTESENC);
-
-            if (get_length1) {
-                ret_tab[i]            = -1;
-                ret_tab[i+str_length] = -1;
-            }
-
-            if (value.len == 0)
-                continue;
-
-            R_len_t word_end = 0;
-            if (use_first_ascii_word && first_ascii_word(
-                    value.ptr, value.len, word_end
-            )) {
-                ret_tab[i] = 1;
-                ret_tab[i+str_length] = word_end;
-                continue;
-            }
-
-            if (warn_default_locale) {
-                STRI__DEFERRED_WARNINGS.push(
-                    ICUError::getICUerrorName(U_USING_DEFAULT_WARNING)
-                );
-                warn_default_locale = false;
-            }
-            brkiter.setupMatcher(
-                value.ptr, value.len,
-                STRI__DEFERRED_WARNINGS
-            );
-            pair<R_len_t, R_len_t> occurrence;
-            bool matched;
-            if (first) {
-                brkiter.first();
-                matched = brkiter.next(occurrence);
-            }
-            else {
-                brkiter.last();
-                matched = brkiter.previous(occurrence);
-            }
-            if (!matched)
-                continue;
-
-            Utf8PositionCursor cursor(
-                value.ptr, value.len,
-                value.enc == cetype_ext_t::CE_ASCII
-            );
-            const R_len_t start = cursor.at(occurrence.first) + 1;
-            const R_len_t end = cursor.at(occurrence.second);
-            ret_tab[i] = start;
-            ret_tab[i+str_length] = get_length1
-                ? end-start+1 : end;
-        }
-    };
-
-    {
-        charr::altrep_backend::io::Utf8Input input(context, str, str_length);
-        process([&](R_len_t i) { return input.record(i).view(); });
-    }
-
-    ci::unwind_protect([&]() -> SEXP {
-        ci__locate_set_dimnames_matrix(ret, get_length1);
-        return R_NilValue;
-    });
-    }
-    STRI__DEFERRED_WARNINGS.emit();
-
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END( ;/* do nothing special on error */ )
-}
-
-
-/**
- * Locate first boundary
- *
- * @param str character vector
- * @param opts_brkiter list
- * @return integer matrix (2 columns)
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-12-05)
- *
- * @version 1.7.1 (Marek Gagolewski, 2021-06-29)
- *     get_length
- */
-SEXP ci_locate_first_boundaries(SEXP str, SEXP opts_brkiter, SEXP get_length)
+CHARR_ENTRYPOINT SEXP ci_locate_first_boundaries(
+    SEXP str, SEXP opts_brkiter, SEXP get_length
+) noexcept
 {
-    bool get_length1 = ci__prepare_arg_logical_1_notNA(get_length, "get_length");
-    return ci__locate_firstlast_boundaries(str, opts_brkiter, true, get_length1);
+    CHARR_ENTRYPOINT_BEGIN();
+
+    const bool return_length = ci__prepare_arg_logical_1_notNA_r(
+        get_length, "get_length"
+    );
+    str = entry_protections.protect_one(
+        ci__prepare_arg_string_r(str, "str")
+    );
+    const shared::BoundaryOptions options =
+        boundary::prepare_options_r(opts_brkiter, UBRK_LINE);
+
+
+    bool iterator_open = false;
+    bool root_fallback_warning = false;
+
+    try {
+        charport::Reader reader;
+        charport::StrViews source_views;
+        shared::NativeToUtf8 converter;
+        shared::SliceArena storage;
+        std::vector<shared::StringView> normalized;
+        shared::BoundaryIterator iterator;
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                const R_len_t length = io::checked_r_len(
+                    XLENGTH(str), "character vectors"
+                );
+                result = entry_protections.reprotect_one(
+                    Rf_allocMatrix(INTSXP, length, 2), result_index
+                );
+                int* output = INTEGER(result);
+
+                reader.reset(str);
+                if (reader.size() != length) {
+                    throw std::runtime_error(
+                        "Reader length changed during boundary location"
+                    );
+                }
+                source_views.resize(length);
+                if (length > 0) {
+                    reader.views(
+                        0, length,
+                        source_views.ptrs(), source_views.lengths(),
+                        source_views.encodings()
+                    );
+                }
+                normalize_input(
+                    source_views, converter, storage, normalized
+                );
+
+                const bool ascii_word_first =
+                    shared::boundary_ascii_word_first(options);
+                for (R_len_t i = 0; i < length; ++i) {
+                    output[i] = NA_INTEGER;
+                    output[i+length] = NA_INTEGER;
+
+                    const shared::StringView& value = normalized[
+                        static_cast<std::size_t>(i)
+                    ];
+                    if (value.is_na())
+                        continue;
+
+                    if (return_length) {
+                        output[i] = -1;
+                        output[i+length] = -1;
+                    }
+                    if (value.len == 0)
+                        continue;
+
+                    int ascii_word_end = 0;
+                    if (ascii_word_first &&
+                            shared::boundary_ascii_initial_word(
+                                value.ptr, value.len, ascii_word_end
+                            )) {
+                        output[i] = 1;
+                        output[i+length] = ascii_word_end;
+                        continue;
+                    }
+
+                    ensure_iterator(
+                        iterator, options, iterator_open,
+                        root_fallback_warning
+                    );
+                    require_icu_success(iterator.set_text(value));
+                    iterator.first();
+                    shared::BoundaryRange range{0, 0};
+                    if (!iterator.next(range))
+                        continue;
+
+                    shared::Utf8PositionCursor cursor(value);
+                    const int start = cursor.at_byte(range.start) + 1;
+                    const int end = cursor.at_byte(range.end);
+                    output[i] = start;
+                    output[i+length] = return_length
+                        ? end - start + 1
+                        : end;
+                }
+
+                ci__locate_set_dimnames_matrix(result, return_length);
+                CHARR_UNWIND_RETURN();
+            }
+        );
+    }
+    CHARR_ENTRYPOINT_END(
+        if (root_fallback_warning)
+            emit_fallback_warning_r();
+    );
 }
 
 
@@ -370,144 +242,147 @@ SEXP ci_locate_first_boundaries(SEXP str, SEXP opts_brkiter, SEXP get_length)
  * @param str character vector
  * @param omit_no_match logical
  * @param opts_brkiter named list
+ * @param get_length logical
  * @return list
  *
  * @version 0.2-2 (Marek Gagolewski, 2014-04-22)
  *
- * @version 0.2-2 (Marek Gagolewski, 2014-04-23)
- *          removed "title": For Unicode 4.0 and above title boundary
- *          iteration, please use Word Boundary iterator.
- *
- * @version 0.2-2 (Marek Gagolewski, 2014-04-25)
- *          use ci__split_or_locate_boundaries
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-10-29)
- *          use opts_brkiter
- *
  * @version 0.4-1 (Marek Gagolewski, 2014-11-28)
  *          new args: omit_no_match
- *
- * @version 0.4-1 (Marek Gagolewski, 2014-12-02)
- *          use boundary::Utf8Iterator
  *
  * @version 1.7.1 (Marek Gagolewski, 2021-06-29)
  *     get_length
  */
-SEXP ci_locate_all_boundaries(SEXP str, SEXP omit_no_match, SEXP opts_brkiter, SEXP get_length)
+CHARR_ENTRYPOINT SEXP ci_locate_all_boundaries(
+    SEXP str, SEXP omit_no_match, SEXP opts_brkiter, SEXP get_length
+) noexcept
 {
-    bool omit_no_match1 = ci__prepare_arg_logical_1_notNA(omit_no_match, "omit_no_match");
-    bool get_length1 = ci__prepare_arg_logical_1_notNA(get_length, "get_length");
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
+    CHARR_ENTRYPOINT_BEGIN();
 
-    STRI__ERROR_HANDLER_BEGIN(1)
-    SEXP ret;
-    {
-    // Deviation from stringi: keep the option's ICU storage inside the
-    // unwind-safe scope so it is released before warning replay.
-    boundary::Options opts_brkiter2(
-        opts_brkiter, "line_break", STRI__DEFERRED_WARNINGS
+    const bool omit = ci__prepare_arg_logical_1_notNA_r(
+        omit_no_match, "omit_no_match"
     );
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    R_len_t str_length = ci::checked_r_len(
-        context.size(str), "character vectors"
+    const bool return_length = ci__prepare_arg_logical_1_notNA_r(
+        get_length, "get_length"
     );
-
-    std::vector<BoundaryLocateElement> elements(
-        static_cast<std::size_t>(str_length)
+    str = entry_protections.protect_one(
+        ci__prepare_arg_string_r(str, "str")
     );
-    std::vector< std::pair<R_len_t, R_len_t> > occurrences;
-    occurrences.reserve(static_cast<std::size_t>(str_length));
+    const shared::BoundaryOptions options =
+        boundary::prepare_options_r(opts_brkiter, UBRK_LINE);
 
-    auto process = [&](auto record) {
-        boundary::Utf8Iterator brkiter(opts_brkiter2);
-        for (R_len_t i = 0; i < str_length; ++i)
-        {
-            BoundaryLocateElement& element = elements[
-                static_cast<std::size_t>(i)
-            ];
-            element.offset = occurrences.size();
 
-            charport::StrView value = record(i);
-            if (value.is_na())
-                continue;
-            if (value.enc == cetype_ext_t::CE_BYTES)
-                throw StriException(MSG__BYTESENC);
-            element.argument_na = false;
+    bool iterator_open = false;
+    bool root_fallback_warning = false;
 
-            brkiter.setupMatcher(
-                value.ptr, value.len,
-                STRI__DEFERRED_WARNINGS
-            );
-            brkiter.first();
+    try {
+        charport::Reader reader;
+        charport::StrViews source_views;
+        shared::NativeToUtf8 converter;
+        shared::SliceArena storage;
+        std::vector<shared::StringView> normalized;
+        std::vector<shared::BoundaryRange> occurrences;
+        shared::BoundaryIterator iterator;
 
-            Utf8PositionCursor cursor(
-                value.ptr, value.len,
-                value.enc == cetype_ext_t::CE_ASCII
-            );
-            pair<R_len_t, R_len_t> occurrence;
-            while (brkiter.next(occurrence)) {
-                const R_len_t start = cursor.at(occurrence.first) + 1;
-                const R_len_t end = cursor.at(occurrence.second);
-                occurrences.push_back(std::make_pair(
-                    start, get_length1 ? end-start+1 : end
-                ));
-            }
-            element.count = static_cast<R_len_t>(
-                occurrences.size()-element.offset
-            );
-        }
-    };
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                const R_len_t length = io::checked_r_len(
+                    XLENGTH(str), "character vectors"
+                );
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(VECSXP, length), result_index
+                );
+                SEXP current = R_NilValue;
+                PROTECT_INDEX current_index;
+                callback_protections.protect_with_index(current, &current_index);
 
-    {
-        charr::altrep_backend::io::Utf8Input input(context, str, str_length);
-        process([&](R_len_t i) { return input.record(i).view(); });
-    }
-
-    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-        return Rf_allocVector(VECSXP, str_length);
-    }));
-
-    ci::unwind_protect([&]() -> SEXP {
-        for (R_len_t i = 0; i < str_length; ++i)
-        {
-            ci::UnwindCallbackProtector protector;
-            const BoundaryLocateElement& element = elements[
-                static_cast<std::size_t>(i)
-            ];
-            SEXP ans;
-            if (element.argument_na) {
-                ans = protector.hold(ci__matrix_NA_INTEGER(1, 2));
-            }
-            else if (element.count <= 0) {
-                ans = protector.hold(ci__matrix_NA_INTEGER(
-                    omit_no_match1?0:1, 2,
-                    get_length1?-1:NA_INTEGER
-                ));
-            }
-            else {
-                ans = protector.hold(Rf_allocMatrix(
-                    INTSXP, element.count, 2
-                ));
-                int* ans_tab = INTEGER(ans);
-                for (R_len_t j = 0; j < element.count; ++j) {
-                    const std::pair<R_len_t, R_len_t>& occurrence =
-                        occurrences[element.offset+
-                            static_cast<std::size_t>(j)];
-                    ans_tab[j] = occurrence.first;
-                    ans_tab[j+element.count] = occurrence.second;
+                reader.reset(str);
+                if (reader.size() != length) {
+                    throw std::runtime_error(
+                        "Reader length changed during boundary location"
+                    );
                 }
-            }
-            SET_VECTOR_ELT(ret, i, ans);
-        }
+                source_views.resize(length);
+                if (length > 0) {
+                    reader.views(
+                        0, length,
+                        source_views.ptrs(), source_views.lengths(),
+                        source_views.encodings()
+                    );
+                }
+                normalize_input(
+                    source_views, converter, storage, normalized
+                );
 
-        ci__locate_set_dimnames_list(ret, get_length1);
-        return R_NilValue;
-    });
+                for (R_len_t i = 0; i < length; ++i) {
+                    const shared::StringView& value = normalized[
+                        static_cast<std::size_t>(i)
+                    ];
+                    if (value.is_na()) {
+                        current = callback_protections.reprotect_slot(
+                            shared::filled_integer_matrix_r(1, 2), current_index
+                        );
+                        SET_VECTOR_ELT(result, i, current);
+                        continue;
+                    }
+
+                    ensure_iterator(
+                        iterator, options, iterator_open,
+                        root_fallback_warning
+                    );
+                    require_icu_success(iterator.set_text(value));
+                    iterator.first();
+
+                    occurrences.clear();
+                    shared::Utf8PositionCursor cursor(value);
+                    shared::BoundaryRange range{0, 0};
+                    while (iterator.next(range)) {
+                        const int start = cursor.at_byte(range.start) + 1;
+                        const int end = cursor.at_byte(range.end);
+                        const shared::BoundaryRange occurrence{
+                            start,
+                            return_length ? end - start + 1 : end
+                        };
+                        occurrences.push_back(occurrence);
+                    }
+
+                    const int count = static_cast<int>(occurrences.size());
+                    if (count == 0) {
+                        current = callback_protections.reprotect_slot(
+                            shared::filled_integer_matrix_r(
+                                omit ? 0 : 1, 2,
+                                return_length ? -1 : NA_INTEGER
+                            ),
+                            current_index
+                        );
+                        SET_VECTOR_ELT(result, i, current);
+                        continue;
+                    }
+
+                    current = callback_protections.reprotect_slot(
+                        Rf_allocMatrix(INTSXP, count, 2),
+                        current_index
+                    );
+                    int* output = INTEGER(current);
+                    for (int j = 0; j < count; ++j) {
+                        const shared::BoundaryRange& occurrence =
+                            occurrences[static_cast<std::size_t>(j)];
+                        output[j] = occurrence.start;
+                        output[j+count] = occurrence.end;
+                    }
+                    SET_VECTOR_ELT(result, i, current);
+                }
+
+                ci__locate_set_dimnames_list(result, return_length);
+                CHARR_UNWIND_RETURN();
+            }
+        );
     }
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END({ /* nothing special t.b.d. on error */ })
+    CHARR_ENTRYPOINT_END(
+        if (root_fallback_warning)
+            emit_fallback_warning_r();
+    );
 }
 
 } } // namespace charr::altrep_backend

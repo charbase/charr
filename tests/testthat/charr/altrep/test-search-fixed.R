@@ -295,7 +295,7 @@ test_that("fixed search rejects bytes-marked input and patterns", {
     expect_error(call("abc", bytes), "bytes encoding")
   }
 
-  # Utf8Input acquires all str elements before detect's max_count
+  # Input preparation scans every str element before detect's max_count
   # traversal, so bytes errors are not hidden by max_count == 0 or exhaustion.
   expect_error(
     detect_fixed(bytes, "a", max_count = 0L),
@@ -315,10 +315,9 @@ test_that("fixed search rejects bytes-marked input and patterns", {
 
 
 test_that("fixed search passes malformed UTF-8 through verbatim (no validation)", {
-  # Fixed byte-search does not validate UTF-8: it matches the raw declared-UTF-8
-  # bytes and never rejects or replaces malformed sequences (Utf8Input passes
-  # declared UTF-8 through verbatim after BOM handling). These therefore
-  # hold identically OFF and ON -- a regression to validation/replacement on
+  # Fixed byte-search does not validate UTF-8: it matches raw declared-UTF-8
+  # bytes and passes them through after BOM handling. These therefore hold
+  # identically OFF and ON -- a regression to validation or replacement on
   # either route fails here.
   bad <- mkenc_fixed(c(0x61, 0xff, 0x62), "UTF-8")   # a <ff> b
   expect_identical(detect_fixed(bad, "b"), TRUE)

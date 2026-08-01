@@ -1,0 +1,3 @@
+effect	qualified_name	canonical_type	inferred_effect	inference_basis	override_reason
+neutral	reviewed_pasted_call_78	int (int)	neutral	rule:reviewed-c-api	
+neutral	reviewed_plain_call	int (int)	neutral	rule:reviewed-c-api	

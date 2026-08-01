@@ -1,7 +1,3 @@
-charr_icu_ok <- function() {
-  .Call(C_charr_icu_ok)
-}
-
 charr_icu_bundled <- function() {
   .Call(C_charr_icu_bundled)
 }

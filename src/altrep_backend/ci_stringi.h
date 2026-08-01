@@ -44,139 +44,76 @@
 namespace charr { namespace altrep_backend {
 
 
-namespace ci {
-class ReaderContext;
-}
-
-
-// common.cpp
-SEXP    ci__make_character_vector_char_ptr(R_len_t numnames, ...);
-SEXP    ci__make_character_vector_UnicodeString_ptr(R_len_t numnames, ...);
-R_len_t ci__recycling_rule(bool enableWarning, int n, ...);
-R_len_t ci__recycling_rule(ci::DeferredWarnings& warnings, int n, ...);
-SEXP    ci__vector_NA_integers(R_len_t howmany);
-SEXP    ci__vector_NA_strings(R_len_t howmany);
-SEXP    ci__vector_empty_strings(R_len_t howmany);
-SEXP    ci__emptyList();
-SEXP    ci__matrix_NA_INTEGER(R_len_t nrow, R_len_t ncol, int filler=NA_INTEGER);  // TODO: other ones can be generalised too
-SEXP    ci__matrix_NA_STRING(R_len_t nrow, R_len_t ncol);
-int     ci__match_arg(
-    const char* option, R_len_t option_length,
-    const char* const* set
-);
-
-// collator.cpp:
-::UCollator* ci__ucol_open(
-    ci::DeferredWarnings& warnings, SEXP opts_collator
-);
-
 // length.cpp
-R_len_t ci__numbytes_max(ci::ReaderContext& context, SEXP str);
-int     ci__width_char(UChar32 c);
-int     ci__width_char_with_context(UChar32 c, UChar32 p, bool& reset);
-int     ci__width_string(const char* s, int n, int max_width=NA_INTEGER);
-int     ci__length_string(const char* s, int n, int max_length=NA_INTEGER);
+CHARR_NEUTRAL_HELPER int ci__width_char(UChar32 c) noexcept;
+CHARR_NEUTRAL_HELPER int ci__width_char_with_context(
+    UChar32 c, UChar32 p, bool& reset
+) noexcept;
+CHARR_CXX_HELPER int ci__width_string(
+    const char* s, int n, int max_width=NA_INTEGER
+);
+CHARR_CXX_HELPER int ci__length_string(
+    const char* s, int n, int max_length=NA_INTEGER
+);
 
 // prepare_arg.cpp:
-SEXP ci__prepare_arg_string_1(
-    SEXP x, const char* argname,
-    ci::DeferredWarnings* warnings=NULL
-);
-SEXP ci__prepare_arg_double_1(
-    SEXP x, const char* argname, bool factors_as_strings=true,
-    ci::DeferredWarnings* warnings=NULL
-);
-SEXP ci__prepare_arg_integer_1(
-    SEXP x, const char* argname, bool factors_as_strings=true,
-    ci::DeferredWarnings* warnings=NULL
-);
-SEXP ci__prepare_arg_logical_1(
-    SEXP x, const char* argname,
-    ci::DeferredWarnings* warnings=NULL
-);
-
-const char* ci__copy_string_Ralloc(SEXP, const char* argname);
-double      ci__prepare_arg_double_1_notNA(
-    SEXP x, const char* argname,
-    ci::DeferredWarnings* warnings=NULL
-);
-int         ci__prepare_arg_integer_1_notNA(
-    SEXP x, const char* argname,
-    ci::DeferredWarnings* warnings=NULL
-);
-bool        ci__prepare_arg_logical_1_notNA(
-    SEXP x, const char* argname,
-    ci::DeferredWarnings* warnings=NULL
-);
-
-double      ci__prepare_arg_double_1_NA(SEXP x, const char* argname);
-int ci__prepare_arg_logical_1_NA(SEXP x, const char* argname);
-int ci__prepare_arg_integer_1_NA(SEXP x, const char* argname);
-
-bool ci__is_C_locale(const char* str);
-const char* ci__prepare_arg_locale(
+CHARR_R_HELPER SEXP ci__prepare_arg_string_1_r(
+    SEXP x, const char* argname
+) noexcept;
+CHARR_R_HELPER SEXP ci__prepare_arg_logical_1_r(
+    SEXP x, const char* argname
+) noexcept;
+CHARR_R_HELPER double ci__prepare_arg_double_1_notNA_r(
+    SEXP x, const char* argname
+) noexcept;
+CHARR_R_HELPER int ci__prepare_arg_integer_1_notNA_r(
+    SEXP x, const char* argname
+) noexcept;
+CHARR_R_HELPER bool ci__prepare_arg_logical_1_notNA_r(
+    SEXP x, const char* argname
+) noexcept;
+CHARR_R_HELPER int ci__prepare_arg_logical_1_NA_r(
+    SEXP x, const char* argname
+) noexcept;
+CHARR_R_HELPER const char* ci__prepare_arg_locale_r(
     SEXP loc, const char* argname,
-    bool allowdefault=true, bool allownull=true,
-    ci::DeferredWarnings* warnings=NULL
-);
-const char* ci__prepare_arg_enc(
-    SEXP loc, const char* argname,
+    bool allowdefault=true, bool allownull=true
+) noexcept;
+CHARR_R_HELPER const char* ci__prepare_arg_enc_r(
+    SEXP enc, const char* argname,
     bool allowdefault
-);
-TimeZone* ci__prepare_arg_timezone(
-    ci::DeferredWarnings& warnings,
-    SEXP tz, const char* argname, bool allowdefault
-);
-
-SEXP ci__prepare_arg_list(
-    SEXP x, const char* argname,
-    ci::DeferredWarnings* warnings=NULL
-);
-SEXP ci__prepare_arg_list_string(SEXP x,  const char* argname);
-SEXP ci__prepare_arg_list_integer(SEXP x, const char* argname);
-SEXP ci__prepare_arg_list_raw(SEXP x,     const char* argname);
-
-SEXP ci__prepare_arg_string(
-    SEXP x, const char* argname, bool allow_error=true,
-    ci::DeferredWarnings* warnings=NULL
-);
-SEXP ci__prepare_arg_logical(
-    SEXP x, const char* argname, bool allow_error=true,
-    ci::DeferredWarnings* warnings=NULL
-);
-SEXP ci__prepare_arg_double(
+) noexcept;
+CHARR_R_HELPER SEXP ci__prepare_arg_list_r(
+    SEXP x, const char* argname
+) noexcept;
+CHARR_R_HELPER SEXP ci__prepare_arg_list_string_r(
+    SEXP x, const char* argname
+) noexcept;
+CHARR_R_HELPER SEXP ci__prepare_arg_list_raw_r(
+    SEXP x, const char* argname
+) noexcept;
+CHARR_R_HELPER SEXP ci__prepare_arg_string_r(
+    SEXP x, const char* argname, bool allow_error=true
+) noexcept;
+CHARR_R_HELPER SEXP ci__prepare_arg_logical_r(
+    SEXP x, const char* argname, bool allow_error=true
+) noexcept;
+CHARR_R_HELPER SEXP ci__prepare_arg_integer_r(
     SEXP x, const char* argname, bool factors_as_strings=true,
-    bool allow_error=true, ci::DeferredWarnings* warnings=NULL
-);
-SEXP ci__prepare_arg_integer(
-    SEXP x, const char* argname, bool factors_as_strings=true,
-    bool allow_error=true, ci::DeferredWarnings* warnings=NULL
-);
-SEXP ci__prepare_arg_raw(
-    SEXP x, const char* argname, bool factors_as_strings=true,
-    bool allow_error=true, ci::DeferredWarnings* warnings=NULL
-);
-
-SEXP ci__prepare_arg_POSIXct(SEXP x,      const char* argname);
+    bool allow_error=true
+) noexcept;
 
 
 
 // search
-void ci__locate_set_dimnames_list(
+CHARR_R_HELPER void ci__locate_set_dimnames_list(
     SEXP list,
     bool get_length=false
-);
-void ci__locate_set_dimnames_matrix(
+) noexcept;
+CHARR_R_HELPER void ci__locate_set_dimnames_matrix(
     SEXP matrix,
     bool get_length=false
-);
-
-
-// date/time
-void ci__set_class_POSIXct(SEXP x);
-Calendar* ci__get_calendar(
-    const char* locale_val, ci::DeferredWarnings& warnings
-);
+) noexcept;
 
 // ------------------------------------------------------------------------
 

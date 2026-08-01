@@ -30,290 +30,170 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-
 #include "ci_stringi.h"
-#include "ci_utf8.h"
-#include "io/utf16_input.h"
-#include "collation/pattern_set.h"
-#include "fixed/pattern_set.h"
-#include "io/integer_input.h"
-#include "io/logical_input.h"
+#include "../shared/entrypoint.h"
+#include "../shared/protect.h"
 #include "../shared/read_lines.h"
+#include "../shared/unwind.h"
+
+#include <cstddef>
+#include <cstring>
+#include <exception>
 #include <string>
 #include <vector>
-#include <unicode/brkiter.h>
-#include <unicode/rbbi.h>
+
 namespace charr { namespace base_backend {
 
-using namespace std;
+namespace read_lines {
 
-
-SEXP ci_read_lines(SEXP path, SEXP encoding)
-{
-    PROTECT(path = ci__prepare_arg_string_1(path, "con"));
-    PROTECT(encoding = ci__prepare_arg_string_1(encoding, "encoding"));
-
-    STRI__ERROR_HANDLER_BEGIN(2)
-    SEXP ret = R_NilValue;
-    bool file_failed = false;
-    charr::shared::read_lines::FileCondition file_condition =
-        charr::shared::read_lines::FileCondition::open_failed;
-    int file_errno = 0;
-    size_t invalid_warning_count = 0;
-    char invalid_warning[256] = {0};
-    try {
-        SEXP path_string = STRING_ELT(path, 0);
-        if (path_string == NA_STRING)
-            throw StriException("invalid 'description' argument");
-        if (STRING_ELT(encoding, 0) == NA_STRING)
-            throw StriException("invalid 'encoding' value");
-
-        {
-        const char* original_path = Rf_translateChar(path_string);
-        const char* expanded = R_ExpandFileName(original_path);
-        const string expanded_path(expanded);
-        vector<char> bytes;
-        try {
-            bytes = charr::shared::read_lines::read_file(expanded_path.c_str());
-        }
-        catch (const charr::shared::read_lines::FileConditionError& error) {
-            file_failed = true;
-            file_condition = error.condition();
-            file_errno = error.error();
-        }
-
-        if (file_failed) {
-            bytes.clear();
-        }
-        else {
-
-            const char* utf8 = bytes.empty() ? "" : bytes.data();
-            int utf8_length = static_cast<int>(bytes.size());
-            if (charr::shared::read_lines::has_utf8_bom(utf8, utf8_length)) {
-                utf8 += 3;
-                utf8_length -= 3;
-            }
-
-            charr::shared::read_lines::ScanResult scan =
-                charr::shared::read_lines::scan_utf8(utf8, utf8_length, false);
-            if (scan.embedded_nul)
-                throw StriException("embedded nul in string");
-
-            vector<char> repaired;
-            if (!scan.invalid.empty()) {
-                const string warning = charr::shared::read_lines::invalid_warning(
-                    utf8, scan.invalid[0]
-                );
-                std::snprintf(
-                    invalid_warning, sizeof(invalid_warning),
-                    "%s", warning.c_str()
-                );
-                invalid_warning_count = scan.invalid.size();
-                repaired = charr::shared::read_lines::repair_utf8(
-                    utf8, utf8_length, scan.invalid
-                );
-                utf8 = repaired.empty() ? "" : repaired.data();
-                utf8_length = static_cast<int>(repaired.size());
-                scan = charr::shared::read_lines::scan_utf8(
-                    utf8, utf8_length, false
-                );
-            }
-
-            STRI__PROTECT(ret = Rf_allocVector(
-                STRSXP, static_cast<R_xlen_t>(scan.lines.size())
-            ));
-            for (size_t i=0; i<scan.lines.size(); ++i) {
-                const charr::shared::read_lines::LineSlice& line = scan.lines[i];
-                SET_STRING_ELT(
-                    ret, static_cast<R_xlen_t>(i),
-                    Rf_mkCharLenCE(
-                        utf8+line.begin, line.length, CE_UTF8
-                    )
-                );
-            }
-        }
-        }
-
-        if (file_failed) {
-            const char* description = Rf_translateChar(path_string);
-            if (file_condition ==
-                    charr::shared::read_lines::FileCondition::directory) {
-                r_warning(
-                    "'raw = FALSE' but '%s' is not a regular file",
-                    description
-                );
-                r_warning(
-                    "cannot open file '%s': it is a directory", description
-                );
-            }
-            else {
-                r_warning(
-                    "cannot open file '%s': %s", description,
-                    std::strerror(file_errno)
-                );
-            }
-            throw StriException("cannot open the connection");
-        }
-
-        for (size_t i=0; i<invalid_warning_count; ++i)
-            r_warning("%s", invalid_warning);
-    }
-    catch (const StriException&) {
-        throw;
-    }
-    catch (const std::exception& error) {
-        throw StriException("%s", error.what());
+CHARR_R_HELPER void emit_file_warnings(
+    const char* description,
+    shared::read_lines::FileCondition condition,
+    int error_number
+) noexcept {
+    if (condition == shared::read_lines::FileCondition::directory) {
+        Rf_warning(
+            "'raw = FALSE' but '%s' is not a regular file", description
+        );
+        Rf_warning(
+            "cannot open file '%s': it is a directory", description
+        );
+        return;
     }
 
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;)
+    Rf_warning(
+        "cannot open file '%s': %s",
+        description, std::strerror(error_number)
+    );
 }
 
+CHARR_R_HELPER void emit_invalid_warning(
+    const char* message
+) noexcept {
+    Rf_warning("%s", message);
+}
 
-/**
- * Split a single string into text lines
- *
- * @param str character vector
- *
- * @return character vector
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-08-04)
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- */
-SEXP ci_split_lines1(SEXP str)
+} // namespace read_lines
+
+using namespace read_lines;
+
+
+CHARR_ENTRYPOINT SEXP ci_read_lines(
+    SEXP path, SEXP encoding
+) noexcept
 {
-    PROTECT(str = ci__prepare_arg_string_1(str, "str"));
-    R_len_t vectorize_length = LENGTH(str);
+    CHARR_ENTRYPOINT_BEGIN();
 
-    STRI__ERROR_HANDLER_BEGIN(1)
-    io::Utf8Input str_cont(str, vectorize_length);
-
-    if (str_cont.isNA(0)) {
-        STRI__UNPROTECT_ALL
-        return str;
-    }
-
-    const char* str_cur_s = str_cont.get(0).data();
-    R_len_t str_cur_n = str_cont.get(0).length();
-
-    charr::shared::read_lines::ScanResult scan =
-        charr::shared::read_lines::scan_utf8(str_cur_s, str_cur_n, false);
-
-    SEXP ans;
-    STRI__PROTECT(ans = Rf_allocVector(
-        STRSXP, static_cast<R_xlen_t>(scan.lines.size())
+    path = entry_protections.protect_one(ci__prepare_arg_string_1_r(path, "con"));
+    encoding = entry_protections.protect_one(ci__prepare_arg_string_1_r(
+        encoding, "encoding"
     ));
-    for (size_t i=0; i<scan.lines.size(); ++i) {
-        const charr::shared::read_lines::LineSlice& line = scan.lines[i];
-        SET_STRING_ELT(
-            ans, static_cast<R_xlen_t>(i),
-            Rf_mkCharLenCE(str_cur_s+line.begin, line.length, CE_UTF8)
+
+    bool file_failed = false;
+    shared::read_lines::FileCondition file_condition =
+        shared::read_lines::FileCondition::open_failed;
+    int file_errno = 0;
+    std::size_t invalid_warning_count = 0;
+    char invalid_warning[shared::read_lines::invalid_warning_size] = {};
+
+    try {
+        shared::read_lines::FileReader file;
+        std::string description;
+        std::string expanded_path;
+        std::vector<char> bytes;
+        std::vector<char> repaired;
+        shared::line_split::ScanResult scan;
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                const SEXP path_string = STRING_ELT(path, 0);
+                if (path_string == NA_STRING)
+                    throw StriException("invalid 'description' argument");
+                if (STRING_ELT(encoding, 0) == NA_STRING)
+                    throw StriException("invalid 'encoding' value");
+
+                description = Rf_translateChar(path_string);
+                expanded_path = R_ExpandFileName(description.c_str());
+
+                try {
+                    file.reset(expanded_path.c_str());
+                    const int file_length = file.size();
+                    bytes.resize(static_cast<std::size_t>(file_length));
+                    file.read(file_length == 0 ? nullptr : bytes.data());
+                    file.close();
+                }
+                catch (const shared::read_lines::FileConditionError& error) {
+                    file_failed = true;
+                    file_condition = error.condition();
+                    file_errno = error.error();
+                }
+
+                if (file_failed) {
+                    emit_file_warnings(
+                        description.c_str(), file_condition, file_errno
+                    );
+                    throw StriException("cannot open the connection");
+                }
+
+                const char* utf8 = bytes.empty() ? "" : bytes.data();
+                int utf8_length = static_cast<int>(bytes.size());
+                if (shared::read_lines::has_utf8_bom(
+                        utf8, utf8_length
+                    )) {
+                    utf8 += 3;
+                    utf8_length -= 3;
+                }
+
+                shared::line_split::scan_utf8(
+                    utf8, utf8_length, false, false, scan
+                );
+                if (scan.embedded_nul)
+                    throw StriException("embedded nul in string");
+
+                if (!scan.invalid.empty()) {
+                    shared::read_lines::format_invalid_warning(
+                        utf8, scan.invalid[0],
+                        invalid_warning, sizeof(invalid_warning)
+                    );
+                    invalid_warning_count = scan.invalid.size();
+                    shared::read_lines::repair_utf8(
+                        utf8, utf8_length, scan.invalid, repaired
+                    );
+                    utf8 = repaired.empty() ? "" : repaired.data();
+                    utf8_length = static_cast<int>(repaired.size());
+                    shared::line_split::scan_utf8(
+                        utf8, utf8_length, false, false, scan
+                    );
+                }
+
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(
+                        STRSXP,
+                        static_cast<R_xlen_t>(scan.lines.size())
+                    ),
+                    result_index
+                );
+                for (std::size_t i = 0; i < scan.lines.size(); ++i) {
+                    const shared::line_split::LineSlice& line = scan.lines[i];
+                    SET_STRING_ELT(
+                        result, static_cast<R_xlen_t>(i),
+                        Rf_mkCharLenCE(
+                            utf8 + line.begin, line.length, CE_UTF8
+                        )
+                    );
+                }
+
+                for (std::size_t i = 0;
+                        i < invalid_warning_count; ++i) {
+                    emit_invalid_warning(invalid_warning);
+                }
+
+                CHARR_UNWIND_RETURN();
+            }
         );
     }
-    STRI__UNPROTECT_ALL
-    return ans;
-
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-}
-
-
-/**
- * Split a string into text lines
- *
- * @param str character vector
- * @param omit_empty logical vector
- *
- * @return list of character vectors
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-08-04)
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-10-30)
- *                removed `n_max` arg, as it doesn't make sense
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- */
-SEXP ci_split_lines(SEXP str, SEXP omit_empty)
-{
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
-//   n_max = ci__prepare_arg_integer(n_max, "n_max");
-    PROTECT(omit_empty = ci__prepare_arg_logical(omit_empty, "omit_empty"));
-    R_len_t vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), /*LENGTH(n_max), */LENGTH(omit_empty));
-
-    STRI__ERROR_HANDLER_BEGIN(2)
-    io::Utf8Input str_cont(str, vectorize_length);
-//   io::IntegerInput   n_max_cont(n_max, vectorize_length);
-    io::LogicalInput   omit_empty_cont(omit_empty, vectorize_length);
-
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(VECSXP, vectorize_length));
-
-    for (R_len_t i = str_cont.vectorize_init();
-            i != str_cont.vectorize_end();
-            i = str_cont.vectorize_next(i))
-    {
-        if (str_cont.isNA(i)) {
-            SET_VECTOR_ELT(ret, i, ci__vector_NA_strings(1));
-            continue;
-        }
-
-        const char* str_cur_s = str_cont.get(i).data();
-        R_len_t str_cur_n = str_cont.get(i).length();
-//      int  n_max_cur        = n_max_cont.get(i);
-        int  omit_empty_cur   = omit_empty_cont.get(i);
-
-//      if (n_max_cur < 0)
-//         n_max_cur = INT_MAX;
-//      else if (n_max_cur == 0) {
-//         SET_VECTOR_ELT(ret, i, Rf_allocVector(STRSXP, 0));
-//         continue;
-//      }
-
-//#define STRI_INDEX_NEWLINE_CR   0
-//#define STRI_INDEX_NEWLINE_LF   1
-//#define STRI_INDEX_NEWLINE_CRLF 2
-//#define STRI_INDEX_NEWLINE_NEL  3
-//#define STRI_INDEX_NEWLINE_VT   4
-//#define STRI_INDEX_NEWLINE_FF   5
-//#define STRI_INDEX_NEWLINE_LS   6
-//#define STRI_INDEX_NEWLINE_PS   7
-//#define STRI_INDEX_NEWLINE_LAST 8
-
-//      int counts[STRI_INDEX_NEWLINE_LAST];
-//      for (R_len_t j=0; j<STRI_INDEX_NEWLINE_LAST; ++j)
-//         counts[j] = 0;
-
-        charr::shared::read_lines::ScanResult scan =
-            charr::shared::read_lines::scan_utf8(
-                str_cur_s, str_cur_n, omit_empty_cur != 0,
-                true
-            );
-
-        SEXP ans;
-        STRI__PROTECT(ans = Rf_allocVector(
-            STRSXP, static_cast<R_xlen_t>(scan.lines.size())
-        ));
-
-        for (size_t j=0; j<scan.lines.size(); ++j) {
-            const charr::shared::read_lines::LineSlice& line = scan.lines[j];
-            SET_STRING_ELT(
-                ans, static_cast<R_xlen_t>(j),
-                Rf_mkCharLenCE(
-                    str_cur_s+line.begin, line.length, CE_UTF8
-                )
-            );
-        }
-
-        SET_VECTOR_ELT(ret, i, ans);
-        STRI__UNPROTECT(1);
-    }
-
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
+    CHARR_ENTRYPOINT_END();
 }
 
 } } // namespace charr::base_backend

@@ -1,0 +1,4 @@
+add_effects	remove_effects	qualified_name	canonical_type	reason
+raw-release		raw_close	void (void *) noexcept	Test fixture models explicit raw resource release.
+raw-acquire		raw_open	void *(void) noexcept	Test fixture models explicit raw resource acquisition.
+raw-acquire+raw-release		raw_replace	void *(void *, unsigned long) noexcept	Test fixture models a call that may replace and release a raw allocation.

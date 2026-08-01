@@ -32,12 +32,149 @@
 
 
 #include "ci_stringi.h"
-#include "io/utf16_input.h"
-#include "collation/pattern_set.h"
-#include "io/integer_input.h"
+#include "collator/options.h"
+#include "io/string_view.h"
+#include "../shared/collation_search.h"
+#include "../shared/collator.h"
+#include "../shared/entrypoint.h"
+#include "../shared/native_to_utf8.h"
+#include "../shared/protect.h"
+#include "../shared/slice_arena.h"
+#include "../shared/unwind.h"
+#include "../shared/utf8.h"
+
+#include <cstddef>
+#include <exception>
 
 
 namespace charr { namespace base_backend {
+
+namespace search_coll_startsendswith {
+
+CHARR_NEUTRAL_HELPER R_len_t recycling_length(
+    R_len_t first, R_len_t second, R_len_t third, bool& warning
+) noexcept
+{
+    warning = false;
+    if (first <= 0 || second <= 0 || third <= 0)
+        return 0;
+
+    R_len_t result = first > second ? first : second;
+    if (third > result)
+        result = third;
+    warning = result % first != 0 || result % second != 0 ||
+        result % third != 0;
+    return result;
+}
+
+
+CHARR_CXX_HELPER void require_icu_success(UErrorCode status)
+{
+    if (U_FAILURE(status))
+        throw StriException(status);
+}
+
+
+CHARR_CXX_HELPER R_len_t count_empty_patterns(
+    const shared::CollationInputs& patterns
+)
+{
+    R_len_t result = 0;
+    for (std::size_t i = 0; i < patterns.size(); ++i) {
+        const shared::CollationInput pattern = patterns.get(i);
+        if (!pattern.missing && pattern.length <= 0)
+            ++result;
+    }
+    return result;
+}
+
+
+CHARR_CXX_HELPER void match_normalized(
+    const shared::CollationInputs& subjects,
+    const shared::CollationInputs& patterns,
+    const int* positions,
+    R_len_t subject_length,
+    R_len_t pattern_length,
+    R_len_t position_length,
+    R_len_t vectorize_length,
+    UCollator* collator,
+    bool starts,
+    bool negate,
+    shared::CollationMatcher& matcher,
+    int* output
+)
+{
+    for (R_len_t lane = 0; lane < pattern_length; ++lane) {
+        const shared::CollationInput pattern = patterns.get(
+            static_cast<std::size_t>(lane)
+        );
+        R_len_t i = lane;
+        for (;;) {
+            const shared::CollationInput subject = subjects.get(
+                static_cast<std::size_t>(i % subject_length)
+            );
+
+            if (subject.missing || pattern.missing || pattern.length <= 0) {
+                output[i] = NA_LOGICAL;
+            }
+            else if (subject.length <= 0) {
+                output[i] = negate;
+            }
+            else {
+                const int position = positions[i % position_length];
+                if (position == NA_INTEGER) {
+                    output[i] = NA_LOGICAL;
+                }
+                else {
+                    const int offset = starts
+                        ? shared::utf16_start_offset(subject, position)
+                        : shared::utf16_end_offset(subject, position);
+                    bool matched = false;
+                    if ((starts && offset < subject.length) ||
+                            (!starts && offset > 0)) {
+                        UErrorCode status = U_ZERO_ERROR;
+                        matched = starts
+                            ? matcher.starts_with(
+                                collator, subject, pattern, offset, status
+                            )
+                            : matcher.ends_with(
+                                collator, subject, pattern, offset, status
+                            );
+                        require_icu_success(status);
+                    }
+                    output[i] = static_cast<int>(matched != negate);
+                }
+            }
+
+            if (pattern_length >= vectorize_length-i)
+                break;
+            i += pattern_length;
+        }
+    }
+}
+
+
+CHARR_R_HELPER void emit_warnings(
+    bool root_fallback_warning,
+    bool recycling_warning,
+    R_len_t empty_pattern_warnings
+) noexcept
+{
+    if (root_fallback_warning) {
+        Rf_warning(
+            "%s", ICUError::getICUerrorName(U_USING_DEFAULT_WARNING)
+        );
+    }
+    if (recycling_warning)
+        Rf_warning(MSG__WARN_RECYCLING_RULE);
+    for (R_len_t i = 0; i < empty_pattern_warnings; ++i)
+        Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+}
+
+} // namespace search_coll_startsendswith
+
+using namespace search_coll_startsendswith;
+
 
 /**
  * Detect if a string starts with a pattern match
@@ -56,81 +193,108 @@ namespace charr { namespace base_backend {
  * @version 1.4.7 (Marek Gagolewski, 2020-08-24)
  *    #345: `negate` arg added
  */
-SEXP ci_startswith_coll(SEXP str, SEXP pattern, SEXP from, SEXP negate, SEXP opts_collator)
+CHARR_ENTRYPOINT SEXP ci_startswith_coll(
+    SEXP str, SEXP pattern, SEXP from,
+    SEXP negate, SEXP opts_collator
+) noexcept
 {
-    bool negate_1 = ci__prepare_arg_logical_1_notNA(negate, "negate");
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
-    PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
-    PROTECT(from = ci__prepare_arg_integer(from, "from"));
+    CHARR_ENTRYPOINT_BEGIN();
 
-    UCollator* collator = NULL;
-    collator = ci__ucol_open(opts_collator);
+    const bool negate_1 = ci__prepare_arg_logical_1_notNA_r(
+        negate, "negate"
+    );
+    str = entry_protections.protect_one(ci__prepare_arg_string_r(str, "str"));
+    pattern = entry_protections.protect_one(ci__prepare_arg_string_r(pattern, "pattern"));
+    from = entry_protections.protect_one(ci__prepare_arg_integer_r(from, "from"));
+    const shared::CollatorOptions options =
+        collator::prepare_options(opts_collator);
 
-    STRI__ERROR_HANDLER_BEGIN(3)
-    int vectorize_length = ci__recycling_rule(true, 3,
-                           LENGTH(str), LENGTH(pattern), LENGTH(from));
-    io::Utf16Input str_cont(str, vectorize_length);
-    collation::PatternSet pattern_cont(pattern, vectorize_length, collator);  // collator is not owned by pattern_cont
-    io::IntegerInput from_cont(from, vectorize_length);
+    const R_len_t subject_length = LENGTH(str);
+    const R_len_t pattern_length = LENGTH(pattern);
+    const R_len_t position_length = LENGTH(from);
+    bool recycling_needed = false;
+    const R_len_t vectorize_length = recycling_length(
+        subject_length, pattern_length, position_length,
+        recycling_needed
+    );
 
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(LGLSXP, vectorize_length));
-    int* ret_tab = LOGICAL(ret);
+    bool root_fallback_warning = false;
+    bool recycling_warning = false;
+    R_len_t empty_pattern_warnings = 0;
 
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
-    {
-        STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-                ret_tab[i] = NA_LOGICAL,
-                ret_tab[i] = negate_1)
+    try {
+        shared::Collator collator_owner;
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        shared::CollationInputs subjects;
+        shared::CollationInputs patterns;
+        shared::CollationMatcher matcher;
 
-        if (from_cont.isNA(i)) {
-            ret_tab[i] = NA_LOGICAL;
-            continue;
-        }
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                const shared::CollatorOpenResult opened =
+                    collator_owner.reset(options);
+                root_fallback_warning = opened.root_fallback;
+                require_icu_success(opened.status);
+                recycling_warning = recycling_needed;
 
-        const UnicodeString* str_cur_data = &(str_cont.get(i));
-        const UChar* str_cur_s = str_cur_data->getBuffer();
-        const int str_cur_n = str_cur_data->length();
+                if (vectorize_length > 0) {
+                    subjects.resize(
+                        static_cast<std::size_t>(subject_length)
+                    );
+                    const SEXP* subject_values = STRING_PTR_RO(str);
+                    for (R_len_t i = 0; i < subject_length; ++i) {
+                        const shared::StringView value =
+                            shared::normalize_utf8_preserve_bom(
+                                io::as_shared_view(subject_values[i]),
+                                subject_converter, subject_storage
+                            );
+                        subjects.set(static_cast<std::size_t>(i), value);
+                    }
 
-        R_len_t from_cur = from_cont.get(i);
-        if (from_cur == 1)
-            from_cur = 0; /* most commonly used case */
-        else if (from_cur >= 0) {
-            R_len_t nskip = from_cur-1;
-            from_cur = 0;
-            U16_FWD_N(str_cur_s, from_cur, str_cur_n, nskip);
-        }
-        else {
-            R_len_t nskip = -from_cur;
-            from_cur = str_cur_n;
-            U16_BACK_N(str_cur_s, 0, from_cur, nskip);
-        }
-        // now surely from_cur >= 0 && from_cur <= str_cur_n
+                    patterns.resize(
+                        static_cast<std::size_t>(pattern_length)
+                    );
+                    const SEXP* pattern_values = STRING_PTR_RO(pattern);
+                    for (R_len_t i = 0; i < pattern_length; ++i) {
+                        const shared::StringView value =
+                            shared::normalize_utf8_preserve_bom(
+                                io::as_shared_view(pattern_values[i]),
+                                pattern_converter, pattern_storage
+                            );
+                        patterns.set(static_cast<std::size_t>(i), value);
+                    }
+                    empty_pattern_warnings = count_empty_patterns(patterns);
+                }
 
-        ret_tab[i] = negate_1;
-        if (from_cur >= str_cur_n) continue; // no match
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(LGLSXP, vectorize_length), result_index
+                );
+                int* output = LOGICAL(result);
+                if (vectorize_length > 0) {
+                    match_normalized(
+                        subjects, patterns, INTEGER_RO(from),
+                        subject_length, pattern_length, position_length,
+                        vectorize_length, collator_owner.get(), true,
+                        negate_1, matcher, output
+                    );
+                }
 
-        UStringSearch *matcher = pattern_cont.getMatcher(i, str_cur_s+from_cur, str_cur_n-from_cur);
-        usearch_reset(matcher);
-        UErrorCode status = U_ZERO_ERROR;
-        int start = usearch_first(matcher, &status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-        if (start != USEARCH_DONE && start == 0) ret_tab[i] = !negate_1;
+                CHARR_UNWIND_RETURN();
+            }
+        );
     }
-
-    if (collator) {
-        ucol_close(collator);
-        collator=NULL;
-    }
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(
-        if (collator) ucol_close(collator);
-    )
-    }
+    CHARR_ENTRYPOINT_END(
+        emit_warnings(
+            root_fallback_warning,
+            recycling_warning,
+            empty_pattern_warnings
+        );
+    );
+}
 
 
 /**
@@ -150,81 +314,107 @@ SEXP ci_startswith_coll(SEXP str, SEXP pattern, SEXP from, SEXP negate, SEXP opt
  * @version 1.4.7 (Marek Gagolewski, 2020-08-24)
  *    #345: `negate` arg added
  */
-SEXP ci_endswith_coll(SEXP str, SEXP pattern, SEXP to, SEXP negate, SEXP opts_collator)
+CHARR_ENTRYPOINT SEXP ci_endswith_coll(
+    SEXP str, SEXP pattern, SEXP to,
+    SEXP negate, SEXP opts_collator
+) noexcept
 {
-    bool negate_1 = ci__prepare_arg_logical_1_notNA(negate, "negate");
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
-    PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
-    PROTECT(to = ci__prepare_arg_integer(to, "to"));
+    CHARR_ENTRYPOINT_BEGIN();
 
-    UCollator* collator = NULL;
-    collator = ci__ucol_open(opts_collator);
+    const bool negate_1 = ci__prepare_arg_logical_1_notNA_r(
+        negate, "negate"
+    );
+    str = entry_protections.protect_one(ci__prepare_arg_string_r(str, "str"));
+    pattern = entry_protections.protect_one(ci__prepare_arg_string_r(pattern, "pattern"));
+    to = entry_protections.protect_one(ci__prepare_arg_integer_r(to, "to"));
+    const shared::CollatorOptions options =
+        collator::prepare_options(opts_collator);
 
-    STRI__ERROR_HANDLER_BEGIN(3)
-    int vectorize_length = ci__recycling_rule(true, 3,
-                           LENGTH(str), LENGTH(pattern), LENGTH(to));
-    io::Utf16Input str_cont(str, vectorize_length);
-    collation::PatternSet pattern_cont(pattern, vectorize_length, collator);  // collator is not owned by pattern_cont
-    io::IntegerInput to_cont(to, vectorize_length);
+    const R_len_t subject_length = LENGTH(str);
+    const R_len_t pattern_length = LENGTH(pattern);
+    const R_len_t position_length = LENGTH(to);
+    bool recycling_needed = false;
+    const R_len_t vectorize_length = recycling_length(
+        subject_length, pattern_length, position_length,
+        recycling_needed
+    );
 
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(LGLSXP, vectorize_length));
-    int* ret_tab = LOGICAL(ret);
+    bool root_fallback_warning = false;
+    bool recycling_warning = false;
+    R_len_t empty_pattern_warnings = 0;
 
-    for (R_len_t i = pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
-    {
-        STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-                ret_tab[i] = NA_LOGICAL,
-                ret_tab[i] = negate_1)
+    try {
+        shared::Collator collator_owner;
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        shared::CollationInputs subjects;
+        shared::CollationInputs patterns;
+        shared::CollationMatcher matcher;
 
-        if (to_cont.isNA(i)) {
-            ret_tab[i] = NA_LOGICAL;
-            continue;
-        }
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                const shared::CollatorOpenResult opened =
+                    collator_owner.reset(options);
+                root_fallback_warning = opened.root_fallback;
+                require_icu_success(opened.status);
+                recycling_warning = recycling_needed;
 
-        const UnicodeString* str_cur_data = &(str_cont.get(i));
-        const UChar* str_cur_s = str_cur_data->getBuffer();
-        const int str_cur_n = str_cur_data->length();
+                if (vectorize_length > 0) {
+                    subjects.resize(
+                        static_cast<std::size_t>(subject_length)
+                    );
+                    const SEXP* subject_values = STRING_PTR_RO(str);
+                    for (R_len_t i = 0; i < subject_length; ++i) {
+                        const shared::StringView value =
+                            shared::normalize_utf8_preserve_bom(
+                                io::as_shared_view(subject_values[i]),
+                                subject_converter, subject_storage
+                            );
+                        subjects.set(static_cast<std::size_t>(i), value);
+                    }
 
-        R_len_t to_cur = to_cont.get(i);
-        if (to_cur == -1)
-            to_cur = str_cur_n; /* most commonly used case */
-        else if (to_cur >= 0) {
-            R_len_t nskip = to_cur;
-            to_cur = 0;
-            U16_FWD_N(str_cur_s, to_cur, str_cur_n, nskip);
-        }
-        else {
-            R_len_t nskip = -to_cur-1;
-            to_cur = str_cur_n;
-            U16_BACK_N(str_cur_s, 0, to_cur, nskip);
-        }
-        // now surely to_cur >= 0 && to_cur <= str_cur_n
+                    patterns.resize(
+                        static_cast<std::size_t>(pattern_length)
+                    );
+                    const SEXP* pattern_values = STRING_PTR_RO(pattern);
+                    for (R_len_t i = 0; i < pattern_length; ++i) {
+                        const shared::StringView value =
+                            shared::normalize_utf8_preserve_bom(
+                                io::as_shared_view(pattern_values[i]),
+                                pattern_converter, pattern_storage
+                            );
+                        patterns.set(static_cast<std::size_t>(i), value);
+                    }
+                    empty_pattern_warnings = count_empty_patterns(patterns);
+                }
 
-        ret_tab[i] = negate_1;
-        if (to_cur <= 0) continue; // no match
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(LGLSXP, vectorize_length), result_index
+                );
+                int* output = LOGICAL(result);
+                if (vectorize_length > 0) {
+                    match_normalized(
+                        subjects, patterns, INTEGER_RO(to),
+                        subject_length, pattern_length, position_length,
+                        vectorize_length, collator_owner.get(), false,
+                        negate_1, matcher, output
+                    );
+                }
 
-        UStringSearch *matcher = pattern_cont.getMatcher(i, str_cur_s, to_cur);
-        usearch_reset(matcher);
-        UErrorCode status = U_ZERO_ERROR;
-        int start = usearch_last(matcher, &status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-        if (start != USEARCH_DONE && start+usearch_getMatchedLength(matcher) == to_cur)
-            ret_tab[i] = !negate_1;
+                CHARR_UNWIND_RETURN();
+            }
+        );
     }
-
-    if (collator) {
-        ucol_close(collator);
-        collator=NULL;
-    }
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(
-        if (collator) ucol_close(collator);
-    )
-    }
+    CHARR_ENTRYPOINT_END(
+        emit_warnings(
+            root_fallback_warning,
+            recycling_warning,
+            empty_pattern_warnings
+        );
+    );
+}
 
 } } // namespace charr::base_backend

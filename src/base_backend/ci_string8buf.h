@@ -35,7 +35,9 @@
 #define __charr_base_ci_string8buf_h
 
 #include "ci_stringi.h"
+#include "../shared/lint.h"
 #include <deque>
+#include <limits>
 
 
 namespace charr { namespace base_backend {
@@ -56,7 +58,7 @@ namespace charr { namespace base_backend {
  * @version 0.5-1 (Marek Gagolewski, 2015-02-14)
  *          Use malloc+realloc
  */
-class String8buf  {
+class CHARR_OWNER_TYPE String8buf  {
 
 private:
 
@@ -71,18 +73,24 @@ public:
      *
      * @param size buffer length-1
      */
-    String8buf(size_t size=0) {
-        this->m_size = size+1;
-        this->m_str = (char*)malloc(sizeof(char)*this->m_size);
-        STRI_ASSERT(this->m_str);
-        if (!this->m_str)
-            throw StriException(MSG__MEM_ALLOC_ERROR_WITH_SIZE, sizeof(char)*this->m_size);
+    CHARR_CXX_HELPER String8buf(size_t size=0) {
+        if (size == std::numeric_limits<size_t>::max())
+            throw StriException(MSG__BUF_SIZE_EXCEEDED);
+        const size_t new_size = size+1;
+        char* new_str = (char*)malloc(sizeof(char)*new_size);
+        STRI_ASSERT(new_str);
+        if (!new_str)
+            throw StriException(
+                MSG__MEM_ALLOC_ERROR_WITH_SIZE, sizeof(char)*new_size
+            );
+        this->m_size = new_size;
+        this->m_str = new_str;
         this->m_str[0] = '\0';
     }
 
 
     /** destructor */
-    ~String8buf()
+    CHARR_CXX_HELPER ~String8buf() noexcept
     {
         if (this->m_str) {
             free(this->m_str);
@@ -91,7 +99,7 @@ public:
     }
 
     /** copy constructor */
-    String8buf(const String8buf& s)
+    CHARR_CXX_HELPER String8buf(const String8buf& s)
     {
         this->m_size = s.m_size;
         this->m_str = (char*)malloc(sizeof(char)*this->m_size);
@@ -102,34 +110,36 @@ public:
     }
 
     /** copy */
-    String8buf& operator=(const String8buf& s)
+    CHARR_CXX_HELPER String8buf& operator=(const String8buf& s)
     {
         if (this == &s)
             return *this;
 
-        if (this->m_str)
-            free(this->m_str);
+        char* new_str = (char*)malloc(sizeof(char)*s.m_size);
+        STRI_ASSERT(new_str);
+        if (!new_str)
+            throw StriException(
+                MSG__MEM_ALLOC_ERROR_WITH_SIZE, sizeof(char)*s.m_size
+            );
+        memcpy(new_str, s.m_str, (size_t)s.m_size);
 
+        free(this->m_str);
+        this->m_str = new_str;
         this->m_size = s.m_size;
-        this->m_str = (char*)malloc(sizeof(char)*this->m_size);
-        STRI_ASSERT(this->m_str);
-        if (!this->m_str)
-            throw StriException(MSG__MEM_ALLOC_ERROR_WITH_SIZE, sizeof(char)*this->m_size);
-        memcpy(this->m_str, s.m_str, (size_t)this->m_size);
 
         return *this;
     }
 
 
     /* return data */
-    inline char* data()
+    CHARR_NEUTRAL_HELPER inline char* data() noexcept
     {
         return this->m_str;
     }
 
 
     /** buffer size in bytes */
-    inline size_t size() const
+    CHARR_NEUTRAL_HELPER inline size_t size() const noexcept
     {
         return this->m_size;
     }
@@ -140,18 +150,25 @@ public:
      * @param size new size-1
      * @param copy should the existing buffer content be retained?
      */
-    inline void resize(size_t size, bool copy=true)
+    CHARR_CXX_HELPER inline void resize(size_t size, bool copy=true)
     {
         if (this->m_size > size)
             return; // do nothing (the requested buffer size is available)
 
-        char* old_str = this->m_str;
-        this->m_size = size+1;
-        this->m_str = (char*)realloc(this->m_str, sizeof(char)*this->m_size);
-        STRI_ASSERT(this->m_str);
-        if (!this->m_str)
-            throw StriException(MSG__MEM_ALLOC_ERROR_WITH_SIZE, sizeof(char)*this->m_size);
-        if (!old_str || !copy) {
+        if (size == std::numeric_limits<size_t>::max())
+            throw StriException(MSG__BUF_SIZE_EXCEEDED);
+        const size_t new_size = size+1;
+        char* new_str = (char*)realloc(
+            this->m_str, sizeof(char)*new_size
+        );
+        STRI_ASSERT(new_str);
+        if (!new_str)
+            throw StriException(
+                MSG__MEM_ALLOC_ERROR_WITH_SIZE, sizeof(char)*new_size
+            );
+        this->m_str = new_str;
+        this->m_size = new_size;
+        if (!copy) {
             this->m_str[0] = '\0';
         }
     }
@@ -164,7 +181,8 @@ public:
      *
      * @version 0.3-1 (Marek Gagolewski, 2014-11-02)
      */
-    size_t replaceAllAtPos(const char* str_cur_s, size_t str_cur_n,
+    CHARR_CXX_HELPER size_t replaceAllAtPos(
+                           const char* str_cur_s, size_t str_cur_n,
                            const char* replacement_cur_s, size_t replacement_cur_n,
                            std::deque< std::pair<R_len_t, R_len_t> >& occurrences)
     {

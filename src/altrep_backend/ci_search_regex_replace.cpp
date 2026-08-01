@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+// Derived from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f.
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -30,116 +30,308 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-
-#include "ci_stringi.h"
 #include "ci_builder.h"
-#include "ci_utf8.h"
-#include "io/utf16_input.h"
-#include "regex/pattern_set.h"
-#include "altrep_backend/io/utf8_input.h"
+#include "io/reader_utils.h"
+#include "ci_stringi.h"
+#include "io/string_view.h"
+#include "io/utf8_output.h"
+#include "regex/options_r.h"
+#include "../shared/entrypoint.h"
+#include "../shared/native_to_utf8.h"
+#include "../shared/protect.h"
+#include "../shared/regex_search.h"
+#include "../shared/slice_arena.h"
+#include "../shared/unwind.h"
+#include "../shared/utf8.h"
 
-#include <memory>
-#include <unicode/ustring.h>
+#include <cstddef>
+#include <exception>
+#include <stdexcept>
+#include <vector>
 
 namespace charr { namespace altrep_backend {
 
-
 namespace search_regex_replace {
 
-class ReusableUtf16Text {
-private:
-    UnicodeString text_;
-
-public:
-    UnicodeString& set(const charport::StrView& value)
-    {
-        if (value.len <= 0) {
-            text_.remove();
-            return text_;
-        }
-
-        UChar* destination = text_.getBuffer(value.len);
-        if (!destination)
-            throw StriException(MSG__MEM_ALLOC_ERROR);
-
-        int32_t length = 0;
-        if (value.enc == cetype_ext_t::CE_ASCII) {
-            for (int32_t i = 0; i < value.len; ++i)
-                destination[i] = static_cast<unsigned char>(value.ptr[i]);
-            length = value.len;
-        }
-        else {
-            UErrorCode status = U_ZERO_ERROR;
-            u_strFromUTF8WithSub(
-                destination, value.len, &length,
-                value.ptr, value.len, 0xfffd, nullptr, &status
-            );
-            text_.releaseBuffer(length);
-            STRI__CHECKICUSTATUS_THROW(status, {/* nothing to release */})
-            return text_;
-        }
-
-        text_.releaseBuffer(length);
-        return text_;
+CHARR_NEUTRAL_HELPER R_len_t recycling_length(
+    R_len_t subject_length,
+    R_len_t pattern_length,
+    R_len_t replacement_length,
+    bool& warning
+) noexcept
+{
+    warning = false;
+    if (subject_length <= 0 || pattern_length <= 0 ||
+            replacement_length <= 0) {
+        return 0;
     }
-};
+
+    R_len_t result = subject_length;
+    if (pattern_length > result)
+        result = pattern_length;
+    if (replacement_length > result)
+        result = replacement_length;
+    warning = result % subject_length != 0 ||
+        result % pattern_length != 0 ||
+        result % replacement_length != 0;
+    return result;
+}
 
 
-void replace_matches(
-    RegexMatcher* matcher, UnicodeString& subject,
-    const UnicodeString& replacement, int type, UnicodeString& output
+CHARR_R_HELPER R_len_t checked_length(SEXP value) noexcept
+{
+    const R_xlen_t length = XLENGTH(value);
+    if (length > R_LEN_T_MAX)
+        Rf_error("long character vectors are not supported");
+    return static_cast<R_len_t>(length);
+}
+
+
+CHARR_CXX_HELPER shared::StringView normalize_input(
+    const shared::StringView& source,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage
 )
 {
-    matcher->reset(subject);
+    if (source.enc == shared::StringEncoding::bytes)
+        throw StriException(MSG__BYTESENC);
+    return shared::normalize_utf8_preserve_bom(
+        source, converter, storage
+    );
+}
+
+
+CHARR_CXX_HELPER void normalize_views(
+    const charport::StrViews& input,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage,
+    std::vector<shared::StringView>& output
+)
+{
+    output.resize(static_cast<std::size_t>(input.size()));
+    for (R_xlen_t i = 0; i < input.size(); ++i) {
+        output[static_cast<std::size_t>(i)] = normalize_input(
+            io::as_shared_view(input[i]), converter, storage
+        );
+    }
+}
+
+
+CHARR_CXX_HELPER void load_utf16(
+    const std::vector<shared::StringView>& input,
+    std::vector<icu::UnicodeString>& output
+)
+{
+    output.resize(input.size());
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        if (input[i].is_na())
+            output[i].setToBogus();
+        else
+            shared::set_regex_utf16(output[i], input[i]);
+    }
+}
+
+
+CHARR_CXX_HELPER [[noreturn]] void throw_regex_error(
+    UErrorCode status,
+    bool pattern_compile_error,
+    const shared::RegexPatterns& patterns,
+    std::size_t pattern_index
+)
+{
+    if (pattern_compile_error) {
+        std::string context;
+        patterns.context(pattern_index, context);
+        throw StriException(status, context.c_str());
+    }
+    throw StriException(status);
+}
+
+
+CHARR_CXX_HELPER void bind_pattern(
+    shared::RegexMatcher& matcher,
+    const shared::RegexInput& pattern,
+    const shared::RegexPatterns& patterns,
+    std::size_t pattern_index
+)
+{
     UErrorCode status = U_ZERO_ERROR;
+    bool pattern_compile_error = false;
+    if (!matcher.bind(pattern, status, pattern_compile_error) ||
+            U_FAILURE(status)) {
+        throw_regex_error(
+            status, pattern_compile_error, patterns, pattern_index
+        );
+    }
+}
 
-    if (type == 0) {
-        output = matcher->replaceAll(replacement, status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-        return;
+
+CHARR_CXX_HELPER shared::RegexReplaceResult replace_bound(
+    shared::RegexMatcher& matcher,
+    const shared::StringView& subject,
+    const void* subject_identity,
+    const icu::UnicodeString* replacement,
+    shared::RegexReplaceMode mode,
+    icu::UnicodeString& output,
+    const shared::RegexPatterns& patterns,
+    std::size_t pattern_index
+)
+{
+    UErrorCode status = U_ZERO_ERROR;
+    const shared::RegexReplaceResult result = matcher.replace(
+        subject, subject_identity, replacement, mode, output, status
+    );
+    if (U_FAILURE(status))
+        throw_regex_error(status, false, patterns, pattern_index);
+    return result;
+}
+
+
+CHARR_CXX_HELPER shared::RegexReplaceResult replace_bound(
+    shared::RegexMatcher& matcher,
+    const icu::UnicodeString& subject,
+    const icu::UnicodeString* replacement,
+    shared::RegexReplaceMode mode,
+    icu::UnicodeString& output,
+    const shared::RegexPatterns& patterns,
+    std::size_t pattern_index
+)
+{
+    UErrorCode status = U_ZERO_ERROR;
+    const shared::RegexReplaceResult result = matcher.replace(
+        subject, replacement, mode, output, status
+    );
+    if (U_FAILURE(status))
+        throw_regex_error(status, false, patterns, pattern_index);
+    return result;
+}
+
+
+CHARR_CXX_HELPER shared::RegexReplaceResult replace_vectorized_record(
+    const shared::StringView& subject,
+    const shared::StringView& replacement,
+    const icu::UnicodeString* scalar_replacement,
+    bool replacement_is_scalar,
+    const shared::RegexPatterns& patterns,
+    const shared::RegexInput* scalar_pattern,
+    bool* scalar_pattern_bound,
+    std::size_t pattern_index,
+    shared::RegexMatcher& matcher,
+    shared::RegexReplaceMode mode,
+    icu::UnicodeString& replacement_text,
+    icu::UnicodeString& output_text
+)
+{
+    const shared::RegexInput pattern = scalar_pattern == nullptr
+        ? patterns.get(pattern_index)
+        : *scalar_pattern;
+    if (subject.is_na() || pattern.missing || pattern.length <= 0)
+        return shared::RegexReplaceResult::missing;
+
+    if (scalar_pattern_bound == nullptr || !*scalar_pattern_bound) {
+        bind_pattern(matcher, pattern, patterns, pattern_index);
+        if (scalar_pattern_bound != nullptr)
+            *scalar_pattern_bound = true;
     }
 
-    if (type == 1) {
-        bool matched = static_cast<bool>(matcher->find(status));
-        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-        if (!matched) {
-            output.setTo(subject);
+    const icu::UnicodeString* replacement_value = scalar_replacement;
+    if (!replacement_is_scalar) {
+        replacement_value = nullptr;
+        if (!replacement.is_na()) {
+            shared::set_regex_utf16(replacement_text, replacement);
+            replacement_value = &replacement_text;
+        }
+    }
+
+    return replace_bound(
+        matcher, subject, &subject, replacement_value, mode, output_text,
+        patterns, pattern_index
+    );
+}
+
+
+CHARR_CXX_HELPER void replace_sequential(
+    std::vector<icu::UnicodeString>& subjects,
+    const shared::RegexPatterns& patterns,
+    const std::vector<icu::UnicodeString>& replacements,
+    shared::RegexMatcher& matcher,
+    icu::UnicodeString& output_text,
+    int& additional_empty_warnings
+)
+{
+    for (std::size_t pattern_index = 0;
+            pattern_index < patterns.size(); ++pattern_index) {
+        const shared::RegexInput pattern = patterns.get(pattern_index);
+        if (pattern.missing) {
+            for (std::size_t i = 0; i < subjects.size(); ++i)
+                subjects[i].setToBogus();
+            return;
+        }
+        if (pattern.length <= 0) {
+            ++additional_empty_warnings;
+            for (std::size_t i = 0; i < subjects.size(); ++i)
+                subjects[i].setToBogus();
             return;
         }
 
-        output.remove();
-        matcher->appendReplacement(output, replacement, status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-        matcher->appendTail(output);
-        return;
-    }
+        bind_pattern(matcher, pattern, patterns, pattern_index);
+        const icu::UnicodeString& replacement = replacements[
+            pattern_index % replacements.size()
+        ];
+        const icu::UnicodeString* replacement_value =
+            replacement.isBogus() ? nullptr : &replacement;
 
-    if (type == -1) {
-        int start = -1;
-        int end = -1;
-        while (matcher->find(status)) {
-            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-            start = matcher->start(status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-            end = matcher->end(status);
-            STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
+        for (std::size_t i = 0; i < subjects.size(); ++i) {
+            if (subjects[i].isBogus())
+                continue;
+            const shared::RegexReplaceResult replace_result = replace_bound(
+                matcher, subjects[i], replacement_value,
+                shared::RegexReplaceMode::all, output_text,
+                patterns, pattern_index
+            );
+            if (replace_result == shared::RegexReplaceResult::missing)
+                subjects[i].setToBogus();
+            else
+                subjects[i].setTo(output_text);
         }
-        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-        if (start < 0) {
-            output.setTo(subject);
-            return;
-        }
-
-        matcher->find(start, status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-        output.remove();
-        matcher->appendReplacement(output, replacement, status);
-        STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-        output.append(subject, end, subject.length()-end);
-        return;
     }
+}
 
-    throw StriException(MSG__INTERNAL_ERROR);
+
+CHARR_CXX_HELPER void set_output(
+    io::OutputBuilder& output,
+    R_len_t index,
+    const icu::UnicodeString& value,
+    std::vector<char>& utf8_buffer
+)
+{
+    int32_t utf8_length = 0;
+    cetype_ext_t encoding = cetype_ext_t::CE_ASCII;
+    const char* utf8 = ci::unicode_to_utf8(
+        value, utf8_buffer, utf8_length, encoding
+    );
+    output.set_validated(
+        index, io::OutputRecord{utf8, utf8_length, encoding}
+    );
+}
+
+
+CHARR_R_HELPER void require_sequential_lengths(
+    R_len_t pattern_length,
+    R_len_t replacement_length
+) noexcept
+{
+    if (pattern_length < replacement_length || pattern_length <= 0 ||
+            replacement_length <= 0) {
+        Rf_error(MSG__WARN_RECYCLING_RULE2);
+    }
+}
+
+
+CHARR_R_HELPER void emit_empty_warnings(int count) noexcept
+{
+    for (int i = 0; i < count; ++i)
+        Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
 }
 
 } // namespace search_regex_replace
@@ -147,413 +339,495 @@ void replace_matches(
 using namespace search_regex_replace;
 
 
-/**
- * Replace occurrences of a regex pattern
- *
- * @param str strings to search in
- * @param pattern regex patterns to search for
- * @param replacement replacements
- * @param opts_regex list
- * @return character vector
- *
- * @version 0.1-?? (Bartek Tartanus)
- *
- * @version 0.1-?? (Marek Gagolewski)
- *          use io::Utf16Input's vectorization
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-21)
- *          use regex::PatternSet + more general
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-07-10)
- *          BUGFIX: wrong behavior on empty str
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 1.0-2 (Marek Gagolewski, 2016-01-29)
- *    Issue #214: allow a regex pattern like `.*`  to match an empty string
- *
- * @version 1.0-2 (Marek Gagolewski, 2016-01-30)
- *    Issue #210: Allow NA replacement
- *
- * @version 1.4.7 (Marek Gagolewski, 2020-08-24)
- *    Use regex::PatternSet::getRegexOptions
- */
-SEXP ci__replace_allfirstlast_regex(SEXP str, SEXP pattern, SEXP replacement, SEXP opts_regex, int type)
+/** Replace every occurrence of a regular-expression pattern. */
+CHARR_ENTRYPOINT SEXP ci_replace_all_regex(
+    SEXP str,
+    SEXP pattern,
+    SEXP replacement,
+    SEXP vectorize_all,
+    SEXP opts_regex
+) noexcept
 {
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
-    PROTECT(replacement = ci__prepare_arg_string(replacement, "replacement"));
-    PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
+    CHARR_ENTRYPOINT_BEGIN();
 
-    STRI__ERROR_HANDLER_BEGIN(3)
-    regex::Options pattern_opts;
-    // Deviation from stringi: keep option parsing in its copied position but
-    // queue controlled option warnings through the operation boundary.
-    ci::unwind_protect([&]() -> SEXP {
-        pattern_opts = regex::PatternSet::getRegexOptions(
-            STRI__DEFERRED_WARNINGS, opts_regex
-        );
-        return R_NilValue;
-    });
-    SEXP ret;
-    {
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    R_len_t str_n = ci::checked_r_len(
-        context.size(str), "character vectors"
+    const bool vectorize = ci__prepare_arg_logical_1_notNA_r(
+        vectorize_all, "vectorize_all"
     );
-    R_len_t pattern_n = ci::checked_r_len(
-        context.size(pattern), "character vectors"
-    );
-    R_len_t replacement_n = ci::checked_r_len(
-        context.size(replacement), "character vectors"
-    );
-    R_len_t vectorize_length = 0;
-    ci::unwind_protect([&]() -> SEXP {
-        vectorize_length = ci__recycling_rule(
-            false, 3, str_n, pattern_n, replacement_n
-        );
-        return R_NilValue;
-    });
-    // Deviation from stringi: queue the recycling warning until regex/Reader
-    // owners, writable UTF-16 staging, and the output Builder are released.
-    if (vectorize_length > 0 &&
-            (vectorize_length % str_n != 0 ||
-             vectorize_length % pattern_n != 0 ||
-             vectorize_length % replacement_n != 0))
-        context.warn(MSG__WARN_RECYCLING_RULE);
 
-    charport::charvec::Builder builder(vectorize_length);
-    {
-        charr::altrep_backend::io::Utf8Input subjects(
-            context, str, vectorize_length, true,
-            charr::altrep_backend::io::Utf8BomPolicy::preserve
-        );
-        regex::PatternSet pattern_cont(
-            context, pattern, vectorize_length, pattern_opts
-        );
-        charr::altrep_backend::io::Utf8Input replacements(
-            context, replacement, vectorize_length, true,
-            charr::altrep_backend::io::Utf8BomPolicy::preserve
-        );
+    R_len_t subject_length = 0;
+    R_len_t pattern_length = 0;
+    R_len_t replacement_length = 0;
+    shared::RegexOptions options{0, 0, 0};
+    R_len_t output_length = 0;
+    bool empty_sequential = false;
+    bool vectorized_core = false;
+    bool recycling_warning = false;
 
-        ReusableUtf16Text subject_text;
-        ReusableUtf16Text replacement_text;
-        UnicodeString output_text;
+    int empty_pattern_warnings = 0;
+    int additional_empty_warnings = 0;
+
+    try {
+        charport::Reader subject_reader;
+        charport::Reader pattern_reader;
+        charport::Reader replacement_reader;
+        charport::StrViews subject_views;
+        charport::StrViews raw_pattern_views;
+        charport::StrViews replacement_views;
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::NativeToUtf8 replacement_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        shared::SliceArena replacement_storage;
+        std::vector<shared::StringView> subjects;
+        std::vector<shared::StringView> pattern_views;
+        std::vector<shared::StringView> replacements;
+        shared::RegexPatterns patterns;
+        shared::RegexMatcher matcher(shared::RegexOptions{0, 0, 0});
+        icu::UnicodeString replacement_text;
+        icu::UnicodeString output_text;
+        std::vector<icu::UnicodeString> sequential_subjects;
+        std::vector<icu::UnicodeString> sequential_replacements;
         std::vector<char> utf8_buffer;
+        io::OutputBuilder output(0);
 
-        const bool scalar_pattern = vectorize_length > 0 && pattern_n == 1;
-        const bool scalar_replacement = vectorize_length > 0 &&
-            replacement_n == 1;
-        const UnicodeString* scalar_replacement_text = nullptr;
-        if (scalar_replacement) {
-            const charport::StrView scalar_record =
-                replacements.record(0).view();
-            if (!scalar_record.is_na())
-                scalar_replacement_text = &replacement_text.set(scalar_record);
-        }
-
-        const bool scalar_pattern_unusable = scalar_pattern &&
-            (pattern_cont.isNA(0) || pattern_cont.get(0).length() <= 0);
-        RegexMatcher* scalar_matcher = nullptr;
-
-        for (R_len_t i = 0; i < vectorize_length; ++i) {
-            const charport::StrView subject_record =
-                subjects.record(i).view();
-            if (subject_record.is_na() || scalar_pattern_unusable ||
-                    (!scalar_pattern && (pattern_cont.isNA(i) ||
-                     pattern_cont.get(i).length() <= 0))) {
-                builder.set_na(i);
-                continue;
-            }
-
-            RegexMatcher* matcher;
-            if (scalar_pattern) {
-                if (!scalar_matcher)
-                    scalar_matcher = pattern_cont.getMatcher(0);
-                matcher = scalar_matcher;
-            }
-            else {
-                matcher = pattern_cont.getMatcher(i);
-            }
-
-            UnicodeString& subject_value = subject_text.set(subject_record);
-            const UnicodeString* replacement_value = scalar_replacement_text;
-            if (!scalar_replacement) {
-                const charport::StrView replacement_record =
-                    replacements.record(i).view();
-                if (!replacement_record.is_na())
-                    replacement_value = &replacement_text.set(
-                        replacement_record
-                    );
-            }
-            if (!replacement_value) {
-                matcher->reset(subject_value);
-                UErrorCode status = U_ZERO_ERROR;
-                const bool matched = static_cast<bool>(matcher->find(status));
-                STRI__CHECKICUSTATUS_THROW(status, {/* nothing special */})
-                if (matched) {
-                    builder.set_na(i);
-                    continue;
-                }
-                output_text.setTo(subject_value);
-            }
-            else {
-                replace_matches(
-                    matcher, subject_value, *replacement_value,
-                    type, output_text
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                str = callback_protections.protect_one(
+                    ci__prepare_arg_string_r(str, "str")
                 );
-            }
+                subject_length = checked_length(str);
+                empty_sequential = !vectorize && subject_length <= 0;
 
-            ci::builder_set(
-                builder, i, output_text, utf8_buffer
-            );
-        }
-    }
-
-    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-        return builder.to_sexp();
-    }));
-    }
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-}
-
-
-/**
- * Replace all occurrences of a regex pattern; vectorize_all=FALSE
- *
- * @param str character vector
- * @param pattern character vector
- * @param replacement character vector
- * @param opts_regex a named list
- * @return character vector
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-01)
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-02)
- *          Second version, 3x faster, 2 for loops + replaceAll
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-05)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- *
- * @version 1.0-2 (Marek Gagolewski, 2016-01-30)
- *    Issue #210: Allow NA replacement
- */
-SEXP ci__replace_all_regex_no_vectorize_all(SEXP str, SEXP pattern, SEXP replacement, SEXP opts_regex)
-{   // version beta
-    PROTECT(str          = ci__prepare_arg_string(str, "str"));
-
-    STRI__ERROR_HANDLER_BEGIN(1)
-    SEXP ret;
-    {
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-
-    // if str_n is 0, then return an empty vector
-    R_len_t str_n = ci::checked_r_len(
-        context.size(str), "character vectors"
-    );
-    if (str_n <= 0) {
-        charport::charvec::Builder builder(0);
-        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-            return builder.to_sexp();
-        }));
-        STRI__UNPROTECT_ALL
-        return ret;
-    }
-
-    // Deviation from stringi: lazy preparation now runs inside the C++
-    // boundary, so queue its controlled warnings with the operation.
-    STRI__PROTECT(pattern = ci::unwind_protect([&]() -> SEXP {
-        return ci__prepare_arg_string(
-            pattern, "pattern", true, &STRI__DEFERRED_WARNINGS
-        );
-    }));
-    STRI__PROTECT(replacement = ci::unwind_protect([&]() -> SEXP {
-        return ci__prepare_arg_string(
-            replacement, "replacement", true,
-            &STRI__DEFERRED_WARNINGS
-        );
-    }));
-    regex::Options pattern_opts;
-    ci::unwind_protect([&]() -> SEXP {
-        pattern_opts = regex::PatternSet::getRegexOptions(
-            STRI__DEFERRED_WARNINGS, opts_regex
-        );
-        return R_NilValue;
-    });
-
-    R_len_t pattern_n = ci::checked_r_len(
-        context.size(pattern), "character vectors"
-    );
-    R_len_t replacement_n = ci::checked_r_len(
-        context.size(replacement), "character vectors"
-    );
-    // Deviation from stringi: a controlled length error crosses the outer
-    // C++ boundary before it is signalled to R.
-    ci::unwind_protect([&]() -> SEXP {
-        if (pattern_n < replacement_n || pattern_n <= 0 || replacement_n <= 0)
-            throw StriException(MSG__WARN_RECYCLING_RULE2);
-        return R_NilValue;
-    });
-    // Deviation from stringi: queue this sequential-substitution recycling
-    // warning until regex/Reader owners and the output Builder are released.
-    if (pattern_n % replacement_n != 0)
-        context.warn(MSG__WARN_RECYCLING_RULE);
-
-    if (pattern_n == 1) {// this will be much faster:
-        // Deviation from stringi: the delegated scalar-pattern path parses
-        // options again. Replay this call's queued diagnostics before entering
-        // it, while no Reader, regex, or output owner is active, to preserve
-        // stringi's two-parser warning order (and warn=2 short-circuit).
-        context.emitWarnings();
-        STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-            return ci__replace_allfirstlast_regex(
-                str, pattern, replacement, opts_regex, 0
-            );
-        }));
-        STRI__UNPROTECT_ALL
-        return ret;
-    }
-
-    charport::charvec::Builder builder(str_n);
-    {
-        io::Utf16Output str_cont(context, str, str_n); // writable
-        regex::PatternSet pattern_cont(
-            context, pattern, pattern_n, pattern_opts
-        );
-        io::Utf16Input replacement_cont(
-            context, replacement, pattern_n
-        );
-        bool return_all_na = false;
-
-        for (R_len_t i = 0; i<pattern_n; ++i)
-        {
-            if (pattern_cont.isNA(i)) {
-                // Deviation from stringi: stage the all-NA return until the
-                // Reader-backed containers have been destroyed.
-                return_all_na = true;
-                break;
-            }
-            else if (pattern_cont.get(i).length() <= 0) {
-                // regex::PatternSet already queued stringi's first
-                // warning; preserve this sequential path's second warning.
-                context.warn(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
-                return_all_na = true;
-                break;
-            }
-
-            RegexMatcher *matcher = pattern_cont.getMatcher(i); // will be deleted automatically
-
-            for (R_len_t j = 0; j<str_n; ++j) {
-                if (str_cont.isNA(j)) continue;
-
-                matcher->reset(str_cont.get(j));
-
-                UErrorCode status = U_ZERO_ERROR;
-
-                if (replacement_cont.isNA(i)) {
-                    int m_res = matcher->find(status);
-                    STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-                    if (m_res)
-                        str_cont.setNA(j);
-                    continue;
+                if (vectorize) {
+                    replacement = callback_protections.protect_one(
+                        ci__prepare_arg_string_r(
+                            replacement, "replacement"
+                        )
+                    );
+                    pattern = callback_protections.protect_one(
+                        ci__prepare_arg_string_r(pattern, "pattern")
+                    );
+                }
+                else if (!empty_sequential) {
+                    pattern = callback_protections.protect_one(
+                        ci__prepare_arg_string_r(pattern, "pattern")
+                    );
+                    replacement = callback_protections.protect_one(
+                        ci__prepare_arg_string_r(
+                            replacement, "replacement"
+                        )
+                    );
                 }
 
-                str_cont.set(j, matcher->replaceAll(replacement_cont.get(i), status));
-                STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
+                pattern_length = empty_sequential
+                    ? 0
+                    : checked_length(pattern);
+                replacement_length = empty_sequential
+                    ? 0
+                    : checked_length(replacement);
+                output_length = subject_length;
+
+                if (vectorize) {
+                    options = regex::prepare_options(opts_regex);
+                    output_length = recycling_length(
+                        subject_length, pattern_length,
+                        replacement_length, recycling_warning
+                    );
+                    if (recycling_warning)
+                        Rf_warning(MSG__WARN_RECYCLING_RULE);
+                }
+                else if (!empty_sequential) {
+                    options = regex::prepare_options(opts_regex);
+                    require_sequential_lengths(
+                        pattern_length, replacement_length
+                    );
+                    if (pattern_length % replacement_length != 0)
+                        Rf_warning(MSG__WARN_RECYCLING_RULE);
+                    if (pattern_length == 1)
+                        options = regex::prepare_options(opts_regex);
+                }
+
+                vectorized_core = vectorize || pattern_length == 1;
+                matcher.reset_options(options);
+
+                output.reset(output_length);
+                if (!empty_sequential && output_length > 0) {
+                    subject_reader.reset(str);
+                    if (subject_reader.size() != subject_length) {
+                        throw std::runtime_error(
+                            "Reader length changed during regex replacement"
+                        );
+                    }
+                    subject_views.resize(subject_length);
+                    subject_reader.views(
+                        0, subject_length,
+                        subject_views.ptrs(), subject_views.lengths(),
+                        subject_views.encodings()
+                    );
+                    normalize_views(
+                        subject_views, subject_converter, subject_storage,
+                        subjects
+                    );
+                    if (!vectorized_core)
+                        load_utf16(subjects, sequential_subjects);
+
+                    pattern_reader.reset(pattern);
+                    if (pattern_reader.size() != pattern_length) {
+                        throw std::runtime_error(
+                            "Reader length changed during regex replacement"
+                        );
+                    }
+                    raw_pattern_views.resize(pattern_length);
+                    pattern_reader.views(
+                        0, pattern_length,
+                        raw_pattern_views.ptrs(),
+                        raw_pattern_views.lengths(),
+                        raw_pattern_views.encodings()
+                    );
+                    normalize_views(
+                        raw_pattern_views, pattern_converter,
+                        pattern_storage, pattern_views
+                    );
+                    patterns.resize(
+                        static_cast<std::size_t>(pattern_length)
+                    );
+                    for (R_len_t i = 0; i < pattern_length; ++i) {
+                        patterns.set(
+                            static_cast<std::size_t>(i),
+                            pattern_views[static_cast<std::size_t>(i)]
+                        );
+                    }
+                    empty_pattern_warnings = patterns.empty_count();
+
+                    replacement_reader.reset(replacement);
+                    if (replacement_reader.size() != replacement_length) {
+                        throw std::runtime_error(
+                            "Reader length changed during regex replacement"
+                        );
+                    }
+                    replacement_views.resize(replacement_length);
+                    replacement_reader.views(
+                        0, replacement_length,
+                        replacement_views.ptrs(),
+                        replacement_views.lengths(),
+                        replacement_views.encodings()
+                    );
+                    normalize_views(
+                        replacement_views, replacement_converter,
+                        replacement_storage, replacements
+                    );
+
+                    if (vectorized_core) {
+                        const bool scalar_pattern = pattern_length == 1;
+                        const shared::RegexInput scalar_pattern_input =
+                            scalar_pattern
+                                ? patterns.get(0)
+                                : shared::RegexInput{
+                                    nullptr, nullptr, 0, true
+                                };
+                        bool scalar_pattern_bound = false;
+                        const bool scalar_replacement =
+                            replacement_length == 1;
+                        const icu::UnicodeString* scalar_replacement_text =
+                            nullptr;
+                        if (scalar_replacement && !replacements[0].is_na()) {
+                            shared::set_regex_utf16(
+                                replacement_text, replacements[0]
+                            );
+                            scalar_replacement_text = &replacement_text;
+                        }
+
+                        for (R_len_t i = 0; i < output_length; ++i) {
+                            const std::size_t subject_index =
+                                subject_length == output_length
+                                    ? static_cast<std::size_t>(i)
+                                    : static_cast<std::size_t>(
+                                        i % subject_length
+                                    );
+                            const std::size_t pattern_index =
+                                scalar_pattern
+                                    ? 0
+                                    : static_cast<std::size_t>(
+                                        i % pattern_length
+                                    );
+                            const std::size_t replacement_index =
+                                scalar_replacement
+                                    ? 0
+                                    : static_cast<std::size_t>(
+                                        i % replacement_length
+                                    );
+                            const shared::RegexReplaceResult replace_result =
+                                replace_vectorized_record(
+                                    subjects[subject_index],
+                                    replacements[replacement_index],
+                                    scalar_replacement_text,
+                                    scalar_replacement,
+                                    patterns,
+                                    scalar_pattern
+                                        ? &scalar_pattern_input
+                                        : nullptr,
+                                    scalar_pattern
+                                        ? &scalar_pattern_bound
+                                        : nullptr,
+                                    pattern_index, matcher,
+                                    shared::RegexReplaceMode::all,
+                                    replacement_text, output_text
+                                );
+                            if (replace_result ==
+                                    shared::RegexReplaceResult::missing) {
+                                output.set_na(i);
+                            }
+                            else {
+                                set_output(
+                                    output, i, output_text, utf8_buffer
+                                );
+                            }
+                        }
+                    }
+                    else {
+                        load_utf16(
+                            replacements, sequential_replacements
+                        );
+                        replace_sequential(
+                            sequential_subjects, patterns,
+                            sequential_replacements, matcher, output_text,
+                            additional_empty_warnings
+                        );
+                        for (R_len_t i = 0; i < output_length; ++i) {
+                            const icu::UnicodeString& value =
+                                sequential_subjects[
+                                    static_cast<std::size_t>(i)
+                                ];
+                            if (value.isBogus())
+                                output.set_na(i);
+                            else
+                                set_output(output, i, value, utf8_buffer);
+                        }
+                    }
+                }
+
+                result = entry_protections.reprotect_one(
+                    output.to_sexp(), result_index
+                );
+                CHARR_UNWIND_RETURN();
             }
-        }
+        );
+    }
+    CHARR_ENTRYPOINT_END(
+        const int deferred_warnings =
+            empty_pattern_warnings+additional_empty_warnings;
+        emit_empty_warnings(deferred_warnings);
+    );
+}
 
+
+/** Replace the first occurrence of a regular-expression pattern. */
+CHARR_ENTRYPOINT SEXP ci_replace_first_regex(
+    SEXP str,
+    SEXP pattern,
+    SEXP replacement,
+    SEXP opts_regex
+) noexcept
+{
+    CHARR_ENTRYPOINT_BEGIN();
+
+    str = entry_protections.protect_one(
+        ci__prepare_arg_string_r(str, "str")
+    );
+    replacement = entry_protections.protect_one(
+        ci__prepare_arg_string_r(
+            replacement, "replacement"
+        )
+    );
+    pattern = entry_protections.protect_one(
+        ci__prepare_arg_string_r(pattern, "pattern")
+    );
+    const shared::RegexOptions options = regex::prepare_options(opts_regex);
+
+    const R_len_t subject_length = checked_length(str);
+    const R_len_t pattern_length = checked_length(pattern);
+    const R_len_t replacement_length = checked_length(replacement);
+    bool recycling_warning = false;
+    const R_len_t output_length = recycling_length(
+        subject_length, pattern_length, replacement_length,
+        recycling_warning
+    );
+    if (recycling_warning)
+        Rf_warning(MSG__WARN_RECYCLING_RULE);
+
+
+    int empty_pattern_warnings = 0;
+
+    try {
+        charport::Reader subject_reader;
+        charport::Reader pattern_reader;
+        charport::Reader replacement_reader;
+        charport::StrViews subject_views;
+        charport::StrViews raw_pattern_views;
+        charport::StrViews replacement_views;
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::NativeToUtf8 replacement_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        shared::SliceArena replacement_storage;
+        std::vector<shared::StringView> subjects;
+        std::vector<shared::StringView> pattern_views;
+        std::vector<shared::StringView> replacements;
+        shared::RegexPatterns patterns;
+        shared::RegexMatcher matcher(options);
+        icu::UnicodeString replacement_text;
+        icu::UnicodeString output_text;
         std::vector<char> utf8_buffer;
-        for (R_len_t j=0; j<str_n; ++j) {
-            if (return_all_na || str_cont.isNA(j))
-                builder.set_na(j);
-            else
-                ci::builder_set(builder, j, str_cont.get(j), utf8_buffer);
-        }
+        io::OutputBuilder output(0);
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                output.reset(output_length);
+                if (output_length > 0) {
+                    subject_reader.reset(str);
+                    if (subject_reader.size() != subject_length) {
+                        throw std::runtime_error(
+                            "Reader length changed during regex replacement"
+                        );
+                    }
+                    subject_views.resize(subject_length);
+                    subject_reader.views(
+                        0, subject_length,
+                        subject_views.ptrs(), subject_views.lengths(),
+                        subject_views.encodings()
+                    );
+                    normalize_views(
+                        subject_views, subject_converter, subject_storage,
+                        subjects
+                    );
+
+                    pattern_reader.reset(pattern);
+                    if (pattern_reader.size() != pattern_length) {
+                        throw std::runtime_error(
+                            "Reader length changed during regex replacement"
+                        );
+                    }
+                    raw_pattern_views.resize(pattern_length);
+                    pattern_reader.views(
+                        0, pattern_length,
+                        raw_pattern_views.ptrs(),
+                        raw_pattern_views.lengths(),
+                        raw_pattern_views.encodings()
+                    );
+                    normalize_views(
+                        raw_pattern_views, pattern_converter,
+                        pattern_storage, pattern_views
+                    );
+                    patterns.resize(
+                        static_cast<std::size_t>(pattern_length)
+                    );
+                    for (R_len_t i = 0; i < pattern_length; ++i) {
+                        patterns.set(
+                            static_cast<std::size_t>(i),
+                            pattern_views[static_cast<std::size_t>(i)]
+                        );
+                    }
+                    empty_pattern_warnings = patterns.empty_count();
+
+                    replacement_reader.reset(replacement);
+                    if (replacement_reader.size() != replacement_length) {
+                        throw std::runtime_error(
+                            "Reader length changed during regex replacement"
+                        );
+                    }
+                    replacement_views.resize(replacement_length);
+                    replacement_reader.views(
+                        0, replacement_length,
+                        replacement_views.ptrs(),
+                        replacement_views.lengths(),
+                        replacement_views.encodings()
+                    );
+                    normalize_views(
+                        replacement_views, replacement_converter,
+                        replacement_storage, replacements
+                    );
+
+                    const bool scalar_replacement =
+                        replacement_length == 1;
+                    const bool scalar_pattern = pattern_length == 1;
+                    const shared::RegexInput scalar_pattern_input =
+                        scalar_pattern
+                            ? patterns.get(0)
+                            : shared::RegexInput{
+                                nullptr, nullptr, 0, true
+                            };
+                    bool scalar_pattern_bound = false;
+                    const icu::UnicodeString* scalar_replacement_text =
+                        nullptr;
+                    if (scalar_replacement && !replacements[0].is_na()) {
+                        shared::set_regex_utf16(
+                            replacement_text, replacements[0]
+                        );
+                        scalar_replacement_text = &replacement_text;
+                    }
+
+                    for (R_len_t i = 0; i < output_length; ++i) {
+                        const std::size_t subject_index =
+                            subject_length == output_length
+                                ? static_cast<std::size_t>(i)
+                                : static_cast<std::size_t>(
+                                    i % subject_length
+                                );
+                        const std::size_t pattern_index =
+                            scalar_pattern
+                                ? 0
+                                : static_cast<std::size_t>(
+                                    i % pattern_length
+                                );
+                        const std::size_t replacement_index =
+                            scalar_replacement
+                                ? 0
+                                : static_cast<std::size_t>(
+                                    i % replacement_length
+                                );
+                        const shared::RegexReplaceResult replace_result =
+                            replace_vectorized_record(
+                                subjects[subject_index],
+                                replacements[replacement_index],
+                                scalar_replacement_text,
+                                scalar_replacement,
+                                patterns,
+                                scalar_pattern
+                                    ? &scalar_pattern_input
+                                    : nullptr,
+                                scalar_pattern
+                                    ? &scalar_pattern_bound
+                                    : nullptr,
+                                pattern_index, matcher,
+                                shared::RegexReplaceMode::first,
+                                replacement_text, output_text
+                            );
+                        if (replace_result ==
+                                shared::RegexReplaceResult::missing) {
+                            output.set_na(i);
+                        }
+                        else {
+                            set_output(
+                                output, i, output_text, utf8_buffer
+                            );
+                        }
+                    }
+                }
+
+                result = entry_protections.reprotect_one(
+                    output.to_sexp(), result_index
+                );
+                CHARR_UNWIND_RETURN();
+            }
+        );
     }
-
-    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-        return builder.to_sexp();
-    }));
-    }
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
-}
-
-
-// version alpha == to slow == too many toutf16 conversions
-//{
-//   PROTECT(pattern      = ci__prepare_arg_string(pattern, "pattern"));
-//   PROTECT(replacement  = ci__prepare_arg_string(replacement, "replacement"));
-//
-//   R_len_t pattern_n = LENGTH(pattern);
-//   R_len_t replacement_n = LENGTH(replacement);
-//   if (pattern_n < replacement_n || pattern_n <= 0 || replacement_n <= 0)
-//      Rf_error(MSG__WARN_RECYCLING_RULE2);
-//   if (pattern_n % replacement_n != 0)
-//      Rf_warning(MSG__WARN_RECYCLING_RULE);
-//
-//   // no str_error_handlers needed here
-//   SEXP pattern_cur, replacement_cur;
-//   PROTECT(pattern_cur = Rf_allocVector(STRSXP, 1));
-//   PROTECT(replacement_cur = Rf_allocVector(STRSXP, 1));
-//
-//   PROTECT(str);
-//   for (R_len_t i=0; i<pattern_n; ++i) {
-//      SET_STRING_ELT(pattern_cur, 0, STRING_ELT(pattern, i));
-//      SET_STRING_ELT(replacement_cur, 0, STRING_ELT(replacement, i%replacement_n));
-//      str = ci__replace_allfirstlast_regex(str, pattern_cur, replacement_cur, opts_regex, 0);
-//      UNPROTECT(1);
-//      PROTECT(str);
-//   }
-//
-//   UNPROTECT(5);
-//   return str;
-//}
-
-
-/**
- * Replace all occurrences of a regex pattern
- *
- * @param str strings to search in
- * @param pattern regex patterns to search for
- * @param replacement replacements
- * @param opts_regex list
- * @return character vector
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-21)
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-01)
- *          vectorize_all argument added
- */
-SEXP ci_replace_all_regex(SEXP str, SEXP pattern, SEXP replacement, SEXP vectorize_all, SEXP opts_regex)
-{
-    if (ci__prepare_arg_logical_1_notNA(vectorize_all, "vectorize_all"))
-        return ci__replace_allfirstlast_regex(str, pattern, replacement, opts_regex, 0);
-    else
-        return ci__replace_all_regex_no_vectorize_all(str, pattern, replacement, opts_regex);
-}
-
-
-/**
- * Replace first occurrence of a regex pattern
- *
- * @param str strings to search in
- * @param pattern regex patterns to search for
- * @param replacement replacements
- * @param opts_regex list
- * @return character vector
- *
- * @version 0.1-?? (Marek Gagolewski, 2013-06-21)
- */
-SEXP ci_replace_first_regex(SEXP str, SEXP pattern, SEXP replacement, SEXP opts_regex)
-{
-    return ci__replace_allfirstlast_regex(str, pattern, replacement, opts_regex, 1);
+    CHARR_ENTRYPOINT_END(
+        emit_empty_warnings(empty_pattern_warnings);
+    );
 }
 
 } } // namespace charr::altrep_backend

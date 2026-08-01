@@ -32,8 +32,10 @@
 
 
 #include "ci_stringi.h"
-#include "io/utf16_input.h"
+#include "../shared/entrypoint.h"
 #include "../shared/native_to_utf8.h"
+#include "../shared/protect.h"
+#include "../shared/unwind.h"
 
 #include <cstdint>
 #include <exception>
@@ -49,8 +51,28 @@ struct EscapeInput {
     int length;
 };
 
+struct EscapeSource {
+    const char* ptr;
+    int length;
+    bool ascii;
+    bool bytes;
+    bool utf8;
+    bool latin1;
+};
 
-bool has_utf8_bom(const char* ptr, int length) noexcept
+CHARR_R_HELPER EscapeSource read_source(SEXP value) noexcept
+{
+    return EscapeSource{
+        CHAR(value), LENGTH(value), IS_ASCII(value) != 0,
+        IS_BYTES(value) != 0, IS_UTF8(value) != 0,
+        IS_LATIN1(value) != 0
+    };
+}
+
+
+CHARR_NEUTRAL_HELPER bool has_utf8_bom(
+    const char* ptr, int length
+) noexcept
 {
     return length >= 3 &&
         static_cast<uint8_t>(ptr[0]) == UTF8_BOM_BYTE1 &&
@@ -59,19 +81,21 @@ bool has_utf8_bom(const char* ptr, int length) noexcept
 }
 
 
-EscapeInput normalize_escape_input(SEXP value, shared::NativeToUtf8& converter)
+CHARR_CXX_HELPER EscapeInput normalize_escape_input(
+    const EscapeSource& value, shared::NativeToUtf8& converter
+)
 {
-    const char* ptr = CHAR(value);
-    int length = LENGTH(value);
+    const char* ptr = value.ptr;
+    int length = value.length;
 
-    if (IS_ASCII(value))
+    if (value.ascii)
         return EscapeInput{ptr, length};
-    if (IS_BYTES(value))
+    if (value.bytes)
         throw StriException(MSG__BYTESENC);
 
-    bool strip_bom = IS_UTF8(value);
-    if (!IS_UTF8(value)) {
-        const bool native = !IS_LATIN1(value);
+    bool strip_bom = value.utf8;
+    if (!value.utf8) {
+        const bool native = !value.latin1;
         const shared::ByteView converted = native
             ? converter.native(ptr, length)
             : converter.latin1(ptr, length);
@@ -88,7 +112,7 @@ EscapeInput normalize_escape_input(SEXP value, shared::NativeToUtf8& converter)
 }
 
 
-char short_escape(UChar32 code_point) noexcept
+CHARR_NEUTRAL_HELPER char short_escape(UChar32 code_point) noexcept
 {
     switch (code_point) {
     case 0x07: return 'a';
@@ -106,7 +130,9 @@ char short_escape(UChar32 code_point) noexcept
 }
 
 
-std::size_t escaped_width(UChar32 code_point) noexcept
+CHARR_NEUTRAL_HELPER std::size_t escaped_width(
+    UChar32 code_point
+) noexcept
 {
     if (short_escape(code_point) != '\0')
         return 2;
@@ -116,7 +142,7 @@ std::size_t escaped_width(UChar32 code_point) noexcept
 }
 
 
-std::size_t escaped_size(const EscapeInput& input)
+CHARR_CXX_HELPER std::size_t escaped_size(const EscapeInput& input)
 {
     std::size_t output_size = 0;
     int32_t cursor = 0;
@@ -144,7 +170,9 @@ std::size_t escaped_size(const EscapeInput& input)
 }
 
 
-char* write_hex(char* output, UChar32 value, int digits) noexcept
+CHARR_NEUTRAL_HELPER char* write_hex(
+    char* output, UChar32 value, int digits
+) noexcept
 {
     static const char hex[] = "0123456789abcdef";
     for (int shift = (digits-1)*4; shift >= 0; shift -= 4)
@@ -153,7 +181,9 @@ char* write_hex(char* output, UChar32 value, int digits) noexcept
 }
 
 
-void write_escape(const EscapeInput& input, char* output) noexcept
+CHARR_NEUTRAL_HELPER void write_escape(
+    const EscapeInput& input, char* output
+) noexcept
 {
     int32_t cursor = 0;
     while (cursor < input.length) {
@@ -209,52 +239,56 @@ using namespace escape;
  * @version 1.1.6 (Steve Grubb, 2017-07-20)
  *          if ((char)c >= 32 || (char)c <= 126) should be &&
 */
-SEXP ci_escape_unicode(SEXP str)
+CHARR_ENTRYPOINT SEXP ci_escape_unicode(SEXP str) noexcept
 {
-    PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
+    CHARR_ENTRYPOINT_BEGIN();
 
-    STRI__ERROR_HANDLER_BEGIN(1)
-    SEXP ret;
-    const R_len_t str_length = LENGTH(str);
-    const SEXP* values = str_length > 0 ? STRING_PTR_RO(str) : nullptr;
-    STRI__PROTECT(ret = Rf_allocVector(STRSXP, str_length));
+    str = entry_protections.protect_one(ci__prepare_arg_string_r(str, "str"));
 
     try {
         shared::NativeToUtf8 converter;
         std::string output;
-        for (R_len_t i = 0; i < str_length; ++i) {
-            if (values[i] == NA_STRING) {
-                SET_STRING_ELT(ret, i, NA_STRING);
-                continue;
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                const R_xlen_t str_length = XLENGTH(str);
+                const SEXP* values = str_length > 0
+                    ? STRING_PTR_RO(str)
+                    : nullptr;
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(STRSXP, str_length), result_index
+                );
+
+                for (R_xlen_t i = 0; i < str_length; ++i) {
+                    if (values[i] == NA_STRING) {
+                        SET_STRING_ELT(result, i, NA_STRING);
+                        continue;
+                    }
+
+                    const EscapeSource source = read_source(values[i]);
+                    const EscapeInput input = normalize_escape_input(
+                        source, converter
+                    );
+                    const std::size_t output_size = escaped_size(input);
+                    if (output.size() < output_size)
+                        output.resize(output_size);
+                    if (output_size > 0)
+                        write_escape(input, &output[0]);
+                    SET_STRING_ELT(
+                        result, i,
+                        Rf_mkCharLenCE(
+                            output_size > 0 ? output.data() : "",
+                            static_cast<int>(output_size), CE_UTF8
+                        )
+                    );
+                }
+
+                CHARR_UNWIND_RETURN();
             }
-
-            const EscapeInput input = normalize_escape_input(
-                values[i], converter
-            );
-            const std::size_t output_size = escaped_size(input);
-            if (output.size() < output_size)
-                output.resize(output_size);
-            if (output_size > 0)
-                write_escape(input, &output[0]);
-            SET_STRING_ELT(
-                ret, i,
-                Rf_mkCharLenCE(
-                    output_size > 0 ? output.data() : "",
-                    static_cast<int>(output_size), CE_UTF8
-                )
-            );
-        }
+        );
     }
-    catch (const StriException&) {
-        throw;
-    }
-    catch (const std::exception& error) {
-        throw StriException("%s", error.what());
-    }
-
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
+    CHARR_ENTRYPOINT_END();
 }
 
 

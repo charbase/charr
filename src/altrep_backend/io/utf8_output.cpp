@@ -9,20 +9,22 @@ namespace io {
 
 namespace utf8_output {
 
-const char* empty_payload() noexcept
+CHARR_NEUTRAL_HELPER const char* empty_payload() noexcept
 {
     static const char value = '\0';
     return &value;
 }
 
-int checked_length(std::size_t length)
+CHARR_CXX_HELPER int checked_length(std::size_t length)
 {
     if (length > static_cast<std::size_t>(R_LEN_T_MAX))
         throw std::length_error("character output exceeds R's string length limit");
     return static_cast<int>(length);
 }
 
-bool is_ascii(const char* data, std::size_t length) noexcept
+CHARR_NEUTRAL_HELPER bool is_ascii(
+    const char* data, std::size_t length
+) noexcept
 {
     for (std::size_t i = 0; i < length; ++i) {
         if (static_cast<unsigned char>(data[i]) > 0x7fU)
@@ -31,7 +33,7 @@ bool is_ascii(const char* data, std::size_t length) noexcept
     return true;
 }
 
-cetype_ext_t resolved_encoding(
+CHARR_CXX_HELPER cetype_ext_t resolved_encoding(
     const char* data, std::size_t length, cetype_ext_t encoding
 )
 {
@@ -53,7 +55,7 @@ cetype_ext_t resolved_encoding(
     }
 }
 
-cetype_ext_t reserve_encoding(cetype_ext_t encoding)
+CHARR_CXX_HELPER cetype_ext_t reserve_encoding(cetype_ext_t encoding)
 {
     switch (encoding) {
     case cetype_ext_t::CE_ASCII:
@@ -145,20 +147,9 @@ OutputStore scalar_store(
     return scalar_store(output_record(value, encoding));
 }
 
-SEXP finalize(OutputStore&& store)
-{
-    return charport::charvec::wrap(std::move(store));
-}
-
 OutputBuilder::OutputBuilder(R_xlen_t size)
     : size_(size), builder_(size)
 {
-}
-
-void OutputBuilder::reset(R_xlen_t size)
-{
-    builder_.reset(size);
-    size_ = size;
 }
 
 R_xlen_t OutputBuilder::size() const noexcept
@@ -181,19 +172,14 @@ void OutputBuilder::set(
     cetype_ext_t encoding
 )
 {
-    set(index, output_record(data, length, encoding));
+    set_validated(index, output_record(data, length, encoding));
 }
 
 void OutputBuilder::set(
     R_xlen_t index, std::string_view value, cetype_ext_t encoding
 )
 {
-    set(index, output_record(value, encoding));
-}
-
-void OutputBuilder::set_na(R_xlen_t index)
-{
-    builder_.set_na(index);
+    set_validated(index, output_record(value, encoding));
 }
 
 char* OutputBuilder::reserve(
@@ -207,14 +193,7 @@ char* OutputBuilder::reserve(
     return builder_.reserve(index, length, checked_encoding);
 }
 
-OutputStore OutputBuilder::release_store()
-{
-    OutputStore store = builder_.release_store();
-    size_ = 0;
-    return store;
-}
-
-SEXP OutputBuilder::to_sexp()
+SEXP OutputBuilder::to_sexp() noexcept
 {
     size_ = 0;
     return builder_.to_sexp();
@@ -249,14 +228,26 @@ void GrowableOutputBuilder::append(
     const char* data, std::size_t length, cetype_ext_t encoding
 )
 {
-    append(output_record(data, length, encoding));
+    const OutputRecord normalized = output_record(
+        data, length, encoding
+    );
+    if (normalized.is_na()) {
+        builder_.append(nullptr, 0, cetype_ext_t::CE_NA);
+        return;
+    }
+    builder_.append(normalized);
 }
 
 void GrowableOutputBuilder::append(
     std::string_view value, cetype_ext_t encoding
 )
 {
-    append(output_record(value, encoding));
+    const OutputRecord normalized = output_record(value, encoding);
+    if (normalized.is_na()) {
+        builder_.append(nullptr, 0, cetype_ext_t::CE_NA);
+        return;
+    }
+    builder_.append(normalized);
 }
 
 void GrowableOutputBuilder::append_na()
@@ -275,14 +266,14 @@ char* GrowableOutputBuilder::append_reserve(
     return builder_.append_reserve(length, checked_encoding);
 }
 
-OutputStore GrowableOutputBuilder::release_store()
+OutputStore GrowableOutputBuilder::release_store() noexcept
 {
     OutputStore store = builder_.release_store();
     reset();
     return store;
 }
 
-SEXP GrowableOutputBuilder::to_sexp()
+SEXP GrowableOutputBuilder::to_sexp() noexcept
 {
     SEXP result = builder_.to_sexp();
     reset();

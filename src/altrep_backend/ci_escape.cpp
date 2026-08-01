@@ -32,21 +32,19 @@
 
 
 #include "ci_stringi.h"
-#include "ci_builder.h"
-#include "io/utf16_input.h"
-#include "ci_reader.h"
+#include "io/reader_utils.h"
+#include "../shared/entrypoint.h"
 #include "../shared/native_to_utf8.h"
+#include "../shared/protect.h"
+#include "../shared/unwind.h"
 #include "altrep_backend/io/utf8_output.h"
 
 #include <cstdint>
+#include <exception>
 #include <stdexcept>
-#include <utility>
 
 namespace charr { namespace altrep_backend {
 
-
-static const char CI__EMBEDDED_NUL_MESSAGE[] =
-    "embedded nul in string";
 
 namespace escape {
 
@@ -56,7 +54,9 @@ struct EscapeInput {
 };
 
 
-bool has_utf8_bom(const char* ptr, int length) noexcept
+CHARR_NEUTRAL_HELPER bool has_utf8_bom(
+    const char* ptr, int length
+) noexcept
 {
     return length >= 3 &&
         static_cast<uint8_t>(ptr[0]) == UTF8_BOM_BYTE1 &&
@@ -65,7 +65,7 @@ bool has_utf8_bom(const char* ptr, int length) noexcept
 }
 
 
-EscapeInput normalize_escape_input(
+CHARR_CXX_HELPER EscapeInput normalize_escape_input(
     const charport::StrView& value,
     charr::shared::NativeToUtf8& converter
 )
@@ -105,7 +105,7 @@ EscapeInput normalize_escape_input(
 }
 
 
-char short_escape(UChar32 code_point) noexcept
+CHARR_NEUTRAL_HELPER char short_escape(UChar32 code_point) noexcept
 {
     switch (code_point) {
     case 0x07: return 'a';
@@ -123,7 +123,9 @@ char short_escape(UChar32 code_point) noexcept
 }
 
 
-std::size_t escaped_width(UChar32 code_point) noexcept
+CHARR_NEUTRAL_HELPER std::size_t escaped_width(
+    UChar32 code_point
+) noexcept
 {
     if (short_escape(code_point) != '\0')
         return 2;
@@ -133,7 +135,7 @@ std::size_t escaped_width(UChar32 code_point) noexcept
 }
 
 
-std::size_t escaped_size(const EscapeInput& input)
+CHARR_CXX_HELPER std::size_t escaped_size(const EscapeInput& input)
 {
     std::size_t output_size = 0;
     int32_t cursor = 0;
@@ -163,7 +165,9 @@ std::size_t escaped_size(const EscapeInput& input)
 }
 
 
-char* write_hex(char* output, UChar32 value, int digits) noexcept
+CHARR_NEUTRAL_HELPER char* write_hex(
+    char* output, UChar32 value, int digits
+) noexcept
 {
     static const char hex[] = "0123456789abcdef";
     for (int shift = (digits-1)*4; shift >= 0; shift -= 4)
@@ -172,7 +176,9 @@ char* write_hex(char* output, UChar32 value, int digits) noexcept
 }
 
 
-void write_escape(const EscapeInput& input, char* output) noexcept
+CHARR_NEUTRAL_HELPER void write_escape(
+    const EscapeInput& input, char* output
+) noexcept
 {
     int32_t cursor = 0;
     while (cursor < input.length) {
@@ -228,52 +234,60 @@ using namespace escape;
  * @version 1.1.6 (Steve Grubb, 2017-07-20)
  *          if ((char)c >= 32 || (char)c <= 126) should be &&
 */
-SEXP ci_escape_unicode(SEXP str)
+CHARR_ENTRYPOINT SEXP ci_escape_unicode(SEXP str) noexcept
 {
-    PROTECT(str = ci__prepare_arg_string(str, "str")); // prepare string argument
+    CHARR_ENTRYPOINT_BEGIN();
 
-    STRI__ERROR_HANDLER_BEGIN(1)
-    SEXP ret;
-    charr::altrep_backend::io::OutputStore output_store(0, 0);
-    {
-        charport::Reader reader(ci::protected_reader_resolve(str));
-        const R_len_t str_length = ci::checked_r_len(
-            reader.size(), "character vectors"
-        );
-        charport::StrViews values(str_length);
-        if (str_length > 0)
-            reader.views(0, str_length, values);
+    str = entry_protections.protect_one(
+        ci__prepare_arg_string_r(str, "str")
+    );
 
-        charr::altrep_backend::io::OutputBuilder builder(str_length);
-        charr::shared::NativeToUtf8 converter;
-        for (R_len_t i = 0; i < str_length; ++i) {
-            const charport::StrView source = values[i];
-            if (source.is_na()) {
-                builder.set_na(i);
-                continue;
+    try {
+        charport::Reader reader;
+        charport::StrViews values;
+        io::OutputBuilder builder(0);
+        shared::NativeToUtf8 converter;
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                reader.reset(str);
+                const R_xlen_t str_length = reader.size();
+                values.resize(str_length);
+                if (str_length > 0) {
+                    reader.views(
+                        0, str_length,
+                        values.ptrs(), values.lengths(), values.encodings()
+                    );
+                }
+                builder.reset(str_length);
+
+                for (R_xlen_t i = 0; i < str_length; ++i) {
+                    const charport::StrView source = values[i];
+                    if (source.is_na()) {
+                        builder.set_na(i);
+                        continue;
+                    }
+
+                    const EscapeInput input = normalize_escape_input(
+                        source, converter
+                    );
+                    const std::size_t output_size = escaped_size(input);
+                    char* output = builder.reserve(
+                        i, output_size, cetype_ext_t::CE_ASCII
+                    );
+                    if (output_size > 0)
+                        write_escape(input, output);
+                }
+
+                result = entry_protections.reprotect_one(
+                    builder.to_sexp(), result_index
+                );
+                CHARR_UNWIND_RETURN();
             }
-
-            const EscapeInput input = normalize_escape_input(
-                source, converter
-            );
-            const std::size_t output_size = escaped_size(input);
-            char* output = builder.reserve(
-                i, output_size, cetype_ext_t::CE_ASCII
-            );
-            if (output_size > 0)
-                write_escape(input, output);
-        }
-
-        output_store = builder.release_store();
+        );
     }
-    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-        return charr::altrep_backend::io::finalize(std::move(output_store));
-    }));
-
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END(;/* nothing special to be done on error */)
+    CHARR_ENTRYPOINT_END();
 }
 
 } } // namespace charr::altrep_backend

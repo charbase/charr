@@ -32,107 +32,90 @@
 
 
 #include "ci_stringi.h"
-#include "ci_builder.h"
-#include "ci_ucnv.h"
+#include "../shared/encoding_info.h"
+#include "../shared/entrypoint.h"
+#include "../shared/protect.h"
+#include "../shared/unwind.h"
 
-#include <cstring>
-#include <limits>
-#include <stdexcept>
-#include <string>
-#include <utility>
-#include <vector>
+#include <charport.h>
+
+#include <cstddef>
+#include <exception>
 
 namespace charr { namespace altrep_backend {
 
 
 namespace encoding_management {
 
-static int ci__management_icu_c_string_length(const char* value)
-{
-    // Deviation from stringi: ICU's encoding-name APIs expose only
-    // terminated strings. Copy that boundary once and retain explicit lengths.
-    const size_t length = std::strlen(value);
-    if (length > static_cast<size_t>(std::numeric_limits<int>::max()))
-        throw std::length_error("ICU encoding name exceeds R's string limit");
-    return static_cast<int>(length);
-}
-
-
-static void ci__stage_management_icu_c_string(
-    charport::charvec::Builder& output, R_len_t i, const char* value
+CHARR_CXX_HELPER void stage_character(
+    charport::charvec::Builder& builder,
+    const shared::EncodingInfoValue& value
 )
 {
-    if (!value) {
-        output.set_na(i);
+    builder.reset(1);
+    if (value.missing || value.data == nullptr) {
+        builder.set_na(0);
         return;
     }
-    ci::builder_set(
-        output, i, value, ci__management_icu_c_string_length(value),
-        cetype_ext_t::CE_ASCII
-    );
+    const charport::StrView staged{
+        value.data, value.length, cetype_ext_t::CE_ASCII
+    };
+    builder.set(0, staged);
 }
 
 
-struct CiEncodingInfoValue {
-    enum Type {
-        UNSET,
-        CHARACTER,
-        LOGICAL,
-        INTEGER
-    };
+CHARR_R_HELPER void emit_warnings_r(
+    const shared::EncodingInfo& info
+) noexcept
+{
+    for (int i = 0; i < info.diagnostic_count(); ++i) {
+        const shared::EncodingInfoDiagnostic diagnostic =
+            info.diagnostic(i);
+        const char* converter = diagnostic.converter_name != nullptr
+            ? diagnostic.converter_name
+            : "<unknown>";
 
-    Type type;
-    charport::charvec::Store character;
-    int scalar;
-
-    CiEncodingInfoValue()
-        : type(UNSET), character(0, 0), scalar(0)
-    {
-    }
-
-    CiEncodingInfoValue(CiEncodingInfoValue&&) noexcept = default;
-    CiEncodingInfoValue& operator=(CiEncodingInfoValue&&) noexcept = default;
-
-    void set_character(const char* value)
-    {
-        if (!value) {
-            character = charport::charvec::Store::scalar(
-                NULL, 0, cetype_ext_t::CE_NA
+        switch (diagnostic.kind) {
+        case shared::EncodingInfoDiagnosticKind::standard_name:
+            Rf_warning(
+                "could not get standard name (StriUcnv::getStandards())"
             );
-        }
-        else {
-            character = ci::scalar_store(
-                value, ci__management_icu_c_string_length(value),
-                cetype_ext_t::CE_ASCII
+            break;
+        case shared::EncodingInfoDiagnosticKind::ascii_conversion:
+            Rf_warning(
+                "Cannot convert ASCII character 0x%02x (encoding=%s)",
+                diagnostic.input_byte, converter
             );
+            break;
+        case shared::EncodingInfoDiagnosticKind::conversion:
+            Rf_warning(
+                "Cannot convert character 0x%02x (encoding=%s)",
+                diagnostic.input_byte, converter
+            );
+            break;
+        case shared::EncodingInfoDiagnosticKind::non_single_code_point:
+            Rf_warning(
+                "Problematic character 0x%02x -> \\u%08x (encoding=%s)",
+                diagnostic.input_byte,
+                static_cast<unsigned int>(diagnostic.code_point),
+                converter
+            );
+            break;
+        case shared::EncodingInfoDiagnosticKind::round_trip:
+            Rf_warning(
+                "Problematic character 0x%02x -> \\u%08x -> 0x%02x "
+                "(encoding=%s)",
+                diagnostic.input_byte,
+                static_cast<unsigned int>(diagnostic.code_point),
+                diagnostic.output_byte, converter
+            );
+            break;
         }
-        type = CHARACTER;
     }
 
-    void set_na_character()
-    {
-        character = charport::charvec::Store::scalar(
-            NULL, 0, cetype_ext_t::CE_NA
-        );
-        type = CHARACTER;
-    }
-
-    void set_logical(int value)
-    {
-        scalar = value;
-        type = LOGICAL;
-    }
-
-    void set_integer(int value)
-    {
-        scalar = value;
-        type = INTEGER;
-    }
-
-private:
-    CiEncodingInfoValue(const CiEncodingInfoValue&);
-    CiEncodingInfoValue& operator=(const CiEncodingInfoValue&);
-};
+    if (info.warn_get_name())
+        Rf_warning(MSG__ENC_ERROR_GETNAME);
+}
 
 } // namespace encoding_management
 
@@ -158,165 +141,81 @@ using namespace encoding_management;
  * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
  *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
  */
-SEXP ci_enc_info(SEXP enc)
+CHARR_ENTRYPOINT SEXP ci_enc_info(SEXP enc) noexcept
 {
-    const char* selected_enc = ci__prepare_arg_enc(enc, "enc", true/*default ok*/); /* this is R_alloc'ed */
+    CHARR_ENTRYPOINT_BEGIN();
 
-    STRI__ERROR_HANDLER_BEGIN(0)
-    SEXP vals;
-    {
-        std::vector<const char*> standards;
-        std::vector<std::string> names;
-        std::vector<unsigned char> has_name;
-        std::vector<CiEncodingInfoValue> values;
-        R_len_t standards_n = 0;
-        int nval = 0;
+    const char* selected_enc = ci__prepare_arg_enc_r(
+        enc, "enc", true
+    );
 
-        {
-            StriUcnv uconv_obj(selected_enc);
-            // Inspection uses ICU's ordinary substitution callbacks.
-            UConverter* uconv = uconv_obj.getConverter();
-            UErrorCode status = U_ZERO_ERROR;
+    try {
+        shared::EncodingInfo info;
+        charport::charvec::Builder character_builder(1);
 
-            standards = StriUcnv::getStandards(STRI__DEFERRED_WARNINGS);
-            standards_n = (R_len_t)standards.size();
-            nval = standards_n+2+5;
-            names.resize(static_cast<size_t>(nval));
-            has_name.resize(static_cast<size_t>(nval), 0);
-            values.resize(static_cast<size_t>(nval));
-            names[0] = "Name.friendly";
-            names[1] = "Name.ICU";
-            has_name[0] = has_name[1] = 1;
-            for (R_len_t i=0; i<standards_n; ++i) {
-                if (!standards[static_cast<size_t>(i)])
-                    continue;
-                std::string& current_name = names[static_cast<size_t>(i+2)];
-                current_name = "Name.";
-                const char* standard = standards[static_cast<size_t>(i)];
-                current_name.append(
-                    standard,
-                    static_cast<size_t>(
-                        ci__management_icu_c_string_length(standard)
-                    )
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                const UErrorCode status = info.reset(selected_enc);
+                if (U_FAILURE(status))
+                    throw StriException(status);
+                info.inspect();
+
+                const int field_count = info.size();
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(VECSXP, field_count), result_index
                 );
-                has_name[static_cast<size_t>(i+2)] = 1;
-            }
-            names[static_cast<size_t>(nval-5)] = "ASCII.subset";
-            names[static_cast<size_t>(nval-4)] = "Unicode.1to1";
-            names[static_cast<size_t>(nval-3)] = "CharSize.8bit";
-            names[static_cast<size_t>(nval-2)] = "CharSize.min";
-            names[static_cast<size_t>(nval-1)] = "CharSize.max";
-            for (int i=nval-5; i<nval; ++i)
-                has_name[static_cast<size_t>(i)] = 1;
-
-            // Deviation from stringi: stage all converter diagnostics and
-            // character values, then assemble the R list after closing it.
-            status = U_ZERO_ERROR;
-            const char* canname = ucnv_getName(uconv, &status);
-            if (U_FAILURE(status) || !canname) {
-                values[1].set_na_character();
-                STRI__DEFERRED_WARNINGS.push(MSG__ENC_ERROR_GETNAME);
-            }
-            else {
-                values[1].set_character(canname);
-
-                const char* frname = StriUcnv::getFriendlyName(canname);
-                if (frname)
-                    values[0].set_character(frname);
-                else
-                    values[0].set_na_character();
-
-                values[static_cast<size_t>(nval-5)].set_logical(
-                    (int)uconv_obj.hasASCIIsubset(STRI__DEFERRED_WARNINGS)
+                SEXP names = callback_protections.protect_one(
+                    Rf_allocVector(STRSXP, field_count)
                 );
 
-                int mincharsize = (int)ucnv_getMinCharSize(uconv);
-                int maxcharsize = (int)ucnv_getMaxCharSize(uconv);
-                int is8bit = (mincharsize==1 && maxcharsize == 1);
-                values[static_cast<size_t>(nval-3)].set_logical(is8bit);
-                values[static_cast<size_t>(nval-2)].set_integer(mincharsize);
-                values[static_cast<size_t>(nval-1)].set_integer(maxcharsize);
-
-                if (!is8bit) {
-                    values[static_cast<size_t>(nval-4)].set_logical(
-                        NA_LOGICAL
-                    );
-                }
-                else {
-                    values[static_cast<size_t>(nval-4)].set_logical(
-                        (int)uconv_obj.is1to1Unicode(
-                            STRI__DEFERRED_WARNINGS
-                        )
-                    );
-                }
-
-                for (R_len_t i=0; i<standards_n; ++i) {
-                    const char* standard = standards[static_cast<size_t>(i)];
-                    if (!standard)
-                        continue;
-
-                    status = U_ZERO_ERROR;
-                    const char* stdname = ucnv_getStandardName(
-                        canname, standard, &status
-                    );
-                    if (U_FAILURE(status) || !stdname)
-                        values[static_cast<size_t>(i+2)].set_na_character();
-                    else
-                        values[static_cast<size_t>(i+2)].set_character(
-                            stdname
+                for (int i = 0; i < field_count; ++i) {
+                    if (info.has_name(i)) {
+                        SET_STRING_ELT(
+                            names, i,
+                            Rf_mkCharLenCE(
+                                info.name_data(i), info.name_length(i),
+                                CE_UTF8
+                            )
                         );
+                    }
+
+                    const shared::EncodingInfoValue value = info.value(i);
+                    SEXP child = R_NilValue;
+                    switch (value.kind) {
+                    case shared::EncodingInfoValueKind::unset:
+                        continue;
+                    case shared::EncodingInfoValueKind::character:
+                        stage_character(character_builder, value);
+                        child = callback_protections.protect_one(
+                            character_builder.to_sexp()
+                        );
+                        break;
+                    case shared::EncodingInfoValueKind::logical:
+                        child = callback_protections.protect_one(
+                            Rf_ScalarLogical(
+                                value.missing ? NA_LOGICAL : value.scalar
+                            )
+                        );
+                        break;
+                    case shared::EncodingInfoValueKind::integer:
+                        child = callback_protections.protect_one(
+                            Rf_ScalarInteger(
+                                value.missing ? NA_INTEGER : value.scalar
+                            )
+                        );
+                        break;
+                    }
+                    SET_VECTOR_ELT(result, i, child);
                 }
+
+                Rf_setAttrib(result, R_NamesSymbol, names);
+                emit_warnings_r(info);
+                CHARR_UNWIND_RETURN();
             }
-        }
-
-        STRI__PROTECT(vals = ci::unwind_protect([&]() -> SEXP {
-            SEXP value = PROTECT(Rf_allocVector(VECSXP, nval));
-            SEXP value_names = PROTECT(Rf_allocVector(STRSXP, nval));
-
-            for (int i=0; i<nval; ++i) {
-                if (has_name[static_cast<size_t>(i)]) {
-                    const std::string& name = names[static_cast<size_t>(i)];
-                    SET_STRING_ELT(
-                        value_names, i,
-                        Rf_mkCharLenCE(
-                            name.data(), static_cast<int>(name.size()),
-                            CE_UTF8
-                        )
-                    );
-                }
-
-                CiEncodingInfoValue& current =
-                    values[static_cast<size_t>(i)];
-                if (current.type == CiEncodingInfoValue::UNSET)
-                    continue;
-
-                SEXP child = R_NilValue;
-                if (current.type == CiEncodingInfoValue::CHARACTER) {
-                    child = PROTECT(charport::charvec::wrap(
-                        std::move(current.character)
-                    ));
-                }
-                else if (current.type == CiEncodingInfoValue::LOGICAL) {
-                    child = PROTECT(Rf_ScalarLogical(current.scalar));
-                }
-                else {
-                    child = PROTECT(Rf_ScalarInteger(current.scalar));
-                }
-                SET_VECTOR_ELT(value, i, child);
-                UNPROTECT(1);
-            }
-
-            Rf_setAttrib(value, R_NamesSymbol, value_names);
-            UNPROTECT(2);
-            return value;
-        }));
+        );
     }
-
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL
-    return vals;
-
-    STRI__ERROR_HANDLER_END({/* no special action on error */})
+    CHARR_ENTRYPOINT_END();
 }
 
 } } // namespace charr::altrep_backend

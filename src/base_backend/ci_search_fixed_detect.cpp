@@ -32,13 +32,165 @@
 
 
 #include "ci_stringi.h"
-#include "ci_utf8.h"
-#include "fixed/pattern_set.h"
+#include "fixed/options.h"
+#include "io/string_view.h"
+#include "../shared/entrypoint.h"
+#include "../shared/fixed_search.h"
+#include "../shared/native_to_utf8.h"
+#include "../shared/protect.h"
+#include "../shared/slice_arena.h"
+#include "../shared/unwind.h"
+#include "../shared/utf8.h"
 
-#include <cstring>
+#include <cstddef>
+#include <exception>
+#include <stdexcept>
+#include <vector>
 
 
 namespace charr { namespace base_backend {
+
+namespace search_fixed_detect {
+
+CHARR_NEUTRAL_HELPER bool contains_ascii_byte(
+    const char* data, R_len_t length, unsigned char pattern
+) noexcept
+{
+    const unsigned char* current =
+        reinterpret_cast<const unsigned char*>(data);
+    const unsigned char* end = current + length;
+    for (; current != end; ++current) {
+        if (*current == pattern)
+            return true;
+    }
+    return false;
+}
+
+
+CHARR_NEUTRAL_HELPER R_len_t recycling_length(
+    R_len_t subject_length, R_len_t pattern_length, bool& warning
+) noexcept
+{
+    warning = false;
+    if (subject_length <= 0 || pattern_length <= 0)
+        return 0;
+
+    const R_len_t result = subject_length > pattern_length
+        ? subject_length
+        : pattern_length;
+    warning = result % subject_length != 0 ||
+        result % pattern_length != 0;
+    return result;
+}
+
+
+CHARR_R_HELPER bool detect_ascii_scalar_direct(
+    SEXP subject, SEXP pattern, shared::FixedSearchOptions options,
+    R_len_t pattern_length, R_len_t vectorize_length, bool negate,
+    int& max_count, int* output, R_len_t& general_start
+) noexcept
+{
+    if (options.case_insensitive || options.overlap || pattern_length != 1)
+        return false;
+
+    SEXP pattern_string = STRING_ELT(pattern, 0);
+    if (pattern_string == NA_STRING || !IS_ASCII(pattern_string) ||
+            LENGTH(pattern_string) != 1) {
+        return false;
+    }
+
+    const unsigned char pattern_byte =
+        static_cast<unsigned char>(CHAR(pattern_string)[0]);
+    for (R_len_t i = 0; i < vectorize_length; ++i) {
+        SEXP value = STRING_ELT(subject, i);
+        if (value != NA_STRING && !IS_ASCII(value) && !IS_UTF8(value)) {
+            general_start = i;
+            return false;
+        }
+
+        if (max_count == 0) {
+            output[i] = NA_LOGICAL;
+            continue;
+        }
+        if (value == NA_STRING) {
+            output[i] = NA_LOGICAL;
+            continue;
+        }
+
+        const bool found = LENGTH(value) > 0 && contains_ascii_byte(
+            CHAR(value), LENGTH(value), pattern_byte
+        );
+        output[i] = negate ? !found : found;
+        if (max_count > 0 && output[i])
+            --max_count;
+    }
+    return true;
+}
+
+
+CHARR_CXX_HELPER void detect_normalized(
+    const std::vector<shared::StringView>& subjects,
+    const std::vector<shared::StringView>& patterns,
+    R_len_t vectorize_length, R_len_t general_start,
+    shared::FixedSearchOptions options, bool negate, int& max_count,
+    shared::FixedMatcher& matcher, int* output
+)
+{
+    const R_len_t subject_length = static_cast<R_len_t>(subjects.size());
+    const R_len_t pattern_length = static_cast<R_len_t>(patterns.size());
+    if (general_start > 0 && pattern_length != 1) {
+        throw std::logic_error(
+            "fixed-detect direct prefix requires a scalar pattern"
+        );
+    }
+
+    for (R_len_t lane = 0; lane < pattern_length; ++lane) {
+        const shared::StringView& current_pattern = patterns[
+            static_cast<std::size_t>(lane)
+        ];
+        R_len_t i = general_start > 0 ? general_start : lane;
+        for (;;) {
+            const shared::StringView& current_subject = subjects[
+                static_cast<std::size_t>(i % subject_length)
+            ];
+
+            if (max_count == 0) {
+                output[i] = NA_LOGICAL;
+            }
+            else if (current_subject.is_na() || current_pattern.is_na() ||
+                    current_pattern.len <= 0) {
+                output[i] = NA_LOGICAL;
+            }
+            else {
+                const bool found = current_subject.len > 0 && matcher.contains(
+                    current_subject, current_pattern, options
+                );
+                output[i] = negate ? !found : found;
+                if (max_count > 0 && output[i])
+                    --max_count;
+            }
+
+            if (pattern_length >= vectorize_length-i)
+                break;
+            i += pattern_length;
+        }
+    }
+}
+
+
+CHARR_R_HELPER void emit_warnings(
+    bool recycling_warning, R_len_t empty_pattern_warnings
+) noexcept
+{
+    if (recycling_warning)
+        Rf_warning(MSG__WARN_RECYCLING_RULE);
+    for (R_len_t i = 0; i < empty_pattern_warnings; ++i)
+        Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
+}
+
+} // namespace search_fixed_detect
+
+using namespace search_fixed_detect;
 
 /**
  * Detect if a pattern occurs in a string [fast but dummy bitewise compare]
@@ -78,164 +230,102 @@ namespace charr { namespace base_backend {
  * @version 1.3.1 (Marek Gagolewski, 2019-02-08)
  *    #232: `max_count` arg added
  */
-SEXP ci_detect_fixed(SEXP str, SEXP pattern, SEXP negate,
-                       SEXP max_count, SEXP opts_fixed)
+CHARR_ENTRYPOINT SEXP ci_detect_fixed(
+    SEXP str, SEXP pattern, SEXP negate,
+    SEXP max_count, SEXP opts_fixed
+) noexcept
 {
-    bool negate_1 = ci__prepare_arg_logical_1_notNA(negate, "negate");
-    int max_count_1 = ci__prepare_arg_integer_1_notNA(max_count, "max_count");
-    uint32_t pattern_flags = fixed::PatternSet::getByteSearchFlags(opts_fixed);
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
-    PROTECT(pattern = ci__prepare_arg_string(pattern, "pattern"));
+    CHARR_ENTRYPOINT_BEGIN();
 
-    STRI__ERROR_HANDLER_BEGIN(2)
-    int vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
+    const bool negate_1 = ci__prepare_arg_logical_1_notNA_r(
+        negate, "negate"
+    );
+    int max_count_1 = ci__prepare_arg_integer_1_notNA_r(
+        max_count, "max_count"
+    );
+    const shared::FixedSearchOptions options = fixed::prepare_options(
+        opts_fixed, false
+    );
+    str = entry_protections.protect_one(ci__prepare_arg_string_r(str, "str"));
+    pattern = entry_protections.protect_one(ci__prepare_arg_string_r(pattern, "pattern"));
 
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(LGLSXP, vectorize_length));
-    int* ret_tab = LOGICAL(ret);
-    R_len_t general_start = 0;
+    const R_len_t subject_length = LENGTH(str);
+    const R_len_t pattern_length = LENGTH(pattern);
+    bool recycling_warning = false;
+    const R_len_t vectorize_length = recycling_length(
+        subject_length, pattern_length, recycling_warning
+    );
 
-    // A scalar ASCII byte needs no encoding conversion or search object.
-    // Other encodings and fixed-search options retain the general path below.
-    if (pattern_flags == 0 && LENGTH(pattern) == 1) {
-        SEXP pattern_elt = STRING_ELT(pattern, 0);
-        if (pattern_elt != NA_STRING && LENGTH(pattern_elt) == 1 &&
-                (IS_ASCII(pattern_elt) || IS_UTF8(pattern_elt)) &&
-                static_cast<unsigned char>(CHAR(pattern_elt)[0]) <= 0x7f) {
-            const unsigned char pattern_byte = static_cast<unsigned char>(
-                CHAR(pattern_elt)[0]
-            );
-            bool direct = true;
+    R_len_t empty_pattern_warnings = 0;
 
-            for (R_len_t i = 0; i < vectorize_length; ++i) {
-                SEXP str_elt = STRING_ELT(str, i);
-                if (str_elt != NA_STRING &&
-                        !IS_ASCII(str_elt) && !IS_UTF8(str_elt)) {
-                    direct = false;
-                    general_start = i;
-                    break;
+    try {
+        shared::NativeToUtf8 subject_converter;
+        shared::NativeToUtf8 pattern_converter;
+        shared::SliceArena subject_storage;
+        shared::SliceArena pattern_storage;
+        std::vector<shared::StringView> subjects;
+        std::vector<shared::StringView> patterns;
+        shared::FixedMatcher matcher;
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(LGLSXP, vectorize_length), result_index
+                );
+                int* output = LOGICAL(result);
+                if (vectorize_length > 0) {
+                    R_len_t general_start = 0;
+                    const bool direct = detect_ascii_scalar_direct(
+                        str, pattern, options, pattern_length,
+                        vectorize_length, negate_1, max_count_1, output,
+                        general_start
+                    );
+                    if (!direct) {
+                        const SEXP* subject_values = STRING_PTR_RO(str);
+                        subjects.resize(
+                            static_cast<std::size_t>(subject_length)
+                        );
+                        for (R_len_t i = 0; i < subject_length; ++i) {
+                            subjects[static_cast<std::size_t>(i)] =
+                                shared::normalize_utf8(
+                                    io::as_shared_view(subject_values[i]),
+                                    subject_converter, subject_storage
+                                );
+                        }
+
+                        const SEXP* pattern_values = STRING_PTR_RO(pattern);
+                        patterns.resize(
+                            static_cast<std::size_t>(pattern_length)
+                        );
+                        R_len_t normalized_empty_patterns = 0;
+                        for (R_len_t i = 0; i < pattern_length; ++i) {
+                            const shared::StringView normalized =
+                                shared::normalize_utf8(
+                                    io::as_shared_view(pattern_values[i]),
+                                    pattern_converter, pattern_storage
+                                );
+                            patterns[static_cast<std::size_t>(i)] = normalized;
+                            if (!normalized.is_na() && normalized.len <= 0)
+                                ++normalized_empty_patterns;
+                        }
+                        empty_pattern_warnings = normalized_empty_patterns;
+
+                        detect_normalized(
+                            subjects, patterns, vectorize_length,
+                            general_start, options, negate_1, max_count_1,
+                            matcher, output
+                        );
+                    }
                 }
 
-                if (max_count_1 == 0) {
-                    ret_tab[i] = NA_LOGICAL;
-                    continue;
-                }
-                if (str_elt == NA_STRING) {
-                    ret_tab[i] = NA_LOGICAL;
-                    continue;
-                }
-
-                const R_len_t str_length = LENGTH(str_elt);
-                const bool found = str_length > 0 && std::memchr(
-                    CHAR(str_elt), pattern_byte,
-                    static_cast<std::size_t>(str_length)
-                ) != NULL;
-                ret_tab[i] = negate_1 ? !found : found;
-                if (max_count_1 > 0 && ret_tab[i])
-                    --max_count_1;
+                CHARR_UNWIND_RETURN();
             }
-
-            if (direct) {
-                STRI__UNPROTECT_ALL
-                return ret;
-            }
-        }
+        );
     }
-
-    io::Utf8Input str_cont(str, vectorize_length);
-    fixed::PatternSet pattern_cont(pattern, vectorize_length, pattern_flags);
-
-    // general_start is set only by the scalar-pattern path, so the pattern
-    // container advances with a unit stride from that index.
-    for (R_len_t i = general_start > 0 ?
-                general_start : pattern_cont.vectorize_init();
-            i != pattern_cont.vectorize_end();
-            i = pattern_cont.vectorize_next(i))
-    {
-        if (max_count_1 == 0) {
-            ret_tab[i] = NA_LOGICAL;
-            continue;
-        }
-
-        STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-                ret_tab[i] = NA_LOGICAL,
-        {   ret_tab[i] = negate_1;
-            if (max_count_1 > 0 && ret_tab[i]) --max_count_1;
-        })
-
-        shared::ByteSearchMatcher* matcher = pattern_cont.getMatcher(i);
-        matcher->reset(str_cont.get(i).data(), str_cont.get(i).length());
-        ret_tab[i] = (int)(matcher->find_first() != shared::ByteSearchMatcher::not_found);
-        if (negate_1) ret_tab[i] = !ret_tab[i];
-        if (max_count_1 > 0 && ret_tab[i]) --max_count_1;
-    }
-
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END( ;/* do nothing special on error */ )
-
-
-//   Version 2 -- slower for long strings
-//   UText *uts = NULL;
-//   UText *utp = NULL;
-//   URegularExpression* matcher = NULL;
-//
-//   STRI__ERROR_HANDLER_BEGIN
-//   int vectorize_length = ci__recycling_rule(true, 2, LENGTH(str), LENGTH(pattern));
-//   io::Utf8Input str_cont(str, vectorize_length);
-//   fixed::PatternSet pattern_cont(pattern, vectorize_length);
-//
-//   SEXP ret;
-//   PROTECT(ret = Rf_allocVector(LGLSXP, vectorize_length));
-//   int* ret_tab = LOGICAL(ret);
-//
-//
-//   const io::Utf8Record* last_s = NULL;
-//   const io::Utf8Record* last_p = NULL;
-//   UErrorCode err = U_ZERO_ERROR;
-//
-//   for (R_len_t i = pattern_cont.vectorize_init();
-//         i != pattern_cont.vectorize_end();
-//         i = pattern_cont.vectorize_next(i))
-//   {
-//      STRI__CONTINUE_ON_EMPTY_OR_NA_STR_PATTERN(str_cont, pattern_cont,
-//         ret_tab[i] = NA_LOGICAL,
-//         ret_tab[i] = FALSE)
-//
-//      const io::Utf8Record* cur_s = &(str_cont.get(i));
-//      const io::Utf8Record* cur_p = &(pattern_cont.get(i));
-//
-//      if (last_p != cur_p) {
-//         last_p = cur_p;
-//         if (matcher) uregex_close(matcher);
-//         utp = utext_openUTF8(utp, last_p->c_str(), last_p->length(), &err);
-//         matcher = uregex_openUText(utp, UREGEX_LITERAL, NULL, &err);
-//         STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-//      }
-//
-//      if (last_s != cur_s) {
-//         last_s = cur_s;
-//         uts = utext_openUTF8(uts, last_s->c_str(), last_s->length(), &err);
-//      }
-//
-//      uregex_setUText(matcher, uts, &err);
-//      uregex_reset(matcher, 0, &err);
-//      int found = (int)uregex_find(matcher, -1, &err);
-//      if (U_FAILURE(err))
-//         throw StriException(MSG__REGEX_FAILED);
-//      LOGICAL(ret)[i] = found;
-//   }
-//
-//   if (matcher) { uregex_close(matcher); matcher=NULL; }
-//   if (uts) { utext_close(uts); uts=NULL; }
-//   if (utp) { utext_close(utp); utp=NULL; }
-//   UNPROTECT(1);
-//   return ret;
-//   STRI__ERROR_HANDLER_END({
-//      if (matcher) { uregex_close(matcher); matcher=NULL; }
-//      if (uts) { utext_close(uts); uts=NULL; }
-//      if (utp) { utext_close(utp); utp=NULL; }
-//   })
+    CHARR_ENTRYPOINT_END(
+        emit_warnings(recycling_warning, empty_pattern_warnings);
+    );
 }
 
 } } // namespace charr::base_backend

@@ -30,158 +30,75 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-
 #include "ci_stringi.h"
-#include "ci_reader.h"
-#include "boundary/iterator.h"
-#include "ci_utf8.h"
+#include "io/reader_utils.h"
+#include "boundary/options_r.h"
+#include "io/string_view.h"
+#include "../shared/boundary_iterator.h"
+#include "../shared/entrypoint.h"
+#include "../shared/native_to_utf8.h"
+#include "../shared/protect.h"
+#include "../shared/slice_arena.h"
+#include "../shared/unwind.h"
+#include "../shared/utf8.h"
 
-#include <cstdint>
-#include <cstring>
+#include <charport.h>
+
+#include <cstddef>
+#include <exception>
 #include <stdexcept>
+#include <vector>
 
 namespace charr { namespace altrep_backend {
 
-
 namespace search_boundaries_count {
 
-bool has_direct_utf8_views(const charport::StrViews& values)
+struct InputScan {
+    bool direct;
+    bool has_nonmissing;
+};
+
+
+CHARR_CXX_HELPER InputScan scan_direct_input(
+    const charport::StrViews& values
+)
 {
-    bool direct = true;
+    bool has_nonmissing = false;
     for (R_xlen_t i = 0; i < values.size(); ++i) {
         const charport::StrView value = values[i];
         if (value.is_na())
             continue;
-        if (value.ptr == nullptr || value.len < 0)
-            throw std::runtime_error("Reader returned an invalid string view");
+        has_nonmissing = true;
+        if (value.ptr == nullptr || value.len < 0) {
+            throw std::runtime_error(
+                "Reader returned an invalid string view"
+            );
+        }
         if (value.enc == cetype_ext_t::CE_BYTES)
             throw StriException(MSG__BYTESENC);
         if (value.enc != cetype_ext_t::CE_ASCII &&
                 value.enc != cetype_ext_t::CE_UTF8 &&
                 value.enc != cetype_ext_t::CE_ASCII_OR_UTF8) {
-            direct = false;
+            return InputScan{false, has_nonmissing};
         }
     }
-    return direct;
+    return InputScan{true, has_nonmissing};
 }
 
-charport::StrView direct_utf8_view(charport::StrView value) noexcept
+
+CHARR_CXX_HELPER void require_icu_success(UErrorCode status)
 {
-    if (value.enc != cetype_ext_t::CE_ASCII && value.len >= 3 &&
-            static_cast<uint8_t>(value.ptr[0]) == UTF8_BOM_BYTE1 &&
-            static_cast<uint8_t>(value.ptr[1]) == UTF8_BOM_BYTE2 &&
-            static_cast<uint8_t>(value.ptr[2]) == UTF8_BOM_BYTE3) {
-        value.ptr += 3;
-        value.len -= 3;
-    }
-    return value;
+    if (U_FAILURE(status))
+        throw StriException(status);
 }
 
-class BoundaryCounter {
-private:
-    boundary::Options options_;
-    BreakIterator* iterator_;
-    UText* text_;
 
-    void open(ci::DeferredWarnings& warnings)
-    {
-        UErrorCode status = U_ZERO_ERROR;
-        const Locale locale_value = Locale::createFromName(
-            options_.getLocale()
-        );
-        if (!options_.getRules().isEmpty()) {
-            UParseError parse_error;
-            iterator_ = new RuleBasedBreakIterator(
-                UnicodeString(options_.getRules()), parse_error, status
-            );
-        }
-        else {
-            switch (options_.getType()) {
-            case UBRK_CHARACTER:
-                iterator_ = BreakIterator::createCharacterInstance(
-                    locale_value, status
-                );
-                break;
-            case UBRK_LINE:
-                iterator_ = BreakIterator::createLineInstance(
-                    locale_value, status
-                );
-                break;
-            case UBRK_SENTENCE:
-                iterator_ = BreakIterator::createSentenceInstance(
-                    locale_value, status
-                );
-                break;
-            case UBRK_WORD:
-                iterator_ = BreakIterator::createWordInstance(
-                    locale_value, status
-                );
-                break;
-            default:
-                throw StriException(MSG__INTERNAL_ERROR);
-            }
-        }
-        STRI__CHECKICUSTATUS_THROW(status, {})
-
-        if (status == U_USING_DEFAULT_WARNING && iterator_ &&
-                options_.getLocale()) {
-            UErrorCode locale_status = U_ZERO_ERROR;
-            const char* valid_locale = iterator_->getLocaleID(
-                ULOC_VALID_LOCALE, locale_status
-            );
-            if (valid_locale && !std::strcmp(valid_locale, "root"))
-                warnings.push(ICUError::getICUerrorName(status));
-        }
-    }
-
-public:
-    explicit BoundaryCounter(const boundary::Options& options)
-        : options_(options), iterator_(nullptr), text_(nullptr)
-    {
-    }
-
-    ~BoundaryCounter()
-    {
-        delete iterator_;
-        if (text_)
-            utext_close(text_);
-    }
-
-    R_len_t count(
-        const char* value, R_len_t length, ci::DeferredWarnings& warnings
-    )
-    {
-        if (!iterator_)
-            open(warnings);
-
-        UErrorCode status = U_ZERO_ERROR;
-        text_ = utext_openUTF8(text_, value, length, &status);
-        STRI__CHECKICUSTATUS_THROW(status, {})
-        status = U_ZERO_ERROR;
-        iterator_->setText(text_, status);
-        STRI__CHECKICUSTATUS_THROW(status, {})
-
-        R_len_t count = 0;
-        if (options_.getSkipSize() <= 0) {
-            while (iterator_->next() != BreakIterator::DONE)
-                ++count;
-            return count;
-        }
-
-        while (iterator_->next() != BreakIterator::DONE) {
-            const int rule = iterator_->getRuleStatus();
-            R_len_t skip = 0;
-            for (; skip < options_.getSkipSize(); skip += 2) {
-                if (rule >= options_.getSkipRules()[skip] &&
-                        rule < options_.getSkipRules()[skip+1])
-                    break;
-            }
-            if (skip == options_.getSkipSize())
-                ++count;
-        }
-        return count;
-    }
-};
+CHARR_R_HELPER void emit_fallback_warning_r() noexcept
+{
+    Rf_warning(
+        "%s", ICUError::getICUerrorName(U_USING_DEFAULT_WARNING)
+    );
+}
 
 } // namespace search_boundaries_count
 
@@ -192,7 +109,7 @@ using namespace search_boundaries_count;
  *
  * @param str character vector
  * @param opts_brkiter identifier
- * @return character vector
+ * @return integer vector
  *
  * @version 0.3-1 (Marek Gagolewski, 2014-10-30)
  *
@@ -202,62 +119,124 @@ using namespace search_boundaries_count;
  * @version 0.4-1 (Marek Gagolewski, 2014-12-02)
  *          use boundary::Utf8Iterator
  */
-SEXP ci_count_boundaries(SEXP str, SEXP opts_brkiter)
-{
-    PROTECT(str = ci__prepare_arg_string(str, "str"));
+CHARR_ENTRYPOINT SEXP ci_count_boundaries(
+    SEXP str, SEXP opts_brkiter
+) noexcept {
+    CHARR_ENTRYPOINT_BEGIN();
 
-    STRI__ERROR_HANDLER_BEGIN(1)
-    SEXP ret;
-    {
-    // Deviation from stringi: keep the option's ICU storage inside the
-    // unwind-safe scope so it is released before warning replay.
-    boundary::Options opts_brkiter2(
-        opts_brkiter, "line_break", STRI__DEFERRED_WARNINGS
+    str = entry_protections.protect_one(
+        ci__prepare_arg_string_r(str, "str")
     );
-    ci::ReaderContext context(STRI__DEFERRED_WARNINGS);
-    R_len_t str_length = ci::checked_r_len(
-        context.size(str), "character vectors"
+    const shared::BoundaryOptions options =
+        boundary::prepare_options_r(opts_brkiter, UBRK_LINE);
+
+
+    bool root_fallback_warning = false;
+
+    try {
+        charport::Reader reader;
+        charport::StrViews source_views;
+        shared::NativeToUtf8 converter;
+        shared::SliceArena storage;
+        std::vector<shared::StringView> normalized;
+        shared::BoundaryIterator counter;
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                const R_len_t length = io::checked_r_len(
+                    XLENGTH(str), "character vectors"
+                );
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(INTSXP, length), result_index
+                );
+                int* output = INTEGER(result);
+
+                reader.reset(str);
+                if (reader.size() != length) {
+                    throw std::runtime_error(
+                        "Reader length changed during boundary counting"
+                    );
+                }
+                source_views.resize(length);
+                if (length > 0) {
+                    reader.views(
+                        0, length,
+                        source_views.ptrs(), source_views.lengths(),
+                        source_views.encodings()
+                    );
+                }
+
+                const InputScan scan = scan_direct_input(source_views);
+                if (scan.direct) {
+                    if (scan.has_nonmissing) {
+                        const shared::BoundaryOpenResult opened =
+                            counter.reset(options);
+                        root_fallback_warning = opened.root_fallback;
+                        require_icu_success(opened.status);
+                    }
+
+                    for (R_len_t i = 0; i < length; ++i) {
+                        const shared::StringView source =
+                            io::as_shared_view(source_views[i]);
+                        if (source.is_na()) {
+                            output[i] = NA_INTEGER;
+                            continue;
+                        }
+
+                        const shared::StringView value =
+                            shared::normalize_utf8(
+                                source, converter, storage
+                            );
+                        UErrorCode status = U_ZERO_ERROR;
+                        output[i] = counter.count(value, status);
+                        require_icu_success(status);
+                    }
+                }
+                else {
+                    normalized.resize(static_cast<std::size_t>(length));
+                    bool has_nonmissing = false;
+                    for (R_len_t i = 0; i < length; ++i) {
+                        const shared::StringView source =
+                            io::as_shared_view(source_views[i]);
+                        if (source.enc == shared::StringEncoding::bytes)
+                            throw StriException(MSG__BYTESENC);
+                        normalized[static_cast<std::size_t>(i)] =
+                            shared::normalize_utf8(
+                                source, converter, storage
+                            );
+                        has_nonmissing = has_nonmissing || !source.is_na();
+                    }
+
+                    if (has_nonmissing) {
+                        const shared::BoundaryOpenResult opened =
+                            counter.reset(options);
+                        root_fallback_warning = opened.root_fallback;
+                        require_icu_success(opened.status);
+                    }
+
+                    for (R_len_t i = 0; i < length; ++i) {
+                        const shared::StringView& value = normalized[
+                            static_cast<std::size_t>(i)
+                        ];
+                        if (value.is_na()) {
+                            output[i] = NA_INTEGER;
+                            continue;
+                        }
+                        UErrorCode status = U_ZERO_ERROR;
+                        output[i] = counter.count(value, status);
+                        require_icu_success(status);
+                    }
+                }
+
+                CHARR_UNWIND_RETURN();
+            }
+        );
+    }
+    CHARR_ENTRYPOINT_END(
+        if (root_fallback_warning)
+            emit_fallback_warning_r();
     );
-
-    STRI__PROTECT(ret = ci::unwind_protect([&]() -> SEXP {
-        return Rf_allocVector(INTSXP, str_length);
-    }));
-    int* ret_tab = INTEGER(ret);
-
-    {
-        std::shared_ptr<ci::ReaderBorrow> borrow = context.acquire(str);
-        const charport::StrViews& views = borrow->views();
-        BoundaryCounter counter(opts_brkiter2);
-        if (has_direct_utf8_views(views)) {
-            for (R_len_t i = 0; i < str_length; ++i) {
-                const charport::StrView value = direct_utf8_view(views[i]);
-                ret_tab[i] = value.is_na()
-                    ? NA_INTEGER
-                    : counter.count(
-                        value.ptr, value.len, STRI__DEFERRED_WARNINGS
-                    );
-            }
-        }
-        else {
-            io::Utf8Input input(borrow, str_length);
-            const io::Utf8Record* records = input.source_data();
-            for (R_len_t i = 0; i < str_length; ++i) {
-                const io::Utf8Record& value = records[i];
-                ret_tab[i] = value.isNA()
-                    ? NA_INTEGER
-                    : counter.count(
-                        value.data(), value.length(),
-                        STRI__DEFERRED_WARNINGS
-                    );
-            }
-        }
-    }
-
-    }
-    STRI__DEFERRED_WARNINGS.emit();
-    STRI__UNPROTECT_ALL
-    return ret;
-    STRI__ERROR_HANDLER_END({ /* no action */  })
 }
 
 } } // namespace charr::altrep_backend

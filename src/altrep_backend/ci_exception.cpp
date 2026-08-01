@@ -53,7 +53,9 @@ namespace charr { namespace altrep_backend {
  *
  * TODO: these should all start with a lowercase letter and not end with a dot
  */
-const char* ICUError::getICUerrorName(UErrorCode status)
+CHARR_NEUTRAL_HELPER const char* ICUError::getICUerrorName(
+    UErrorCode status
+) noexcept
 {
     switch(status) {
     case U_USING_FALLBACK_WARNING:

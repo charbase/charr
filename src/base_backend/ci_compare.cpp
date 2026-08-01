@@ -32,187 +32,165 @@
 
 
 #include "ci_stringi.h"
-#include "ci_utf8.h"
-#include "io/utf16_input.h"
+#include "collator/options.h"
+#include "io/string_view.h"
+#include "../shared/collator.h"
+#include "../shared/entrypoint.h"
+#include "../shared/native_to_utf8.h"
+#include "../shared/protect.h"
+#include "../shared/slice_arena.h"
+#include "../shared/string_view.h"
+#include "../shared/unwind.h"
+#include "../shared/utf8.h"
+
 #include <unicode/ucol.h>
+
+#include <exception>
 #include <vector>
-#include <deque>
-#include <algorithm>
-#include <set>
 
 
 namespace charr { namespace base_backend {
 
-// !!!! no longer used since stringi_0.2-3 !!!!
-///** Compare 2 strings in UTF8, codepoint-wise [internal]
-// *
-// * Used by ci_order_codepoints and ci_cmp_codepoints
-// *
-// * @param str1 string in UTF8
-// * @param str2 string in UTF8
-// * @param n1 length of str1
-// * @param n2 length of str2
-// * @return -1, 0, or 1, like in strcmp
-// *
-// * @version 0.1-?? (Marek Gagolewski)
-// *
-// * @version 0.2-1 (Marek Gagolewski, 2014-03-19)
-// *          BUGFIX: possibly incorrect results for strings of inequal number
-// *                  of codepoints
-// *
-// * @version 0.2-1 (Marek Gagolewski, 2014-04-02)
-// *          detect invalid UTF-8 byte stream
-// */
-//int ci__cmp_codepoints(const char* str1, R_len_t n1, const char* str2, R_len_t n2)
-//{
-//   // @NOTE: strangely, this is being outperformed by ucol_strcollUTF8
-//   //        in some UTF-8 benchmarks...
-//   int i1 = 0;
-//   int i2 = 0;
-//   UChar32 c1 = 0;
-//   UChar32 c2 = 0;
-//   while (c1 == c2 && i1 < n1 && i2 < n2) {
-//      U8_NEXT(str1, i1, n1, c1);
-//      U8_NEXT(str2, i2, n2, c2);
-//      if (c1 < 0 || c2 < 0)
-//         throw StriException(MSG__INVALID_UTF8);
-//   }
-//
-//   if (c1 < c2)
-//      return -1;
-//   else if (c1 > c2)
-//      return 1;
-//
-//   // reached here => first i1==i2 codepoints are the same
-//   if (i1 < n1)      return  1;
-//   else if (i2 < n2) return -1;
-//   else              return  0;
-//}
+namespace compare {
 
-
-/* *************************************************************************
-                                  STRI_CMP_CODEPOINTS
-   ************************************************************************* */
-
-
-/* *************************************************************************
-                                  STRI_CMP_LOGICAL
-   ************************************************************************* */
-
-
-/**
- * Compare elements in 2 character vectors, with collation [INTERNAL]
- *
- * @param e1 character vector
- * @param e2 character vector
- * @param opts_collator passed to ci__ucol_open()
- * @param type [internal] vector of length 2,
- * type[0]: 0 for ==, -1 for < and 1 for >,
- * type[1]: 0 or 1 (whether to negate the results)
- *
- * @return logical vector
- *
- * @version 0.2-1  (Marek Gagolewski, 2014-03-19)
- *
- * @version 0.2-3 (Marek Gagolewski, 2014-05-07)
- *          opts_collator == NA no longer allowed
- *
- * @version 0.3-1 (Marek Gagolewski, 2014-11-04)
- *    Issue #112: str_prepare_arg* retvals were not PROTECTed from gc
- */
-SEXP ci__cmp_logical(SEXP e1, SEXP e2, SEXP opts_collator, int _type, int _negate)
+CHARR_NEUTRAL_HELPER R_len_t recycling_length(
+    R_len_t first, R_len_t second, bool& warning
+) noexcept
 {
-    // we'll perform a collator-based cmp
-    // type is an internal arg, check manually, error() allowed here
-    if (_type > 1 || _type < -1 || _negate < 0 || _negate > 1)
-        Rf_error(MSG__INCORRECT_INTERNAL_ARG);
+    warning = false;
+    if (first <= 0 || second <= 0)
+        return 0;
 
-    PROTECT(e1 = ci__prepare_arg_string(e1, "e1")); // prepare string argument
-    PROTECT(e2 = ci__prepare_arg_string(e2, "e2")); // prepare string argument
-
-    // call ci__ucol_open after prepare_arg:
-    // if prepare_arg had failed, we would have a mem leak
-    UCollator* col = NULL;
-    col = ci__ucol_open(opts_collator);
-
-    STRI__ERROR_HANDLER_BEGIN(2)
-
-    R_len_t vectorize_length = ci__recycling_rule(true, 2, LENGTH(e1), LENGTH(e2));
-
-    io::Utf8Input e1_cont(e1, vectorize_length);
-    io::Utf8Input e2_cont(e2, vectorize_length);
-    const io::Utf8Record* e1_records = e1_cont.source_data();
-    const io::Utf8Record* e2_records = e2_cont.source_data();
-    const R_len_t e1_n = e1_cont.get_n();
-    const R_len_t e2_n = e2_cont.get_n();
-    R_len_t e1_index = 0;
-    R_len_t e2_index = 0;
-
-    SEXP ret;
-    STRI__PROTECT(ret = Rf_allocVector(LGLSXP, vectorize_length));
-    int* ret_tab = LOGICAL(ret);
-
-    for (R_len_t i = 0; i < vectorize_length; ++i)
-    {
-        const io::Utf8Record& cur1 = e1_records[e1_index];
-        const io::Utf8Record& cur2 = e2_records[e2_index];
-        if (++e1_index == e1_n)
-            e1_index = 0;
-        if (++e2_index == e2_n)
-            e2_index = 0;
-
-        if (cur1.isNA() || cur2.isNA()) {
-            ret_tab[i] = NA_LOGICAL;
-            continue;
-        }
-
-        // with collation
-        UErrorCode status = U_ZERO_ERROR;
-        ret_tab[i] = (_type == (int)ucol_strcollUTF8(col,
-                      cur1.ptr, cur1.len, cur2.ptr, cur2.len, &status
-                                                    ));
-        STRI__CHECKICUSTATUS_THROW(status, {/* do nothing special on err */})
-
-        if (_negate)
-            ret_tab[i] = !ret_tab[i];
-    }
-
-    if (col) {
-        ucol_close(col);
-        col = NULL;
-    }
-    STRI__UNPROTECT_ALL
-    return ret;
-
-    STRI__ERROR_HANDLER_END({
-        if (col) {
-            ucol_close(col);
-            col = NULL;
-        }
-    })
+    const R_len_t result = first > second ? first : second;
+    warning = result % first != 0 || result % second != 0;
+    return result;
 }
+
+
+CHARR_CXX_HELPER void require_icu_success(UErrorCode status)
+{
+    if (U_FAILURE(status))
+        throw StriException(status);
+}
+
+} // namespace compare
+
+using namespace compare;
 
 
 /**
- * Compare elements in 2 character vectors, with collation [INTERNAL]
+ * Compare corresponding elements in two character vectors for collation
+ * equivalence.
  *
  * @param e1 character vector
  * @param e2 character vector
- * @param opts_collator passed to ci__ucol_open()
- *
+ * @param opts_collator collator options
  * @return logical vector
- *
- * @version 0.6-1  (Marek Gagolewski, 2015-07-05)
- *    use ci__cmp_logical
  */
-SEXP ci_cmp_equiv(SEXP e1, SEXP e2, SEXP opts_collator) {
-    return ci__cmp_logical(e1, e2, opts_collator, 0, 0);
+CHARR_ENTRYPOINT SEXP ci_cmp_equiv(
+    SEXP e1, SEXP e2, SEXP opts_collator
+) noexcept
+{
+    CHARR_ENTRYPOINT_BEGIN();
+
+    e1 = entry_protections.protect_one(ci__prepare_arg_string_r(e1, "e1"));
+    e2 = entry_protections.protect_one(ci__prepare_arg_string_r(e2, "e2"));
+    const shared::CollatorOptions options =
+        collator::prepare_options(opts_collator);
+
+    const R_len_t e1_length = LENGTH(e1);
+    const R_len_t e2_length = LENGTH(e2);
+    bool recycling_warning = false;
+    const R_len_t vectorize_length = recycling_length(
+        e1_length, e2_length, recycling_warning
+    );
+
+    bool root_fallback_warning = false;
+
+    try {
+        shared::Collator collator_owner;
+        shared::NativeToUtf8 e1_converter;
+        shared::NativeToUtf8 e2_converter;
+        shared::SliceArena e1_storage;
+        shared::SliceArena e2_storage;
+        std::vector<shared::StringView> e1_inputs;
+        std::vector<shared::StringView> e2_inputs;
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                const shared::CollatorOpenResult open_result =
+                    collator_owner.reset(options);
+                root_fallback_warning = open_result.root_fallback;
+                require_icu_success(open_result.status);
+
+                const SEXP* e1_values = vectorize_length > 0
+                    ? STRING_PTR_RO(e1)
+                    : nullptr;
+                const SEXP* e2_values = vectorize_length > 0
+                    ? STRING_PTR_RO(e2)
+                    : nullptr;
+
+                if (vectorize_length > 0) {
+                    e1_inputs.resize(static_cast<std::size_t>(e1_length));
+                    for (R_len_t i = 0; i < e1_length; ++i) {
+                        e1_inputs[static_cast<std::size_t>(i)] =
+                            shared::normalize_utf8(
+                                io::as_shared_view(e1_values[i]),
+                                e1_converter, e1_storage
+                            );
+                    }
+
+                    e2_inputs.resize(static_cast<std::size_t>(e2_length));
+                    for (R_len_t i = 0; i < e2_length; ++i) {
+                        e2_inputs[static_cast<std::size_t>(i)] =
+                            shared::normalize_utf8(
+                                io::as_shared_view(e2_values[i]),
+                                e2_converter, e2_storage
+                            );
+                    }
+                }
+
+                result = entry_protections.reprotect_one(
+                    Rf_allocVector(LGLSXP, vectorize_length), result_index
+                );
+                int* output = LOGICAL(result);
+
+                for (R_len_t i = 0; i < vectorize_length; ++i) {
+                    const shared::StringView& current1 = e1_inputs[
+                        static_cast<std::size_t>(i % e1_length)
+                    ];
+                    const shared::StringView& current2 = e2_inputs[
+                        static_cast<std::size_t>(i % e2_length)
+                    ];
+                    if (current1.is_na() || current2.is_na()) {
+                        output[i] = NA_LOGICAL;
+                        continue;
+                    }
+
+                    UErrorCode status = U_ZERO_ERROR;
+                    output[i] = static_cast<int>(ucol_strcollUTF8(
+                        collator_owner.get(),
+                        current1.ptr, current1.len,
+                        current2.ptr, current2.len,
+                        &status
+                    )) == 0;
+                    require_icu_success(status);
+                }
+
+                CHARR_UNWIND_RETURN();
+            }
+        );
+    }
+    CHARR_ENTRYPOINT_END(
+        if (root_fallback_warning) {
+            Rf_warning(
+                "%s", ICUError::getICUerrorName(U_USING_DEFAULT_WARNING)
+            );
+        }
+        if (recycling_warning)
+            Rf_warning(MSG__WARN_RECYCLING_RULE);
+    );
 }
-
-
-/* *************************************************************************
-                                  STRI_CMP
-   ************************************************************************* */
-
 
 } } // namespace charr::base_backend
