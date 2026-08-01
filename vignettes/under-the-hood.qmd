@@ -81,7 +81,7 @@ Bars are how many times faster `charr` is than the reference on the same input, 
 
 ![](../man/figures/bench-full.png)
 
-Both optimized backends are faster than or equivalent to the reference on all 67 operations. Base medians run from 1.01× to 3.33×, ALTREP medians from 1.03× to 13.6×.
+ALTREP is faster than the reference on all 67 operations, with medians from 1.05× to 13.8×. Base medians run from 0.98× to 3.53×. The four operations where base sits below 1.00× are `str_equal` and the three trims, all within a run-to-run spread of the reference rather than behind it.
 
 Measured on Linux, R 4.6.1, GCC with `-O2`, `charr` on system ICU 78.2.
 

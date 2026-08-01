@@ -330,7 +330,7 @@ test-valgrind:
 
 # Documentation. The main vignette is also the README and the pkgdown home
 # page, rendered from one source so the three cannot drift apart.
-BENCH_LABEL := optimized-backends-record-20260724
+BENCH_LABEL := optimized-backends-record-20260731
 
 figures:
 	Rscript inst/extra/benchmark/make-vignette-figures.R $(BENCH_LABEL)

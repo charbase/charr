@@ -44,7 +44,7 @@ The figure below shows thirteen representative operations measured on a multilin
 ![](../man/figures/bench-summary.png)
 :::
 
-`str_read_lines()` leads at 13.6×: a second of work becomes 76 ms. Below it the ordering follows how much of each operation's time goes into producing strings rather than inspecting them. `str_detect()` with collation sits at the bottom at 1.1×; it returns `TRUE`/`FALSE`, so there is no string output to improve on.
+`str_read_lines()` leads at 13.8×: a second of work becomes 72 ms. Below it the ordering follows how much of each operation's time goes into producing strings rather than inspecting them. `str_detect()` with collation sits at the bottom at 1.1×; it returns `TRUE`/`FALSE`, so there is no string output to improve on.
 
 ::: {.content-visible when-format="gfm"}
 This is a sample rather than the whole surface. [Under the hood](https://charport.github.io/charr/articles/under-the-hood.html) has the complete record: all 67 operations, grouped by family.

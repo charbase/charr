@@ -1,0 +1,68 @@
+"family","label","input_n","stringi","base","altrep","base_x","altrep_x"
+"Encoding and files","str_read_lines",1000000,1022,798,74,1.28070175438596,13.8108108108108
+"Encoding and files","str_view (escape)",100000,73,60,31,1.21666666666667,2.35483870967742
+"Encoding and files","str_conv",100000,36,34,16,1.05882352941176,2.25
+"Combine and duplicate","str_dup",100000,45,45,5,1,9
+"Combine and duplicate","str_c",100000,35,35,4,1,8.75
+"Combine and duplicate","str_reverse",100000,40,38,8,1.05263157894737,5
+"Combine and duplicate","str_flatten",1000000,101,94,35,1.07446808510638,2.88571428571429
+"Combine and duplicate","str_replace_na",1000000,36,21,32,1.71428571428571,1.125
+"Substring","str_sub_all<-",100000,74,37,6,2,12.3333333333333
+"Substring","str_sub",100000,27,24,3,1.125,9
+"Substring","str_sub<-",100000,38,34,5,1.11764705882353,7.6
+"Substring","str_sub_all",100000,46,31,28,1.48387096774194,1.64285714285714
+"Trim and measure","str_trim (left)",1000000,348,351,49,0.991452991452991,7.10204081632653
+"Trim and measure","str_trim (right)",1000000,338,340,51,0.994117647058824,6.62745098039216
+"Trim and measure","str_trim (both)",1000000,197,200,51,0.985,3.86274509803922
+"Trim and measure","str_length",1000000,61,58,50,1.05172413793103,1.22
+"Padding and layout","str_pad (both)",100000,100,53,20,1.88679245283019,5
+"Padding and layout","str_pad (left)",100000,99,52,20,1.90384615384615,4.95
+"Padding and layout","str_pad (right)",100000,99,52,20,1.90384615384615,4.95
+"Padding and layout","str_width",100000,60,17,16,3.52941176470588,3.75
+"Padding and layout","str_wrap",10000,45,19,17,2.36842105263158,2.64705882352941
+"Case mapping","str_to_lower",100000,44,42,14,1.04761904761905,3.14285714285714
+"Case mapping","str_to_upper",100000,63,53,25,1.18867924528302,2.52
+"Case mapping","str_to_title",100000,150,129,96,1.16279069767442,1.5625
+"Fixed pattern","str_replace (fixed)",100000,38,36,6,1.05555555555556,6.33333333333333
+"Fixed pattern","str_count (fixed)",1000000,102,37,27,2.75675675675676,3.77777777777778
+"Fixed pattern","str_split (fixed)",100000,107,100,38,1.07,2.81578947368421
+"Fixed pattern","str_replace_all (fixed)",100000,48,44,18,1.09090909090909,2.66666666666667
+"Fixed pattern","str_locate (fixed)",1000000,70,40,31,1.75,2.25806451612903
+"Fixed pattern","str_starts (fixed)",1000000,35,23,16,1.52173913043478,2.1875
+"Fixed pattern","str_ends (fixed)",1000000,36,25,17,1.44,2.11764705882353
+"Fixed pattern","str_extract (fixed)",1000000,101,76,55,1.32894736842105,1.83636363636364
+"Fixed pattern","str_detect (fixed)",1000000,42,33,23,1.27272727272727,1.82608695652174
+"Fixed pattern","str_extract_all (fixed)",100000,15,10,9,1.5,1.66666666666667
+"Fixed pattern","str_locate_all (fixed)",100000,38,32,29,1.1875,1.31034482758621
+"Regular expression","str_extract (regex)",100000,103,59,39,1.74576271186441,2.64102564102564
+"Regular expression","str_match (regex)",100000,61,52,26,1.17307692307692,2.34615384615385
+"Regular expression","str_split (regex)",100000,156,138,77,1.1304347826087,2.02597402597403
+"Regular expression","str_extract_all (regex)",100000,217,144,112,1.50694444444444,1.9375
+"Regular expression","str_replace (regex)",100000,112,94,60,1.19148936170213,1.86666666666667
+"Regular expression","str_match_all (regex)",100000,218,210,127,1.03809523809524,1.71653543307087
+"Regular expression","str_replace_all (regex)",100000,143,135,108,1.05925925925926,1.32407407407407
+"Regular expression","str_detect (regex)",100000,47,39,37,1.20512820512821,1.27027027027027
+"Regular expression","str_locate (regex)",100000,52,44,41,1.18181818181818,1.26829268292683
+"Regular expression","str_locate_all (regex)",100000,125,112,108,1.11607142857143,1.15740740740741
+"Regular expression","str_count (regex)",100000,82,75,73,1.09333333333333,1.12328767123288
+"Text boundary","str_extract (boundary)",100000,65,46,28,1.41304347826087,2.32142857142857
+"Text boundary","str_locate (boundary)",100000,47,29,27,1.62068965517241,1.74074074074074
+"Text boundary","str_split (boundary)",100000,198,195,128,1.01538461538462,1.546875
+"Text boundary","str_extract_all (boundary)",100000,199,195,150,1.02051282051282,1.32666666666667
+"Text boundary","str_locate_all (boundary)",100000,119,114,110,1.04385964912281,1.08181818181818
+"Text boundary","str_count (boundary)",100000,79,78,75,1.01282051282051,1.05333333333333
+"Collation","str_replace (coll)",100000,148,141,113,1.04964539007092,1.30973451327434
+"Collation","str_replace_all (coll)",10000,20,19,17,1.05263157894737,1.17647058823529
+"Collation","str_split (coll)",10000,22,19,19,1.15789473684211,1.15789473684211
+"Collation","str_extract (coll)",100000,118,107,104,1.10280373831776,1.13461538461538
+"Collation","str_detect (coll)",100000,114,102,101,1.11764705882353,1.12871287128713
+"Collation","str_count (coll)",10000,18,16,16,1.125,1.125
+"Collation","str_locate (coll)",100000,117,105,104,1.11428571428571,1.125
+"Collation","str_starts (coll)",100000,117,107,105,1.09345794392523,1.11428571428571
+"Collation","str_locate_all (coll)",10000,20,18,18,1.11111111111111,1.11111111111111
+"Collation","str_extract_all (coll)",10000,19,16,18,1.1875,1.05555555555556
+"Collation","str_ends (coll)",100000,185,177,177,1.04519774011299,1.04519774011299
+"Order and compare","str_equal",1000000,77,78,53,0.987179487179487,1.45283018867925
+"Order and compare","str_order",100000,70,66,59,1.06060606060606,1.1864406779661
+"Order and compare","str_rank",100000,77,74,65,1.04054054054054,1.18461538461538
+"Order and compare","str_unique",100000,108,105,92,1.02857142857143,1.17391304347826
