@@ -6,16 +6,18 @@ args <- commandArgs(trailingOnly = TRUE)
 if (length(args) < 3L) {
   stop(
     "usage: benchmark-worker.R <metadata|preflight|time> ",
-    "<package-lib> <main|claude> ..."
+    "<package-lib> main ..."
   )
 }
 
 mode <- args[[1L]]
 package_lib <- normalizePath(args[[2L]], mustWork = TRUE)
+# Kept as an argument because it is recorded in the raw CSV, where archived
+# runs also carry the retired Claude ALTREP snapshot.
 branch_kind <- args[[3L]]
 stopifnot(
   mode %in% c("metadata", "preflight", "time"),
-  branch_kind %in% c("main", "claude")
+  identical(branch_kind, "main")
 )
 
 .libPaths(c(package_lib, .libPaths()))
@@ -24,13 +26,6 @@ loaded_package <- normalizePath(system.file(package = "charr"), mustWork = TRUE)
 expected_package <- normalizePath(file.path(package_lib, "charr"), mustWork = TRUE)
 stopifnot(identical(loaded_package, expected_package))
 charr_ns <- asNamespace("charr")
-
-if (branch_kind == "claude") {
-  if (exists("charr_threads", envir = charr_ns, inherits = FALSE)) {
-    get("charr_threads", envir = charr_ns, inherits = FALSE)(1L)
-  }
-  get("charr_altrep", envir = charr_ns, inherits = FALSE)(TRUE)
-}
 
 emit_metadata <- function(key, value) {
   value <- gsub("[\t\r\n]", " ", as.character(value))
@@ -89,39 +84,26 @@ if (is.null(op)) {
   stop("unknown operation: ", operation)
 }
 
-if (branch_kind == "main") {
-  stopifnot(condition %in% c("stringi", "base", "altrep"))
-  leaf_map <- get(".charr_leaf_map", envir = charr_ns, inherits = FALSE)
-  backend_environments <- get(
-    ".charr_backend_environments", envir = charr_ns, inherits = FALSE
-  )
-  expected_stringi <- sub("^ci_", "stri_", names(bench_ops))
-  stopifnot(
-    identical(names(leaf_map), expected_stringi),
-    identical(unname(leaf_map), names(bench_ops))
-  )
-  backend_environment <- backend_environments[[condition]]
-  resolve <- function(ci_name) {
-    index <- match(ci_name, unname(leaf_map))
-    if (is.na(index)) {
-      stop("operation is absent from .charr_leaf_map: ", ci_name)
-    }
-    get(names(leaf_map)[[index]], envir = backend_environment, inherits = FALSE)
+stopifnot(condition %in% c("stringi", "base", "altrep"))
+leaf_map <- get(".charr_leaf_map", envir = charr_ns, inherits = FALSE)
+backend_environments <- get(
+  ".charr_backend_environments", envir = charr_ns, inherits = FALSE
+)
+expected_stringi <- sub("^ci_", "stri_", names(bench_ops))
+stopifnot(
+  identical(names(leaf_map), expected_stringi),
+  identical(unname(leaf_map), names(bench_ops))
+)
+backend_environment <- backend_environments[[condition]]
+resolve <- function(ci_name) {
+  index <- match(ci_name, unname(leaf_map))
+  if (is.na(index)) {
+    stop("operation is absent from .charr_leaf_map: ", ci_name)
   }
-} else {
-  stopifnot(identical(condition, "claude_altrep"))
-  missing <- names(bench_ops)[!vapply(
-    names(bench_ops), exists, logical(1L), envir = charr_ns, inherits = FALSE
-  )]
-  if (length(missing)) {
-    stop("Claude package is missing benchmark leaves: ", paste(missing, collapse = ", "))
-  }
-  resolve <- function(ci_name) {
-    get(ci_name, envir = charr_ns, inherits = FALSE)
-  }
+  get(names(leaf_map)[[index]], envir = backend_environment, inherits = FALSE)
 }
 
-input_mode <- if (condition %in% c("claude_altrep", "altrep")) {
+input_mode <- if (identical(condition, "altrep")) {
   "charvec"
 } else {
   "plain"

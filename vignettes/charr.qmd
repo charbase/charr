@@ -19,18 +19,32 @@ vignette: >
 ::: {.content-visible when-format="gfm"}
 <img src="man/figures/logo.svg" alt="charr logo" align="right" width="160"/>
 
-<a href="https://github.com/charport/charr/actions"><img src="https://github.com/charport/charr/actions/workflows/R-CMD-check.yaml/badge.svg" alt="R-CMD-check status"/></a>
+<a href="https://github.com/charbase/charr/actions"><img src="https://github.com/charbase/charr/actions/workflows/R-CMD-check.yaml/badge.svg" alt="R-CMD-check status"/></a>
 :::
 
 ## charr: string processing reimagined for ALTREP strings
 
-`charr` is a fork of `stringr` API and `stringi` backend reimagined for ALTREP strings. The functions and semantics are the same as `stringr` but everything is optimized around ALTREP.
+`charr` is an experimental fork of `stringr`/`stringi` reimagined for ALTREP strings. The functions and semantics are the same as `stringr` but everything is optimized around ALTREP.
 
 ALTREP is R's mechanism for letting a vector define its own layout, and many packages already use it internally to store data more efficiently. For string data, the right layout is worth a lot: order-of-magnitude performance improvements are possible.
 
 `charr` reimplements `stringr`'s entire API and provides three different backends: the `stringi` reference, an optimized `base` implementation that returns ordinary character vectors, and the default `altrep` implementation that returns ALTREP strings. The three backends are semantically interchangeable but on average the ALTREP backend can be much faster.
 
 *This work is supported by the R Consortium Infrastructure Steering Committee, under the grant Universal ALTREP Interoperability for Strings.*
+
+::: {.content-visible when-format="gfm"}
+## Installation
+
+`charr` is built on [charport](https://github.com/charbase/charport), which is not on CRAN yet, so install it first:
+
+``` r
+# install.packages("remotes")
+remotes::install_github("charbase/charport")
+remotes::install_github("charbase/charr")
+```
+
+`charr` bundles ICU4C and builds it from source when no allowlisted system ICU is present, so the first install takes a while.
+:::
 
 ## Benchmark
 
@@ -47,7 +61,7 @@ The figure below shows thirteen representative operations measured on a multilin
 `str_read_lines()` leads at 13.8×: a second of work becomes 72 ms. Below it the ordering follows how much of each operation's time goes into producing strings rather than inspecting them. `str_detect()` with collation sits at the bottom at 1.1×; it returns `TRUE`/`FALSE`, so there is no string output to improve on.
 
 ::: {.content-visible when-format="gfm"}
-This is a sample rather than the whole surface. [Under the hood](https://charport.github.io/charr/articles/under-the-hood.html) has the complete record: all 67 operations, grouped by family.
+This is a sample rather than the whole surface. [Under the hood](https://charbase.github.io/charr/articles/under-the-hood.html) has the complete record: all 67 operations, grouped by family.
 :::
 
 ::: {.content-visible when-format="html"}
@@ -80,11 +94,12 @@ The `charr_backend` selection is stored as an option so you can retrieve it with
 ## See also
 
 ::: {.content-visible when-format="gfm"}
-- [Under the hood](https://charport.github.io/charr/articles/under-the-hood.html): the three backends, the ICU and C++ choices, and the full per-operation benchmark.
-- [charport](https://charport.github.io/charport/): the ALTREP string interoperability layer `charr` is built on.
+- [Under the hood](https://charbase.github.io/charr/articles/under-the-hood.html): the three backends, the ICU and C++ choices, and the full per-operation benchmark.
+- [Code map](https://charbase.github.io/charr/code-map/): an interactive view of the native source graph, generated from Clang's semantic model.
+- [charport](https://charbase.github.io/charport/): the ALTREP string interoperability layer `charr` is built on.
 :::
 
 ::: {.content-visible when-format="html"}
 - [Under the hood](under-the-hood.html): the three backends, the ICU and C++ choices, and the full per-operation benchmark.
-- [charport](https://charport.github.io/charport/): the ALTREP string interoperability layer `charr` is built on.
+- [charport](https://charbase.github.io/charport/): the ALTREP string interoperability layer `charr` is built on.
 :::

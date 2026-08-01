@@ -1,9 +1,8 @@
-# Four-backend benchmark registry. The names and order match
-# charr:::.charr_leaf_map on the optimized branch.
+# Benchmark registry for the three timed backends. The names and order match
+# charr:::.charr_leaf_map.
 #
-# Each timed expression receives the backend leaf as `leaf`. Current charr
-# resolves that leaf from .charr_backend_environments; the Claude snapshot
-# resolves its copied ci_* wrapper directly after enabling charr_altrep().
+# Each timed expression receives the backend leaf as `leaf`, resolved from
+# .charr_backend_environments through the inverse of .charr_leaf_map.
 
 bench_args <- list(
   fixed_pattern = " ",

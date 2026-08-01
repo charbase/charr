@@ -13,9 +13,9 @@ An optimization and benchmarking experiment derived from the 'stringr' package. 
 \seealso{
 Useful links:
 \itemize{
-  \item \url{https://github.com/charport/charr}
-  \item \url{https://charport.github.io/charr/}
-  \item Report bugs at \url{https://github.com/charport/charr/issues}
+  \item \url{https://github.com/charbase/charr}
+  \item \url{https://charbase.github.io/charr/}
+  \item Report bugs at \url{https://github.com/charbase/charr/issues}
 }
 
 }

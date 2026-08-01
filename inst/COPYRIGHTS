@@ -11,6 +11,14 @@ pristine official import; package-specific settings remain in charr's build
 flags and configuration header. Copied stringi files retain their upstream
 copyright notices and identify the pinned source commit.
 
+That commit, 19e9586ba39b3320df49355e32bd18d74ed6098f, is stringi
+1.8.7.9001 of 2026-06-03. Upstream has since rewritten its history, so the
+hash no longer resolves in the public repository; it names the tree charr
+actually copied and is kept for that reason. The nearest published release is
+1.8.9, which differs from the copied tree only in build configuration,
+compiler-warning fixes, and null checks in the datetime code that charr does
+not port.
+
 Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
 All rights reserved.
 
@@ -52,7 +60,8 @@ stringr
 
 Charr is a fork of stringr, and its R surface, documentation and tests derive
 from it. Copyright (c) 2023 stringr authors, Posit Software, PBC, under the MIT
-License; the terms are in `LICENSE.md`.
+License. Charr is distributed under those same MIT terms, recorded in this
+package's `DESCRIPTION` and `LICENSE`.
 
 Tatoeba
 -------

@@ -3,7 +3,13 @@ PACKAGE := $(shell perl -aF: -ne 'print, exit if s/^Package:\s+//' DESCRIPTION)
 VERSION := $(shell perl -aF: -ne 'print, exit if s/^Version:\s+//' DESCRIPTION)
 BUILD   := $(PACKAGE)_$(VERSION).tar.gz
 RLIBS   := $(shell Rscript -e 'cat(paste(.libPaths(), collapse = ":"))')
-CODE_MAP_DIR ?= scratch/code-map
+# The code map is published as part of the pkgdown site, so it is generated
+# into pkgdown/assets, which pkgdown copies verbatim into docs/. Override
+# CODE_MAP_DIR to write a throwaway copy while iterating on the viewer.
+CODE_MAP_DIR ?= pkgdown/assets/code-map
+# Public stringr operations implemented by each optimized backend. The map has
+# one semantic entrypoint and one ABI shim per operation per backend, so
+# validate.R derives its expected counts from this one number.
 CODE_MAP_BACKEND_METHODS ?= 70
 LINT_EFFECT_ARGS := \
 	--effects tools/charr-lint/effects.tsv \
@@ -222,6 +228,9 @@ lint-effects-update: lint-tool lint-db
 
 # `code-map` refreshes the compilation database. Use `code-map-current` while
 # iterating on the viewer when the existing database still matches the source.
+# The generated map is tracked, because the pkgdown workflow publishes the site
+# without a compiler, Clang, or a compilation database. Regenerate it here and
+# commit the result whenever the native sources move.
 code-map: lint-db
 	$(MAKE) code-map-current
 
@@ -375,14 +384,18 @@ vignette:
 	XDG_CACHE_HOME=$(CURDIR)/local/cache quarto render vignettes/under-the-hood.qmd --to html
 
 pkgdown: clean-pkgdown doc
+	@test -s pkgdown/assets/code-map/data.js || \
+	  { echo "missing code map; run 'make code-map' first" >&2; exit 1; }
 	$(MAKE) pkgdown-index
 	mkdir -p local/cache
 	XDG_CACHE_HOME=$(CURDIR)/local/cache R_USER_CACHE_DIR=$(CURDIR)/local/cache/R \
 	  IN_PKGDOWN=true Rscript -e 'pkgdown::build_site(new_process = FALSE, install = FALSE, quiet = FALSE, override = list(home = list(sidebar = FALSE)))'
 	# pkgdown turns every root-level .md into a page and its file list is hard
 	# coded, so CLAUDE.md becomes CLAUDE.html with no way to configure it out.
-	# The CI workflow that publishes the site drops the same two files.
-	rm -f docs/CLAUDE.html docs/CLAUDE.md
+	# It also writes a markdown mirror beside every index.html it finds, which
+	# turns the code map viewer into a stub of base64 SVG that nothing links to.
+	# The CI workflow that publishes the site drops the same three files.
+	rm -f docs/CLAUDE.html docs/CLAUDE.md docs/code-map/index.md
 	$(MAKE) clean-altrep
 
 pkgdown-index:
@@ -393,7 +406,7 @@ clean-pkgdown:
 	rm -rf docs
 	rm -f pkgdown/index.md
 
-clean: clean-altrep clean-build-products
+clean: clean-altrep clean-pkgdown clean-build-products
 
 clean-altrep:
 	find . -iname "*.a" -exec rm {} \;
@@ -405,4 +418,3 @@ clean-altrep:
 clean-build-products:
 	rm -f $(PACKAGE)_*.tar.gz
 	rm -rf $(PACKAGE).Rcheck ..Rcheck
-	rm -rf docs

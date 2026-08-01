@@ -1,7 +1,6 @@
-# Three plotted conditions only: current stringi (plain), current base
-# (plain), and current ALTREP (charvec). The frozen Claude ALTREP snapshot was
-# retired as a comparison once the optimized backends passed it everywhere; its
-# last recorded numbers stay in the archived result files.
+# Three timed conditions: stringi (plain input), base (plain), and ALTREP
+# (charvec). All three come from one installed charr, selected through
+# .charr_backend_environments.
 
 args <- commandArgs(trailingOnly = TRUE)
 reps_arg <- grep("^--reps=", args, value = TRUE)
@@ -117,7 +116,7 @@ for (scale in names(bench_scale_n)) {
 
 conditions <- data.frame(
   condition = c("stringi", "base", "altrep"),
-  condition_label = c("stringi", "Main base", "Main ALTREP"),
+  condition_label = c("stringi", "base", "ALTREP"),
   branch = c("main", "main", "main"),
   backend = c("stringi", "base", "altrep"),
   input_mode = c("plain", "plain", "charvec"),

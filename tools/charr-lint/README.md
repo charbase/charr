@@ -1,7 +1,7 @@
 # charr-lint
 
-`charr-lint` checks the native error and lifetime rules described in
-`scratch/frame-unwind-architecture.md`. It uses Clang's AST and the package
+`charr-lint` checks the native error and lifetime rules stated under "Native
+error and lifetime shape" in `CLAUDE.md`. It uses Clang's AST and the package
 compilation database.
 
 ## External effects

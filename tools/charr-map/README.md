@@ -5,10 +5,20 @@ It records declarations once by Clang USR, even when a header is parsed in
 many translation units.
 
 Run `make code-map` from the package root to refresh `compile_commands.json`
-and write the map to `scratch/code-map`. Run `make code-map-current` when the
-existing compilation database still matches the source. Open the generated
-`index.html` directly in a browser. The viewer uses only local HTML,
+and write the map to `pkgdown/assets/code-map`. Run `make code-map-current`
+when the existing compilation database still matches the source. Open the
+generated `index.html` directly in a browser. The viewer uses only local HTML,
 JavaScript, and SVG.
+
+The output is tracked, because pkgdown copies `pkgdown/assets` verbatim into
+`docs/` and the workflow that publishes the site has no compiler, no Clang, and
+no compilation database. Regenerate and commit the map whenever the native
+sources move; the published copy is otherwise the one from the last run. Pass
+`CODE_MAP_DIR=` to write somewhere disposable while iterating on the viewer:
+
+```sh
+make code-map-current CODE_MAP_DIR=scratch/code-map
+```
 
 The output has three tables:
 

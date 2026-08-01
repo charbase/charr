@@ -17,10 +17,12 @@ The three timed conditions are:
 - the current base backend with ordinary character input; and
 - the current ALTREP backend with unmaterialized charvec input.
 
-The frozen Claude ALTREP snapshot was retired as a timed condition once both
-optimized backends beat it on every operation. Its last measurements remain in
-the archived `*-times.csv` files, which still carry a `claude_altrep`
-condition; `compare-targets.R` now scores both candidates against stringi.
+All three come from one installed charr. A fourth condition, a frozen ALTREP
+snapshot, was retired once both optimized backends beat it everywhere; the
+harness no longer measures it, and `compare-targets.R` scores both candidates
+against stringi. Archived `*-times.csv` files from before the change still
+carry its `claude_altrep` rows, which is why `branch` and `condition_label`
+remain in the recorded schema.
 
 Current-backend leaves are resolved from `.charr_backend_environments` through
 the inverse of `.charr_leaf_map`. This is important: calling the namespace's
@@ -150,5 +152,9 @@ The plot uses a raw, linear millisecond axis with an independent range in each
 facet. Each operation has three grouped median bars, its raw repetition points,
 and a min-max error bar. Most integration rows use three repetitions; a close
 targeted row may retain a larger run when the timing CSV records that choice.
-The retained
-artifacts are `*-times.csv`, `*-summary.csv`, and the wide PNG/PDF pair.
+
+The retained artifacts are `*-times.csv`, `*-summary.csv`, `*-targets.csv`, and
+the wide PNG/PDF pair. `run.R` writes the first two and is the only writer of
+`*-summary.csv`; the plotting script aggregates in memory and writes only the
+figures. Keeping one writer matters, because the summary carries fixture
+provenance the plotting script never sees.

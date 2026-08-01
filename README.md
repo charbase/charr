@@ -3,11 +3,11 @@
 
 <img src="man/figures/logo.svg" alt="charr logo" align="right" width="160"/>
 
-<a href="https://github.com/charport/charr/actions"><img src="https://github.com/charport/charr/actions/workflows/R-CMD-check.yaml/badge.svg" alt="R-CMD-check status"/></a>
+<a href="https://github.com/charbase/charr/actions"><img src="https://github.com/charbase/charr/actions/workflows/R-CMD-check.yaml/badge.svg" alt="R-CMD-check status"/></a>
 
 ## charr: string processing reimagined for ALTREP strings
 
-`charr` is a fork of `stringr` API and `stringi` backend reimagined for
+`charr` is an experimental fork of `stringr`/`stringi` reimagined for
 ALTREP strings. The functions and semantics are the same as `stringr`
 but everything is optimized around ALTREP.
 
@@ -27,6 +27,20 @@ much faster.
 Committee, under the grant Universal ALTREP Interoperability for
 Strings.*
 
+## Installation
+
+`charr` is built on [charport](https://github.com/charbase/charport),
+which is not on CRAN yet, so install it first:
+
+``` r
+# install.packages("remotes")
+remotes::install_github("charbase/charport")
+remotes::install_github("charbase/charr")
+```
+
+`charr` bundles ICU4C and builds it from source when no allowlisted
+system ICU is present, so the first install takes a while.
+
 ## Benchmark
 
 The figure below shows thirteen representative operations measured on a
@@ -45,7 +59,7 @@ collation sits at the bottom at 1.1×; it returns `TRUE`/`FALSE`, so
 there is no string output to improve on.
 
 This is a sample rather than the whole surface. [Under the
-hood](https://charport.github.io/charr/articles/under-the-hood.html) has
+hood](https://charbase.github.io/charr/articles/under-the-hood.html) has
 the complete record: all 67 operations, grouped by family.
 
 ## Choosing a backend
@@ -82,8 +96,11 @@ be added over time.
 ## See also
 
 - [Under the
-  hood](https://charport.github.io/charr/articles/under-the-hood.html):
+  hood](https://charbase.github.io/charr/articles/under-the-hood.html):
   the three backends, the ICU and C++ choices, and the full
   per-operation benchmark.
-- [charport](https://charport.github.io/charport/): the ALTREP string
+- [Code map](https://charbase.github.io/charr/code-map/): an interactive
+  view of the native source graph, generated from Clang’s semantic
+  model.
+- [charport](https://charbase.github.io/charport/): the ALTREP string
   interoperability layer `charr` is built on.

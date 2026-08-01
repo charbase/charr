@@ -52,8 +52,10 @@ jobs:
           pkgdown::build_site(new_process = FALSE, install = FALSE, override = list(home = list(sidebar = FALSE)))
 
           # pkgdown turns every root-level .md into a page and its file list is
-          # hard coded, so the agent instructions would be published too.
-          unlink(c("docs/CLAUDE.html", "docs/CLAUDE.md"))
+          # hard coded, so the agent instructions would be published too. It
+          # also writes a markdown mirror beside every index.html, which turns
+          # the code map viewer into a stub nothing links to.
+          unlink(c("docs/CLAUDE.html", "docs/CLAUDE.md", "docs/code-map/index.md"))
         shell: Rscript {0}
 
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3

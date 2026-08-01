@@ -52,9 +52,8 @@ compare_pair <- function(candidate, reference, prefix) {
   result
 }
 
-# Both optimized backends are measured against installed stringi. The retired
-# Claude ALTREP snapshot is no longer a timed condition, so ALTREP's target is
-# the same public baseline the base backend has to beat.
+# Both optimized backends are measured against installed stringi, so ALTREP's
+# target is the same public baseline the base backend has to beat.
 base <- compare_pair("base", "stringi", "base")
 altrep <- compare_pair("altrep", "stringi", "altrep")
 targets <- merge(base, altrep, by = "op", all = TRUE)

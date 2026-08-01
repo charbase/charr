@@ -1,6 +1,7 @@
 Package: charr
 Title: Optimization Experiment for the Stringr API
-Version: 0.0.0.9000
+Version: 0.1.0
+Date: 2026-08-01
 Authors@R: c(
     person("Travers", "Ching", , "traversc@gmail.com", role = c("aut", "cre", "cph")),
     person("Hadley", "Wickham", , "hadley@posit.co", role = c("ctb", "cph"),
@@ -18,20 +19,19 @@ Description: An optimization and benchmarking experiment derived from the
     'stringr' package. It provides the original route through installed
     'stringi', an independent backend returning ordinary R character vectors,
     and an independent backend returning 'ALTREP' character vectors through
-    'charport'. The package records both a mechanical translation and later
-    architecture and performance work; it is not currently intended as a
-    drop-in replacement for 'stringr' or 'stringi'.
+    'charport'. It is not currently intended as a drop-in replacement for
+    'stringr' or 'stringi'.
 License: MIT + file LICENSE
 Copyright: This package is a fork of the 'stringr' package owned by Posit
     Software, PBC under the MIT License. It includes R and C++ code from the
     'stringi' package owned by Marek Gagolewski under the BSD 3-Clause License,
     and it bundles ICU4C source code and data owned by Unicode, Inc. and others
-    under the Unicode License v3; see inst/COPYRIGHTS and inst/icu/LICENSE.
-    Benchmark measurements use sentences from the Tatoeba Project
-    (<https://tatoeba.org>) under Creative Commons Attribution 2.0 France; no
-    Tatoeba data is included in this package.
-URL: https://github.com/charport/charr, https://charport.github.io/charr/
-BugReports: https://github.com/charport/charr/issues
+    under the Unicode License v3; the full notices are installed as COPYRIGHTS
+    and icu/LICENSE. Benchmark measurements use sentences from the Tatoeba
+    Project (<https://tatoeba.org>) under Creative Commons Attribution 2.0
+    France; no Tatoeba data is included in this package.
+URL: https://github.com/charbase/charr, https://charbase.github.io/charr/
+BugReports: https://github.com/charbase/charr/issues
 Depends:
     R (>= 4.1.0)
 Imports:
@@ -51,11 +51,11 @@ Suggests:
     quarto,
     testthat (>= 3.0.0)
 VignetteBuilder: quarto
-Remotes: traversc/charport
 SystemRequirements: GNU make, C++17, ICU4C 78.2 or 78.3 (optional; bundled
     otherwise)
 Biarch: true
 Config/testthat/edition: 3
+Config/Needs/website: pkgdown, xml2
 Encoding: UTF-8
 LazyData: true
 Roxygen: list(markdown = TRUE)

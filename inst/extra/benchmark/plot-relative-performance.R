@@ -8,7 +8,6 @@ source(file.path(bench_dir, "benchmark-ops.R"))
 
 safe_label <- gsub("[^A-Za-z0-9_.-]", "_", label)
 times_path <- file.path(results_dir, paste0(safe_label, "-times.csv"))
-summary_path <- file.path(results_dir, paste0(safe_label, "-summary.csv"))
 png_path <- file.path(results_dir, paste0(safe_label, "-backends.png"))
 pdf_path <- file.path(results_dir, paste0(safe_label, "-backends.pdf"))
 
@@ -26,8 +25,8 @@ stopifnot(length(plot_reps) >= 1L, all(!is.na(plot_reps)), all(plot_reps >= 1L))
 condition_order <- c("stringi", "base", "altrep")
 condition_labels <- c(
   stringi = "stringi",
-  base = "Main base",
-  altrep = "Main ALTREP"
+  base = "base",
+  altrep = "ALTREP"
 )
 stopifnot(
   identical(sort(unique(times$condition)), sort(condition_order)),
@@ -50,6 +49,10 @@ groups <- split(
   times,
   interaction(times$op, times$condition, drop = TRUE, lex.order = TRUE)
 )
+# Aggregated in memory only. run.R owns <label>-summary.csv and records the
+# fixture provenance columns; writing it from here as well used to overwrite
+# that file with this narrower column list, so plotting a record silently
+# dropped fixture_format_version and fixture_md5 from it.
 summary <- do.call(rbind, lapply(groups, function(group) {
   first <- group[1L, c(
     "label", "op", "family", "condition", "condition_label", "branch",
@@ -89,7 +92,6 @@ summary <- summary[order(
   match(summary$op, op_order),
   match(summary$condition, condition_order)
 ), , drop = FALSE]
-write.csv(summary, summary_path, row.names = FALSE)
 
 summary$op <- factor(summary$op, levels = op_order)
 summary$family <- factor(summary$family, levels = family_order)
@@ -153,7 +155,7 @@ plot <- ggplot(
     y = "Elapsed time (milliseconds)",
     caption = paste0(
       "Seed 20260721. Timed conditions only: stringi/plain, ",
-      "Main base/plain, Main ALTREP/charvec."
+      "base/plain, ALTREP/charvec."
     )
   ) +
   theme_minimal(base_size = 15) +
@@ -176,6 +178,5 @@ plot <- ggplot(
 ggsave(png_path, plot, width = 28, height = 18, units = "in", dpi = 180)
 ggsave(pdf_path, plot, width = 28, height = 18, units = "in")
 
-cat("summary: ", summary_path, "\n", sep = "")
-cat("PNG:     ", png_path, "\n", sep = "")
-cat("PDF:     ", pdf_path, "\n", sep = "")
+cat("PNG: ", png_path, "\n", sep = "")
+cat("PDF: ", pdf_path, "\n", sep = "")

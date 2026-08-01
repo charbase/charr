@@ -1,0 +1,671 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>charr code map</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --page: #11151b;
+      --panel: #171d25;
+      --panel-2: #1d2530;
+      --line: #34404e;
+      --text: #ecf1f7;
+      --muted: #9daaba;
+      --focus: #f4c95d;
+      --base: #57a6d9;
+      --altrep: #d78f58;
+      --shared: #68b486;
+      --runtime: #b28bd5;
+      --other: #9aa5b1;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--page);
+      color: var(--text);
+    }
+
+    button, input { font: inherit; }
+
+    button, .file-link {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #222b36;
+      color: var(--text);
+      padding: 0.42rem 0.65rem;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    button:hover, .file-link:hover { background: #2b3744; }
+
+    button:focus-visible, input:focus-visible, a:focus-visible,
+    [tabindex="0"]:focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 2px;
+    }
+
+    button[aria-pressed="true"] {
+      border-color: var(--focus);
+      color: var(--focus);
+    }
+
+    #app {
+      height: 100%;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    header {
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.65rem 0.8rem;
+      border-bottom: 1px solid var(--line);
+      background: #131920;
+    }
+
+    header h1 {
+      margin: 0;
+      font-size: 1rem;
+      white-space: nowrap;
+    }
+
+    .toolbar {
+      min-width: 0;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+    }
+
+    .search-wrap {
+      position: relative;
+      flex: 1;
+      max-width: 520px;
+      min-width: 180px;
+    }
+
+    #search {
+      width: 100%;
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #0f141a;
+      color: var(--text);
+      padding: 0.45rem 0.7rem;
+    }
+
+    #search-results {
+      position: absolute;
+      z-index: 20;
+      top: calc(100% + 5px);
+      left: 0;
+      right: 0;
+      max-height: min(460px, 65vh);
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #121820;
+      box-shadow: 0 12px 30px #0009;
+    }
+
+    #search-results[hidden] { display: none; }
+
+    .search-result {
+      width: 100%;
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 0.25rem 0.55rem;
+      border: 0;
+      border-bottom: 1px solid #2a3440;
+      border-radius: 0;
+      background: transparent;
+      padding: 0.55rem 0.65rem;
+      text-align: left;
+    }
+
+    .search-result:last-child { border-bottom: 0; }
+    .search-result .result-name { overflow-wrap: anywhere; }
+    .search-result .result-path {
+      grid-column: 2;
+      color: var(--muted);
+      font-size: 0.75rem;
+      overflow-wrap: anywhere;
+    }
+
+    .file-links {
+      display: flex;
+      gap: 0.35rem;
+      white-space: nowrap;
+    }
+
+    .file-link { font-size: 0.78rem; }
+
+    #workspace {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 210px minmax(360px, 1fr) 340px;
+    }
+
+    aside {
+      min-height: 0;
+      overflow: auto;
+      padding: 0.75rem;
+      background: var(--panel);
+    }
+
+    #filters { border-right: 1px solid var(--line); }
+    #details { border-left: 1px solid var(--line); }
+
+    aside h2, aside h3 {
+      margin: 0 0 0.6rem;
+      font-size: 0.86rem;
+      letter-spacing: 0.02em;
+    }
+
+    aside h3 { margin-top: 1.1rem; }
+
+    .filter-list {
+      display: grid;
+      gap: 0.38rem;
+    }
+
+    .check-row {
+      display: grid;
+      grid-template-columns: 1rem 0.8rem 1fr auto;
+      align-items: center;
+      gap: 0.38rem;
+      min-width: 0;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+
+    .check-row input { margin: 0; }
+
+    .swatch {
+      width: 0.65rem;
+      height: 0.65rem;
+      border: 1px solid #fff8;
+      background: var(--other);
+    }
+
+    .filter-count { color: #768394; }
+
+    .legend {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 0.38rem;
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+
+    .legend li {
+      display: grid;
+      grid-template-columns: 1.1rem 1fr;
+      align-items: center;
+      gap: 0.45rem;
+    }
+
+    .legend-shape {
+      display: inline-grid;
+      place-items: center;
+      width: 0.9rem;
+      height: 0.9rem;
+      border: 2px solid #c8d1dc;
+      font-size: 0.55rem;
+      line-height: 1;
+    }
+
+    .legend-shape.function { border-radius: 50%; }
+    .legend-shape.type { clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); }
+    .legend-shape.unit { border-radius: 2px; }
+    .legend-shape.other { transform: rotate(45deg) scale(0.8); }
+
+    #stage {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 30% 30%, #20293655 0, transparent 40%),
+        #0e1319;
+    }
+
+    #graph {
+      display: block;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+      user-select: none;
+    }
+
+    #graph.grabbing { cursor: grabbing; }
+
+    #graph-controls {
+      position: absolute;
+      top: 0.65rem;
+      left: 0.65rem;
+      z-index: 3;
+      display: flex;
+      gap: 0.3rem;
+    }
+
+    #graph-controls button {
+      min-width: 2.1rem;
+      padding: 0.35rem 0.5rem;
+      background: #18212bdd;
+    }
+
+    #view-legend {
+      position: absolute;
+      right: 0.65rem;
+      bottom: 2.7rem;
+      z-index: 3;
+      width: 240px;
+      max-height: min(520px, calc(100% - 4rem));
+      overflow: auto;
+      border: 1px solid #394655;
+      border-radius: 7px;
+      background: #121922ee;
+      color: var(--muted);
+      font-size: 0.72rem;
+    }
+
+    #view-legend summary {
+      cursor: pointer;
+      color: var(--text);
+      padding: 0.45rem 0.55rem;
+      font-weight: 650;
+    }
+
+    #view-legend[open] summary { border-bottom: 1px solid #303b48; }
+
+    #view-legend-content {
+      display: grid;
+      gap: 0.65rem;
+      padding: 0.55rem;
+    }
+
+    .view-legend-section h4 {
+      margin: 0 0 0.35rem;
+      color: #c9d2dc;
+      font-size: 0.68rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .view-legend-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.3rem 0.45rem;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .view-legend-section.shapes .view-legend-list,
+    .view-legend-section.lint-badges .view-legend-list {
+      grid-template-columns: 1fr;
+    }
+
+    .view-legend-row {
+      display: grid;
+      grid-template-columns: 1rem minmax(0, 1fr);
+      align-items: center;
+      gap: 0.35rem;
+      min-width: 0;
+    }
+
+    .view-legend-row span:last-child {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .view-legend-swatch {
+      width: 0.72rem;
+      height: 0.72rem;
+      border: 1px solid #fff8;
+    }
+
+    .view-legend-badge {
+      display: inline-grid;
+      place-items: center;
+      width: 1rem;
+      height: 1rem;
+      border: 1px solid #c8d1dc;
+      border-radius: 50%;
+      color: #e6edf4;
+      font-size: 0.58rem;
+      line-height: 1;
+    }
+
+    #graph-status {
+      position: absolute;
+      left: 0.65rem;
+      bottom: 0.55rem;
+      max-width: calc(100% - 1.3rem);
+      border: 1px solid #33404e;
+      border-radius: 5px;
+      background: #121922e8;
+      color: var(--muted);
+      padding: 0.35rem 0.55rem;
+      font-size: 0.76rem;
+      pointer-events: none;
+    }
+
+    #data-error {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 2rem;
+      text-align: center;
+      color: #f0b3aa;
+    }
+
+    #data-error[hidden] { display: none; }
+
+    .module-box {
+      fill: #1a222c;
+      fill-opacity: 0.58;
+      stroke: #485565;
+      stroke-width: 1;
+      stroke-dasharray: 8 6;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .module-title {
+      fill: #aeb9c6;
+      font-size: 18px;
+      font-weight: 650;
+      letter-spacing: 0.04em;
+      pointer-events: none;
+    }
+
+    .edge {
+      fill: none;
+      stroke: #7f8b98;
+      stroke-width: 1.2;
+      stroke-opacity: 0.2;
+      vector-effect: non-scaling-stroke;
+      marker-end: url(#arrow);
+    }
+
+    .edge.related { stroke-opacity: 0.86; stroke-width: 2; }
+    .edge.dimmed { stroke-opacity: 0.035; }
+
+    .node { cursor: pointer; }
+
+    .node-shape {
+      fill: #3e4a58;
+      stroke: #c6d0db;
+      stroke-width: 1.4;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .node:hover .node-shape { stroke: #fff; stroke-width: 2.3; }
+    .node.selected .node-shape { stroke: var(--focus); stroke-width: 3.2; }
+    .node.neighbor .node-shape { stroke: #fff; stroke-width: 2; }
+    .node.dimmed { opacity: 0.2; }
+
+    .node-label {
+      fill: #dfe7ef;
+      font-size: 11px;
+      paint-order: stroke;
+      stroke: #10151b;
+      stroke-width: 3px;
+      stroke-linejoin: round;
+      pointer-events: none;
+    }
+
+    .node-label.secondary { fill: #95a4b4; font-size: 9px; }
+
+    .node-badge circle, .node-badge rect {
+      fill: #10151b;
+      stroke: #dfe7ef;
+      stroke-width: 1;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .node-badge text {
+      fill: #fff;
+      font-size: 8px;
+      font-weight: 750;
+      text-anchor: middle;
+      dominant-baseline: central;
+      pointer-events: none;
+    }
+
+    .mismatch-marker polygon {
+      fill: #d6685a;
+      stroke: #fff;
+      stroke-width: 0.8;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .mismatch-marker text {
+      fill: white;
+      font-size: 8px;
+      font-weight: 800;
+      text-anchor: middle;
+      dominant-baseline: central;
+      pointer-events: none;
+    }
+
+    .empty-copy, .small-copy {
+      color: var(--muted);
+      font-size: 0.84rem;
+      line-height: 1.45;
+    }
+
+    .detail-title {
+      margin: 0 0 0.25rem;
+      font-size: 1rem;
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.3rem;
+      margin: 0.45rem 0 0.7rem;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      border: 1px solid #455261;
+      border-radius: 999px;
+      color: #c5cfda;
+      padding: 0.15rem 0.4rem;
+      font-size: 0.7rem;
+    }
+
+    .pill.warning { border-color: #d6685a; color: #ffc0b8; }
+
+    .properties {
+      margin: 0.65rem 0 1rem;
+      display: grid;
+      grid-template-columns: minmax(76px, auto) minmax(0, 1fr);
+      gap: 0.35rem 0.55rem;
+      font-size: 0.78rem;
+    }
+
+    .properties dt { color: var(--muted); }
+    .properties dd {
+      margin: 0;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+    }
+
+    .detail-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      margin: 0.6rem 0 0.9rem;
+    }
+
+    .entity-list, .relation-list {
+      display: grid;
+      gap: 0.3rem;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .entity-button, .relation-button {
+      width: 100%;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 0.25rem 0.45rem;
+      text-align: left;
+      background: #1c2530;
+      padding: 0.4rem 0.48rem;
+    }
+
+    .entity-button .item-sub, .relation-button .item-sub {
+      grid-column: 2;
+      color: var(--muted);
+      font-size: 0.68rem;
+      overflow-wrap: anywhere;
+    }
+
+    .direction {
+      color: var(--focus);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.75rem;
+    }
+
+    .item-kind {
+      min-width: 2rem;
+      color: var(--muted);
+      font-size: 0.67rem;
+      text-transform: uppercase;
+    }
+
+    .list-note {
+      margin: 0.45rem 0;
+      color: var(--muted);
+      font-size: 0.72rem;
+    }
+
+    @media (max-width: 980px) {
+      #workspace { grid-template-columns: 170px minmax(320px, 1fr) 280px; }
+      .file-links { display: none; }
+    }
+
+    @media (max-width: 720px) {
+      html, body { overflow: auto; }
+      #app { height: auto; min-height: 100%; }
+      header { flex-wrap: wrap; }
+      .toolbar { flex-basis: 100%; }
+      #workspace {
+        min-height: 900px;
+        grid-template-columns: 1fr;
+        grid-template-rows: auto minmax(520px, 70vh) auto;
+      }
+      #filters { border-right: 0; border-bottom: 1px solid var(--line); }
+      #details { border-left: 0; border-top: 1px solid var(--line); }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>charr code map</h1>
+      <div class="toolbar">
+        <div class="search-wrap">
+          <input id="search" type="search" autocomplete="off"
+            placeholder="Find a unit, type, entrypoint, or helper"
+            aria-label="Search code entities" aria-controls="search-results"
+            aria-expanded="false">
+          <div id="search-results" role="listbox" hidden></div>
+        </div>
+        <button id="units-view" type="button" aria-pressed="true">Unit graph</button>
+        <button id="fit-view" type="button">Fit</button>
+      </div>
+      <nav class="file-links" aria-label="Code map tables">
+        <a class="file-link" href="entities.tsv" download>Entities TSV</a>
+        <a class="file-link" href="relationships.tsv" download>Relationships TSV</a>
+        <a class="file-link" href="unit_dependencies.tsv" download>Unit dependencies TSV</a>
+        <a class="file-link" href="https://charbase.github.io/charr/">charr documentation</a>
+      </nav>
+    </header>
+
+    <div id="workspace">
+      <aside id="filters" aria-label="Graph filters">
+        <h2>Modules</h2>
+        <div id="module-filters" class="filter-list"></div>
+
+        <h3>Relationships</h3>
+        <div id="edge-filters" class="filter-list"></div>
+
+        <h3>Backend areas</h3>
+        <ul id="subcategory-legend" class="legend"></ul>
+
+        <h3>Shapes</h3>
+        <ul class="legend">
+          <li><span class="legend-shape unit"></span><span>Compilation unit</span></li>
+          <li><span class="legend-shape function"></span><span>Function or method</span></li>
+          <li><span class="legend-shape type"></span><span>Class or struct</span></li>
+          <li><span class="legend-shape other"></span><span>Other entity</span></li>
+          <li><span class="legend-shape">E</span><span>Lint-tag badge</span></li>
+          <li><span class="legend-shape">!</span><span>Namespace mismatch</span></li>
+        </ul>
+      </aside>
+
+      <main id="stage">
+        <div id="graph-controls" aria-label="Graph zoom controls">
+          <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
+          <button id="zoom-out" type="button" aria-label="Zoom out">−</button>
+        </div>
+        <details id="view-legend" open>
+          <summary>View legend</summary>
+          <div id="view-legend-content"></div>
+        </details>
+        <svg id="graph" role="img" aria-label="Semantic dependency graph">
+          <defs>
+            <marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5"
+              orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L7,3.5 L0,7 z" fill="#7f8b98"></path>
+            </marker>
+          </defs>
+          <g id="viewport">
+            <g id="groups-layer"></g>
+            <g id="edges-layer"></g>
+            <g id="nodes-layer"></g>
+          </g>
+        </svg>
+        <div id="data-error" hidden></div>
+        <div id="graph-status" aria-live="polite"></div>
+      </main>
+
+      <aside id="details" aria-label="Selection details">
+        <h2>Selection</h2>
+        <div id="detail-content" class="empty-copy">
+          Select a compilation unit. Its entities and semantic dependencies will appear here.
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

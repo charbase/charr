@@ -8,14 +8,25 @@
 # This script only reads a recorded benchmark label. It never runs the
 # benchmark. Regenerate measurements with run.R first, then:
 #
-#   Rscript inst/extra/benchmark/make-vignette-figures.R [label] [--variants]
+#   Rscript inst/extra/benchmark/make-vignette-figures.R <label> [--variants]
+#
+# The label is required. It used to default to whichever record was current
+# when this line was written, which silently drew the vignette from a
+# superseded run once a newer one existed. `make figures` passes BENCH_LABEL.
 #
 # --variants also writes the candidate summary layouts to local/ for review.
 
 args <- commandArgs(trailingOnly = TRUE)
 variants <- "--variants" %in% args
 args <- args[args != "--variants"]
-label <- if (length(args) >= 1L) args[[1L]] else "optimized-backends-record-20260724"
+if (!length(args)) {
+  stop(
+    "usage: make-vignette-figures.R <label> [--variants]\n",
+    "  label names a recorded run in results/, without the -times.csv suffix",
+    call. = FALSE
+  )
+}
+label <- args[[1L]]
 
 file_arg <- grep("^--file=", commandArgs(FALSE), value = TRUE)[[1L]]
 bench_dir <- dirname(normalizePath(sub("^--file=", "", file_arg)))
