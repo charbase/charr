@@ -17,6 +17,27 @@ wrap_stringi_joined <- function(...) {
   )
 }
 
+# ICU carries no line-break resource for th_TH, so the lookup falls back to the
+# root bundle and stringi reports it (gagolews/stringi#476, added in 1.8.1).
+# charr reproduces stringi rather than hiding the condition, so the warning is
+# part of what these tests check.
+root_fallback_warning <- "resource bundle lookup returned a result"
+
+# Returns the value and every warning raised, so a comparison can cover both.
+# Muffling here also keeps the expected warnings out of the test summary, where
+# dozens of copies would bury a real one.
+wrap_with_warnings <- function(expr) {
+  warnings <- character()
+  value <- withCallingHandlers(
+    expr,
+    warning = function(condition) {
+      warnings <<- c(warnings, conditionMessage(condition))
+      invokeRestart("muffleWarning")
+    }
+  )
+  list(value = value, warnings = warnings)
+}
+
 test_that("native wrap normalization matches stringi's complete preprocessing", {
   bom <- "\uFEFF"
   line_separators <- c(
@@ -57,6 +78,21 @@ test_that("native wrap normalization matches stringi's complete preprocessing", 
   }
 })
 
+test_that("wrapping a locale without break data warns like stringi", {
+  # Asserted here so the option sweep below can compare warnings between the
+  # two implementations without that comparison passing vacuously if ICU ever
+  # stops falling back. A failure here means the expectation moved, not that
+  # charr broke: check whether stringi still warns before changing anything.
+  expect_warning(
+    stringi::stri_wrap("ภาษาไทย", width = 8L, locale = "th_TH"),
+    root_fallback_warning
+  )
+  expect_warning(
+    wrap_selected_leaf("ภาษาไทย", width = 8L, locale = "th_TH"),
+    root_fallback_warning
+  )
+})
+
 test_that("native normalization feeds every wrap mode and option path", {
   strings <- c(
     first = "  alpha\r\nbeta  gamma\t delta  ",
@@ -74,29 +110,36 @@ test_that("native normalization feeds every wrap mode and option path", {
           whitespace_only = whitespace_only, use_length = use_length,
           locale = "th_TH"
         )
-        actual_list <- do.call(
+        actual_list <- wrap_with_warnings(do.call(
           wrap_selected_leaf, c(arguments, list(simplify = FALSE))
-        )
-        expected_list <- do.call(
+        ))
+        expected_list <- wrap_with_warnings(do.call(
           stringi::stri_wrap, c(arguments, list(simplify = FALSE))
-        )
-        expect_identical(actual_list, expected_list)
+        ))
+        expect_identical(actual_list$value, expected_list$value)
+        expect_identical(actual_list$warnings, expected_list$warnings)
 
-        actual_flat <- do.call(
+        actual_flat <- wrap_with_warnings(do.call(
           wrap_selected_leaf, c(arguments, list(simplify = TRUE))
-        )
-        expected_flat <- do.call(
+        ))
+        expected_flat <- wrap_with_warnings(do.call(
           stringi::stri_wrap, c(arguments, list(simplify = TRUE))
-        )
-        expect_identical(actual_flat, expected_flat)
+        ))
+        expect_identical(actual_flat$value, expected_flat$value)
+        expect_identical(actual_flat$warnings, expected_flat$warnings)
 
         if (!identical(charr_backend(), "stringi")) {
-          actual_joined <- do.call(
+          actual_joined <- wrap_with_warnings(do.call(
             wrap_selected_leaf,
             c(arguments, list(simplify = TRUE, .output_mode = 2L))
+          ))
+          expected_joined <- wrap_with_warnings(
+            do.call(wrap_stringi_joined, arguments)
           )
-          expected_joined <- do.call(wrap_stringi_joined, arguments)
-          expect_identical(actual_joined, expected_joined)
+          expect_identical(actual_joined$value, expected_joined$value)
+          expect_identical(
+            actual_joined$warnings, expected_joined$warnings
+          )
         }
       }
     }

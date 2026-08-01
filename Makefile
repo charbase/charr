@@ -266,20 +266,53 @@ install-dev: clean-altrep
 	R CMD INSTALL --preclean .
 	$(MAKE) clean-altrep
 
+# The native-encoding tests need a non-UTF-8 single-byte LC_CTYPE, which most
+# distributions no longer generate. Build one under local/ so the tests run
+# instead of skipping. LOCPATH replaces glibc's locale archive rather than
+# adding to it, so the UTF-8 locale the same tests need has to be built here
+# too. Without localedef the directory stays empty, LOCPATH goes unset, and the
+# tests skip themselves exactly as before.
+LOCALE_DIR := $(CURDIR)/local/locales
+
+define build_test_locales
+	if command -v localedef >/dev/null 2>&1; then \
+		for spec in "ISO-8859-1 en_US.ISO-8859-1" "UTF-8 en_US.UTF-8"; do \
+			set -- $$spec; \
+			[ -d "$(LOCALE_DIR)/$$2" ] && continue; \
+			mkdir -p "$(LOCALE_DIR)"; \
+			localedef -i en_US -f "$$1" --no-archive "$(LOCALE_DIR)/$$2" || \
+				printf 'note: could not build %s\n' "$$2"; \
+		done; \
+	fi
+endef
+
+# Export LOCPATH only when both locales exist; a partial directory would hide
+# the system archive and leave the suite with no usable UTF-8 locale at all.
+use_test_locales = if [ -d "$(LOCALE_DIR)/en_US.ISO-8859-1" ] && [ -d "$(LOCALE_DIR)/en_US.UTF-8" ]; then export LOCPATH="$(LOCALE_DIR)"; fi
+
 # Run the complete suite against all three public backends after one install.
 test: install
+	@$(build_test_locales)
+	$(use_test_locales); \
 	for backend in stringi base altrep; do \
 		printf '== charr_backend=%s\n' "$$backend"; \
-		(cd tests && NOT_CRAN=true CHARR_BACKEND=$$backend Rscript testthat.R) || exit 1; \
+		(cd tests && NOT_CRAN=true CHARR_BACKEND=$$backend Rscript testthat.R) \
+			|| exit 1; \
 	done
 
 test-stringi: install
+	@$(build_test_locales)
+	$(use_test_locales); \
 	cd tests && NOT_CRAN=true CHARR_BACKEND=stringi Rscript testthat.R
 
 test-base: install
+	@$(build_test_locales)
+	$(use_test_locales); \
 	cd tests && NOT_CRAN=true CHARR_BACKEND=base Rscript testthat.R
 
 test-altrep: install
+	@$(build_test_locales)
+	$(use_test_locales); \
 	cd tests && NOT_CRAN=true CHARR_BACKEND=altrep Rscript testthat.R
 
 # ICU-mode validation uses the same three-backend matrix with configure's

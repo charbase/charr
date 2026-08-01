@@ -14,7 +14,7 @@ the common length of vector inputs.
 
 Like most other R functions, missing values are "infectious": whenever
 a missing value is combined with another string the result will always
-be missing. Use \code{\link[dplyr:coalesce]{dplyr::coalesce()}} or \code{\link[=str_replace_na]{str_replace_na()}} to convert to
+be missing. Use \code{\link[=str_replace_na]{str_replace_na()}} or \code{dplyr::coalesce()} to convert to
 the desired value.}
 
 \item{sep}{String to insert between input vectors.}

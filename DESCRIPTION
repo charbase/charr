@@ -33,7 +33,7 @@ Copyright: This package is a fork of the 'stringr' package owned by Posit
 URL: https://github.com/charport/charr, https://charport.github.io/charr/
 BugReports: https://github.com/charport/charr/issues
 Depends:
-    R (>= 4.2.0)
+    R (>= 4.1.0)
 Imports:
     charport,
     cli,
@@ -46,13 +46,10 @@ Imports:
 LinkingTo:
     charport
 Suggests:
-    covr,
-    dplyr,
     htmltools,
     htmlwidgets,
     quarto,
-    testthat (>= 3.0.0),
-    tibble
+    testthat (>= 3.0.0)
 VignetteBuilder: quarto
 Remotes: traversc/charport
 SystemRequirements: GNU make, C++17, ICU4C 78.2 or 78.3 (optional; bundled

@@ -18,7 +18,7 @@
 #'
 #'   Like most other R functions, missing values are "infectious": whenever
 #'   a missing value is combined with another string the result will always
-#'   be missing. Use [dplyr::coalesce()] or [str_replace_na()] to convert to
+#'   be missing. Use [str_replace_na()] or `dplyr::coalesce()` to convert to
 #'   the desired value.
 #' @param sep String to insert between input vectors.
 #' @param collapse Optional string used to combine output into single

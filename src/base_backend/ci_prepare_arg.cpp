@@ -116,7 +116,6 @@ CHARR_R_HELPER SEXP prepare_double_r(
         argname = "<noname>";
 
     if (factors_as_strings && Rf_isFactor(x)) {
-#if defined(R_VERSION) && R_VERSION >= R_Version(3, 5, 0)
         if (allow_error)
             PROTECT(x = call_as_character_r(static_cast<void*>(x)));
         else {
@@ -129,9 +128,6 @@ CHARR_R_HELPER SEXP prepare_double_r(
                 return x;
             }
         }
-#else
-        PROTECT(x = call_as_character_r(static_cast<void*>(x)));
-#endif
         PROTECT(x = Rf_coerceVector(x, REALSXP));
         UNPROTECT(2);
         return x;
@@ -141,15 +137,11 @@ CHARR_R_HELPER SEXP prepare_double_r(
         if (Rf_isVectorList(x) && !check_list_of_scalars(x))
             Rf_warning(MSG__WARN_LIST_COERCION);
 
-#if defined(R_VERSION) && R_VERSION >= R_Version(3, 5, 0)
         if (allow_error)
             return call_as_double_r(static_cast<void*>(x));
         return R_tryCatchError(
             call_as_double_r, static_cast<void*>(x), handler_null, NULL
         );
-#else
-        return call_as_double_r(static_cast<void*>(x));
-#endif
     }
 
     if ((bool)Rf_isReal(x))
@@ -354,15 +346,11 @@ CHARR_R_HELPER SEXP ci__prepare_arg_string_r(
         if (Rf_isVectorList(x) && !check_list_of_scalars(x))
             Rf_warning(MSG__WARN_LIST_COERCION);
 
-#if defined(R_VERSION) && R_VERSION >= R_Version(3, 5, 0)
         if (allow_error)
             return call_as_character_r(static_cast<void*>(x));
         return R_tryCatchError(
             call_as_character_r, static_cast<void*>(x), handler_null, NULL
         );
-#else
-        return call_as_character_r(static_cast<void*>(x));
-#endif
     }
 
     if ((bool)Rf_isString(x))
@@ -387,7 +375,6 @@ CHARR_R_HELPER SEXP ci__prepare_arg_integer_r(
         argname = "<noname>";
 
     if (factors_as_strings && Rf_isFactor(x)) {
-#if defined(R_VERSION) && R_VERSION >= R_Version(3, 5, 0)
         if (allow_error)
             PROTECT(x = call_as_character_r(static_cast<void*>(x)));
         else {
@@ -400,9 +387,6 @@ CHARR_R_HELPER SEXP ci__prepare_arg_integer_r(
                 return x;
             }
         }
-#else
-        PROTECT(x = call_as_character_r(static_cast<void*>(x)));
-#endif
         PROTECT(x = Rf_coerceVector(x, INTSXP));
         UNPROTECT(2);
         return x;
@@ -412,15 +396,11 @@ CHARR_R_HELPER SEXP ci__prepare_arg_integer_r(
         if (Rf_isVectorList(x) && !check_list_of_scalars(x))
             Rf_warning(MSG__WARN_LIST_COERCION);
 
-#if defined(R_VERSION) && R_VERSION >= R_Version(3, 5, 0)
         if (allow_error)
             return call_as_integer_r(static_cast<void*>(x));
         return R_tryCatchError(
             call_as_integer_r, static_cast<void*>(x), handler_null, NULL
         );
-#else
-        return call_as_integer_r(static_cast<void*>(x));
-#endif
     }
 
     if (Rf_isInteger(x))
@@ -442,30 +422,22 @@ CHARR_R_HELPER SEXP ci__prepare_arg_logical_r(
         argname = "<noname>";
 
     if (Rf_isFactor(x)) {
-#if defined(R_VERSION) && R_VERSION >= R_Version(3, 5, 0)
         if (allow_error)
             return call_as_logical_r(static_cast<void*>(x));
         return R_tryCatchError(
             call_as_logical_r, static_cast<void*>(x), handler_null, NULL
         );
-#else
-        return call_as_logical_r(static_cast<void*>(x));
-#endif
     }
 
     if (Rf_isVectorList(x) || Rf_isObject(x)) {
         if (Rf_isVectorList(x) && !check_list_of_scalars(x))
             Rf_warning(MSG__WARN_LIST_COERCION);
 
-#if defined(R_VERSION) && R_VERSION >= R_Version(3, 5, 0)
         if (allow_error)
             return call_as_logical_r(static_cast<void*>(x));
         return R_tryCatchError(
             call_as_logical_r, static_cast<void*>(x), handler_null, NULL
         );
-#else
-        return call_as_logical_r(static_cast<void*>(x));
-#endif
     }
 
     if ((bool)Rf_isLogical(x))

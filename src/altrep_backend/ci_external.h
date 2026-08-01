@@ -60,8 +60,6 @@
 #include <unicode/utf16.h>
 #include <unicode/brkiter.h>
 #include <unicode/rbbi.h>
-#include <unicode/timezone.h>
-#include <unicode/calendar.h>
 
 namespace charr {
 namespace altrep_backend {
@@ -77,13 +75,5 @@ using namespace icu;
 #include <Rmath.h>
 #include <Rdefines.h>
 #include <R_ext/Rdynload.h>
-
-#if R_VERSION >= R_Version(3, 5, 0)
-
-#else
-/* ALTREP is R>=3.5.0 */
-#define ALTREP(x) (0)
-#endif
-
 
 #endif

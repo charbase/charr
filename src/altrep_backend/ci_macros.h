@@ -34,6 +34,10 @@
 #ifndef __ci_macros_h
 #define __ci_macros_h
 
+#include "../shared/ascii.h"
+
+#include <cstddef>
+
 
 // undef R's length macro (conflicts with std::string.length())
 // use LENGTH instead
@@ -137,7 +141,12 @@
     #if R_VERSION >= R_Version(4, 5, 0)
     #define IS_ASCII(x) Rf_charIsASCII(x)
     #else
-    #define IS_ASCII(x) (LEVELS(x) & ASCII_MASK)
+    // R stores this as a cached bit, but LEVELS() is not part of the API.
+    // Recompute it instead; see shared/ascii.h.
+    #define IS_ASCII(x) \
+        (::charr::shared::is_ascii( \
+            CHAR(x), static_cast<std::size_t>(LENGTH(x)) \
+        ))
     #endif
 #endif
 

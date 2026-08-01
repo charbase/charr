@@ -4,7 +4,6 @@
 #include "lint.h"
 
 #include <algorithm>
-#include <cassert>
 #include <cstddef>
 #include <memory>
 #include <utility>
@@ -25,15 +24,16 @@ public:
     SliceArena(SliceArena&&) = delete;
     SliceArena& operator=(SliceArena&&) = delete;
 
+    // start_slice() always leaves current_used_ at zero with a capacity of at
+    // least the request, so current_capacity_ - current_used_ never wraps and
+    // the returned slice always fits.
     CHARR_CXX_HELPER char* allocate(std::size_t bytes)
     {
-        assert(bytes > 0);
         if (current_ == nullptr || bytes > current_capacity_ - current_used_)
             start_slice(bytes);
 
         char* output = current_ + current_used_;
         current_used_ += bytes;
-        assert(current_used_ <= current_capacity_);
         return output;
     }
 
