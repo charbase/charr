@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -199,7 +199,7 @@ CHARR_ENTRYPOINT SEXP ci_extract_first_boundaries(
                         builder.set(
                             i, value.ptr,
                             static_cast<std::size_t>(ascii_word_end),
-                            cetype_ext_t::CE_ASCII
+                            CETYPE_EXT_ASCII
                         );
                         continue;
                     }
@@ -402,7 +402,7 @@ CHARR_ENTRYPOINT SEXP ci_extract_all_boundaries(
                             else {
                                 matrix_builder.set(
                                     i+j*rows, "", 0,
-                                    cetype_ext_t::CE_ASCII
+                                    CETYPE_EXT_ASCII
                                 );
                             }
                         }

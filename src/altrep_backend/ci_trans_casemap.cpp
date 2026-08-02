@@ -1,4 +1,4 @@
-// Derived from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f.
+// Derived from stringi.
 // Copyright (c) 2013-2025, Marek Gagolewski. See inst/COPYRIGHTS.
 
 #include "ci_stringi.h"
@@ -92,7 +92,7 @@ CHARR_ENTRYPOINT SEXP ci_trans_tolower(
                     if (mapper.has_ascii_fast_path(input)) {
                         char* output = builder.reserve(
                             i, static_cast<std::size_t>(input.length),
-                            cetype_ext_t::CE_ASCII
+                            CETYPE_EXT_ASCII
                         );
                         mapper.map_ascii(input, output);
                         continue;
@@ -177,7 +177,7 @@ CHARR_ENTRYPOINT SEXP ci_trans_toupper(
                     if (mapper.has_ascii_fast_path(input)) {
                         char* output = builder.reserve(
                             i, static_cast<std::size_t>(input.length),
-                            cetype_ext_t::CE_ASCII
+                            CETYPE_EXT_ASCII
                         );
                         mapper.map_ascii(input, output);
                         continue;

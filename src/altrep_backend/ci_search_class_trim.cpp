@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -188,10 +188,10 @@ CHARR_NEUTRAL_HELPER bool strip_input_bom(
 {
     if (!STRI__ENC_HAS_BOM_UTF8(normalized.ptr, normalized.len))
         return false;
-    if (original.enc == cetype_ext_t::CE_UTF8 ||
-            original.enc == cetype_ext_t::CE_ASCII_OR_UTF8)
+    if (original.enc == CETYPE_EXT_UTF8 ||
+            original.enc == CETYPE_EXT_ASCII_OR_UTF8)
         return true;
-    return original.enc == cetype_ext_t::CE_NATIVE &&
+    return original.enc == CETYPE_EXT_NATIVE &&
         STRI__ENC_HAS_BOM_UTF8(original.ptr, original.len);
 }
 
@@ -203,20 +203,20 @@ CHARR_NEUTRAL_HELPER cetype_ext_t trimmed_encoding(
 ) noexcept
 {
     if (trimmed.length == 0 ||
-            original.enc == cetype_ext_t::CE_ASCII)
-        return cetype_ext_t::CE_ASCII;
+            original.enc == CETYPE_EXT_ASCII)
+        return CETYPE_EXT_ASCII;
 
     // A definite UTF-8 mark promises a non-ASCII record. Removing only ASCII
     // edge code points cannot invalidate that promise. Ambiguous marks and
     // converted records need one scan of the retained slice.
-    if (original.enc == cetype_ext_t::CE_UTF8 &&
+    if (original.enc == CETYPE_EXT_UTF8 &&
             normalized.enc == shared::StringEncoding::utf8 &&
             !trimmed.removed_non_ascii)
-        return cetype_ext_t::CE_UTF8;
+        return CETYPE_EXT_UTF8;
 
     return io::is_ascii(
         trimmed.data, static_cast<std::size_t>(trimmed.length)
-    ) ? cetype_ext_t::CE_ASCII : cetype_ext_t::CE_UTF8;
+    ) ? CETYPE_EXT_ASCII : CETYPE_EXT_UTF8;
 }
 
 
@@ -249,17 +249,17 @@ CHARR_CXX_HELPER bool source_is_direct_utf8(
         if (value.ptr == nullptr || value.len < 0)
             throw std::runtime_error("Reader returned an invalid string view");
 
-        switch (value.enc) {
-        case cetype_ext_t::CE_ASCII:
-        case cetype_ext_t::CE_UTF8:
-        case cetype_ext_t::CE_ASCII_OR_UTF8:
+        switch (value.enc.value) {
+        case CETYPE_EXT_ASCII.value:
+        case CETYPE_EXT_UTF8.value:
+        case CETYPE_EXT_ASCII_OR_UTF8.value:
             break;
-        case cetype_ext_t::CE_BYTES:
+        case CETYPE_EXT_BYTES.value:
             throw StriException(MSG__BYTESENC);
-        case cetype_ext_t::CE_LATIN1:
-        case cetype_ext_t::CE_NATIVE:
+        case CETYPE_EXT_LATIN1.value:
+        case CETYPE_EXT_NATIVE.value:
             return false;
-        case cetype_ext_t::CE_NA:
+        case CETYPE_EXT_NA.value:
             throw std::logic_error(
                 "non-missing Reader record has NA encoding"
             );

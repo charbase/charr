@@ -1,4 +1,4 @@
-// Derived from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f.
+// Derived from stringi.
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.

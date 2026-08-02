@@ -1,4 +1,4 @@
-// Adapted from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f. See inst/COPYRIGHTS.
+// Adapted from stringi. See inst/COPYRIGHTS.
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.

@@ -37,19 +37,19 @@ CHARR_CXX_HELPER cetype_ext_t resolved_encoding(
     const char* data, std::size_t length, cetype_ext_t encoding
 )
 {
-    switch (encoding) {
-    case cetype_ext_t::CE_ASCII:
-    case cetype_ext_t::CE_UTF8:
-    case cetype_ext_t::CE_BYTES:
-    case cetype_ext_t::CE_LATIN1:
-    case cetype_ext_t::CE_NATIVE:
+    switch (encoding.value) {
+    case CETYPE_EXT_ASCII.value:
+    case CETYPE_EXT_UTF8.value:
+    case CETYPE_EXT_BYTES.value:
+    case CETYPE_EXT_LATIN1.value:
+    case CETYPE_EXT_NATIVE.value:
         return encoding;
-    case cetype_ext_t::CE_ASCII_OR_UTF8:
+    case CETYPE_EXT_ASCII_OR_UTF8.value:
         return is_ascii(data, length)
-            ? cetype_ext_t::CE_ASCII
-            : cetype_ext_t::CE_UTF8;
-    case cetype_ext_t::CE_NA:
-        return cetype_ext_t::CE_NA;
+            ? CETYPE_EXT_ASCII
+            : CETYPE_EXT_UTF8;
+    case CETYPE_EXT_NA.value:
+        return CETYPE_EXT_NA;
     default:
         throw std::invalid_argument("unknown character output encoding");
     }
@@ -57,15 +57,15 @@ CHARR_CXX_HELPER cetype_ext_t resolved_encoding(
 
 CHARR_CXX_HELPER cetype_ext_t reserve_encoding(cetype_ext_t encoding)
 {
-    switch (encoding) {
-    case cetype_ext_t::CE_ASCII:
-    case cetype_ext_t::CE_UTF8:
-    case cetype_ext_t::CE_BYTES:
-    case cetype_ext_t::CE_LATIN1:
-    case cetype_ext_t::CE_NATIVE:
-    case cetype_ext_t::CE_NA:
+    switch (encoding.value) {
+    case CETYPE_EXT_ASCII.value:
+    case CETYPE_EXT_UTF8.value:
+    case CETYPE_EXT_BYTES.value:
+    case CETYPE_EXT_LATIN1.value:
+    case CETYPE_EXT_NATIVE.value:
+    case CETYPE_EXT_NA.value:
         return encoding;
-    case cetype_ext_t::CE_ASCII_OR_UTF8:
+    case CETYPE_EXT_ASCII_OR_UTF8.value:
         throw std::invalid_argument(
             "cannot reserve output with an unresolved ASCII-or-UTF-8 mark"
         );
@@ -80,14 +80,14 @@ using namespace utf8_output;
 
 OutputRecord missing_output_record() noexcept
 {
-    return make_strview(nullptr, NA_INTEGER, cetype_ext_t::CE_NA);
+    return make_strview(nullptr, NA_INTEGER, CETYPE_EXT_NA);
 }
 
 OutputRecord output_record(
     const char* data, std::size_t length, cetype_ext_t encoding
 )
 {
-    if (encoding == cetype_ext_t::CE_NA)
+    if (encoding == CETYPE_EXT_NA)
         return missing_output_record();
     if (data == nullptr) {
         if (length != 0)
@@ -124,7 +124,7 @@ OutputStore scalar_store(const OutputRecord& value)
     const OutputRecord normalized = output_record(value);
     if (normalized.is_na()) {
         return OutputStore::scalar(
-            nullptr, 0, cetype_ext_t::CE_NA
+            nullptr, 0, CETYPE_EXT_NA
         );
     }
     return OutputStore::scalar(
@@ -187,7 +187,7 @@ char* OutputBuilder::reserve(
 )
 {
     const cetype_ext_t checked_encoding = reserve_encoding(encoding);
-    if (checked_encoding == cetype_ext_t::CE_NA)
+    if (checked_encoding == CETYPE_EXT_NA)
         return builder_.reserve(index, 0, checked_encoding);
     (void)checked_length(length);
     return builder_.reserve(index, length, checked_encoding);
@@ -218,7 +218,7 @@ void GrowableOutputBuilder::append(const OutputRecord& value)
 {
     const OutputRecord normalized = output_record(value);
     if (normalized.is_na()) {
-        builder_.append(nullptr, 0, cetype_ext_t::CE_NA);
+        builder_.append(nullptr, 0, CETYPE_EXT_NA);
         return;
     }
     builder_.append(normalized);
@@ -232,7 +232,7 @@ void GrowableOutputBuilder::append(
         data, length, encoding
     );
     if (normalized.is_na()) {
-        builder_.append(nullptr, 0, cetype_ext_t::CE_NA);
+        builder_.append(nullptr, 0, CETYPE_EXT_NA);
         return;
     }
     builder_.append(normalized);
@@ -244,7 +244,7 @@ void GrowableOutputBuilder::append(
 {
     const OutputRecord normalized = output_record(value, encoding);
     if (normalized.is_na()) {
-        builder_.append(nullptr, 0, cetype_ext_t::CE_NA);
+        builder_.append(nullptr, 0, CETYPE_EXT_NA);
         return;
     }
     builder_.append(normalized);
@@ -252,7 +252,7 @@ void GrowableOutputBuilder::append(
 
 void GrowableOutputBuilder::append_na()
 {
-    builder_.append(nullptr, 0, cetype_ext_t::CE_NA);
+    builder_.append(nullptr, 0, CETYPE_EXT_NA);
 }
 
 char* GrowableOutputBuilder::append_reserve(
@@ -260,7 +260,7 @@ char* GrowableOutputBuilder::append_reserve(
 )
 {
     const cetype_ext_t checked_encoding = reserve_encoding(encoding);
-    if (checked_encoding == cetype_ext_t::CE_NA)
+    if (checked_encoding == CETYPE_EXT_NA)
         return builder_.append_reserve(0, checked_encoding);
     (void)checked_length(length);
     return builder_.append_reserve(length, checked_encoding);

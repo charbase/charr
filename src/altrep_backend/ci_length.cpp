@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -155,31 +155,31 @@ CHARR_ENTRYPOINT SEXP ci_length(SEXP str) noexcept
 
                     for (R_len_t k = 0; k < str_n; ++k) {
                         const cetype_ext_t encoding = encodings[k];
-                        if (encoding == cetype_ext_t::CE_NA) {
+                        if (encoding == CETYPE_EXT_NA) {
                             retint[k] = NA_INTEGER;
                             continue;
                         }
 
                         const char* curs_s = ptrs[k];
                         const int curs_n = lengths[k];
-                        if (encoding == cetype_ext_t::CE_ASCII ||
-                                encoding == cetype_ext_t::CE_LATIN1) {
+                        if (encoding == CETYPE_EXT_ASCII ||
+                                encoding == CETYPE_EXT_LATIN1) {
                             retint[k] = curs_n;
                         }
-                        else if (encoding == cetype_ext_t::CE_BYTES) {
+                        else if (encoding == CETYPE_EXT_BYTES) {
                             throw StriException(MSG__BYTESENC);
                         }
-                        else if (encoding == cetype_ext_t::CE_UTF8 ||
+                        else if (encoding == CETYPE_EXT_UTF8 ||
                                 encoding ==
-                                    cetype_ext_t::CE_ASCII_OR_UTF8 ||
-                                (encoding == cetype_ext_t::CE_NATIVE &&
+                                    CETYPE_EXT_ASCII_OR_UTF8 ||
+                                (encoding == CETYPE_EXT_NATIVE &&
                                  native_to_utf8.native_is_utf8())) {
                             if (!ci__length_utf8_fast(
                                     curs_s, curs_n, retint[k])) {
                                 throw StriException(MSG__INVALID_UTF8);
                             }
                         }
-                        else if (encoding == cetype_ext_t::CE_NATIVE) {
+                        else if (encoding == CETYPE_EXT_NATIVE) {
                             const shared::ByteView converted =
                                 native_to_utf8.native(curs_s, curs_n);
                             if (!ci__length_utf8_fast(
@@ -536,35 +536,35 @@ CHARR_ENTRYPOINT SEXP ci_width(SEXP str) noexcept
 
                     for (R_len_t i = 0; i < str_n; ++i) {
                         const cetype_ext_t encoding = encodings[i];
-                        if (encoding == cetype_ext_t::CE_NA) {
+                        if (encoding == CETYPE_EXT_NA) {
                             retint[i] = NA_INTEGER;
                             continue;
                         }
 
                         const char* data = ptrs[i];
                         const int length = lengths[i];
-                        if (encoding == cetype_ext_t::CE_ASCII) {
+                        if (encoding == CETYPE_EXT_ASCII) {
                             retint[i] = ci__ascii_string_width(data, length);
                             continue;
                         }
-                        if (encoding == cetype_ext_t::CE_BYTES)
+                        if (encoding == CETYPE_EXT_BYTES)
                             throw StriException(MSG__BYTESENC);
 
-                        if (encoding == cetype_ext_t::CE_UTF8 ||
+                        if (encoding == CETYPE_EXT_UTF8 ||
                                 encoding ==
-                                    cetype_ext_t::CE_ASCII_OR_UTF8) {
+                                    CETYPE_EXT_ASCII_OR_UTF8) {
                             retint[i] = ci__width_string(data, length);
                             continue;
                         }
 
-                        if (encoding != cetype_ext_t::CE_LATIN1 &&
-                                encoding != cetype_ext_t::CE_NATIVE) {
+                        if (encoding != CETYPE_EXT_LATIN1 &&
+                                encoding != CETYPE_EXT_NATIVE) {
                             throw StriException(
                                 "unknown charport string encoding"
                             );
                         }
                         const shared::ByteView converted =
-                            encoding == cetype_ext_t::CE_LATIN1
+                            encoding == CETYPE_EXT_LATIN1
                                 ? native_to_utf8.latin1(data, length)
                                 : native_to_utf8.native(data, length);
                         retint[i] = ci__width_string(

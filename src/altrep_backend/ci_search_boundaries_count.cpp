@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -74,11 +74,11 @@ CHARR_CXX_HELPER InputScan scan_direct_input(
                 "Reader returned an invalid string view"
             );
         }
-        if (value.enc == cetype_ext_t::CE_BYTES)
+        if (value.enc == CETYPE_EXT_BYTES)
             throw StriException(MSG__BYTESENC);
-        if (value.enc != cetype_ext_t::CE_ASCII &&
-                value.enc != cetype_ext_t::CE_UTF8 &&
-                value.enc != cetype_ext_t::CE_ASCII_OR_UTF8) {
+        if (value.enc != CETYPE_EXT_ASCII &&
+                value.enc != CETYPE_EXT_UTF8 &&
+                value.enc != CETYPE_EXT_ASCII_OR_UTF8) {
             return InputScan{false, has_nonmissing};
         }
     }

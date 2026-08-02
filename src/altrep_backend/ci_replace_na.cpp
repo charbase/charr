@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -68,9 +68,9 @@ CHARR_NEUTRAL_HELPER bool is_direct_source(
     const charport::StrView& source
 ) noexcept
 {
-    if (source.is_na() || source.enc == cetype_ext_t::CE_ASCII)
+    if (source.is_na() || source.enc == CETYPE_EXT_ASCII)
         return true;
-    return source.enc == cetype_ext_t::CE_UTF8 &&
+    return source.enc == CETYPE_EXT_UTF8 &&
         !has_utf8_bom(source.ptr, source.len);
 }
 
@@ -134,7 +134,7 @@ CHARR_ENTRYPOINT SEXP ci_replace_na(
         std::vector<shared::StringView> source_inputs;
         charport::charvec::Builder builder(0);
         charport::StrView replacement_input{
-            nullptr, NA_INTEGER, cetype_ext_t::CE_NA
+            nullptr, NA_INTEGER, CETYPE_EXT_NA
         };
 
         result = shared::unwind_protect(
@@ -167,7 +167,7 @@ CHARR_ENTRYPOINT SEXP ci_replace_na(
                         has_na = true;
                         continue;
                     }
-                    if (source.enc == cetype_ext_t::CE_BYTES) {
+                    if (source.enc == CETYPE_EXT_BYTES) {
                         shared::normalize_utf8(
                             io::as_shared_view(source),
                             source_converter, source_storage

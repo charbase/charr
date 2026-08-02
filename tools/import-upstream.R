@@ -16,8 +16,9 @@
 UPSTREAM_REPO <- "https://github.com/tidyverse/stringr"
 UPSTREAM_COMMIT <- "ae054b1d28f630fee22ddb3cb7525396e62af4fe"
 
+# Package licensing is maintained locally in LICENSE and LICENSE.note.
 UPSTREAM_SUBSET <- c(
-  "DESCRIPTION", "NAMESPACE", "LICENSE", "LICENSE.md",
+  "DESCRIPTION", "NAMESPACE",
   "R", "data", "man", "tests", "inst"
 )
 

@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -72,19 +72,19 @@ CHARR_CXX_HELPER EscapeInput normalize_escape_input(
 {
     if (value.ptr == nullptr || value.len < 0)
         throw std::runtime_error("Reader returned an invalid string view");
-    if (value.enc == cetype_ext_t::CE_ASCII)
+    if (value.enc == CETYPE_EXT_ASCII)
         return EscapeInput{value.ptr, value.len};
-    if (value.enc == cetype_ext_t::CE_BYTES)
+    if (value.enc == CETYPE_EXT_BYTES)
         throw StriException(MSG__BYTESENC);
 
     const char* ptr = value.ptr;
     int length = value.len;
-    bool strip_bom = value.enc == cetype_ext_t::CE_UTF8 ||
-        value.enc == cetype_ext_t::CE_ASCII_OR_UTF8;
+    bool strip_bom = value.enc == CETYPE_EXT_UTF8 ||
+        value.enc == CETYPE_EXT_ASCII_OR_UTF8;
 
-    if (value.enc == cetype_ext_t::CE_LATIN1 ||
-            value.enc == cetype_ext_t::CE_NATIVE) {
-        const bool native = value.enc == cetype_ext_t::CE_NATIVE;
+    if (value.enc == CETYPE_EXT_LATIN1 ||
+            value.enc == CETYPE_EXT_NATIVE) {
+        const bool native = value.enc == CETYPE_EXT_NATIVE;
         const shared::ByteView converted = native
             ? converter.native(ptr, length)
             : converter.latin1(ptr, length);
@@ -92,8 +92,8 @@ CHARR_CXX_HELPER EscapeInput normalize_escape_input(
         ptr = converted.ptr;
         length = converted.len;
     }
-    else if (value.enc != cetype_ext_t::CE_UTF8 &&
-            value.enc != cetype_ext_t::CE_ASCII_OR_UTF8) {
+    else if (value.enc != CETYPE_EXT_UTF8 &&
+            value.enc != CETYPE_EXT_ASCII_OR_UTF8) {
         throw std::runtime_error("Reader returned an unknown string encoding");
     }
 
@@ -274,7 +274,7 @@ CHARR_ENTRYPOINT SEXP ci_escape_unicode(SEXP str) noexcept
                     );
                     const std::size_t output_size = escaped_size(input);
                     char* output = builder.reserve(
-                        i, output_size, cetype_ext_t::CE_ASCII
+                        i, output_size, CETYPE_EXT_ASCII
                     );
                     if (output_size > 0)
                         write_escape(input, output);

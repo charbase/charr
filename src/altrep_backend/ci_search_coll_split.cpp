@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -166,7 +166,7 @@ CHARR_CXX_HELPER void set_scalar_empty(
 )
 {
     output = io::scalar_store(
-        "", 0, cetype_ext_t::CE_ASCII
+        "", 0, CETYPE_EXT_ASCII
     );
 }
 
@@ -182,7 +182,7 @@ CHARR_CXX_HELPER io::OutputRecord field_record(
         const int length = field.end-field.start;
         return io::OutputRecord{
             length == 0 ? "" : source.ptr+field.start,
-            length, cetype_ext_t::CE_ASCII
+            length, CETYPE_EXT_ASCII
         };
     }
 
@@ -194,7 +194,7 @@ CHARR_CXX_HELPER io::OutputRecord field_record(
     require_icu_success(status);
     return io::OutputRecord{
         value.data, value.length,
-        value.ascii ? cetype_ext_t::CE_ASCII : cetype_ext_t::CE_UTF8
+        value.ascii ? CETYPE_EXT_ASCII : CETYPE_EXT_UTF8
     };
 }
 
@@ -564,7 +564,7 @@ CHARR_ENTRYPOINT SEXP ci_split_coll(
                             else {
                                 matrix_builder.set(
                                     i+j*rows, "", 0,
-                                    cetype_ext_t::CE_ASCII
+                                    CETYPE_EXT_ASCII
                                 );
                             }
                         }

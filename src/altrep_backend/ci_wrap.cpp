@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -56,7 +56,7 @@ CHARR_CXX_HELPER shared::StringView normalize_input(
     shared::NativeToUtf8& converter,
     shared::SliceArena& storage
 ) {
-    if (source.enc == cetype_ext_t::CE_BYTES)
+    if (source.enc == CETYPE_EXT_BYTES)
         throw StriException(MSG__BYTESENC);
     return shared::normalize_utf8(
         io::as_shared_view(source), converter, storage
@@ -307,8 +307,8 @@ CHARR_ENTRYPOINT SEXP ci_wrap(
                         char* destination = joined_output.reserve(
                             i, staged.size,
                             staged.ascii
-                                ? cetype_ext_t::CE_ASCII
-                                : cetype_ext_t::CE_UTF8
+                                ? CETYPE_EXT_ASCII
+                                : CETYPE_EXT_UTF8
                         );
                         engine.write_joined(
                             destination,
@@ -329,8 +329,8 @@ CHARR_ENTRYPOINT SEXP ci_wrap(
                             prefix_exdent, true
                         );
                         const cetype_ext_t encoding = staged.ascii
-                            ? cetype_ext_t::CE_ASCII
-                            : cetype_ext_t::CE_UTF8;
+                            ? CETYPE_EXT_ASCII
+                            : CETYPE_EXT_UTF8;
                         char* destination = flatten
                             ? flat_output.append_reserve(
                                 staged.size, encoding

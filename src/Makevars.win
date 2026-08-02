@@ -1,9 +1,10 @@
 CXX_STD = CXX17
 
 # --- Vendored ICU4C (src/icu78) --------------------------------------------
-# src/icu78 is pristine ICU4C 78.3 runtime source (Unicode, Inc. and others;
-# Unicode License v3, see src/icu78/LICENSE). Package-specific configuration
-# is supplied below and by src/uconfig_local.h. U_HAVE_LIB_SUFFIX /
+# src/icu78 comes from ICU4C 78.3 (Unicode, Inc. and others; Unicode License
+# v3, see src/icu78/LICENSE). Local source adjustments are summarized in
+# src/icu78/UPSTREAM.md. Package-specific configuration is supplied below and
+# by src/uconfig_local.h. U_HAVE_LIB_SUFFIX /
 # U_LIB_SUFFIX_C_NAME rename every ICU C symbol to
 # ...78_charr so charr's statically linked ICU never collides with stringi's or
 # the system's. DECNUMDIGITS=4 avoids GCC overflow diagnostics without

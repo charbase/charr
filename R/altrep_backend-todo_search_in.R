@@ -1,4 +1,4 @@
-# Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*.
+# Copied from stringi; stri_* renamed to ci_*.
 # kate: default-dictionary en_US
 
 ## This file is part of the 'stringi' package for R.

@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -112,15 +112,15 @@ CHARR_CXX_HELPER CiSubFrameInput ci__sub_normalize_frame_input(
 
     const char* data = value.ptr;
     R_len_t length = value.len;
-    if (value.enc == cetype_ext_t::CE_ASCII) {
+    if (value.enc == CETYPE_EXT_ASCII) {
         return CiSubFrameInput{data, length, false, true, false};
     }
-    if (value.enc == cetype_ext_t::CE_BYTES)
+    if (value.enc == CETYPE_EXT_BYTES)
         throw StriException(MSG__BYTESENC);
 
-    if (value.enc == cetype_ext_t::CE_UTF8 ||
-            value.enc == cetype_ext_t::CE_ASCII_OR_UTF8) {
-        const bool ascii = value.enc == cetype_ext_t::CE_ASCII_OR_UTF8 &&
+    if (value.enc == CETYPE_EXT_UTF8 ||
+            value.enc == CETYPE_EXT_ASCII_OR_UTF8) {
+        const bool ascii = value.enc == CETYPE_EXT_ASCII_OR_UTF8 &&
             io::is_ascii(data, static_cast<std::size_t>(length));
         if (!ascii && STRI__ENC_HAS_BOM_UTF8(data, length)) {
             data += 3;
@@ -130,10 +130,10 @@ CHARR_CXX_HELPER CiSubFrameInput ci__sub_normalize_frame_input(
     }
 
     shared::ByteView output;
-    if (value.enc == cetype_ext_t::CE_LATIN1) {
+    if (value.enc == CETYPE_EXT_LATIN1) {
         output = converter.latin1(data, length);
     }
-    else if (value.enc == cetype_ext_t::CE_NATIVE) {
+    else if (value.enc == CETYPE_EXT_NATIVE) {
         const bool native_has_bom = STRI__ENC_HAS_BOM_UTF8(data, length);
         output = converter.native(data, length);
         if (native_has_bom &&
@@ -431,7 +431,7 @@ CHARR_ENTRYPOINT SEXP ci_sub(
                     if (length_tab) {
                         if (current_to == 0) {
                             builder.set(
-                                i, "", 0, cetype_ext_t::CE_ASCII
+                                i, "", 0, CETYPE_EXT_ASCII
                             );
                             continue;
                         }
@@ -457,14 +457,14 @@ CHARR_ENTRYPOINT SEXP ci_sub(
                                 value.data+range.begin,
                                 range.end-range.begin,
                                 value.is_ascii
-                                    ? cetype_ext_t::CE_ASCII
-                                    : cetype_ext_t::CE_ASCII_OR_UTF8
+                                    ? CETYPE_EXT_ASCII
+                                    : CETYPE_EXT_ASCII_OR_UTF8
                             }
                         );
                     }
                     else {
                         builder.set(
-                            i, "", 0, cetype_ext_t::CE_ASCII
+                            i, "", 0, CETYPE_EXT_ASCII
                         );
                     }
                 }
@@ -729,8 +729,8 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement(
                                     source.length == 0 ? "" : source.data,
                                     source.length,
                                     source.is_ascii
-                                        ? cetype_ext_t::CE_ASCII
-                                        : cetype_ext_t::CE_UTF8
+                                        ? CETYPE_EXT_ASCII
+                                        : CETYPE_EXT_UTF8
                                 }
                             );
                         }
@@ -746,8 +746,8 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement(
                                 source.length == 0 ? "" : source.data,
                                 source.length,
                                 source.is_ascii
-                                    ? cetype_ext_t::CE_ASCII
-                                    : cetype_ext_t::CE_UTF8
+                                    ? CETYPE_EXT_ASCII
+                                    : CETYPE_EXT_UTF8
                             }
                         );
                         continue;
@@ -794,8 +794,8 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement(
                     char* output = builder.reserve(
                         i, output_size,
                         output_ascii
-                            ? cetype_ext_t::CE_ASCII
-                            : cetype_ext_t::CE_UTF8
+                            ? CETYPE_EXT_ASCII
+                            : CETYPE_EXT_UTF8
                     );
                     if (prefix > 0)
                         std::memcpy(output, source.data, prefix);
@@ -1090,7 +1090,7 @@ CHARR_ENTRYPOINT SEXP ci_sub_all(
                             if (current_to == 0) {
                                 builder.set(
                                     output++, "", 0,
-                                    cetype_ext_t::CE_ASCII
+                                    CETYPE_EXT_ASCII
                                 );
                                 continue;
                             }
@@ -1115,15 +1115,15 @@ CHARR_ENTRYPOINT SEXP ci_sub_all(
                                     source.data+range.begin,
                                     range.end-range.begin,
                                     source.is_ascii
-                                        ? cetype_ext_t::CE_ASCII
-                                        : cetype_ext_t::CE_ASCII_OR_UTF8
+                                        ? CETYPE_EXT_ASCII
+                                        : CETYPE_EXT_ASCII_OR_UTF8
                                 }
                             );
                         }
                         else {
                             builder.set(
                                 output++, "", 0,
-                                cetype_ext_t::CE_ASCII
+                                CETYPE_EXT_ASCII
                             );
                         }
                     }
@@ -1414,8 +1414,8 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement_all(
                                             ? "" : source.data,
                                         source.length,
                                         source.is_ascii
-                                            ? cetype_ext_t::CE_ASCII
-                                            : cetype_ext_t::CE_UTF8
+                                            ? CETYPE_EXT_ASCII
+                                            : CETYPE_EXT_UTF8
                                     }
                                 );
                             }
@@ -1466,8 +1466,8 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement_all(
                         char* output = builder.reserve(
                             outer, output_size,
                             output_ascii
-                                ? cetype_ext_t::CE_ASCII
-                                : cetype_ext_t::CE_UTF8
+                                ? CETYPE_EXT_ASCII
+                                : CETYPE_EXT_UTF8
                         );
                         if (prefix > 0) {
                             std::memcpy(
@@ -1586,8 +1586,8 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement_all(
                                 output.value.len,
                                 output.value.enc ==
                                         shared::StringEncoding::ascii
-                                    ? cetype_ext_t::CE_ASCII
-                                    : cetype_ext_t::CE_UTF8
+                                    ? CETYPE_EXT_ASCII
+                                    : CETYPE_EXT_UTF8
                             }
                         );
                     }

@@ -3,9 +3,9 @@ CXX_STD = CXX17
 # Template: ../configure generates src/Makevars from this file, substituting
 # the three @...@ tokens for either the system ICU4C (pkg-config) or the
 # vendored bundle in src/icu78 (ICU4C 78.3; Unicode, Inc. and others; Unicode
-# License v3, see src/icu78/LICENSE). The imported ICU runtime files are
-# pristine; package-specific configuration is supplied by compiler flags and
-# src/uconfig_local.h. In bundle mode the
+# License v3, see src/icu78/LICENSE). Local source adjustments are summarized
+# in src/icu78/UPSTREAM.md; package-specific configuration is supplied by
+# compiler flags and src/uconfig_local.h. In bundle mode the
 # U_HAVE_LIB_SUFFIX / U_LIB_SUFFIX_C_NAME pair renames every ICU C symbol to
 # ...78_charr so charr's statically linked ICU never collides with stringi's
 # or the system's at runtime; in system mode the suffix is off and the

@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -158,7 +158,7 @@ CHARR_CXX_HELPER void set_utf16_output(
     output.set(
         output_index, utf8.data,
         static_cast<std::size_t>(utf8.length),
-        utf8.ascii ? cetype_ext_t::CE_ASCII : cetype_ext_t::CE_UTF8
+        utf8.ascii ? CETYPE_EXT_ASCII : CETYPE_EXT_UTF8
     );
 }
 

@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -101,8 +101,8 @@ CHARR_NEUTRAL_HELPER shared::StringView direct_input(
 
     const char* data = value.ptr;
     int length = value.len;
-    if ((value.enc == cetype_ext_t::CE_UTF8 ||
-            value.enc == cetype_ext_t::CE_ASCII_OR_UTF8) &&
+    if ((value.enc == CETYPE_EXT_UTF8 ||
+            value.enc == CETYPE_EXT_ASCII_OR_UTF8) &&
             length >= 3 &&
             static_cast<unsigned char>(data[0]) == 0xefU &&
             static_cast<unsigned char>(data[1]) == 0xbbU &&
@@ -111,12 +111,12 @@ CHARR_NEUTRAL_HELPER shared::StringView direct_input(
         length -= 3;
     }
 
-    if (value.enc == cetype_ext_t::CE_ASCII) {
+    if (value.enc == CETYPE_EXT_ASCII) {
         return shared::StringView{
             data, length, shared::StringEncoding::ascii
         };
     }
-    if (value.enc == cetype_ext_t::CE_ASCII_OR_UTF8) {
+    if (value.enc == CETYPE_EXT_ASCII_OR_UTF8) {
         return shared::StringView{
             data, length,
             is_ascii(data, length)
@@ -144,13 +144,13 @@ CHARR_CXX_HELPER void preflight_inputs(
         if (value.is_na())
             continue;
 
-        switch (value.enc) {
-        case cetype_ext_t::CE_ASCII:
-        case cetype_ext_t::CE_UTF8:
-        case cetype_ext_t::CE_ASCII_OR_UTF8:
+        switch (value.enc.value) {
+        case CETYPE_EXT_ASCII.value:
+        case CETYPE_EXT_UTF8.value:
+        case CETYPE_EXT_ASCII_OR_UTF8.value:
             break;
-        case cetype_ext_t::CE_NATIVE:
-        case cetype_ext_t::CE_LATIN1:
+        case CETYPE_EXT_NATIVE.value:
+        case CETYPE_EXT_LATIN1.value:
             if (converted_slots.empty()) {
                 converted_slots.assign(
                     static_cast<std::size_t>(size), no_slot()
@@ -162,9 +162,9 @@ CHARR_CXX_HELPER void preflight_inputs(
                 io::as_shared_view(value), converter, storage
             ));
             break;
-        case cetype_ext_t::CE_BYTES:
+        case CETYPE_EXT_BYTES.value:
             throw StriException(MSG__BYTESENC);
-        case cetype_ext_t::CE_NA:
+        case CETYPE_EXT_NA.value:
         default:
             throw StriException("unknown charport string encoding");
         }
@@ -194,8 +194,8 @@ CHARR_NEUTRAL_HELPER cetype_ext_t output_encoding(
 ) noexcept
 {
     return encoding == shared::StringEncoding::ascii
-        ? cetype_ext_t::CE_ASCII
-        : cetype_ext_t::CE_UTF8;
+        ? CETYPE_EXT_ASCII
+        : CETYPE_EXT_UTF8;
 }
 
 
@@ -281,7 +281,7 @@ CHARR_ENTRYPOINT SEXP ci_dup(SEXP str, SEXP times) noexcept
                             static_cast<std::size_t>(value.len);
                         if (current == 0 || length == 0) {
                             builder.set(
-                                i, "", 0, cetype_ext_t::CE_ASCII
+                                i, "", 0, CETYPE_EXT_ASCII
                             );
                             continue;
                         }

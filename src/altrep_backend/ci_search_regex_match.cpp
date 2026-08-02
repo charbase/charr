@@ -1,4 +1,4 @@
-// Derived from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f.
+// Derived from stringi.
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -308,11 +308,11 @@ CHARR_NEUTRAL_HELPER charport::StrView matched_view(
 ) noexcept
 {
     const int length = range.end-range.start;
-    cetype_ext_t encoding = cetype_ext_t::CE_UTF8;
+    cetype_ext_t encoding = CETYPE_EXT_UTF8;
     if (subject.enc == shared::StringEncoding::ascii)
-        encoding = cetype_ext_t::CE_ASCII;
+        encoding = CETYPE_EXT_ASCII;
     else if (subject.enc == shared::StringEncoding::ascii_or_utf8)
-        encoding = cetype_ext_t::CE_ASCII_OR_UTF8;
+        encoding = CETYPE_EXT_ASCII_OR_UTF8;
     return charport::StrView{
         length == 0 ? "" : subject.ptr+range.start,
         length,

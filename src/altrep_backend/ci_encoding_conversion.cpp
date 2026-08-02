@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -120,19 +120,19 @@ CHARR_CXX_HELPER bool validate_identity_views(
     for (R_xlen_t i = 0; i < size; ++i) {
         const charport::StrView value = input[i];
         if (value.is_na()) {
-            encodings[static_cast<std::size_t>(i)] = cetype_ext_t::CE_NA;
+            encodings[static_cast<std::size_t>(i)] = CETYPE_EXT_NA;
             continue;
         }
         if (value.len < 0 || (value.ptr == nullptr && value.len != 0))
             throw std::runtime_error("Reader returned an invalid string view");
         if (respect_marks &&
-                value.enc != cetype_ext_t::CE_ASCII &&
-                value.enc != cetype_ext_t::CE_UTF8 &&
-                value.enc != cetype_ext_t::CE_ASCII_OR_UTF8) {
+                value.enc != CETYPE_EXT_ASCII &&
+                value.enc != CETYPE_EXT_UTF8 &&
+                value.enc != CETYPE_EXT_ASCII_OR_UTF8) {
             return false;
         }
-        if (value.enc == cetype_ext_t::CE_ASCII) {
-            encodings[static_cast<std::size_t>(i)] = cetype_ext_t::CE_ASCII;
+        if (value.enc == CETYPE_EXT_ASCII) {
+            encodings[static_cast<std::size_t>(i)] = CETYPE_EXT_ASCII;
             continue;
         }
 
@@ -145,8 +145,8 @@ CHARR_CXX_HELPER bool validate_identity_views(
             return false;
         }
         encodings[static_cast<std::size_t>(i)] = ascii
-            ? cetype_ext_t::CE_ASCII
-            : cetype_ext_t::CE_UTF8;
+            ? CETYPE_EXT_ASCII
+            : CETYPE_EXT_UTF8;
     }
     return true;
 }
@@ -162,7 +162,7 @@ CHARR_CXX_HELPER void copy_identity_views(
         const cetype_ext_t encoding = encodings[
             static_cast<std::size_t>(i)
         ];
-        if (encoding == cetype_ext_t::CE_NA) {
+        if (encoding == CETYPE_EXT_NA) {
             output.set_na(i);
             continue;
         }
@@ -359,13 +359,13 @@ CHARR_NEUTRAL_HELPER cetype_ext_t extended_encoding(
 ) noexcept {
     switch (encoding) {
     case CE_UTF8:
-        return cetype_ext_t::CE_UTF8;
+        return CETYPE_EXT_UTF8;
     case CE_LATIN1:
-        return cetype_ext_t::CE_LATIN1;
+        return CETYPE_EXT_LATIN1;
     case CE_BYTES:
-        return cetype_ext_t::CE_BYTES;
+        return CETYPE_EXT_BYTES;
     default:
-        return cetype_ext_t::CE_NATIVE;
+        return CETYPE_EXT_NATIVE;
     }
 }
 
@@ -608,8 +608,8 @@ CHARR_ENTRYPOINT SEXP ci_encode(
                                     ? CE_NATIVE
                                     : target_converter.getCE())
                         );
-                        if (target_mark == cetype_ext_t::CE_UTF8)
-                            target_mark = cetype_ext_t::CE_ASCII_OR_UTF8;
+                        if (target_mark == CETYPE_EXT_UTF8)
+                            target_mark = CETYPE_EXT_ASCII_OR_UTF8;
 
                         bool native_input = false;
                         bool native_output = false;

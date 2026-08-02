@@ -1,25 +1,30 @@
 Third-party notices for charr
 =============================
 
+Scope of this file
+------------------
+
+Charr's original code and documentation are copyright (c) 2026 Travers Ching
+and are distributed under the MIT License recorded in `DESCRIPTION` and
+`LICENSE`. Material derived from stringr is also distributed under the MIT
+License, with the upstream copyright notice reproduced below.
+
+This file collects the copyright and license notices for material included in
+charr from stringr and stringi. The complete ICU4C notice is supplied in the
+separate `icu/LICENSE` file because it includes the Unicode License v3 and all
+third-party component notices from the ICU distribution.
+
 stringi
 -------
 
-Charr's initial private backend is copied from stringi's R and C++
-implementation. Its original ICU4C vendoring layout and build configuration
-were also adapted from stringi. The current ICU4C 78.3 runtime source comes
-from the official archive, with small CRAN-facing diagnostic adjustments
-recorded in the source package's `tools/icu78/README.md`; package-specific
-settings remain in charr's build flags and configuration header. Copied
-stringi files retain their upstream copyright notices and identify the pinned
-source commit.
+Charr's optimized backends contain R and C++ code copied or adapted from
+stringi. The package's original ICU4C vendoring layout and parts of its build
+configuration were also adapted from stringi. Copied files that carried
+upstream copyright and BSD notices retain them. This aggregate notice also
+applies to stringi-derived code that charr has since reorganized or rewritten.
 
-That commit, 19e9586ba39b3320df49355e32bd18d74ed6098f, is stringi
-1.8.7.9001 of 2026-06-03. Upstream has since rewritten its history, so the
-hash no longer resolves in the public repository; it names the tree charr
-actually copied and is kept for that reason. The nearest published release is
-1.8.9, which differs from the copied tree only in build configuration,
-compiler-warning fixes, and null checks in the datetime code that charr does
-not port.
+The pinned source is stringi 1.8.9 at commit
+68fe9b91cee2ca959d72a75660add028531d6af1 (2026-07-30).
 
 Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
 All rights reserved.
@@ -53,17 +58,47 @@ ICU4C
 -----
 
 Charr bundles ICU4C 78.3 source code and data from Unicode, Inc. and others.
-The complete Unicode License v3 and ICU third-party notices are included in
-`icu/LICENSE` in the installed package and `src/icu78/LICENSE` in the source
-package.
+The primary notice is copyright (c) 2016-2025 Unicode, Inc. under the Unicode
+License v3, SPDX identifier Unicode-3.0. ICU also contains components with
+their own copyright holders and compatible terms.
+
+The complete Unicode License v3 and every third-party notice supplied with
+ICU4C 78.3 are included in `icu/LICENSE` in the installed package and
+`src/icu78/LICENSE` in the repository and source package. Those files are
+retained verbatim from ICU's distribution.
+
+Charr carries four small source adjustments for compiler diagnostics and
+portability. They do not alter ICU's license terms. The adjusted files and
+changes are listed under "Source-package adjustments" in the repository's
+`tools/icu78/README.md`; source archive hashes and data provenance are recorded
+in `src/icu78/UPSTREAM.md`.
 
 stringr
 -------
 
-Charr is a fork of stringr, and its R surface, documentation and tests derive
-from it. Copyright (c) 2023 stringr authors, Posit Software, PBC, under the MIT
-License. Charr is distributed under those same MIT terms, recorded in this
-package's `DESCRIPTION` and `LICENSE`.
+Charr is a fork of stringr, and its R interface, documentation, and tests
+contain material derived from it. Current stringr metadata identifies Hadley
+Wickham and Posit Software, PBC as copyright holders.
+
+Copyright (c) 2023 stringr authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 Tatoeba
 -------
@@ -76,3 +111,12 @@ CC0 1.0, and sentences from the Tanaka Corpus are in the public domain.
 No Tatoeba data is included in this package or in its repository. The benchmark
 reads a sentence export the maintainer supplies locally, and the corpus it
 derives from that export is untracked.
+
+External package dependencies
+-----------------------------
+
+Charr calls the installed stringi package for its reference backend and uses
+the installed charport package for ALTREP interoperability. Those package
+distributions are not bundled in charr and retain their own licenses. This
+does not change the notices above for stringi-derived source that is included
+directly in charr.

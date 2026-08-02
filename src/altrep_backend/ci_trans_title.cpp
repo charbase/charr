@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f;
+// Copied from stringi;
 // stri_* renamed to ci_*. See inst/COPYRIGHTS.
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
@@ -334,7 +334,7 @@ CHARR_ENTRYPOINT SEXP ci_trans_totitle(
                     if (mapper.has_ascii_fast_path(input)) {
                         char* output = builder.reserve(
                             i, static_cast<std::size_t>(input.length),
-                            cetype_ext_t::CE_ASCII
+                            CETYPE_EXT_ASCII
                         );
                         mapper.map_ascii(input, output);
                         continue;

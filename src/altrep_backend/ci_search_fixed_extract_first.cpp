@@ -1,4 +1,4 @@
-// Derived from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f.
+// Derived from stringi.
 // Copyright (c) 2013-2025, Marek Gagolewski. See inst/COPYRIGHTS.
 
 #include "ci_stringi.h"
@@ -54,16 +54,16 @@ CHARR_NEUTRAL_HELPER inline bool direct_view(
         return true;
     }
 
-    if (value.enc != cetype_ext_t::CE_ASCII &&
-            value.enc != cetype_ext_t::CE_UTF8 &&
-            value.enc != cetype_ext_t::CE_ASCII_OR_UTF8) {
+    if (value.enc != CETYPE_EXT_ASCII &&
+            value.enc != CETYPE_EXT_UTF8 &&
+            value.enc != CETYPE_EXT_ASCII_OR_UTF8) {
         return false;
     }
     if (value.len < 0 || value.ptr == nullptr)
         return false;
 
     output = value;
-    if (output.enc != cetype_ext_t::CE_ASCII &&
+    if (output.enc != CETYPE_EXT_ASCII &&
             output.len >= 3 &&
             static_cast<unsigned char>(output.ptr[0]) == 0xefU &&
             static_cast<unsigned char>(output.ptr[1]) == 0xbbU &&
@@ -80,10 +80,10 @@ CHARR_NEUTRAL_HELPER inline charport::StrView matched_output_view(
     const char* data, int length
 ) noexcept
 {
-    cetype_ext_t encoding = cetype_ext_t::CE_ASCII;
+    cetype_ext_t encoding = CETYPE_EXT_ASCII;
     for (int i = 0; i < length; ++i) {
         if (static_cast<unsigned char>(data[i]) > 0x7fU) {
-            encoding = cetype_ext_t::CE_UTF8;
+            encoding = CETYPE_EXT_UTF8;
             break;
         }
     }

@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -162,17 +162,17 @@ CHARR_CXX_HELPER bool are_direct_inputs(
         const charport::StrView value = values[i];
         if (value.is_na())
             continue;
-        switch (value.enc) {
-        case cetype_ext_t::CE_ASCII:
-        case cetype_ext_t::CE_UTF8:
-        case cetype_ext_t::CE_ASCII_OR_UTF8:
+        switch (value.enc.value) {
+        case CETYPE_EXT_ASCII.value:
+        case CETYPE_EXT_UTF8.value:
+        case CETYPE_EXT_ASCII_OR_UTF8.value:
             break;
-        case cetype_ext_t::CE_NATIVE:
-        case cetype_ext_t::CE_LATIN1:
+        case CETYPE_EXT_NATIVE.value:
+        case CETYPE_EXT_LATIN1.value:
             return false;
-        case cetype_ext_t::CE_BYTES:
+        case CETYPE_EXT_BYTES.value:
             throw StriException(MSG__BYTESENC);
-        case cetype_ext_t::CE_NA:
+        case CETYPE_EXT_NA.value:
             break;
         default:
             throw StriException("unknown charport string encoding");
@@ -195,8 +195,8 @@ CHARR_NEUTRAL_HELPER shared::StringView direct_input(
 
     const char* data = value.ptr;
     int length = value.len;
-    if ((value.enc == cetype_ext_t::CE_UTF8 ||
-            value.enc == cetype_ext_t::CE_ASCII_OR_UTF8) &&
+    if ((value.enc == CETYPE_EXT_UTF8 ||
+            value.enc == CETYPE_EXT_ASCII_OR_UTF8) &&
             length >= 3 &&
             static_cast<unsigned char>(data[0]) == 0xefU &&
             static_cast<unsigned char>(data[1]) == 0xbbU &&
@@ -205,8 +205,8 @@ CHARR_NEUTRAL_HELPER shared::StringView direct_input(
         length -= 3;
     }
 
-    const bool ascii = value.enc == cetype_ext_t::CE_ASCII ||
-        (value.enc == cetype_ext_t::CE_ASCII_OR_UTF8 &&
+    const bool ascii = value.enc == CETYPE_EXT_ASCII ||
+        (value.enc == CETYPE_EXT_ASCII_OR_UTF8 &&
             is_ascii(data, length));
     return shared::StringView{
         data, length,
@@ -246,7 +246,7 @@ CHARR_NEUTRAL_HELPER cetype_ext_t output_encoding(
     bool ascii
 ) noexcept
 {
-    return ascii ? cetype_ext_t::CE_ASCII : cetype_ext_t::CE_UTF8;
+    return ascii ? CETYPE_EXT_ASCII : CETYPE_EXT_UTF8;
 }
 
 } // namespace join_frame
@@ -305,7 +305,7 @@ CHARR_ENTRYPOINT SEXP ci_join(
                     builder.reset(collapse_output ? 1 : 0);
                     if (collapse_output) {
                         builder.set(
-                            0, "", 0, cetype_ext_t::CE_ASCII
+                            0, "", 0, CETYPE_EXT_ASCII
                         );
                     }
                     result = entry_protections.reprotect_one(
@@ -586,7 +586,7 @@ CHARR_ENTRYPOINT SEXP ci_join(
                     if (row_count <= 0) {
                         builder.reset(1);
                         builder.set(
-                            0, "", 0, cetype_ext_t::CE_ASCII
+                            0, "", 0, CETYPE_EXT_ASCII
                         );
                         result = entry_protections.reprotect_one(
                             builder.to_sexp(), result_index
@@ -678,7 +678,7 @@ CHARR_ENTRYPOINT SEXP ci_join(
                     if (row_count <= 0) {
                         builder.reset(1);
                         builder.set(
-                            0, "", 0, cetype_ext_t::CE_ASCII
+                            0, "", 0, CETYPE_EXT_ASCII
                         );
                         result = entry_protections.reprotect_one(
                             builder.to_sexp(), result_index
@@ -890,7 +890,7 @@ CHARR_ENTRYPOINT SEXP ci_flatten(
                 }
                 else if (str_length <= 0) {
                     (void)output.reserve(
-                        0, 0, cetype_ext_t::CE_ASCII
+                        0, 0, CETYPE_EXT_ASCII
                     );
                 }
                 else {
@@ -935,8 +935,8 @@ CHARR_ENTRYPOINT SEXP ci_flatten(
                         char* destination = output.reserve(
                             0, plan.bytes,
                             plan.ascii
-                                ? cetype_ext_t::CE_ASCII
-                                : cetype_ext_t::CE_UTF8
+                                ? CETYPE_EXT_ASCII
+                                : CETYPE_EXT_UTF8
                         );
                         shared::join::write_flatten(
                             values.data(), values.size(), separator_ptr,

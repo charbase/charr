@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -73,19 +73,19 @@ CHARR_NEUTRAL_HELPER bool direct_view(
 {
     if (value.is_na()) {
         output = DirectView{
-            nullptr, NA_INTEGER, true, cetype_ext_t::CE_NA
+            nullptr, NA_INTEGER, true, CETYPE_EXT_NA
         };
         return true;
     }
     if (value.len < 0 || (value.ptr == nullptr && value.len != 0) ||
-            (value.enc != cetype_ext_t::CE_ASCII &&
-             value.enc != cetype_ext_t::CE_UTF8 &&
-             value.enc != cetype_ext_t::CE_ASCII_OR_UTF8)) {
+            (value.enc != CETYPE_EXT_ASCII &&
+             value.enc != CETYPE_EXT_UTF8 &&
+             value.enc != CETYPE_EXT_ASCII_OR_UTF8)) {
         return false;
     }
 
     output = DirectView{value.ptr, value.len, false, value.enc};
-    if (value.enc != cetype_ext_t::CE_ASCII &&
+    if (value.enc != CETYPE_EXT_ASCII &&
             STRI__ENC_HAS_BOM_UTF8(output.data, output.length)) {
         output.data += 3;
         output.length -= 3;
@@ -321,7 +321,7 @@ CHARR_CXX_HELPER bool replace_scalar_byte_direct(
             );
             char* destination = output.reserve(
                 i, size,
-                ascii ? cetype_ext_t::CE_ASCII : cetype_ext_t::CE_UTF8
+                ascii ? CETYPE_EXT_ASCII : CETYPE_EXT_UTF8
             );
             write_first_byte(
                 destination, subject, match, replacement_value
@@ -351,7 +351,7 @@ CHARR_CXX_HELPER bool replace_scalar_byte_direct(
         );
         char* destination = output.reserve(
             i, size,
-            ascii ? cetype_ext_t::CE_ASCII : cetype_ext_t::CE_UTF8
+            ascii ? CETYPE_EXT_ASCII : CETYPE_EXT_UTF8
         );
         write_all_bytes(
             destination, subject, pattern_byte, replacement_value
@@ -481,7 +481,7 @@ CHARR_CXX_HELPER void replace_one(
     );
     char* destination = output.reserve(
         output_index, size,
-        ascii ? cetype_ext_t::CE_ASCII : cetype_ext_t::CE_UTF8
+        ascii ? CETYPE_EXT_ASCII : CETYPE_EXT_UTF8
     );
     shared::write_replacement(
         subject, ranges, replacement, destination, size

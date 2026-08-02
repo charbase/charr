@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -68,18 +68,18 @@ CHARR_CXX_HELPER ReverseInput normalize_input(
     charr::shared::NativeToUtf8& converter
 )
 {
-    if (value.enc == cetype_ext_t::CE_ASCII)
+    if (value.enc == CETYPE_EXT_ASCII)
         return ReverseInput{value.ptr, value.len, true};
-    if (value.enc == cetype_ext_t::CE_BYTES)
+    if (value.enc == CETYPE_EXT_BYTES)
         throw StriException(MSG__BYTESENC);
 
     const char* ptr = value.ptr;
     int len = value.len;
-    bool ambiguous = value.enc == cetype_ext_t::CE_ASCII_OR_UTF8;
-    if (value.enc == cetype_ext_t::CE_LATIN1 ||
-            value.enc == cetype_ext_t::CE_NATIVE) {
+    bool ambiguous = value.enc == CETYPE_EXT_ASCII_OR_UTF8;
+    if (value.enc == CETYPE_EXT_LATIN1 ||
+            value.enc == CETYPE_EXT_NATIVE) {
         const shared::ByteView converted =
-            value.enc == cetype_ext_t::CE_LATIN1
+            value.enc == CETYPE_EXT_LATIN1
             ? converter.latin1(ptr, len)
             : converter.native(ptr, len);
         ptr = converted.ptr;
@@ -88,7 +88,7 @@ CHARR_CXX_HELPER ReverseInput normalize_input(
         // ASCII. Resolve that mark before reserving native charvec storage.
         ambiguous = true;
     }
-    else if (value.enc != cetype_ext_t::CE_UTF8 && !ambiguous) {
+    else if (value.enc != CETYPE_EXT_UTF8 && !ambiguous) {
         throw StriException("unknown charport string encoding");
     }
 
@@ -222,8 +222,8 @@ CHARR_ENTRYPOINT SEXP ci_reverse(SEXP str) noexcept
                     char* output = builder.reserve(
                         i, static_cast<std::size_t>(value.len),
                         value.ascii
-                            ? cetype_ext_t::CE_ASCII
-                            : cetype_ext_t::CE_UTF8
+                            ? CETYPE_EXT_ASCII
+                            : CETYPE_EXT_UTF8
                     );
                     reverse_input(value, output);
                 }

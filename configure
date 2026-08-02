@@ -56,8 +56,8 @@ emit() {
 }
 
 emit_bundle() {
-  # Keep the imported ICU sources pristine. DECNUMDIGITS=4 is the established
-  # stringi build setting and avoids GCC 15 overflow warnings in decNumber.
+  # DECNUMDIGITS=4 is the established stringi build setting for the bundled
+  # decimal implementation and avoids GCC 15 overflow diagnostics.
   emit bundle \
     "-Iicu78 -Iicu78/unicode -Iicu78/common -Iicu78/i18n -DU_STATIC_IMPLEMENTATION -DU_COMMON_IMPLEMENTATION -DU_I18N_IMPLEMENTATION -D_REENTRANT -DUCONFIG_USE_LOCAL -DU_CHARSET_IS_UTF8=0 -DU_HAVE_ELF_H -DUCONFIG_NO_FILE_IO=1 -DDECNUMDIGITS=4 -DSTRI_ICU_FOUND=0 -DU_HAVE_LIB_SUFFIX=1 -DU_LIB_SUFFIX_C_NAME=_charr -DCHARR_BUNDLED_ICU=1" \
     "-L. -licu_i18n -licu_common -licu_stubdata" \

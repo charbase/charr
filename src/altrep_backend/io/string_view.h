@@ -13,26 +13,26 @@ CHARR_NEUTRAL_HELPER inline shared::StringView as_shared_view(
     const charport::StrView& value
 ) noexcept {
     shared::StringEncoding encoding = shared::StringEncoding::unknown;
-    switch (value.enc) {
-    case cetype_ext_t::CE_NATIVE:
+    switch (value.enc.value) {
+    case CETYPE_EXT_NATIVE.value:
         encoding = shared::StringEncoding::native;
         break;
-    case cetype_ext_t::CE_UTF8:
+    case CETYPE_EXT_UTF8.value:
         encoding = shared::StringEncoding::utf8;
         break;
-    case cetype_ext_t::CE_LATIN1:
+    case CETYPE_EXT_LATIN1.value:
         encoding = shared::StringEncoding::latin1;
         break;
-    case cetype_ext_t::CE_BYTES:
+    case CETYPE_EXT_BYTES.value:
         encoding = shared::StringEncoding::bytes;
         break;
-    case cetype_ext_t::CE_ASCII:
+    case CETYPE_EXT_ASCII.value:
         encoding = shared::StringEncoding::ascii;
         break;
-    case cetype_ext_t::CE_ASCII_OR_UTF8:
+    case CETYPE_EXT_ASCII_OR_UTF8.value:
         encoding = shared::StringEncoding::ascii_or_utf8;
         break;
-    case cetype_ext_t::CE_NA:
+    case CETYPE_EXT_NA.value:
         encoding = shared::StringEncoding::missing;
         break;
     }
@@ -43,29 +43,29 @@ CHARR_NEUTRAL_HELPER inline shared::StringView as_shared_view(
 CHARR_NEUTRAL_HELPER inline charport::StrView as_charport_view(
     const shared::StringView& value
 ) noexcept {
-    cetype_ext_t encoding = cetype_ext_t::CE_NA;
+    cetype_ext_t encoding = CETYPE_EXT_NA;
     switch (value.enc) {
     case shared::StringEncoding::native:
-        encoding = cetype_ext_t::CE_NATIVE;
+        encoding = CETYPE_EXT_NATIVE;
         break;
     case shared::StringEncoding::utf8:
-        encoding = cetype_ext_t::CE_UTF8;
+        encoding = CETYPE_EXT_UTF8;
         break;
     case shared::StringEncoding::latin1:
-        encoding = cetype_ext_t::CE_LATIN1;
+        encoding = CETYPE_EXT_LATIN1;
         break;
     case shared::StringEncoding::bytes:
-        encoding = cetype_ext_t::CE_BYTES;
+        encoding = CETYPE_EXT_BYTES;
         break;
     case shared::StringEncoding::ascii:
-        encoding = cetype_ext_t::CE_ASCII;
+        encoding = CETYPE_EXT_ASCII;
         break;
     case shared::StringEncoding::ascii_or_utf8:
-        encoding = cetype_ext_t::CE_ASCII_OR_UTF8;
+        encoding = CETYPE_EXT_ASCII_OR_UTF8;
         break;
     case shared::StringEncoding::missing:
     case shared::StringEncoding::unknown:
-        encoding = cetype_ext_t::CE_NA;
+        encoding = CETYPE_EXT_NA;
         break;
     }
     return charport::StrView{

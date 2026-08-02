@@ -9,7 +9,6 @@
 ^local($|/)
 ^.*\.tar\.gz$
 ^charr\.Rcheck($|/)
-^LICENSE\.md$
 ^Makefile$
 ^compile_commands\.json$
 ^inst/extra($|/)

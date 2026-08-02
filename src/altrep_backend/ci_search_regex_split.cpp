@@ -1,4 +1,4 @@
-// Derived from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f.
+// Derived from stringi.
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -182,15 +182,15 @@ CHARR_NEUTRAL_HELPER CHARR_ALWAYS_INLINE cetype_ext_t field_encoding(
 ) noexcept
 {
     return ascii
-        ? cetype_ext_t::CE_ASCII
-        : cetype_ext_t::CE_ASCII_OR_UTF8;
+        ? CETYPE_EXT_ASCII
+        : CETYPE_EXT_ASCII_OR_UTF8;
 }
 
 
 CHARR_CXX_HELPER void set_scalar_missing(io::OutputStore& output)
 {
     output = io::OutputStore::scalar(
-        nullptr, 0, cetype_ext_t::CE_NA
+        nullptr, 0, CETYPE_EXT_NA
     );
 }
 
@@ -198,7 +198,7 @@ CHARR_CXX_HELPER void set_scalar_missing(io::OutputStore& output)
 CHARR_CXX_HELPER void set_scalar_empty(io::OutputStore& output)
 {
     output = io::OutputStore::scalar(
-        "", 0, cetype_ext_t::CE_ASCII
+        "", 0, CETYPE_EXT_ASCII
     );
 }
 
@@ -614,7 +614,7 @@ CHARR_ENTRYPOINT SEXP ci_split_regex(
                             else {
                                 matrix_builder.set(
                                     i+j*rows, "", 0,
-                                    cetype_ext_t::CE_ASCII
+                                    CETYPE_EXT_ASCII
                                 );
                             }
                         }

@@ -74,14 +74,16 @@ r	VECTOR_ELT	struct SEXPREC *(struct SEXPREC *, long)	r	rule:r-header+rule:revie
 r	XLENGTH	long (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
 neutral	__errno_location	int *(void) noexcept	neutral	clang:no-cxx-propagation	
 neutral	_setjmp	int (struct __jmp_buf_tag *) noexcept	neutral	clang:no-cxx-propagation	
+neutral	cetype_ext_t::operator!=	_Bool (struct cetype_ext_t) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	cetype_ext_t::operator==	_Bool (struct cetype_ext_t) const noexcept	neutral	clang:no-cxx-propagation	
 owner	charport::Reader::Reader	void (void) noexcept	owner	clang:cleanup-construction	
 neutral	charport::Reader::operator=	class charport::Reader &(class charport::Reader &&) noexcept	neutral	clang:no-cxx-propagation	
 r	charport::Reader::reset	void (struct SEXPREC *)	cxx	clang:not-noexcept	charport Reader initialization may raise an R error and does not propagate C++ exceptions.
 neutral	charport::Reader::size	long (void) const noexcept	neutral	clang:no-cxx-propagation	
 cxx	charport::Reader::view	struct charport_strview (long) const	cxx	clang:not-noexcept	
-cxx	charport::Reader::views	void (int, long, const char **, int *, enum cetype_ext_t *) const	cxx	clang:not-noexcept	
+cxx	charport::Reader::views	void (int, long, const char **, int *, struct cetype_ext_t *) const	cxx	clang:not-noexcept	
 owner	charport::StrViews::StrViews	void (long)	owner	clang:cleanup-construction	
-neutral	charport::StrViews::encodings	enum cetype_ext_t *(void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	charport::StrViews::encodings	struct cetype_ext_t *(void) noexcept	neutral	clang:no-cxx-propagation	
 neutral	charport::StrViews::lengths	int *(void) noexcept	neutral	clang:no-cxx-propagation	
 neutral	charport::StrViews::operator[]	struct charport_strview (long) const noexcept	neutral	clang:no-cxx-propagation	
 neutral	charport::StrViews::ptrs	const char **(void) noexcept	neutral	clang:no-cxx-propagation	
@@ -90,15 +92,15 @@ cxx	charport::StrViews::resize	void (long)	cxx	clang:not-noexcept
 neutral	charport::StrViews::size	long (void) const noexcept	neutral	clang:no-cxx-propagation	
 owner	charport::charvec::Builder::Builder	void (long)	owner	clang:cleanup-construction	
 owner	charport::charvec::Builder::release_store	class charport::charvec::Store (void) noexcept		legacy-unobserved	
-cxx	charport::charvec::Builder::reserve	char *(long, unsigned long, enum cetype_ext_t)	cxx	clang:not-noexcept	
+cxx	charport::charvec::Builder::reserve	char *(long, unsigned long, struct cetype_ext_t)	cxx	clang:not-noexcept	
 cxx	charport::charvec::Builder::reset	void (long)	cxx	clang:not-noexcept	
 cxx	charport::charvec::Builder::set	void (long, const struct charport_strview &)	cxx	clang:not-noexcept	
 cxx	charport::charvec::Builder::set_na	void (long)	cxx	clang:not-noexcept	
 r	charport::charvec::Builder::to_sexp	struct SEXPREC *(void) noexcept	neutral	clang:no-cxx-propagation	charport permits R errors during ALTREP wrapping and does not propagate C++ exceptions.
 owner	charport::charvec::GrowableBuilder::GrowableBuilder	void (void) noexcept	owner	clang:cleanup-construction	
-cxx	charport::charvec::GrowableBuilder::append	void (const char *, unsigned long, enum cetype_ext_t)	cxx	clang:not-noexcept	
+cxx	charport::charvec::GrowableBuilder::append	void (const char *, unsigned long, struct cetype_ext_t)	cxx	clang:not-noexcept	
 cxx	charport::charvec::GrowableBuilder::append	void (const struct charport_strview &)	cxx	clang:not-noexcept	
-cxx	charport::charvec::GrowableBuilder::append_reserve	char *(unsigned long, enum cetype_ext_t)	cxx	clang:not-noexcept	
+cxx	charport::charvec::GrowableBuilder::append_reserve	char *(unsigned long, struct cetype_ext_t)	cxx	clang:not-noexcept	
 neutral	charport::charvec::GrowableBuilder::operator=	class charport::charvec::GrowableBuilder &(class charport::charvec::GrowableBuilder &&) noexcept	neutral	clang:no-cxx-propagation	
 owner	charport::charvec::GrowableBuilder::release_store	class charport::charvec::Store (void) noexcept	owner	clang:cleanup-return	
 neutral	charport::charvec::GrowableBuilder::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
@@ -107,14 +109,14 @@ owner	charport::charvec::Store::Store	void (class charport::charvec::Store &&) n
 owner	charport::charvec::Store::Store	void (unsigned long, unsigned long)	owner	clang:cleanup-construction	
 owner	charport::charvec::Store::Store	void (void) noexcept	owner	clang:cleanup-construction	
 neutral	charport::charvec::Store::operator=	class charport::charvec::Store &(class charport::charvec::Store &&) noexcept	neutral	clang:no-cxx-propagation	
-owner	charport::charvec::Store::scalar	class charport::charvec::Store (const char *, unsigned long, enum cetype_ext_t)	owner	clang:cleanup-return	
+owner	charport::charvec::Store::scalar	class charport::charvec::Store (const char *, unsigned long, struct cetype_ext_t)	owner	clang:cleanup-return	
 neutral	charport::charvec::Store::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
 neutral	charport::charvec::Store::view	struct charport_strview (unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
 owner	charport::charvec::components::RecordTable::RecordTable	void (unsigned long)	owner	clang:cleanup-construction	
 neutral	charport::charvec::components::RecordTable::operator=	struct charport::charvec::components::RecordTable &(struct charport::charvec::components::RecordTable &&) noexcept	neutral	clang:no-cxx-propagation	
 cxx	charport::charvec::components::RecordTable::push_back	void (const struct charport_strview &)		legacy-unobserved	
 cxx	charport::charvec::components::RecordTable::reserve	void (unsigned long)		legacy-unobserved	
-neutral	charport::charvec::components::RecordTable::set	void (unsigned long, const char *, int, enum cetype_ext_t) noexcept	neutral	clang:no-cxx-propagation	
+neutral	charport::charvec::components::RecordTable::set	void (unsigned long, const char *, int, struct cetype_ext_t) noexcept	neutral	clang:no-cxx-propagation	
 neutral	charport::charvec::components::RecordTable::view	struct charport_strview (unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
 neutral	charport::charvec::components::SliceChain::empty	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
 neutral	charport::charvec::components::SliceChain::front_data	char *(void) noexcept	neutral	clang:no-cxx-propagation	
@@ -181,7 +183,7 @@ cxx	icu_78::UnicodeString::setToBogus	void (void)	cxx	clang:not-noexcept
 neutral	icu_78::UnicodeString::swap	void (class icu_78::UnicodeString &) noexcept	neutral	clang:no-cxx-propagation	
 cxx	icu_78::UnicodeString::toUTF8String	class std::basic_string<char> &(class std::basic_string<char> &) const	cxx	clang:not-noexcept	
 neutral	longjmp	void (struct __jmp_buf_tag *, int) __attribute__((noreturn)) noexcept	neutral	clang:no-cxx-propagation	
-neutral	make_strview	struct charport_strview (const char *, int, enum cetype_ext_t) noexcept	neutral	clang:no-cxx-propagation	
+neutral	make_strview	struct charport_strview (const char *, int, struct cetype_ext_t) noexcept	neutral	clang:no-cxx-propagation	
 neutral+raw-acquire	malloc	void *(unsigned long) noexcept		legacy-unobserved	Returns owned memory that free must release.
 neutral	memchr	const void *(const void *, int, unsigned long) noexcept	neutral	clang:no-cxx-propagation	
 neutral	memcmp	int (const void *, const void *, unsigned long) noexcept	neutral	clang:no-cxx-propagation	
@@ -261,9 +263,9 @@ neutral	std::unordered_map<charr::shared::FixedExtractRepeatKey, SEXPREC *, char
 cxx	std::unordered_map<charr::shared::FixedExtractRepeatKey, SEXPREC *, charr::shared::FixedExtractRepeatHash>::find	struct std::__detail::_Node_iterator<struct std::pair<const struct charr::shared::FixedExtractRepeatKey, struct SEXPREC *>, false, false> (const struct charr::shared::FixedExtractRepeatKey &)	cxx	clang:not-noexcept	
 cxx	std::unordered_map<charr::shared::FixedExtractRepeatKey, SEXPREC *, charr::shared::FixedExtractRepeatHash>::reserve	void (unsigned long)	cxx	clang:not-noexcept	
 owner	std::unordered_map<charr::shared::FixedExtractRepeatKey, SEXPREC *, charr::shared::FixedExtractRepeatHash>::unordered_map	void (void) noexcept	owner	clang:cleanup-construction	
-neutral	std::vector<cetype_ext_t>::operator[]	const enum cetype_ext_t &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
-neutral	std::vector<cetype_ext_t>::operator[]	enum cetype_ext_t &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
-owner	std::vector<cetype_ext_t>::vector	void (unsigned long, const class std::allocator<enum cetype_ext_t> &)	owner	clang:cleanup-construction	
+neutral	std::vector<cetype_ext_t>::operator[]	const struct cetype_ext_t &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<cetype_ext_t>::operator[]	struct cetype_ext_t &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<cetype_ext_t>::vector	void (unsigned long, const class std::allocator<struct cetype_ext_t> &)	owner	clang:cleanup-construction	
 neutral	std::vector<char>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
 neutral	std::vector<char>::data	char *(void) noexcept	neutral	clang:no-cxx-propagation	
 neutral	std::vector<char>::data	const char *(void) const noexcept	neutral	clang:no-cxx-propagation	

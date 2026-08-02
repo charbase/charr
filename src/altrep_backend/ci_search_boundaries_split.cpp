@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -121,7 +121,7 @@ CHARR_NEUTRAL_HELPER io::OutputRecord boundary_record(
     const int length = range.end - range.start;
     const cetype_ext_t encoding = io::is_ascii(
         data, static_cast<std::size_t>(length)
-    ) ? cetype_ext_t::CE_ASCII : cetype_ext_t::CE_UTF8;
+    ) ? CETYPE_EXT_ASCII : CETYPE_EXT_UTF8;
     return charport::StrView{data, length, encoding};
 }
 
@@ -424,7 +424,7 @@ CHARR_ENTRYPOINT SEXP ci_split_boundaries(
                             else {
                                 matrix_builder.set(
                                     i+j*rows, "", 0,
-                                    cetype_ext_t::CE_ASCII
+                                    CETYPE_EXT_ASCII
                                 );
                             }
                         }

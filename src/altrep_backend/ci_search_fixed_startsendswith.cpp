@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -77,11 +77,11 @@ CHARR_NEUTRAL_HELPER bool direct_utf8_view(
     int length = source.len;
     shared::StringEncoding encoding;
 
-    if (source.enc == cetype_ext_t::CE_ASCII) {
+    if (source.enc == CETYPE_EXT_ASCII) {
         encoding = shared::StringEncoding::ascii;
     }
-    else if (source.enc == cetype_ext_t::CE_UTF8 ||
-            source.enc == cetype_ext_t::CE_ASCII_OR_UTF8) {
+    else if (source.enc == CETYPE_EXT_UTF8 ||
+            source.enc == CETYPE_EXT_ASCII_OR_UTF8) {
         const bool strip_bom = has_utf8_bom(data, length);
         if (strip_bom) {
             data += 3;
@@ -89,7 +89,7 @@ CHARR_NEUTRAL_HELPER bool direct_utf8_view(
         }
         encoding = strip_bom
             ? shared::StringEncoding::utf8
-            : source.enc == cetype_ext_t::CE_UTF8
+            : source.enc == CETYPE_EXT_UTF8
                 ? shared::StringEncoding::utf8
                 : shared::StringEncoding::ascii_or_utf8;
     }

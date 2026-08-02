@@ -7,9 +7,9 @@
 
 ## charr: string processing reimagined for ALTREP strings
 
-`charr` is an experimental fork of `stringr`/`stringi` reimagined for
-ALTREP strings. The functions and semantics are the same as `stringr`
-but everything is optimized around ALTREP.
+`charr` is an experimental fork of `stringr` reimagined for ALTREP
+strings. The functions and semantics are the same as `stringr` but
+everything is optimized around ALTREP.
 
 ALTREP is R’s mechanism for letting a vector define its own layout, and
 many packages already use it internally to store data more efficiently.
@@ -26,6 +26,19 @@ much faster.
 *This work is supported by the R Consortium Infrastructure Steering
 Committee, under the grant Universal ALTREP Interoperability for
 Strings.*
+
+## Licensing
+
+Charr’s original work and the material derived from stringr are
+distributed under the MIT License. Code copied or adapted from stringi
+remains under the BSD 3-Clause License. Bundled ICU4C source and data
+retain the Unicode License v3 and ICU’s additional component licenses.
+
+The repository’s [licensing and copyright notice](LICENSE.note) contains
+the complete MIT license and explains the component boundaries. The
+[installed aggregate notice](inst/COPYRIGHTS) supplies the complete
+stringr and stringi terms and points to ICU’s full notices. No Tatoeba
+benchmark data is included in the repository or package.
 
 ## Installation
 

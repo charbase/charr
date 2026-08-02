@@ -1,0 +1,122 @@
+Licensing and copyright notices for charr
+==========================================
+
+Package license
+---------------
+
+Charr's original code and documentation are copyright (c) 2026 Travers Ching.
+Material derived from stringr is copyright (c) 2023 stringr authors. These
+parts of the package are distributed under the MIT License.
+
+`DESCRIPTION` declares `MIT + file LICENSE`. The top-level `LICENSE` is the
+DCF-format completion of R's standard MIT template. It records Travers Ching
+as the copyright holder for charr's original MIT-licensed work. The complete
+MIT terms are reproduced below. Stringr's upstream notice is preserved in the
+same license text and in the stringr section below.
+
+The MIT package license does not replace the licenses and notices for the
+included components described below.
+
+MIT License
+-----------
+
+Copyright (c) 2026 Travers Ching
+Copyright (c) 2023 stringr authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+stringr-derived material
+------------------------
+
+Charr is a fork of stringr. Its R interface, documentation, and tests contain
+material derived from stringr under the MIT License. The exact upstream notice
+is:
+
+    Copyright (c) 2023 stringr authors
+
+Current stringr metadata identifies Hadley Wickham and Posit Software, PBC as
+copyright holders. The upstream notice and the complete MIT terms are
+reproduced in `inst/COPYRIGHTS` and in this file.
+
+stringi-derived material
+------------------------
+
+Charr's optimized backends contain R and C++ code copied or adapted from
+stringi 1.8.9. The pinned upstream source is commit
+68fe9b91cee2ca959d72a75660add028531d6af1, dated 2026-07-30. The source pin and
+the relationship between the imported and current implementations are recorded
+in `src/UPSTREAM.md`.
+
+The stringi-derived code remains subject to the BSD 3-Clause License and the
+following upstream copyright:
+
+    Copyright (c) 2013-2025, Marek Gagolewski
+
+Copied files that carried upstream copyright and license headers retain them.
+The full BSD notice is reproduced in `inst/COPYRIGHTS`.
+
+Bundled ICU4C
+-------------
+
+The package contains ICU4C 78.3 runtime source and a trimmed data archive from
+the official ICU4C 78.3 distribution. ICU is used when an allowlisted system
+ICU is unavailable. The primary ICU notice is:
+
+    Copyright (c) 2016-2025 Unicode, Inc.
+    SPDX-License-Identifier: Unicode-3.0
+
+ICU4C also includes material from other copyright holders under compatible
+component licenses. The complete Unicode License v3 and every third-party
+notice supplied with ICU are in `src/icu78/LICENSE` in the repository and
+source package. The same file is installed as `icu/LICENSE`.
+
+Charr carries four small ICU source adjustments for compiler diagnostics and
+portability. They do not alter ICU's license terms. The repository documents
+the adjusted files under "Source-package adjustments" in
+`tools/icu78/README.md`. Source archive hashes, the complete import inventory,
+and data provenance are recorded in `src/icu78/UPSTREAM.md`.
+
+External dependencies
+---------------------
+
+The installed stringi and charport packages are dependencies. Their package
+distributions are not bundled in charr and retain their own licenses. This is
+separate from the stringi-derived source included directly in charr.
+
+Benchmark input
+---------------
+
+Benchmark scripts can process a sentence export supplied locally by the
+maintainer from the Tatoeba Project. Tatoeba releases that export under
+Creative Commons Attribution 2.0 France, with some sentences also available
+under CC0 1.0 and Tanaka Corpus sentences in the public domain. Charr includes
+no Tatoeba data in the repository or package. `inst/COPYRIGHTS` records the
+attribution for users who run the benchmark with their own local export.
+
+Notice locations
+----------------
+
+* `DESCRIPTION` records package metadata, copyright holders, and license
+  categories.
+* `LICENSE` completes R's standard MIT template for charr's own copyright.
+* `LICENSE.note` contains the full MIT text and explains how the package's
+  other licenses and notices apply.
+* `inst/COPYRIGHTS` contains the installed aggregate notice, including the
+  complete stringr MIT and stringi BSD terms.
+* `src/icu78/LICENSE` and `inst/icu/LICENSE` contain the complete ICU notice.

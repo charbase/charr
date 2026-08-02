@@ -1,4 +1,4 @@
-// Derived from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f.
+// Derived from stringi.
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -306,7 +306,7 @@ CHARR_CXX_HELPER void set_output(
 )
 {
     int32_t utf8_length = 0;
-    cetype_ext_t encoding = cetype_ext_t::CE_ASCII;
+    cetype_ext_t encoding = CETYPE_EXT_ASCII;
     const char* utf8 = ci::unicode_to_utf8(
         value, utf8_buffer, utf8_length, encoding
     );

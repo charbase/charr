@@ -1,11 +1,12 @@
 // charr links its own ICU4C, never stringi's. In bundle mode (configure did not
-// select an allowlisted system candidate; always on Windows) that is pristine
-// ICU4C 78.3 runtime source (Unicode, Inc. and others; Unicode License v3, see
-// src/icu78/LICENSE): symbols are suffixed ..._78_charr and the packaged
-// trimmed icudt78l.dat is fed in via udata_setCommonData at load
-// time. In system mode (CHARR_BUNDLED_ICU=0, set by configure after a
-// pkg-config probe) charr links the system ICU4C, which locates its own
-// complete data archive, so no data file ships or loads.
+// select an allowlisted system candidate; always on Windows) it uses ICU4C
+// 78.3 runtime source with local adjustments summarized in
+// src/icu78/UPSTREAM.md (Unicode, Inc. and others; Unicode License v3, see
+// src/icu78/LICENSE). Symbols are suffixed ..._78_charr, and the packaged
+// trimmed icudt78l.dat is fed in via udata_setCommonData at load time. In
+// system mode (CHARR_BUNDLED_ICU=0, set by configure after a pkg-config probe)
+// charr links the system ICU4C, which locates its own complete data archive, so
+// no data file ships or loads.
 
 #include "icu.h"
 

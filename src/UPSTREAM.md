@@ -2,10 +2,8 @@
 
 Charr's two optimized backends, `base_backend/` and `altrep_backend/`, derive
 from stringi's R and C++ implementation. The upstream package is stringi
-1.8.7.9001 at commit `19e9586ba39b3320df49355e32bd18d74ed6098f`. Upstream has
-since rewritten its history, so that hash no longer resolves in the public
-repository; `inst/COPYRIGHTS` records what it names and how the nearest
-published release differs.
+1.8.9 at commit `68fe9b91cee2ca959d72a75660add028531d6af1`
+(2026-07-30).
 
 The original import was mechanical: every `stri_*` name became `ci_*` and the
 operation bodies stayed recognizable. That translation is frozen on the

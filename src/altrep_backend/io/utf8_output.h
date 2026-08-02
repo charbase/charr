@@ -70,8 +70,8 @@ public:
         R_xlen_t index, std::string_view value, cetype_ext_t encoding
     );
     // Hot paths may use this after validating the pointer, length, and
-    // encoding while constructing the record. CE_ASCII_OR_UTF8 is valid:
-    // charport resolves that mark when R materializes the CHARSXP.
+    // encoding while constructing the record. CETYPE_EXT_ASCII_OR_UTF8 is
+    // valid: charport resolves that mark when R materializes the CHARSXP.
     CHARR_CXX_HELPER void set_validated(
         R_xlen_t index, const OutputRecord& value
     )

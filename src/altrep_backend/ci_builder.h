@@ -23,21 +23,21 @@ inline cetype_ext_t output_encoding(
     const char* data, size_t length, cetype_ext_t preferred
 )
 {
-    if (preferred == cetype_ext_t::CE_NA || data == NULL)
-        return cetype_ext_t::CE_NA;
+    if (preferred == CETYPE_EXT_NA || data == NULL)
+        return CETYPE_EXT_NA;
 
     // Deviation from stringi: reject an overlong lazy record before either
     // scanning it or narrowing its size to R's character-string limit.
     if (length > static_cast<size_t>(R_LEN_T_MAX))
         throw std::length_error("character output exceeds R's string length limit");
 
-    // Deviation from stringi: CE_ASCII_OR_UTF8 deliberately leaves the mark
+    // Deviation from stringi: CETYPE_EXT_ASCII_OR_UTF8 leaves the mark
     // unresolved until the payload is exposed. Explicit marks are trusted.
-    if (preferred != cetype_ext_t::CE_ASCII_OR_UTF8)
+    if (preferred != CETYPE_EXT_ASCII_OR_UTF8)
         return preferred;
     return io::is_ascii(data, length)
-        ? cetype_ext_t::CE_ASCII
-        : cetype_ext_t::CE_UTF8;
+        ? CETYPE_EXT_ASCII
+        : CETYPE_EXT_UTF8;
 }
 
 
@@ -47,7 +47,7 @@ inline charport::charvec::Store scalar_store(
 {
     // Deviation from stringi: C++11 permits data() to be null for empty
     // strings and vectors, while Store::scalar reserves null for NA.
-    if (data == NULL && length == 0 && preferred != cetype_ext_t::CE_NA)
+    if (data == NULL && length == 0 && preferred != CETYPE_EXT_NA)
         data = "";
     return charport::charvec::Store::scalar(
         data, length, output_encoding(data, length, preferred)
@@ -71,7 +71,7 @@ inline void builder_set(
     // Deviation from stringi: C++11 permits data() to be null for an empty
     // vector. Builder reserves a null pointer for NA, so canonicalize only
     // the empty, non-missing case at this common length-delimited boundary.
-    if (data == NULL && length == 0 && preferred != cetype_ext_t::CE_NA)
+    if (data == NULL && length == 0 && preferred != CETYPE_EXT_NA)
         data = "";
     builder.set(
         i, data, length,
@@ -92,8 +92,9 @@ inline void builder_set(
 }
 
 
-// Resolves to CE_ASCII or CE_UTF8 without scanning: u_strToUTF8 emits exactly
-// one byte per UTF-16 code unit only when every code point is below 0x80.
+// Resolves to CETYPE_EXT_ASCII or CETYPE_EXT_UTF8 without scanning:
+// u_strToUTF8 emits one byte per UTF-16 code unit only when every code point
+// is below 0x80.
 // Anything higher costs strictly more UTF-8 bytes than UTF-16 code units
 // (2 or 3 bytes for one unit, 4 bytes for a surrogate pair), so equal lengths
 // is precisely the ASCII case.
@@ -102,8 +103,8 @@ inline cetype_ext_t utf8_mark_from_lengths(
 ) noexcept
 {
     return utf8_length == utf16_length
-        ? cetype_ext_t::CE_ASCII
-        : cetype_ext_t::CE_UTF8;
+        ? CETYPE_EXT_ASCII
+        : CETYPE_EXT_UTF8;
 }
 
 
@@ -122,7 +123,7 @@ CHARR_CXX_HELPER inline const char* unicode_to_utf8(
         // Deviation from stringi: Builder treats a null pointer as NA, while
         // vector::data() may be null for an empty buffer under C++11.
         utf8_buffer.clear();
-        utf8_mark = cetype_ext_t::CE_ASCII;
+        utf8_mark = CETYPE_EXT_ASCII;
         return "";
     }
 
@@ -153,11 +154,11 @@ inline charport::charvec::Store scalar_store(
 {
     if (value.isBogus())
         return charport::charvec::Store::scalar(
-            NULL, 0, cetype_ext_t::CE_NA
+            NULL, 0, CETYPE_EXT_NA
         );
 
     int32_t utf8_length = 0;
-    cetype_ext_t utf8_mark = cetype_ext_t::CE_ASCII;
+    cetype_ext_t utf8_mark = CETYPE_EXT_ASCII;
     const char* utf8 = unicode_to_utf8(
         value, utf8_buffer, utf8_length, utf8_mark
     );
@@ -180,7 +181,7 @@ inline void builder_set(
     // io::Utf16Output::toR used one reusable conversion buffer. Keep that
     // behavior while sending the length-delimited UTF-8 result to Builder.
     int32_t utf8_length = 0;
-    cetype_ext_t utf8_mark = cetype_ext_t::CE_ASCII;
+    cetype_ext_t utf8_mark = CETYPE_EXT_ASCII;
     const char* utf8 = unicode_to_utf8(
         value, utf8_buffer, utf8_length, utf8_mark
     );
@@ -194,7 +195,7 @@ inline void builder_append(
 )
 {
     // See builder_set(): a null empty C++11 buffer is still an empty string.
-    if (data == NULL && length == 0 && preferred != cetype_ext_t::CE_NA)
+    if (data == NULL && length == 0 && preferred != CETYPE_EXT_NA)
         data = "";
     builder.append(
         data, length,
@@ -220,12 +221,12 @@ inline void builder_append(
 )
 {
     if (value.isBogus()) {
-        builder.append(NULL, 0, cetype_ext_t::CE_NA);
+        builder.append(NULL, 0, CETYPE_EXT_NA);
         return;
     }
 
     int32_t utf8_length = 0;
-    cetype_ext_t utf8_mark = cetype_ext_t::CE_ASCII;
+    cetype_ext_t utf8_mark = CETYPE_EXT_ASCII;
     const char* utf8 = unicode_to_utf8(
         value, utf8_buffer, utf8_length, utf8_mark
     );

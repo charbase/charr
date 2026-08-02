@@ -22,12 +22,17 @@ Description: An optimization and benchmarking experiment derived from the
     'charport'. It is not currently intended as a drop-in replacement for
     'stringr' or 'stringi'.
 License: MIT + file LICENSE
-Copyright: This package is a fork of the 'stringr' package owned by Posit
-    Software, PBC under the MIT License. It includes R and C++ code from the
-    'stringi' package owned by Marek Gagolewski under the BSD 3-Clause License,
-    and it bundles ICU4C source code and data owned by Unicode, Inc. and others
-    under the Unicode License v3; the full notices are installed as COPYRIGHTS
-    and icu/LICENSE. Benchmark measurements use sentences from the Tatoeba
+Copyright: Copyright (c) 2026 Travers Ching. Portions derived from the
+    'stringr' package are copyright (c) 2023 stringr authors; current upstream
+    metadata identifies Hadley Wickham and Posit Software, PBC as copyright
+    holders. Those portions are used under the MIT License. Included R and C++
+    code from 'stringi' is copyright (c) 2013-2025 Marek Gagolewski and is used
+    under the BSD 3-Clause License. Bundled ICU4C 78.3 source code and data are
+    copyright (c) 2016-2025 Unicode, Inc., with additional holders and terms
+    identified in ICU's third-party notices, under the Unicode License v3 and
+    the applicable component licenses. The source package includes
+    LICENSE.note; installed notices are supplied as COPYRIGHTS and icu/LICENSE.
+    Benchmark scripts can process locally supplied sentences from the Tatoeba
     Project (<https://tatoeba.org>) under Creative Commons Attribution 2.0
     France; no Tatoeba data is included in this package.
 URL: https://github.com/charbase/charr, https://charbase.github.io/charr/

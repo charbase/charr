@@ -1,4 +1,4 @@
-// Copied from stringi 19e9586ba39b3320df49355e32bd18d74ed6098f; stri_* renamed to ci_*. See inst/COPYRIGHTS.
+
 /* This file is part of the 'stringi' project.
  * Copyright (c) 2013-2025, Marek Gagolewski <https://www.gagolewski.com/>
  * All rights reserved.
@@ -95,9 +95,9 @@ CHARR_CXX_HELPER PadInput normalize_input(
 {
     if (value.ptr == nullptr || value.len < 0)
         throw std::runtime_error("Reader returned an invalid string view");
-    if (value.enc == cetype_ext_t::CE_ASCII)
+    if (value.enc == CETYPE_EXT_ASCII)
         return PadInput{value.ptr, value.len, true, false};
-    if (value.enc == cetype_ext_t::CE_BYTES)
+    if (value.enc == CETYPE_EXT_BYTES)
         throw StriException(MSG__BYTESENC);
 
     const char* ptr = value.ptr;
@@ -106,19 +106,19 @@ CHARR_CXX_HELPER PadInput normalize_input(
     bool strip_bom = false;
     bool converted_input = false;
 
-    switch (value.enc) {
-    case cetype_ext_t::CE_UTF8:
+    switch (value.enc.value) {
+    case CETYPE_EXT_UTF8.value:
         strip_bom = has_utf8_bom(ptr, len);
         break;
-    case cetype_ext_t::CE_ASCII_OR_UTF8:
+    case CETYPE_EXT_ASCII_OR_UTF8.value:
         strip_bom = has_utf8_bom(ptr, len);
         ascii = !strip_bom && io::is_ascii(
             ptr, static_cast<std::size_t>(len)
         );
         break;
-    case cetype_ext_t::CE_LATIN1:
-    case cetype_ext_t::CE_NATIVE: {
-        const bool native = value.enc == cetype_ext_t::CE_NATIVE;
+    case CETYPE_EXT_LATIN1.value:
+    case CETYPE_EXT_NATIVE.value: {
+        const bool native = value.enc == CETYPE_EXT_NATIVE;
         const bool native_bom = native && converter.native_is_utf8();
         const shared::ByteView converted = native
             ? converter.native(ptr, len)
@@ -135,7 +135,7 @@ CHARR_CXX_HELPER PadInput normalize_input(
         converted_input = true;
         break;
     }
-    case cetype_ext_t::CE_NA:
+    case CETYPE_EXT_NA.value:
         throw std::runtime_error("non-missing Reader record has NA encoding");
     default:
         throw std::runtime_error("Reader returned an unknown string encoding");
@@ -430,8 +430,8 @@ CHARR_ENTRYPOINT SEXP ci_pad(
                             i, str_current.ptr,
                             static_cast<std::size_t>(str_current.len),
                             str_current.ascii
-                                ? cetype_ext_t::CE_ASCII
-                                : cetype_ext_t::CE_UTF8
+                                ? CETYPE_EXT_ASCII
+                                : CETYPE_EXT_UTF8
                         );
                         continue;
                     }
@@ -454,8 +454,8 @@ CHARR_ENTRYPOINT SEXP ci_pad(
                     char* output = builder.reserve(
                         i, output_length,
                         str_current.ascii && pad_current.ascii
-                            ? cetype_ext_t::CE_ASCII
-                            : cetype_ext_t::CE_UTF8
+                            ? CETYPE_EXT_ASCII
+                            : CETYPE_EXT_UTF8
                     );
 
                     R_len_t left_count = 0;
