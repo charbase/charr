@@ -1,6 +1,8 @@
 ^.*\.Rproj$
 ^\.Rproj\.user($|/)
 ^\.claude($|/)
+^\.agents($|/)
+^\.codex($|/)
 ^\.github($|/)
 ^\.vscode($|/)
 ^\.gitignore$
@@ -16,6 +18,7 @@
 ^tests/testthat/_problems($|/)
 ^tests/testthat/.*/_problems($|/)
 ^CLAUDE\.md$
+^AGENTS\.md$
 ^vignettes/.*\.html$
 ^vignettes/.*_files($|/)
 ^vignettes/\.quarto($|/)

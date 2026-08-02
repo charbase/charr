@@ -6,10 +6,12 @@ stringi
 
 Charr's initial private backend is copied from stringi's R and C++
 implementation. Its original ICU4C vendoring layout and build configuration
-were also adapted from stringi. The current ICU4C 78.3 runtime source is a
-pristine official import; package-specific settings remain in charr's build
-flags and configuration header. Copied stringi files retain their upstream
-copyright notices and identify the pinned source commit.
+were also adapted from stringi. The current ICU4C 78.3 runtime source comes
+from the official archive, with small CRAN-facing diagnostic adjustments
+recorded in the source package's `tools/icu78/README.md`; package-specific
+settings remain in charr's build flags and configuration header. Copied
+stringi files retain their upstream copyright notices and identify the pinned
+source commit.
 
 That commit, 19e9586ba39b3320df49355e32bd18d74ed6098f, is stringi
 1.8.7.9001 of 2026-06-03. Upstream has since rewritten its history, so the

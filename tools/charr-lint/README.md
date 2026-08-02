@@ -1,8 +1,8 @@
 # charr-lint
 
-`charr-lint` checks the native error and lifetime rules stated under "Native
-error and lifetime shape" in `CLAUDE.md`. It uses Clang's AST and the package
-compilation database.
+`charr-lint` checks the native error and lifetime rules encoded by the
+`CHARR_LINT_*` annotations. It uses Clang's AST and the package compilation
+database.
 
 ## External effects
 

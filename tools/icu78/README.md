@@ -33,3 +33,22 @@ without network access. `ICU_CACHE_DIR` controls the download cache.
 `tools/trim-icudt.R` documents the keep/drop policy and its required canaries.
 For the ICU 78.3 import, the full and trimmed archives passed the same service
 canaries, and the wider comparison produced no trimming-specific failure.
+
+## Source-package adjustments
+
+The bundled runtime sources come from the official ICU4C 78.3 archive, with
+four small changes that keep compiler diagnostics enabled for CRAN:
+
+- `common/unistr.cpp` marks the static destructor-instantiation helper
+  `[[maybe_unused]]` instead of suppressing `-Wunused-function`.
+- `i18n/decNumber.cpp` leaves the compiler's `-Warray-bounds` diagnostics
+  enabled around three upstream decimal routines. Their logic is unchanged.
+- `i18n/formattedvalue.cpp` omits the unused `ufmtval_getString()` definition,
+  as stringi does. GCC reports a false `-Wreturn-local-addr` diagnostic for
+  the upstream implementation.
+- `i18n/number_skeletons.cpp` keeps the temporary `UnicodeString` alias alive
+  through `CurrencyUnit` construction instead of suppressing
+  `-Wdangling-pointer`.
+
+The platform-specific optimization and macro-state pragmas remain unchanged;
+they do not suppress compiler diagnostics.

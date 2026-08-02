@@ -22,6 +22,11 @@ compile_commands.json
 .DS_Store
 .vscode
 /src/.vscode
+CLAUDE.md
+AGENTS.md
+.claude/
+.agents/
+.codex/
 scratch
 tests/testthat/_problems/
 tests/testthat/**/_problems/

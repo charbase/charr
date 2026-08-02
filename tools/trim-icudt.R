@@ -59,9 +59,9 @@
 #     stringr suite alone stayed green while CJK segmentation was broken — do
 #     not treat it as sufficiency evidence.
 #   - Sufficiency evidence so far: dual suite + those canaries. Entry-by-entry
-#     NECESSITY proofs (drop one kept item -> its canary must fail) are still
-#     owed per CLAUDE.md before calling the archive minimal; this script's
-#     keep set is validated-sufficient, not proven-minimal.
+#     NECESSITY proofs (drop one kept item -> its canary must fail) are not
+#     complete, so this script's keep set is validated-sufficient, not
+#     proven-minimal.
 #   - Only little-endian is handled ("l" archives; every CRAN platform except
 #     s390x). For big-endian, ship icudt<NN>b and flip endian= in the readBin
 #     calls or byte-swap at build time like stringi does.
@@ -133,9 +133,9 @@ parse_dat <- function(x) {
   list(hdr = hdr, names = names, data_off = data_off, size = size)
 }
 
-# Drop policy: validated variant E of the 2026-07-14 feasibility study
-# (scratch/dat-feasibility-report.md). Patterns are PCRE, matched against
-# item names with the "icudt78l/" prefix removed.
+# Drop policy: validated variant E of the 2026-07-14 feasibility study.
+# Patterns are PCRE, matched against item names with the "icudt78l/" prefix
+# removed.
 drop_patterns <- c(
   "^zone/", "^curr/", "^lang/", "^unit/", "^region/",  # locale vocabulary
   "^translit/", "^rbnf/",                              # utrans, spellout

@@ -15,7 +15,8 @@ LINT_EFFECT_ARGS := \
 	--effects tools/charr-lint/effects.tsv \
 	--effect-overrides tools/charr-lint/effect-overrides.tsv
 
-.PHONY: doc build install install-dev check check-no-vignette test test-stringi \
+.PHONY: doc build install install-dev check check-no-vignette rhub-platforms \
+	test test-stringi \
 	test-base test-altrep test-system test-bundle \
 	test-san test-valgrind vignette figures pkgdown pkgdown-index \
 	lint lint-tool lint-fixtures lint-db lint-frontier lint-converted lint-audit \
@@ -255,6 +256,62 @@ check: $(BUILD)
 check-no-vignette: $(BUILD)
 	R CMD check --as-cran --no-build-vignettes $<
 
+# R-hub runs from .github/workflows/rhub.yaml, triggered by hand from the
+# Actions tab. The platform list is hardcoded there so a run is reproducible,
+# but upstream adds platforms a few times a year and has never removed one, so
+# a stale list under-tests silently instead of failing. This compares the
+# workflow against upstream and offers to rewrite it. The pinned action
+# revision resolves the platform names, so the pin and the list are rewritten
+# together and always come from one upstream revision. Upstream force-moves the
+# v1 tag on every release, so each pin is annotated with the exact semver tag it
+# came from and that annotation is rewritten too.
+RHUB_WORKFLOW := .github/workflows/rhub.yaml
+RHUB_ACTIONS  := https://raw.githubusercontent.com/r-hub/actions
+
+rhub-platforms:
+	@set -o pipefail; \
+	for tool in curl jq; do \
+	  command -v $$tool >/dev/null || { echo "$$tool is required." >&2; exit 1; }; \
+	done; \
+	have_list=$$(sed -n "s/^.*default: '\([^']*\)'.*# rhub-platforms.*$$/\1/p" $(RHUB_WORKFLOW)); \
+	have_sha=$$(sed -n 's|^.*r-hub/actions/[a-z-]*@\([0-9a-f]\{40\}\).*$$|\1|p' $(RHUB_WORKFLOW) | sort -u); \
+	have_ver=$$(sed -n 's|^.*r-hub/actions/[a-z-]*@[0-9a-f]\{40\} # \(v[0-9.]*\).*$$|\1|p' $(RHUB_WORKFLOW) | sort -u | head -1); \
+	if [ -z "$$have_list" ]; then \
+	  echo "No '# rhub-platforms' marker in $(RHUB_WORKFLOW)." >&2; exit 1; \
+	fi; \
+	if [ "$$(echo "$$have_sha" | wc -l)" -ne 1 ]; then \
+	  echo "$(RHUB_WORKFLOW) pins more than one r-hub/actions revision:" >&2; \
+	  echo "$$have_sha" >&2; exit 1; \
+	fi; \
+	sha=$$(curl -fsSL https://api.github.com/repos/r-hub/actions/commits/v1 | jq -r '.sha'); \
+	case "$$sha" in [0-9a-f]*) ;; *) echo "Could not resolve the r-hub/actions v1 tip." >&2; exit 1;; esac; \
+	ver=$$(curl -fsSL 'https://api.github.com/repos/r-hub/actions/tags?per_page=100' | jq -r --arg sha "$$sha" '[.[] | select(.commit.sha == $$sha) | .name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$$"))] | first // "v1"'); \
+	list=$$(curl -fsSL $(RHUB_ACTIONS)/$$sha/setup/platforms.json | jq -r '[.[].name] | join(",")'); \
+	if [ -z "$$list" ]; then echo "Could not read platforms.json at $$sha." >&2; exit 1; fi; \
+	if [ "$$have_list" = "$$list" ] && [ "$$have_sha" = "$$sha" ]; then \
+	  echo "$(RHUB_WORKFLOW) is current: $$(echo "$$list" | tr ',' '\n' | wc -l) platforms at $$ver ($${sha:0:7})."; \
+	  exit 0; \
+	fi; \
+	if [ "$$have_list" != "$$list" ]; then \
+	  echo "The r-hub platform list has changed:"; \
+	  diff <(echo "$$have_list" | tr ',' '\n' | sort) \
+	       <(echo "$$list" | tr ',' '\n' | sort) \
+	    | sed -n 's/^< /  removed: /p; s/^> /  added:   /p'; \
+	else \
+	  echo "The platform list is unchanged."; \
+	fi; \
+	if [ "$$have_sha" != "$$sha" ]; then \
+	  echo "The r-hub/actions pin has moved: $$have_ver ($${have_sha:0:7}) -> $$ver ($${sha:0:7})."; \
+	fi; \
+	read -r -p "Rewrite $(RHUB_WORKFLOW)? [y/N] " reply; \
+	case "$$reply" in [yY]*) ;; *) echo "Left unchanged."; exit 0;; esac; \
+	sed -i \
+	  -e "s|^\(\s*default: \)'[^']*'\(.*# rhub-platforms.*\)$$|\1'$$list'\2|" \
+	  -e "s|\(r-hub/actions/[a-z-]*\)@[0-9a-f]\{40\} # v[0-9.]*|\1@$$sha # $$ver|g" \
+	  $(RHUB_WORKFLOW); \
+	echo "Updated $(RHUB_WORKFLOW). Review it, commit it, and push it to the"; \
+	echo "default branch, or the Run workflow button will use the old list."
+
 doc:
 	Rscript -e 'roxygen2::roxygenise(roclets = "rd")'
 
@@ -390,12 +447,9 @@ pkgdown: clean-pkgdown doc
 	mkdir -p local/cache
 	XDG_CACHE_HOME=$(CURDIR)/local/cache R_USER_CACHE_DIR=$(CURDIR)/local/cache/R \
 	  IN_PKGDOWN=true Rscript -e 'pkgdown::build_site(new_process = FALSE, install = FALSE, quiet = FALSE, override = list(home = list(sidebar = FALSE)))'
-	# pkgdown turns every root-level .md into a page and its file list is hard
-	# coded, so CLAUDE.md becomes CLAUDE.html with no way to configure it out.
-	# It also writes a markdown mirror beside every index.html it finds, which
+	# pkgdown writes a markdown mirror beside every index.html it finds, which
 	# turns the code map viewer into a stub of base64 SVG that nothing links to.
-	# The CI workflow that publishes the site drops the same three files.
-	rm -f docs/CLAUDE.html docs/CLAUDE.md docs/code-map/index.md
+	rm -f docs/code-map/index.md
 	$(MAKE) clean-altrep
 
 pkgdown-index:

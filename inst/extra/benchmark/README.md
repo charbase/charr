@@ -21,8 +21,8 @@ All three come from one installed charr. A fourth condition, a frozen ALTREP
 snapshot, was retired once both optimized backends beat it everywhere; the
 harness no longer measures it, and `compare-targets.R` scores both candidates
 against stringi. Archived `*-times.csv` files from before the change still
-carry its `claude_altrep` rows, which is why `branch` and `condition_label`
-remain in the recorded schema.
+carry rows for the retired ALTREP snapshot, which is why `branch` and
+`condition_label` remain in the recorded schema.
 
 Current-backend leaves are resolved from `.charr_backend_environments` through
 the inverse of `.charr_leaf_map`. This is important: calling the namespace's

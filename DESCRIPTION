@@ -45,6 +45,8 @@ Imports:
     vctrs (>= 0.4.0)
 LinkingTo:
     charport
+Remotes:
+    charbase/charport
 Suggests:
     htmltools,
     htmlwidgets,

@@ -193,36 +193,9 @@ ucfpos_close(UConstrainedFieldPosition* ptr) {
 }
 
 
-// -Wreturn-local-addr first found in https://gcc.gnu.org/onlinedocs/gcc-4.8.5/gcc/Warning-Options.html#Warning-Options
-#if U_GCC_MAJOR_MINOR >= 409
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wreturn-local-addr"
-#endif
-U_CAPI const char16_t* U_EXPORT2
-ufmtval_getString(
-        const UFormattedValue* ufmtval,
-        int32_t* pLength,
-        UErrorCode* ec) {
-    const auto* impl = UFormattedValueApiHelper::validate(ufmtval, *ec);
-    if (U_FAILURE(*ec)) {
-        return nullptr;
-    }
-    UnicodeString readOnlyAlias = impl->fFormattedValue->toTempString(*ec);
-    if (U_FAILURE(*ec)) {
-        return nullptr;
-    }
-    if (pLength != nullptr) {
-        *pLength = readOnlyAlias.length();
-    }
-    // Note: this line triggers -Wreturn-local-addr, but it is safe because toTempString is
-    // defined to return memory owned by the ufmtval argument.
-    return readOnlyAlias.getBuffer();
-}
-#if U_GCC_MAJOR_MINOR >= 409
-#pragma GCC diagnostic pop
-#endif
-
-
+// This private ICU build does not use ufmtval_getString(). The upstream
+// definition is omitted because GCC misidentifies its documented read-only
+// alias as the address of a local object. stringi omits the same definition.
 U_CAPI UBool U_EXPORT2
 ufmtval_nextPosition(
         const UFormattedValue* ufmtval,

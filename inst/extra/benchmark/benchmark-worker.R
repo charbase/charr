@@ -13,7 +13,7 @@ if (length(args) < 3L) {
 mode <- args[[1L]]
 package_lib <- normalizePath(args[[2L]], mustWork = TRUE)
 # Kept as an argument because it is recorded in the raw CSV, where archived
-# runs also carry the retired Claude ALTREP snapshot.
+# runs also carry the retired ALTREP snapshot.
 branch_kind <- args[[3L]]
 stopifnot(
   mode %in% c("metadata", "preflight", "time"),

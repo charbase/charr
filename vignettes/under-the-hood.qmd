@@ -90,5 +90,5 @@ Measured on Linux, R 4.6.1, GCC with `-O2`, `charr` on system ICU 78.2.
 `charr` incorporates and builds off of three impressive external packages:
 
 - stringr 1.6.0.9000, forked, [tidyverse/stringr](https://github.com/tidyverse/stringr) at `ae054b1d28f630fee22ddb3cb7525396e62af4fe` (2025-11-04)
-- stringi 1.8.9, forked, [gagolews/stringi](https://github.com/gagolews/stringi) at `68fe9b91cee2ca959d72a75660add028531d6af1` (2026-07-30)
+- stringi 1.8.7.9001, forked from [gagolews/stringi](https://github.com/gagolews/stringi) at `19e9586ba39b3320df49355e32bd18d74ed6098f` (2026-06-03; the commit no longer resolves after an upstream history rewrite, and 1.8.9 is the nearest published release)
 - ICU4C 78.3, bundled, `icu4c-78.3-sources.tgz` from the official [release archive](https://github.com/unicode-org/icu/releases/tag/release-78.3)

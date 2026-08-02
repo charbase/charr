@@ -3229,6 +3229,15 @@ std::string normalize_path(llvm::StringRef input)
 
     std::string output = path.str().str();
     std::replace(output.begin(), output.end(), '\\', '/');
+
+    const llvm::StringRef charport_marker = "/charport/include/";
+    const std::size_t charport_position = output.find(charport_marker.str());
+    if (charport_position != std::string::npos) {
+        output = "charport/include/" + output.substr(
+            charport_position + charport_marker.size()
+        );
+    }
+
     if (llvm::StringRef(output).starts_with("base_backend/") ||
             llvm::StringRef(output).starts_with("altrep_backend/") ||
             llvm::StringRef(output).starts_with("shared/") ||
