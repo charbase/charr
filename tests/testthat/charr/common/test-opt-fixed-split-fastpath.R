@@ -23,7 +23,7 @@ test_that("optimized fixed split preserves scalar delimiter semantics", {
     expected <- with_backend(
       "stringi",
       do.call(
-        charr:::ci_split_fixed,
+        charr_test_leaf("ci_split_fixed"),
         c(list(str = values, pattern = " "), args)
       )
     )
@@ -37,7 +37,7 @@ test_that("optimized fixed split preserves scalar delimiter semantics", {
       actual <- with_backend(
         backend,
         do.call(
-          charr:::ci_split_fixed,
+          charr_test_leaf("ci_split_fixed"),
           c(list(str = input, pattern = " "), args)
         )
       )
@@ -60,7 +60,7 @@ test_that("optimized fixed split keeps general matcher behavior", {
   for (args in cases) {
     expected <- with_backend(
       "stringi",
-      do.call(charr:::ci_split_fixed, c(list(str = values), args))
+      do.call(charr_test_leaf("ci_split_fixed"), c(list(str = values), args))
     )
 
     for (backend in c("base", "altrep")) {
@@ -72,7 +72,7 @@ test_that("optimized fixed split keeps general matcher behavior", {
       expect_identical(
         with_backend(
           backend,
-          do.call(charr:::ci_split_fixed, c(list(str = input), args))
+          do.call(charr_test_leaf("ci_split_fixed"), c(list(str = input), args))
         ),
         expected
       )
@@ -85,7 +85,7 @@ test_that("optimized fixed split marks ASCII fields from mixed UTF-8 input", {
   value <- enc2utf8("é plain β")
   expected <- with_backend(
     "stringi",
-    charr:::ci_split_fixed(value, " ")
+    charr_test_leaf("ci_split_fixed")(value, " ")
   )
 
   for (backend in c("base", "altrep")) {
@@ -96,7 +96,7 @@ test_that("optimized fixed split marks ASCII fields from mixed UTF-8 input", {
     }
     actual <- with_backend(
       backend,
-      charr:::ci_split_fixed(input, " ")
+      charr_test_leaf("ci_split_fixed")(input, " ")
     )
     expect_identical(actual, expected)
     expect_identical(Encoding(actual[[1]]), Encoding(expected[[1]]))

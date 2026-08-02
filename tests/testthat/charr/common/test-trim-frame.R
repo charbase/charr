@@ -85,6 +85,22 @@ expect_trim_frame_lazy <- function(backend, inputs, output = NULL) {
 }
 
 
+test_that("character-class trim preserves supplementary UTF-8 bytes", {
+  payload <- paste0(
+    "\U0001f469\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466",
+    "e\u0301"
+  )
+  subject <- paste0(" ", payload, " ")
+
+  for (backend in c("stringi", "base", "altrep")) {
+    inputs <- trim_frame_inputs(backend, subject, "\\P{Wspace}")
+    actual <- trim_frame_invoke(backend, "both", inputs)
+    expect_trim_frame_lazy(backend, inputs, actual)
+    expect_identical(charToRaw(as.character(actual)), charToRaw(payload))
+  }
+})
+
+
 test_that("character-class trim preserves direction and vectorization", {
   subject <- c("  alpha  ", "--beta--", "  gamma--", NA_character_)
   pattern <- c("\\P{Wspace}", "[a-z]", "[a-z]", "\\P{Wspace}")

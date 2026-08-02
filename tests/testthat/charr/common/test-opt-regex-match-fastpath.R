@@ -14,9 +14,9 @@ test_that("optimized regex match preserves captures and marked input", {
   pattern <- "(?<space>\\s+)(?<word>[\\p{L}\\p{M}]+)?"
 
   operations <- list(
-    function(x) charr:::ci_match_first_regex(x, pattern, cg_missing = "MISS"),
-    function(x) charr:::ci_match_all_regex(x, pattern, cg_missing = "MISS"),
-    function(x) charr:::ci_match_all_regex(
+    function(x) charr_test_leaf("ci_match_first_regex")(x, pattern, cg_missing = "MISS"),
+    function(x) charr_test_leaf("ci_match_all_regex")(x, pattern, cg_missing = "MISS"),
+    function(x) charr_test_leaf("ci_match_all_regex")(
       x, pattern, omit_no_match = TRUE, cg_missing = "MISS"
     )
   )
@@ -42,8 +42,8 @@ test_that("optimized regex match retains vectorized capture shapes", {
   )
 
   operations <- list(
-    function(x, p) charr:::ci_match_first_regex(x, p),
-    function(x, p) charr:::ci_match_all_regex(x, p)
+    function(x, p) charr_test_leaf("ci_match_first_regex")(x, p),
+    function(x, p) charr_test_leaf("ci_match_all_regex")(x, p)
   )
   for (operation in operations) {
     expected <- with_backend("stringi", operation(values, patterns))
@@ -75,11 +75,11 @@ test_that("optimized regex match rejects bytes-marked input", {
       bytes
     }
     expect_error(
-      with_backend(backend, charr:::ci_match_first_regex(input, "(.)")),
+      with_backend(backend, charr_test_leaf("ci_match_first_regex")(input, "(.)")),
       "bytes encoding"
     )
     expect_error(
-      with_backend(backend, charr:::ci_match_all_regex("x", input)),
+      with_backend(backend, charr_test_leaf("ci_match_all_regex")("x", input)),
       "bytes encoding"
     )
   }

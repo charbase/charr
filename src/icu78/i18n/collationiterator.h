@@ -210,6 +210,14 @@ public:
     virtual UChar32 previousCodePoint(UErrorCode &errorCode) = 0;
 
 protected:
+    CollationIterator(UBool numeric)
+            : trie(nullptr),
+              data(nullptr),
+              cesIndex(0),
+              skipped(nullptr),
+              numCpFwd(-1),
+              isNumeric(numeric) {}
+
     CollationIterator(const CollationIterator &other);
 
     void reset();

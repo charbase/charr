@@ -5,17 +5,17 @@ test_that("optimized replace-NA handles direct and conversion inputs", {
   replacement <- "中"
   expected <- with_backend(
     "stringi",
-    charr:::ci_replace_na(values, replacement)
+    charr_test_leaf("ci_replace_na")(values, replacement)
   )
 
   expect_identical(
-    with_backend("base", charr:::ci_replace_na(values, replacement)),
+    with_backend("base", charr_test_leaf("ci_replace_na")(values, replacement)),
     expected
   )
   expect_identical(
     with_backend(
       "altrep",
-      charr:::ci_replace_na(
+      charr_test_leaf("ci_replace_na")(
         charport::as_charvec(values),
         charport::as_charvec(replacement)
       )
@@ -26,10 +26,10 @@ test_that("optimized replace-NA handles direct and conversion inputs", {
 
 test_that("optimized replace-NA drops source attributes like stringi", {
   values <- structure(c("a", NA_character_), names = c("first", "second"))
-  expected <- with_backend("stringi", charr:::ci_replace_na(values, "x"))
+  expected <- with_backend("stringi", charr_test_leaf("ci_replace_na")(values, "x"))
 
   expect_identical(
-    with_backend("base", charr:::ci_replace_na(values, "x")),
+    with_backend("base", charr_test_leaf("ci_replace_na")(values, "x")),
     expected
   )
 })

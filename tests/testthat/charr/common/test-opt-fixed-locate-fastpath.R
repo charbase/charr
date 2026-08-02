@@ -15,19 +15,19 @@ test_that("optimized fixed locate keeps scalar byte positions and shapes", {
 
   expected_first <- with_backend(
     "stringi",
-    charr:::ci_locate_first_fixed(values, " ")
+    charr_test_leaf("ci_locate_first_fixed")(values, " ")
   )
   expected_first_length <- with_backend(
     "stringi",
-    charr:::ci_locate_first_fixed(values, " ", get_length = TRUE)
+    charr_test_leaf("ci_locate_first_fixed")(values, " ", get_length = TRUE)
   )
   expected_all <- with_backend(
     "stringi",
-    charr:::ci_locate_all_fixed(values, " ")
+    charr_test_leaf("ci_locate_all_fixed")(values, " ")
   )
   expected_all_omit <- with_backend(
     "stringi",
-    charr:::ci_locate_all_fixed(
+    charr_test_leaf("ci_locate_all_fixed")(
       values, " ", omit_no_match = TRUE, get_length = TRUE
     )
   )
@@ -40,24 +40,24 @@ test_that("optimized fixed locate keeps scalar byte positions and shapes", {
     }
 
     expect_identical(
-      with_backend(backend, charr:::ci_locate_first_fixed(input, " ")),
+      with_backend(backend, charr_test_leaf("ci_locate_first_fixed")(input, " ")),
       expected_first
     )
     expect_identical(
       with_backend(
         backend,
-        charr:::ci_locate_first_fixed(input, " ", get_length = TRUE)
+        charr_test_leaf("ci_locate_first_fixed")(input, " ", get_length = TRUE)
       ),
       expected_first_length
     )
     expect_identical(
-      with_backend(backend, charr:::ci_locate_all_fixed(input, " ")),
+      with_backend(backend, charr_test_leaf("ci_locate_all_fixed")(input, " ")),
       expected_all
     )
     expect_identical(
       with_backend(
         backend,
-        charr:::ci_locate_all_fixed(
+        charr_test_leaf("ci_locate_all_fixed")(
           input, " ", omit_no_match = TRUE, get_length = TRUE
         )
       ),
@@ -74,13 +74,13 @@ test_that("optimized fixed locate falls back for options and conversion", {
 
   expected <- with_backend(
     "stringi",
-    charr:::ci_locate_first_fixed(
+    charr_test_leaf("ci_locate_first_fixed")(
       values, "a", case_insensitive = TRUE
     )
   )
   expected_all <- with_backend(
     "stringi",
-    charr:::ci_locate_all_fixed(
+    charr_test_leaf("ci_locate_all_fixed")(
       values, "a", overlap = TRUE, get_length = TRUE
     )
   )
@@ -95,7 +95,7 @@ test_that("optimized fixed locate falls back for options and conversion", {
     expect_identical(
       with_backend(
         backend,
-        charr:::ci_locate_first_fixed(
+        charr_test_leaf("ci_locate_first_fixed")(
           input, "a", case_insensitive = TRUE
         )
       ),
@@ -104,7 +104,7 @@ test_that("optimized fixed locate falls back for options and conversion", {
     expect_identical(
       with_backend(
         backend,
-        charr:::ci_locate_all_fixed(
+        charr_test_leaf("ci_locate_all_fixed")(
           input, "a", overlap = TRUE, get_length = TRUE
         )
       ),
@@ -122,10 +122,10 @@ test_that("optimized fixed locate keeps prefix outputs on conversion fallback", 
   values <- c("éa a", latin1, malformed, NA_character_, "")
 
   expected_first <- with_backend(
-    "stringi", charr:::ci_locate_first_fixed(values, "a")
+    "stringi", charr_test_leaf("ci_locate_first_fixed")(values, "a")
   )
   expected_all <- with_backend(
-    "stringi", charr:::ci_locate_all_fixed(values, "a", get_length = TRUE)
+    "stringi", charr_test_leaf("ci_locate_all_fixed")(values, "a", get_length = TRUE)
   )
 
   for (backend in c("base", "altrep")) {
@@ -136,13 +136,13 @@ test_that("optimized fixed locate keeps prefix outputs on conversion fallback", 
     }
 
     expect_identical(
-      with_backend(backend, charr:::ci_locate_first_fixed(input, "a")),
+      with_backend(backend, charr_test_leaf("ci_locate_first_fixed")(input, "a")),
       expected_first
     )
     expect_identical(
       with_backend(
         backend,
-        charr:::ci_locate_all_fixed(input, "a", get_length = TRUE)
+        charr_test_leaf("ci_locate_all_fixed")(input, "a", get_length = TRUE)
       ),
       expected_all
     )
@@ -162,11 +162,11 @@ test_that("optimized fixed locate validates incompatible tails", {
       values
     }
     expect_error(
-      with_backend(backend, charr:::ci_locate_first_fixed(input, "a")),
+      with_backend(backend, charr_test_leaf("ci_locate_first_fixed")(input, "a")),
       "bytes encoding"
     )
     expect_error(
-      with_backend(backend, charr:::ci_locate_all_fixed(input, "a")),
+      with_backend(backend, charr_test_leaf("ci_locate_all_fixed")(input, "a")),
       "bytes encoding"
     )
   }
@@ -182,10 +182,10 @@ test_that("optimized fixed locate validates incompatible tails", {
         values
       }
       expect_error(
-        with_backend(backend, charr:::ci_locate_first_fixed(input, "a"))
+        with_backend(backend, charr_test_leaf("ci_locate_first_fixed")(input, "a"))
       )
       expect_error(
-        with_backend(backend, charr:::ci_locate_all_fixed(input, "a"))
+        with_backend(backend, charr_test_leaf("ci_locate_all_fixed")(input, "a"))
       )
     }
   }

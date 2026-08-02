@@ -22,7 +22,7 @@ test_that("a malformed byte substitutes rather than failing the call", {
 
   for (backend in c("base", "altrep")) {
     value <- suppressWarnings(
-      with_backend(backend, charr:::ci_encode(malformed, NULL, "UTF-8"))
+      with_backend(backend, charr_test_leaf("ci_encode")(malformed, NULL, "UTF-8"))
     )
     expect_identical(value, expected)
     expect_identical(Encoding(value), "UTF-8")
@@ -70,7 +70,7 @@ test_that("the default source encoding still round-trips valid input", {
     expect_identical(with_backend(backend, str_read_lines(path)), expected)
     # NULL and "" name the same default.
     expect_identical(
-      with_backend(backend, charr:::ci_read_lines(path, "")),
+      with_backend(backend, charr_test_leaf("ci_read_lines")(path, "")),
       expected
     )
   }
@@ -80,12 +80,12 @@ test_that("the default source encoding still round-trips valid input", {
 test_that("a NA byte source is preserved on the default encoding path", {
   input <- list(as.raw(c(0x61, 0x62)), NULL, as.raw(0x63))
 
-  expected <- with_backend("stringi", charr:::ci_encode(input, NULL, "UTF-8"))
+  expected <- with_backend("stringi", charr_test_leaf("ci_encode")(input, NULL, "UTF-8"))
   expect_identical(expected, c("ab", NA_character_, "c"))
 
   for (backend in c("base", "altrep")) {
     expect_identical(
-      with_backend(backend, charr:::ci_encode(input, NULL, "UTF-8")),
+      with_backend(backend, charr_test_leaf("ci_encode")(input, NULL, "UTF-8")),
       expected
     )
   }

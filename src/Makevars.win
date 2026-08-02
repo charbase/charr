@@ -16,7 +16,8 @@ ICU_CPPFLAGS = -Ialtrep_backend -Iicu78 -Iicu78/unicode -Iicu78/common -Iicu78/i
   -UDEBUG -DNDEBUG -DWINVER=0x0601 -D_WIN32_WINNT=0x0601 -DU_USE_STRTOD_L=0 \
   -DU_HAVE_LIB_SUFFIX=1 -DU_LIB_SUFFIX_C_NAME=_charr -DCHARR_BUNDLED_ICU=1
 
-PKG_CPPFLAGS = -I. $(ICU_CPPFLAGS)
+# Keep R's short remapping macros from colliding with C++ member names.
+PKG_CPPFLAGS = -DR_NO_REMAP -I. $(ICU_CPPFLAGS)
 
 # On Windows, linking all ICU objects at once overflows the command line (see
 # stringi src/Makevars.win); collect them into static libs first.
@@ -192,6 +193,11 @@ OBJECTS = $(RUNTIME_OBJECTS) \
 ICU_COMMON_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu78/common/*.cpp))
 ICU_I18N_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu78/i18n/*.cpp))
 ICU_STUBDATA_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu78/stubdata/*.cpp))
+ICU_OBJECTS = $(ICU_COMMON_OBJECTS) $(ICU_I18N_OBJECTS) $(ICU_STUBDATA_OBJECTS)
+
+# ICU 78.3 calls deprecated ICU entry points inside its own implementation.
+# Keep those annotations for charr code, but not while compiling ICU itself.
+$(ICU_OBJECTS): PKG_CPPFLAGS += -DU_ATTRIBUTE_DEPRECATED=
 
 PKG_LIBS = -L. -licu_i18n -licu_common -licu_stubdata
 

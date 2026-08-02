@@ -37,8 +37,11 @@ canaries, and the wider comparison produced no trimming-specific failure.
 ## Source-package adjustments
 
 The bundled runtime sources come from the official ICU4C 78.3 archive, with
-four small changes that keep compiler diagnostics enabled for CRAN:
+six small changes for CRAN compiler diagnostics and the defects they exposed:
 
+- `common/locmap.cpp` uses an overlap-safe move when shortening the Windows
+  language tags `quz` and `prs`. The upstream `strcat()` call had overlapping
+  source and destination ranges.
 - `common/unistr.cpp` marks the static destructor-instantiation helper
   `[[maybe_unused]]` instead of suppressing `-Wunused-function`.
 - `i18n/decNumber.cpp` leaves the compiler's `-Warray-bounds` diagnostics
@@ -49,6 +52,15 @@ four small changes that keep compiler diagnostics enabled for CRAN:
 - `i18n/number_skeletons.cpp` keeps the temporary `UnicodeString` alias alive
   through `CurrencyUnit` construction instead of suppressing
   `-Wdangling-pointer`.
+- `i18n/collationiterator.h` and `i18n/collationdatabuilder.cpp` finish
+  constructing the builder's `CollationData` before binding it to the base
+  iterator. The upstream constructor read that derived member too early.
 
 The platform-specific optimization and macro-state pragmas remain unchanged;
 they do not suppress compiler diagnostics.
+
+ICU's deprecation attribute is disabled only while compiling bundled ICU
+objects. ICU 78.3 still calls deprecated public entry points inside its own
+implementation, and some replacement APIs call these older routines too.
+Charr's objects retain the annotations, and other compiler diagnostics remain
+enabled.

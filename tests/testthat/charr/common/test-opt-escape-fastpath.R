@@ -11,15 +11,15 @@ test_that("optimized escape matches stringi across input encodings", {
     "",
     NA_character_
   )
-  expected <- with_backend("stringi", charr:::ci_escape_unicode(values))
+  expected <- with_backend("stringi", charr_test_leaf("ci_escape_unicode")(values))
 
   expect_identical(
-    with_backend("base", charr:::ci_escape_unicode(values)),
+    with_backend("base", charr_test_leaf("ci_escape_unicode")(values)),
     expected
   )
 
   input <- charport::as_charvec(values)
-  actual <- with_backend("altrep", charr:::ci_escape_unicode(input))
+  actual <- with_backend("altrep", charr_test_leaf("ci_escape_unicode")(input))
   expect_false(charport::charport_info(input)$is_materialized)
   expect_false(charport::charport_info(actual)$is_materialized)
   expect_identical(actual, expected)
@@ -35,18 +35,18 @@ test_that("optimized escape retains invalid-input behavior", {
 
   for (value in list(malformed, bytes)) {
     expected <- tryCatch(
-      with_backend("stringi", charr:::ci_escape_unicode(value)),
+      with_backend("stringi", charr_test_leaf("ci_escape_unicode")(value)),
       error = conditionMessage
     )
     expect_error(
-      with_backend("base", charr:::ci_escape_unicode(value)),
+      with_backend("base", charr_test_leaf("ci_escape_unicode")(value)),
       expected,
       fixed = TRUE
     )
     expect_error(
       with_backend(
         "altrep",
-        charr:::ci_escape_unicode(charport::as_charvec(value))
+        charr_test_leaf("ci_escape_unicode")(charport::as_charvec(value))
       ),
       expected,
       fixed = TRUE

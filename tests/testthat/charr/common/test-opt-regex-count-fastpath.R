@@ -11,14 +11,14 @@ test_that("optimized regex counting matches stringi on direct UTF-8 input", {
   )
 
   operations <- list(
-    scalar = function(x) charr:::ci_count_regex(x, patterns[[1L]]),
-    recycled = function(x) charr:::ci_count_regex(x, patterns),
+    scalar = function(x) charr_test_leaf("ci_count_regex")(x, patterns[[1L]]),
+    recycled = function(x) charr_test_leaf("ci_count_regex")(x, patterns),
     insensitive = function(x) {
-      charr:::ci_count_regex(
+      charr_test_leaf("ci_count_regex")(
         x, "CAF\u00c9", opts_regex = list(case_insensitive = TRUE)
       )
     },
-    zero_width = function(x) charr:::ci_count_regex(x, "(?=a)")
+    zero_width = function(x) charr_test_leaf("ci_count_regex")(x, "(?=a)")
   )
 
   for (operation in operations) {
@@ -38,16 +38,16 @@ test_that("optimized regex counting retains conversion fallbacks", {
   values <- c(latin1, "plain text", NA_character_)
 
   expected <- with_backend(
-    "stringi", charr:::ci_count_regex(values, "\\p{L}+")
+    "stringi", charr_test_leaf("ci_count_regex")(values, "\\p{L}+")
   )
   expect_identical(
-    with_backend("base", charr:::ci_count_regex(values, "\\p{L}+")),
+    with_backend("base", charr_test_leaf("ci_count_regex")(values, "\\p{L}+")),
     expected
   )
   expect_identical(
     with_backend(
       "altrep",
-      charr:::ci_count_regex(charport::as_charvec(values), "\\p{L}+")
+      charr_test_leaf("ci_count_regex")(charport::as_charvec(values), "\\p{L}+")
     ),
     expected
   )
@@ -61,7 +61,7 @@ test_that("optimized regex counting retains conversion fallbacks", {
       bytes
     }
     expect_error(
-      with_backend(backend, charr:::ci_count_regex(input, "x")),
+      with_backend(backend, charr_test_leaf("ci_count_regex")(input, "x")),
       "bytes encoding"
     )
   }
@@ -76,7 +76,7 @@ test_that("regex counting still compiles patterns lazily around missing input", 
       NA_character_
     }
     expect_identical(
-      with_backend(backend, charr:::ci_count_regex(input, "[")),
+      with_backend(backend, charr_test_leaf("ci_count_regex")(input, "[")),
       NA_integer_
     )
   }

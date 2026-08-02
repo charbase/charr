@@ -13,18 +13,18 @@ test_that("optimized fixed extract keeps scalar ASCII matches and shapes", {
   )
 
   operations <- list(
-    first = function(x) charr:::ci_extract_first_fixed(x, " "),
-    all = function(x) charr:::ci_extract_all_fixed(x, " "),
+    first = function(x) charr_test_leaf("ci_extract_first_fixed")(x, " "),
+    all = function(x) charr_test_leaf("ci_extract_all_fixed")(x, " "),
     all_omit = function(x) {
-      charr:::ci_extract_all_fixed(x, " ", omit_no_match = TRUE)
+      charr_test_leaf("ci_extract_all_fixed")(x, " ", omit_no_match = TRUE)
     },
     matrix_empty = function(x) {
-      charr:::ci_extract_all_fixed(
+      charr_test_leaf("ci_extract_all_fixed")(
         x, " ", omit_no_match = TRUE, simplify = TRUE
       )
     },
     matrix_na = function(x) {
-      charr:::ci_extract_all_fixed(
+      charr_test_leaf("ci_extract_all_fixed")(
         x, " ", omit_no_match = TRUE, simplify = NA
       )
     }
@@ -56,7 +56,7 @@ test_that("cached fixed-extract children retain copy-on-write isolation", {
     }
     output <- with_backend(
       backend,
-      charr:::ci_extract_all_fixed(input, " ", omit_no_match = TRUE)
+      charr_test_leaf("ci_extract_all_fixed")(input, " ", omit_no_match = TRUE)
     )
     output[[1L]][1L] <- "X"
     expect_identical(output, list("X", " "))
@@ -67,7 +67,7 @@ test_that("cached fixed-extract children retain copy-on-write isolation", {
 test_that("optimized fixed extract pads missing rows like stringi", {
   values <- c("aa", "none", "", NA_character_)
   operation <- function(x) {
-    charr:::ci_extract_all_fixed(
+    charr_test_leaf("ci_extract_all_fixed")(
       x, "a", omit_no_match = TRUE, simplify = TRUE
     )
   }
@@ -87,12 +87,12 @@ test_that("optimized fixed extract falls back for conversion and options", {
   values <- c(latin1, "A a A", NA_character_)
 
   operations <- list(
-    multibyte = function(x) charr:::ci_extract_first_fixed(x, "é"),
+    multibyte = function(x) charr_test_leaf("ci_extract_first_fixed")(x, "é"),
     insensitive = function(x) {
-      charr:::ci_extract_all_fixed(x, "a", case_insensitive = TRUE)
+      charr_test_leaf("ci_extract_all_fixed")(x, "a", case_insensitive = TRUE)
     },
     recycled = function(x) {
-      charr:::ci_extract_all_fixed(x, c("i", "A"), overlap = TRUE)
+      charr_test_leaf("ci_extract_all_fixed")(x, c("i", "A"), overlap = TRUE)
     }
   )
 
@@ -129,18 +129,18 @@ test_that("fixed extract keeps completed rows across mixed encodings", {
   )
 
   operations <- list(
-    first = function(x) charr:::ci_extract_first_fixed(x, " "),
-    all = function(x) charr:::ci_extract_all_fixed(x, " "),
+    first = function(x) charr_test_leaf("ci_extract_first_fixed")(x, " "),
+    all = function(x) charr_test_leaf("ci_extract_all_fixed")(x, " "),
     all_omit = function(x) {
-      charr:::ci_extract_all_fixed(x, " ", omit_no_match = TRUE)
+      charr_test_leaf("ci_extract_all_fixed")(x, " ", omit_no_match = TRUE)
     },
     matrix_empty = function(x) {
-      charr:::ci_extract_all_fixed(
+      charr_test_leaf("ci_extract_all_fixed")(
         x, " ", omit_no_match = TRUE, simplify = TRUE
       )
     },
     matrix_na = function(x) {
-      charr:::ci_extract_all_fixed(
+      charr_test_leaf("ci_extract_all_fixed")(
         x, " ", omit_no_match = TRUE, simplify = NA
       )
     }
@@ -164,10 +164,10 @@ test_that("fixed extract still rejects bytes after a direct prefix", {
   Encoding(bytes) <- "bytes"
   values <- c("a a", "none", bytes)
   operations <- list(
-    function(x) charr:::ci_extract_first_fixed(x, " "),
-    function(x) charr:::ci_extract_all_fixed(x, " "),
+    function(x) charr_test_leaf("ci_extract_first_fixed")(x, " "),
+    function(x) charr_test_leaf("ci_extract_all_fixed")(x, " "),
     function(x) {
-      charr:::ci_extract_all_fixed(x, " ", simplify = TRUE)
+      charr_test_leaf("ci_extract_all_fixed")(x, " ", simplify = TRUE)
     }
   )
 
@@ -190,13 +190,13 @@ test_that("fixed extract validates bytes before an empty pattern", {
   bytes <- rawToChar(as.raw(0xff))
   Encoding(bytes) <- "bytes"
   operations <- list(
-    function(x) charr:::ci_extract_first_fixed(x, ""),
-    function(x) charr:::ci_extract_all_fixed(x, ""),
+    function(x) charr_test_leaf("ci_extract_first_fixed")(x, ""),
+    function(x) charr_test_leaf("ci_extract_all_fixed")(x, ""),
     function(x) {
-      charr:::ci_extract_all_fixed(x, "", simplify = TRUE)
+      charr_test_leaf("ci_extract_all_fixed")(x, "", simplify = TRUE)
     },
     function(x) {
-      charr:::ci_extract_all_fixed(x, "", simplify = NA)
+      charr_test_leaf("ci_extract_all_fixed")(x, "", simplify = NA)
     }
   )
 

@@ -20,7 +20,7 @@ LINT_EFFECT_ARGS := \
 	test-base test-altrep test-system test-bundle \
 	test-san test-valgrind vignette figures pkgdown pkgdown-index \
 	lint lint-tool lint-fixtures lint-db lint-frontier lint-converted lint-audit \
-	lint-effects-update \
+	lint-effects-update lint-r-literals \
 	code-map code-map-current code-map-validate \
 	clean-pkgdown clean clean-altrep \
 	clean-build-products
@@ -165,9 +165,13 @@ LINT_CONVERTED := \
 	src/altrep_backend/io/utf8_output.cpp
 
 lint:
+	$(MAKE) lint-r-literals
 	$(MAKE) lint-fixtures
 	$(MAKE) lint-db
 	$(MAKE) lint-converted
+
+lint-r-literals:
+	Rscript tools/check-r-unicode-literals.R
 
 lint-tool:
 	$(MAKE) -C tools/charr-lint all

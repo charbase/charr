@@ -8,28 +8,28 @@ test_that("optimized regex locate matches stringi on direct UTF-8 input", {
 
   operations <- list(
     first = function(x) {
-      charr:::ci_locate_first_regex(x, "(?<=\\s)\\p{L}+")
+      charr_test_leaf("ci_locate_first_regex")(x, "(?<=\\s)\\p{L}+")
     },
     first_length = function(x) {
-      charr:::ci_locate_first_regex(
+      charr_test_leaf("ci_locate_first_regex")(
         x, "(?<=\\s)\\p{L}+", get_length = TRUE
       )
     },
     all = function(x) {
-      charr:::ci_locate_all_regex(x, "(?<=\\s)\\p{L}+")
+      charr_test_leaf("ci_locate_all_regex")(x, "(?<=\\s)\\p{L}+")
     },
     all_omit = function(x) {
-      charr:::ci_locate_all_regex(
+      charr_test_leaf("ci_locate_all_regex")(
         x, "(?<=\\s)\\p{L}+", omit_no_match = TRUE
       )
     },
     all_length = function(x) {
-      charr:::ci_locate_all_regex(
+      charr_test_leaf("ci_locate_all_regex")(
         x, "(?<=\\s)\\p{L}+", get_length = TRUE
       )
     },
     zero_width = function(x) {
-      charr:::ci_locate_all_regex(x, "(?=a)", omit_no_match = TRUE)
+      charr_test_leaf("ci_locate_all_regex")(x, "(?=a)", omit_no_match = TRUE)
     }
   )
 
@@ -50,17 +50,17 @@ test_that("regex locate keeps capture metadata and recycled patterns", {
 
   operations <- list(
     first_capture = function(x) {
-      charr:::ci_locate_first_regex(
+      charr_test_leaf("ci_locate_first_regex")(
         x, patterns[[1L]], capture_groups = TRUE
       )
     },
     all_capture = function(x) {
-      charr:::ci_locate_all_regex(
+      charr_test_leaf("ci_locate_all_regex")(
         x, patterns[[1L]], capture_groups = TRUE,
         omit_no_match = TRUE, get_length = TRUE
       )
     },
-    recycled = function(x) charr:::ci_locate_all_regex(x, patterns)
+    recycled = function(x) charr_test_leaf("ci_locate_all_regex")(x, patterns)
   )
 
   for (operation in operations) {
@@ -82,8 +82,8 @@ test_that("regex locate retains encoding fallbacks and bytes errors", {
   values <- c(latin1, "plain text", NA_character_)
 
   operations <- list(
-    first = function(x) charr:::ci_locate_first_regex(x, "\\p{L}+"),
-    all = function(x) charr:::ci_locate_all_regex(x, "\\p{L}+")
+    first = function(x) charr_test_leaf("ci_locate_first_regex")(x, "\\p{L}+"),
+    all = function(x) charr_test_leaf("ci_locate_all_regex")(x, "\\p{L}+")
   )
   for (operation in operations) {
     expected <- with_backend("stringi", operation(values))
@@ -106,7 +106,7 @@ test_that("regex locate retains encoding fallbacks and bytes errors", {
     }
     expect_error(
       with_backend(
-        backend, charr:::ci_locate_first_regex(input, "x")
+        backend, charr_test_leaf("ci_locate_first_regex")(input, "x")
       ),
       "bytes encoding"
     )
@@ -116,8 +116,8 @@ test_that("regex locate retains encoding fallbacks and bytes errors", {
 
 test_that("regex locate accepts zero-length subjects with scalar patterns", {
   operations <- list(
-    first = function(x) charr:::ci_locate_first_regex(x, "x"),
-    all = function(x) charr:::ci_locate_all_regex(x, "x")
+    first = function(x) charr_test_leaf("ci_locate_first_regex")(x, "x"),
+    all = function(x) charr_test_leaf("ci_locate_all_regex")(x, "x")
   )
 
   for (operation in operations) {

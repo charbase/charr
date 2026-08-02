@@ -11,9 +11,9 @@ test_that("optimized padding preserves ASCII width inside mixed strings", {
   widths <- c(5L, 6L, 4L, 7L, 5L, 3L)
   pads <- c("x\t", ".", "y\n", "-", "_", " ")
   operations <- list(
-    charr:::ci_pad_left,
-    charr:::ci_pad_right,
-    charr:::ci_pad_both
+    charr_test_leaf("ci_pad_left"),
+    charr_test_leaf("ci_pad_right"),
+    charr_test_leaf("ci_pad_both")
   )
 
   for (operation in operations) {

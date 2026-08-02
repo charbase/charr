@@ -39,9 +39,10 @@
 #include <cstddef>
 
 
-// undef R's length macro (conflicts with std::string.length())
-// use LENGTH instead
-#undef length
+// NO_ATTRIB was added in R 4.5.0.
+#ifndef NO_ATTRIB
+#define NO_ATTRIB(x) (ATTRIB(x) == R_NilValue)
+#endif
 
 
 #define STRI__CONTINUE_ON_EMPTY_OR_NA_PATTERN(str_cont, pattern_cont, naset)                     \

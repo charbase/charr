@@ -10,16 +10,16 @@ test_that("optimized regex split matches stringi on scalar patterns", {
 
   for (pattern in patterns) {
     expected <- with_backend(
-      "stringi", charr:::ci_split_regex(values, pattern)
+      "stringi", charr_test_leaf("ci_split_regex")(values, pattern)
     )
     expect_identical(
-      with_backend("base", charr:::ci_split_regex(values, pattern)),
+      with_backend("base", charr_test_leaf("ci_split_regex")(values, pattern)),
       expected
     )
 
     input <- charport::as_charvec(values)
     actual <- with_backend(
-      "altrep", charr:::ci_split_regex(input, pattern)
+      "altrep", charr_test_leaf("ci_split_regex")(input, pattern)
     )
     expect_identical(actual, expected)
     expect_true(all(vapply(actual, charport::is_charvec, logical(1))))
@@ -41,12 +41,12 @@ test_that("optimized regex split retains vectorized split options", {
   for (args in cases) {
     expected <- with_backend(
       "stringi",
-      do.call(charr:::ci_split_regex, c(list(str = values), args))
+      do.call(charr_test_leaf("ci_split_regex"), c(list(str = values), args))
     )
     expect_identical(
       with_backend(
         "base",
-        do.call(charr:::ci_split_regex, c(list(str = values), args))
+        do.call(charr_test_leaf("ci_split_regex"), c(list(str = values), args))
       ),
       expected
     )
@@ -55,7 +55,7 @@ test_that("optimized regex split retains vectorized split options", {
     expect_identical(
       with_backend(
         "altrep",
-        do.call(charr:::ci_split_regex, c(list(str = input), args))
+        do.call(charr_test_leaf("ci_split_regex"), c(list(str = input), args))
       ),
       expected
     )
@@ -74,7 +74,7 @@ test_that("regex split keeps bytes errors and lazy pattern compilation", {
     expect_identical(
       with_backend(
         backend,
-        charr:::ci_split_regex(missing, "[")
+        charr_test_leaf("ci_split_regex")(missing, "[")
       ),
       list(NA_character_)
     )
@@ -89,7 +89,7 @@ test_that("regex split keeps bytes errors and lazy pattern compilation", {
       bytes
     }
     expect_error(
-      with_backend(backend, charr:::ci_split_regex(input, "x")),
+      with_backend(backend, charr_test_leaf("ci_split_regex")(input, "x")),
       "bytes encoding"
     )
   }

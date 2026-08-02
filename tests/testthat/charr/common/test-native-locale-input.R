@@ -292,11 +292,11 @@ test_that("ci_encode resolves a UTF-8 default target through LC_CTYPE", {
     for (target in list(NULL, "")) {
       character_output <- with_backend(
         backend,
-        charr:::ci_encode(value, "UTF-8", target, FALSE)
+        charr_test_leaf("ci_encode")(value, "UTF-8", target, FALSE)
       )
       raw_output <- with_backend(
         backend,
-        charr:::ci_encode(utf8_bytes, "UTF-8", target, TRUE)
+        charr_test_leaf("ci_encode")(utf8_bytes, "UTF-8", target, TRUE)
       )
       expect_identical(charToRaw(character_output), utf8_bytes)
       expect_identical(raw_output, list(utf8_bytes))
@@ -339,11 +339,11 @@ test_that("ci_encode writes a representable single-byte default target", {
     for (target in list(NULL, "")) {
       character_output <- with_backend(
         backend,
-        charr:::ci_encode(value, "UTF-8", target, FALSE)
+        charr_test_leaf("ci_encode")(value, "UTF-8", target, FALSE)
       )
       raw_output <- with_backend(
         backend,
-        charr:::ci_encode(utf8_bytes, "UTF-8", target, TRUE)
+        charr_test_leaf("ci_encode")(utf8_bytes, "UTF-8", target, TRUE)
       )
       expect_identical(charToRaw(character_output), expected_bytes)
       expect_identical(Encoding(character_output), "unknown")
@@ -382,14 +382,14 @@ test_that("ci_encode rejects an unrepresentable default target", {
       expect_error(
         with_backend(
           backend,
-          charr:::ci_encode(value, "UTF-8", target, FALSE)
+          charr_test_leaf("ci_encode")(value, "UTF-8", target, FALSE)
         ),
         "failed to convert UTF-8 to R native encoding"
       )
       expect_error(
         with_backend(
           backend,
-          charr:::ci_encode(utf8_bytes, "UTF-8", target, TRUE)
+          charr_test_leaf("ci_encode")(utf8_bytes, "UTF-8", target, TRUE)
         ),
         "failed to convert UTF-8 to R native encoding"
       )

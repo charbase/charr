@@ -12,14 +12,14 @@ test_that("optimized join paths match stringi on direct UTF-8 input", {
   times <- c(2L, 1L, 3L, 2L, 0L, NA_integer_)
 
   operations <- list(
-    join = function(x) charr:::ci_c(x, "!"),
+    join = function(x) charr_test_leaf("ci_c")(x, "!"),
     flatten = function(x) {
-      charr:::ci_flatten(x, "|", na_empty = TRUE, omit_empty = FALSE)
+      charr_test_leaf("ci_flatten")(x, "|", na_empty = TRUE, omit_empty = FALSE)
     },
     flatten_omit = function(x) {
-      charr:::ci_flatten(x, "|", na_empty = NA, omit_empty = TRUE)
+      charr_test_leaf("ci_flatten")(x, "|", na_empty = NA, omit_empty = TRUE)
     },
-    duplicate = function(x) charr:::ci_dup(x, times)
+    duplicate = function(x) charr_test_leaf("ci_dup")(x, times)
   )
 
   for (operation in operations) {
@@ -42,11 +42,11 @@ test_that("optimized join paths retain conversion and byte errors", {
   values <- c(latin1, "x", NA_character_)
 
   operations <- list(
-    join = function(x) charr:::ci_c(x, "!"),
+    join = function(x) charr_test_leaf("ci_c")(x, "!"),
     flatten = function(x) {
-      charr:::ci_flatten(x, "|", na_empty = TRUE)
+      charr_test_leaf("ci_flatten")(x, "|", na_empty = TRUE)
     },
-    duplicate = function(x) charr:::ci_dup(x, c(2L, 1L, 0L))
+    duplicate = function(x) charr_test_leaf("ci_dup")(x, c(2L, 1L, 0L))
   )
 
   for (operation in operations) {
@@ -70,15 +70,15 @@ test_that("optimized join paths retain conversion and byte errors", {
       bytes
     }
     expect_error(
-      with_backend(backend, charr:::ci_c(input, "x")),
+      with_backend(backend, charr_test_leaf("ci_c")(input, "x")),
       "bytes encoding"
     )
     expect_error(
-      with_backend(backend, charr:::ci_flatten(input, "|")),
+      with_backend(backend, charr_test_leaf("ci_flatten")(input, "|")),
       "bytes encoding"
     )
     expect_error(
-      with_backend(backend, charr:::ci_dup(input, 2L)),
+      with_backend(backend, charr_test_leaf("ci_dup")(input, 2L)),
       "bytes encoding"
     )
   }

@@ -1,8 +1,8 @@
 test_that("optimized trim preserves no-op and empty-recycling semantics", {
   operations <- list(
-    charr:::ci_trim_left,
-    charr:::ci_trim_right,
-    charr:::ci_trim_both
+    charr_test_leaf("ci_trim_left"),
+    charr_test_leaf("ci_trim_right"),
+    charr_test_leaf("ci_trim_both")
   )
   values <- c("alpha", "βeta", "中", "", NA_character_)
 
@@ -40,11 +40,11 @@ test_that("optimized trim keeps conversion, BOM, and output-mark semantics", {
   values <- c(latin1, bom, " éascii", "plainé ", "  中  ", NA_character_)
 
   cases <- list(
-    list(operation = charr:::ci_trim_left),
-    list(operation = charr:::ci_trim_right),
-    list(operation = charr:::ci_trim_both),
-    list(operation = charr:::ci_trim_left, pattern = "[a-z]"),
-    list(operation = charr:::ci_trim_both, pattern = c("[a-z]", "\\P{Wspace}"))
+    list(operation = charr_test_leaf("ci_trim_left")),
+    list(operation = charr_test_leaf("ci_trim_right")),
+    list(operation = charr_test_leaf("ci_trim_both")),
+    list(operation = charr_test_leaf("ci_trim_left"), pattern = "[a-z]"),
+    list(operation = charr_test_leaf("ci_trim_both"), pattern = c("[a-z]", "\\P{Wspace}"))
   )
 
   for (case in cases) {
@@ -71,9 +71,9 @@ test_that("optimized trim rejects bytes even under a missing pattern", {
   Encoding(bytes) <- "bytes"
 
   for (operation in list(
-    charr:::ci_trim_left,
-    charr:::ci_trim_right,
-    charr:::ci_trim_both
+    charr_test_leaf("ci_trim_left"),
+    charr_test_leaf("ci_trim_right"),
+    charr_test_leaf("ci_trim_both")
   )) {
     expected <- tryCatch(
       with_backend("stringi", operation(bytes, NA_character_)),
@@ -107,9 +107,9 @@ test_that("optimized trim keeps malformed UTF-8 scan boundaries", {
   Encoding(malformed_inside) <- "UTF-8"
 
   cases <- list(
-    list(charr:::ci_trim_left, malformed_left),
-    list(charr:::ci_trim_right, malformed_right),
-    list(charr:::ci_trim_both, malformed_left)
+    list(charr_test_leaf("ci_trim_left"), malformed_left),
+    list(charr_test_leaf("ci_trim_right"), malformed_right),
+    list(charr_test_leaf("ci_trim_both"), malformed_left)
   )
   for (case in cases) {
     operation <- case[[1L]]
@@ -125,9 +125,9 @@ test_that("optimized trim keeps malformed UTF-8 scan boundaries", {
   }
 
   for (operation in list(
-    charr:::ci_trim_left,
-    charr:::ci_trim_right,
-    charr:::ci_trim_both
+    charr_test_leaf("ci_trim_left"),
+    charr_test_leaf("ci_trim_right"),
+    charr_test_leaf("ci_trim_both")
   )) {
     expected <- with_backend("stringi", operation(malformed_inside))
     expect_identical(with_backend("base", operation(malformed_inside)), expected)
@@ -148,9 +148,9 @@ test_that("optimized trim preserves converted source recycling", {
   pattern <- rep("\\P{Wspace}", 4L)
 
   for (operation in list(
-    charr:::ci_trim_left,
-    charr:::ci_trim_right,
-    charr:::ci_trim_both
+    charr_test_leaf("ci_trim_left"),
+    charr_test_leaf("ci_trim_right"),
+    charr_test_leaf("ci_trim_both")
   )) {
     expected <- with_backend("stringi", operation(latin1, pattern))
     expect_identical(with_backend("base", operation(latin1, pattern)), expected)

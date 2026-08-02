@@ -15,12 +15,12 @@ test_that("fixed replace keeps completed rows across mixed encodings", {
   )
 
   operations <- list(
-    first = function(x) charr:::ci_replace_first_fixed(x, "a", "X"),
-    all_byte = function(x) charr:::ci_replace_all_fixed(x, "a", "X"),
-    all_long = function(x) charr:::ci_replace_all_fixed(x, "a", "word"),
-    all_delete = function(x) charr:::ci_replace_all_fixed(x, "a", ""),
+    first = function(x) charr_test_leaf("ci_replace_first_fixed")(x, "a", "X"),
+    all_byte = function(x) charr_test_leaf("ci_replace_all_fixed")(x, "a", "X"),
+    all_long = function(x) charr_test_leaf("ci_replace_all_fixed")(x, "a", "word"),
+    all_delete = function(x) charr_test_leaf("ci_replace_all_fixed")(x, "a", ""),
     all_missing = function(x) {
-      charr:::ci_replace_all_fixed(x, "a", NA_character_)
+      charr_test_leaf("ci_replace_all_fixed")(x, "a", NA_character_)
     }
   )
 
@@ -42,13 +42,13 @@ test_that("fixed replace preserves general and sequential output shapes", {
   values <- c("ababa", "none", "Xab", NA_character_, "")
   operations <- list(
     recycled = function(x) {
-      charr:::ci_replace_all_fixed(x, c("a", "b"), c("X", "Y"))
+      charr_test_leaf("ci_replace_all_fixed")(x, c("a", "b"), c("X", "Y"))
     },
     insensitive = function(x) {
-      charr:::ci_replace_all_fixed(x, "A", "x", case_insensitive = TRUE)
+      charr_test_leaf("ci_replace_all_fixed")(x, "A", "x", case_insensitive = TRUE)
     },
     sequential = function(x) {
-      charr:::ci_replace_all_fixed(
+      charr_test_leaf("ci_replace_all_fixed")(
         x, c("ab", "X"), c("X", "!"), vectorize_all = FALSE
       )
     }
@@ -76,9 +76,9 @@ test_that("fixed replace still rejects buried bytes inputs", {
   bytes <- fixed_replace_marked(0xff, "bytes")
   subjects <- c("a-a", "none", bytes)
   calls <- list(
-    function(x) charr:::ci_replace_first_fixed(x, "a", "X"),
-    function(x) charr:::ci_replace_all_fixed(x, "a", "X"),
-    function(x) charr:::ci_replace_all_fixed(x, "a", "X", vectorize_all = FALSE)
+    function(x) charr_test_leaf("ci_replace_first_fixed")(x, "a", "X"),
+    function(x) charr_test_leaf("ci_replace_all_fixed")(x, "a", "X"),
+    function(x) charr_test_leaf("ci_replace_all_fixed")(x, "a", "X", vectorize_all = FALSE)
   )
 
   for (call in calls) {
@@ -98,14 +98,14 @@ test_that("fixed replace still rejects buried bytes inputs", {
     expect_error(
       with_backend(
         backend,
-        charr:::ci_replace_first_fixed(input, bytes, "X")
+        charr_test_leaf("ci_replace_first_fixed")(input, bytes, "X")
       ),
       "bytes encoding"
     )
     expect_error(
       with_backend(
         backend,
-        charr:::ci_replace_first_fixed(input, "a", bytes)
+        charr_test_leaf("ci_replace_first_fixed")(input, "a", bytes)
       ),
       "bytes encoding"
     )

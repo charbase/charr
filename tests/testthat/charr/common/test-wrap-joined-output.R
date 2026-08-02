@@ -20,7 +20,7 @@ test_that("dynamic wrapping rejects an overflowing work matrix", {
 
   many_words <- paste(rep.int("a", 65536L), collapse = " ")
   expect_error(
-    charr:::ci_wrap(
+    charr_test_leaf("ci_wrap")(
       many_words,
       width = 1L,
       cost_exponent = 2,

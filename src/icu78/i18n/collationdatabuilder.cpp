@@ -164,9 +164,11 @@ protected:
 };
 
 DataBuilderCollationIterator::DataBuilderCollationIterator(CollationDataBuilder &b)
-        : CollationIterator(&builderData, /*numeric=*/ false),
+        : CollationIterator(/*numeric=*/ false),
           builder(b), builderData(b.nfcImpl),
           s(nullptr), pos(0) {
+    trie = builderData.trie;
+    data = &builderData;
     builderData.base = builder.base;
     // Set all of the jamoCE32s[] to indirection CE32s.
     for(int32_t j = 0; j < CollationData::JAMO_CE32S_LENGTH; ++j) {  // Count across Jamo types.

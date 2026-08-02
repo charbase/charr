@@ -38,7 +38,7 @@ test_that("optimized comparison preserves warnings before a native error", {
     actual <- compare_frame_events(
       with_backend(
         backend,
-        charr:::ci_cmp_equiv(
+        charr_test_leaf("ci_cmp_equiv")(
           compare_frame_input(backend, left),
           compare_frame_input(backend, right),
           opts_collator = opts
@@ -57,14 +57,14 @@ test_that("collator option warning errors leave comparison reusable", {
     expect_error(
       with_backend(
         backend,
-        charr:::ci_cmp_equiv("a", "a", opts_collator = list(bogus = TRUE))
+        charr_test_leaf("ci_cmp_equiv")("a", "a", opts_collator = list(bogus = TRUE))
       ),
       "incorrect opts_collator setting",
       fixed = TRUE,
       info = backend
     )
     expect_identical(
-      with_backend(backend, charr:::ci_cmp_equiv("a", "a")),
+      with_backend(backend, charr_test_leaf("ci_cmp_equiv")("a", "a")),
       TRUE,
       info = backend
     )

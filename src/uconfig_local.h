@@ -7,7 +7,9 @@
 #ifndef CHARR_UCONFIG_LOCAL_H
 #define CHARR_UCONFIG_LOCAL_H
 
+#ifndef R_NO_REMAP
 #define R_NO_REMAP
+#endif
 #include <R_ext/Error.h>
 
 /* Never terminate the R process for an ICU internal invariant failure. */

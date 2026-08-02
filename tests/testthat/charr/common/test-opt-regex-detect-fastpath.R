@@ -12,14 +12,14 @@ test_that("optimized regex detection matches stringi on direct UTF-8 input", {
 
   operations <- list(
     scalar = function(x) {
-      charr:::ci_detect_regex(x, patterns[[1L]])
+      charr_test_leaf("ci_detect_regex")(x, patterns[[1L]])
     },
-    recycled = function(x) charr:::ci_detect_regex(x, patterns),
+    recycled = function(x) charr_test_leaf("ci_detect_regex")(x, patterns),
     negated = function(x) {
-      charr:::ci_detect_regex(x, patterns[[1L]], negate = TRUE)
+      charr_test_leaf("ci_detect_regex")(x, patterns[[1L]], negate = TRUE)
     },
     limited = function(x) {
-      charr:::ci_detect_regex(x, patterns[[1L]], max_count = 2L)
+      charr_test_leaf("ci_detect_regex")(x, patterns[[1L]], max_count = 2L)
     }
   )
 
@@ -36,19 +36,19 @@ test_that("optimized regex detection matches stringi on direct UTF-8 input", {
   recycled_patterns <- c("one", "nope", "two", "^$")
   expected <- with_backend(
     "stringi",
-    charr:::ci_detect_regex(recycled_subject, recycled_patterns)
+    charr_test_leaf("ci_detect_regex")(recycled_subject, recycled_patterns)
   )
   expect_identical(
     with_backend(
       "base",
-      charr:::ci_detect_regex(recycled_subject, recycled_patterns)
+      charr_test_leaf("ci_detect_regex")(recycled_subject, recycled_patterns)
     ),
     expected
   )
   expect_identical(
     with_backend(
       "altrep",
-      charr:::ci_detect_regex(
+      charr_test_leaf("ci_detect_regex")(
         charport::as_charvec(recycled_subject), recycled_patterns
       )
     ),
@@ -63,16 +63,16 @@ test_that("optimized regex detection retains conversion fallbacks", {
   values <- c(latin1, "plain text", NA_character_)
 
   expected <- with_backend(
-    "stringi", charr:::ci_detect_regex(values, "\\p{L}+")
+    "stringi", charr_test_leaf("ci_detect_regex")(values, "\\p{L}+")
   )
   expect_identical(
-    with_backend("base", charr:::ci_detect_regex(values, "\\p{L}+")),
+    with_backend("base", charr_test_leaf("ci_detect_regex")(values, "\\p{L}+")),
     expected
   )
   expect_identical(
     with_backend(
       "altrep",
-      charr:::ci_detect_regex(charport::as_charvec(values), "\\p{L}+")
+      charr_test_leaf("ci_detect_regex")(charport::as_charvec(values), "\\p{L}+")
     ),
     expected
   )
@@ -88,7 +88,7 @@ test_that("optimized regex detection retains conversion fallbacks", {
     expect_error(
       with_backend(
         backend,
-        charr:::ci_detect_regex(input, "x", max_count = 0L)
+        charr_test_leaf("ci_detect_regex")(input, "x", max_count = 0L)
       ),
       "bytes encoding"
     )

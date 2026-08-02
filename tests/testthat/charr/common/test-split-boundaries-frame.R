@@ -114,6 +114,7 @@ test_that("boundary split preserves iterator types and skip ranges", {
   values <- c(
     "alpha 123 \u65e5\u672c\u8a9e. Next!",
     "One. Two! Three?",
+    "\U0001f469\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466e\u0301",
     "a b\nnext line", "", NA_character_
   )
   rules <- paste0(
@@ -141,6 +142,12 @@ test_that("boundary split preserves iterator types and skip ranges", {
     expected <- split_boundaries_frame_invoke(
       "stringi", values, options = options
     )
+    if (identical(options$type, "char")) {
+      expect_identical(
+        expected[[3L]], c("👩‍👩‍👧‍👦", "e\u0301"),
+        info = "stringi"
+      )
+    }
     for (backend in c("base", "altrep")) {
       input <- split_boundaries_frame_input(backend, values)
       backend_options <- split_boundaries_frame_options(backend, options)
@@ -149,6 +156,12 @@ test_that("boundary split preserves iterator types and skip ranges", {
       )
 
       expect_identical(actual, expected, info = backend)
+      if (identical(options$type, "char")) {
+        expect_identical(
+          actual[[3L]], c("👩‍👩‍👧‍👦", "e\u0301"),
+          info = backend
+        )
+      }
       expect_split_boundaries_frame_unmaterialized(backend, input)
       expect_split_boundaries_frame_unmaterialized(
         backend, backend_options$type

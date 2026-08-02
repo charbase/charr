@@ -11,7 +11,8 @@ CXX_STD = CXX17
 # or the system's at runtime; in system mode the suffix is off and the
 # vendored headers stay OFF the include path.
 
-PKG_CPPFLAGS = -I. -Ialtrep_backend @ICU_CPPFLAGS@
+# Keep R's short remapping macros from colliding with C++ member names.
+PKG_CPPFLAGS = -DR_NO_REMAP -I. -Ialtrep_backend @ICU_CPPFLAGS@
 PKG_LIBS = @ICU_LIBS@
 
 RUNTIME_SOURCES = \
@@ -186,6 +187,11 @@ OBJECTS = $(RUNTIME_OBJECTS) \
 ICU_COMMON_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu78/common/*.cpp))
 ICU_I18N_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu78/i18n/*.cpp))
 ICU_STUBDATA_OBJECTS = $(patsubst %.cpp,%.o,$(wildcard icu78/stubdata/*.cpp))
+ICU_OBJECTS = $(ICU_COMMON_OBJECTS) $(ICU_I18N_OBJECTS) $(ICU_STUBDATA_OBJECTS)
+
+# ICU 78.3 calls deprecated ICU entry points inside its own implementation.
+# Keep those annotations for charr code, but not while compiling ICU itself.
+$(ICU_OBJECTS): PKG_CPPFLAGS += -DU_ATTRIBUTE_DEPRECATED=
 
 .PHONY: all clean
 all: $(SHLIB)

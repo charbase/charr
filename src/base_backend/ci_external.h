@@ -63,7 +63,7 @@
 using namespace icu;
 
 // #define USE_RINTERNALS  removed 2021-08-12 - do not use anymore
-// #define R_NO_REMAP      removed 2021-08-12 - do not use anymore
+// R_NO_REMAP is set for every translation unit in Makevars.
 #include <R.h>
 #include <Rversion.h>
 #include <Rinternals.h>

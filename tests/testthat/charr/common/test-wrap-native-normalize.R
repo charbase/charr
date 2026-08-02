@@ -38,6 +38,24 @@ wrap_with_warnings <- function(expr) {
   list(value = value, warnings = warnings)
 }
 
+test_that("wrap preserves supplementary graphemes", {
+  family_text <- paste0(
+    "\U0001f469\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466",
+    " e\u0301 family"
+  )
+  actual <- wrap_selected_leaf(
+    family_text, width = 5L, simplify = FALSE, normalize = FALSE,
+    locale = "en_US"
+  )
+  expected <- stringi::stri_wrap(
+    family_text, width = 5L, simplify = FALSE, normalize = FALSE,
+    locale = "en_US"
+  )
+  expect_identical(actual, expected)
+  expect_identical(paste(actual[[1L]], collapse = " "), family_text)
+})
+
+
 test_that("native wrap normalization matches stringi's complete preprocessing", {
   bom <- "\uFEFF"
   line_separators <- c(

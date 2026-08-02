@@ -1040,11 +1040,10 @@ getPosixID(const ILcidPosixMap *this_0, uint32_t hostID)
 void FIX_LANGUAGE_ID_TAG(char* buffer, int32_t len) {
     if (len >= 3) {
         if (buffer[0] == 'q' && buffer[1] == 'u' && buffer[2] == 'z') {
-            buffer[2] = 0;
-            uprv_strcat(buffer, buffer+3);
+            uprv_memmove(buffer + 2, buffer + 3, uprv_strlen(buffer + 3) + 1);
         } else if (buffer[0] == 'p' && buffer[1] == 'r' && buffer[2] == 's') {
-            buffer[0] = 'f'; buffer[1] = 'a'; buffer[2] = 0;
-            uprv_strcat(buffer, buffer+3);
+            buffer[0] = 'f'; buffer[1] = 'a';
+            uprv_memmove(buffer + 2, buffer + 3, uprv_strlen(buffer + 3) + 1);
         }
     }
 }

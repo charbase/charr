@@ -15,15 +15,15 @@ test_that("optimized scalar substring paths match stringi", {
   )
 
   operations <- list(
-    sub = function(x) charr:::ci_sub(x, 2L, 8L),
+    sub = function(x) charr_test_leaf("ci_sub")(x, 2L, 8L),
     replace = function(x) {
-      charr:::ci_sub_replace(x, 2L, 5L, replacement = "X")
+      charr_test_leaf("ci_sub_replace")(x, 2L, 5L, replacement = "X")
     },
     sub_all = function(x) {
-      charr:::ci_sub_all(x, list(2L), list(8L))
+      charr_test_leaf("ci_sub_all")(x, list(2L), list(8L))
     },
     replace_all = function(x) {
-      charr:::ci_sub_replace_all(
+      charr_test_leaf("ci_sub_replace_all")(
         x, list(2L), list(5L), replacement = "X"
       )
     }
@@ -46,13 +46,13 @@ test_that("optimized scalar substring paths retain missing replacements", {
 
   expected <- with_backend(
     "stringi",
-    charr:::ci_sub_replace_all(
+    charr_test_leaf("ci_sub_replace_all")(
       values, list(2L), list(5L), replacement = NA_character_
     )
   )
   expected_omit <- with_backend(
     "stringi",
-    charr:::ci_sub_replace_all(
+    charr_test_leaf("ci_sub_replace_all")(
       values, list(2L), list(5L), omit_na = TRUE,
       replacement = NA_character_
     )
@@ -68,7 +68,7 @@ test_that("optimized scalar substring paths retain missing replacements", {
     expect_identical(
       with_backend(
         backend,
-        charr:::ci_sub_replace_all(
+        charr_test_leaf("ci_sub_replace_all")(
           input, list(2L), list(5L), replacement = NA_character_
         )
       ),
@@ -77,7 +77,7 @@ test_that("optimized scalar substring paths retain missing replacements", {
     expect_identical(
       with_backend(
         backend,
-        charr:::ci_sub_replace_all(
+        charr_test_leaf("ci_sub_replace_all")(
           input, list(2L), list(5L), omit_na = TRUE,
           replacement = NA_character_
         )
@@ -93,9 +93,9 @@ test_that("optimized scalar substring paths retain malformed UTF-8 bytes", {
   Encoding(malformed) <- "UTF-8"
 
   operations <- list(
-    function(x) charr:::ci_sub(x, 2L, 3L),
+    function(x) charr_test_leaf("ci_sub")(x, 2L, 3L),
     function(x) {
-      charr:::ci_sub_replace(x, 2L, 3L, replacement = "X")
+      charr_test_leaf("ci_sub_replace")(x, 2L, 3L, replacement = "X")
     }
   )
 
@@ -123,7 +123,7 @@ test_that("optimized scalar replacement normalizes its replacement once", {
   for (replacement in replacements) {
     for (omit_na in c(FALSE, TRUE)) {
       operation <- function(x, replacement) {
-        charr:::ci_sub_replace(
+        charr_test_leaf("ci_sub_replace")(
           x, 2L, 3L, omit_na = omit_na,
           replacement = replacement
         )
