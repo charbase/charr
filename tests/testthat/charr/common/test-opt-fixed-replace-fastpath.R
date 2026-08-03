@@ -6,6 +6,8 @@ fixed_replace_marked <- function(bytes, encoding) {
 
 
 test_that("fixed replace keeps completed rows across mixed encodings", {
+  skip_if_stringi_cannot_compare_native()
+
   latin1 <- fixed_replace_marked(c(0x61, 0xe9, 0x61), "latin1")
   native <- fixed_replace_marked(c(0x61, 0xc3, 0xa9, 0x61), "unknown")
   malformed <- fixed_replace_marked(c(0x61, 0xff, 0x61), "UTF-8")

@@ -3,6 +3,7 @@ PACKAGE := $(shell perl -aF: -ne 'print, exit if s/^Package:\s+//' DESCRIPTION)
 VERSION := $(shell perl -aF: -ne 'print, exit if s/^Version:\s+//' DESCRIPTION)
 BUILD   := $(PACKAGE)_$(VERSION).tar.gz
 RLIBS   := $(shell Rscript -e 'cat(paste(.libPaths(), collapse = ":"))')
+INSTALL_CONFIGURE_ARGS ?=
 # The code map is published as part of the pkgdown site, so it is generated
 # into pkgdown/assets, which pkgdown copies verbatim into docs/. Override
 # CODE_MAP_DIR to write a throwaway copy while iterating on the viewer.
@@ -16,8 +17,7 @@ LINT_EFFECT_ARGS := \
 	--effect-overrides tools/charr-lint/effect-overrides.tsv
 
 .PHONY: doc build install install-dev check check-no-vignette rhub-platforms \
-	test test-stringi test-locales \
-	test-base test-altrep test-system test-bundle \
+	test test-locales test-system test-bundle \
 	test-san test-valgrind vignette figures pkgdown pkgdown-index \
 	lint lint-tool lint-fixtures lint-db lint-frontier lint-converted lint-audit \
 	lint-effects-update lint-r-literals \
@@ -333,15 +333,13 @@ install: $(BUILD)
 	rm -f $(BUILD)
 
 install-dev: clean-altrep
-	R CMD INSTALL --preclean .
+	R CMD INSTALL --preclean $(INSTALL_CONFIGURE_ARGS) .
 	$(MAKE) clean-altrep
 
-# The native-encoding tests need a non-UTF-8 single-byte LC_CTYPE, which most
-# distributions no longer generate. Build one under local/ so the tests run
-# instead of skipping. LOCPATH replaces glibc's locale archive rather than
-# adding to it, so the UTF-8 locale the same tests need has to be built here
-# too. Without localedef the directory stays empty, LOCPATH goes unset, and the
-# tests skip themselves exactly as before.
+# The native-encoding tests need fresh R processes in UTF-8 and ISO-8859-1
+# locales. Most distributions no longer generate the latter, so build both
+# under local/. LOCPATH replaces glibc's locale archive rather than adding to
+# it, which is why the matching UTF-8 locale is also private.
 LOCALE_DIR := $(CURDIR)/local/locales
 
 define build_test_locales
@@ -360,47 +358,31 @@ endef
 # the system archive and leave the suite with no usable UTF-8 locale at all.
 use_test_locales = if [ -d "$(LOCALE_DIR)/en_US.ISO-8859-1" ] && [ -d "$(LOCALE_DIR)/en_US.UTF-8" ]; then export LOCPATH="$(LOCALE_DIR)"; fi
 
-# CI calls this strict target before R CMD check. The ordinary test targets
-# remain portable and skip locale-specific cases when localedef is unavailable.
+# CI calls this strict target before R CMD check. Each probe starts R with its
+# locale already selected. The test driver uses the same mechanism and skips
+# locale classes that the current platform does not support.
 test-locales:
 	@$(build_test_locales)
 	@test -d "$(LOCALE_DIR)/en_US.ISO-8859-1"
 	@test -d "$(LOCALE_DIR)/en_US.UTF-8"
-	@LOCPATH="$(LOCALE_DIR)" Rscript -e 'latin <- Sys.setlocale("LC_CTYPE", "en_US.ISO-8859-1"); stopifnot(nzchar(latin), !isTRUE(l10n_info()[["UTF-8"]])); value <- rawToChar(as.raw(0xe9)); Encoding(value) <- "unknown"; converted <- iconv(value, from = "", to = "UTF-8"); stopifnot(identical(charToRaw(converted), as.raw(c(0xc3, 0xa9)))); utf8 <- Sys.setlocale("LC_CTYPE", "en_US.UTF-8"); stopifnot(nzchar(utf8), isTRUE(l10n_info()[["UTF-8"]]))'
+	@LOCPATH="$(LOCALE_DIR)" LC_ALL= LC_CTYPE=en_US.ISO-8859-1 Rscript -e 'stopifnot(!isTRUE(l10n_info()[["UTF-8"]]), isTRUE(l10n_info()[["Latin-1"]])); value <- rawToChar(as.raw(0xe9)); Encoding(value) <- "unknown"; converted <- iconv(value, from = "", to = "UTF-8"); stopifnot(identical(charToRaw(converted), as.raw(c(0xc3, 0xa9))))'
+	@LOCPATH="$(LOCALE_DIR)" LC_ALL= LC_CTYPE=en_US.UTF-8 Rscript -e 'stopifnot(isTRUE(l10n_info()[["UTF-8"]])); value <- rawToChar(as.raw(c(0xc3, 0xa9))); Encoding(value) <- "unknown"; converted <- iconv(value, from = "", to = "UTF-8"); stopifnot(identical(charToRaw(converted), as.raw(c(0xc3, 0xa9))))'
 
-# Run the complete suite against all three public backends after one install.
-test: install
+# Test installs use the source tree directly. Rebuilding vignettes belongs to
+# package builds and checks, not to the edit-test loop.
+test: install-dev
 	@$(build_test_locales)
 	$(use_test_locales); \
-	for backend in stringi base altrep; do \
-		printf '== charr_backend=%s\n' "$$backend"; \
-		(cd tests && NOT_CRAN=true CHARR_BACKEND=$$backend Rscript testthat.R) \
-			|| exit 1; \
-	done
-
-test-stringi: install
-	@$(build_test_locales)
-	$(use_test_locales); \
-	cd tests && NOT_CRAN=true CHARR_BACKEND=stringi Rscript testthat.R
-
-test-base: install
-	@$(build_test_locales)
-	$(use_test_locales); \
-	cd tests && NOT_CRAN=true CHARR_BACKEND=base Rscript testthat.R
-
-test-altrep: install
-	@$(build_test_locales)
-	$(use_test_locales); \
-	cd tests && NOT_CRAN=true CHARR_BACKEND=altrep Rscript testthat.R
+	cd tests && Rscript testthat.R
 
 # ICU-mode validation uses the same three-backend matrix with configure's
 # choice made explicit. The system target fails instead of falling back when
 # the installed ICU is not an allowlisted candidate.
 test-system:
-	CHARR_SYSTEM_ICU=yes $(MAKE) test
+	$(MAKE) test INSTALL_CONFIGURE_ARGS=--configure-args=--with-system-icu
 
 test-bundle:
-	CHARR_SYSTEM_ICU=no $(MAKE) test
+	$(MAKE) test INSTALL_CONFIGURE_ARGS=--configure-args=--without-system-icu
 
 # ASan + UBSan over the full suite, all three backends. Only the package
 # is instrumented -- R itself is not, so libasan must be preloaded and leak
@@ -412,32 +394,32 @@ test-bundle:
 # uninstrumented user-library charr. The test runs below do the real
 # (preloaded) load.
 test-san:
+	@$(build_test_locales)
+	$(use_test_locales); \
 	tmp_lib=$$(mktemp -d /tmp/$(PACKAGE)-san-XXXXXX); \
+	trap 'rm -rf "$$tmp_lib"' EXIT; \
 	printf 'CXXFLAGS = -g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all\nCXX17FLAGS = -g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all\nSHLIB_CXXLDFLAGS = -fsanitize=address,undefined -shared\nSHLIB_CXX17LDFLAGS = -fsanitize=address,undefined -shared\n' > $$tmp_lib/Makevars.san; \
-	CHARR_SYSTEM_ICU=yes ASAN_OPTIONS=detect_leaks=0 LSAN_OPTIONS=detect_leaks=0 \
+	ASAN_OPTIONS=detect_leaks=0 LSAN_OPTIONS=detect_leaks=0 \
 	  R_MAKEVARS_USER=$$tmp_lib/Makevars.san \
-	  R CMD INSTALL --preclean --no-test-load -l $$tmp_lib .; \
-	for backend in stringi base altrep; do \
-	  printf '== charr_backend=%s\n' "$$backend"; \
-	  (cd tests && LD_PRELOAD=$$(gcc -print-file-name=libasan.so) \
-	    ASAN_OPTIONS=detect_leaks=0 LSAN_OPTIONS=detect_leaks=0 \
-	    UBSAN_OPTIONS=print_stacktrace=1 \
-	    R_MAKEVARS_USER=$$tmp_lib/Makevars.san R_LIBS=$$tmp_lib:$(RLIBS) \
-	    NOT_CRAN=true CHARR_BACKEND=$$backend Rscript testthat.R) || exit 1; \
-	done; \
-	rm -rf $$tmp_lib
+	  R CMD INSTALL --preclean --no-test-load \
+	    --configure-args=--with-system-icu -l $$tmp_lib .; \
+	cd tests && LD_PRELOAD=$$(gcc -print-file-name=libasan.so) \
+	  ASAN_OPTIONS=detect_leaks=0 LSAN_OPTIONS=detect_leaks=0 \
+	  UBSAN_OPTIONS=print_stacktrace=1 \
+	  R_MAKEVARS_USER=$$tmp_lib/Makevars.san R_LIBS=$$tmp_lib:$(RLIBS) \
+	  Rscript testthat.R
 
 # Full suite under valgrind memcheck, all three backends (no
 # instrumentation rebuild; slow). Requires valgrind.
 test-valgrind:
+	@$(build_test_locales)
+	$(use_test_locales); \
 	tmp_lib=$$(mktemp -d /tmp/$(PACKAGE)-vg-XXXXXX); \
+	trap 'rm -rf "$$tmp_lib"' EXIT; \
 	R CMD INSTALL --preclean -l $$tmp_lib .; \
-	for backend in stringi base altrep; do \
-	  printf '== charr_backend=%s\n' "$$backend"; \
-	  (cd tests && R_LIBS=$$tmp_lib:$(RLIBS) NOT_CRAN=true CHARR_BACKEND=$$backend \
-	    R --vanilla -d "valgrind --tool=memcheck --leak-check=no --error-exitcode=1" -f testthat.R) || exit 1; \
-	done; \
-	rm -rf $$tmp_lib
+	cd tests && R_LIBS=$$tmp_lib:$(RLIBS) \
+	  R --vanilla -d "valgrind --trace-children=yes --tool=memcheck --leak-check=no --error-exitcode=1" \
+	  -f testthat.R
 
 # Documentation. The main vignette is also the README and the pkgdown home
 # page, rendered from one source so the three cannot drift apart.

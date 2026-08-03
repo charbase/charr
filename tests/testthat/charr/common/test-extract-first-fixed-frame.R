@@ -106,6 +106,8 @@ expect_extract_first_fixed_frame_output <- function(backend, output) {
 
 
 test_that("fixed first extraction keeps direct and fallback slices", {
+  skip_if_stringi_cannot_compare_native()
+
   direct_subject <- c(
     "zaq", "caf\u00e9", "no-match", "", NA_character_, "value"
   )

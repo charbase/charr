@@ -39,7 +39,7 @@ test_that("str_split() can control maximum number of splits", {
 })
 
 test_that("str_split() checks its inputs", {
-  expect_snapshot(error = TRUE, {
+  expect_snapshot(cran = TRUE, error = TRUE, {
     str_split(letters[1:3], letters[1:2])
     str_split("x", 1)
     str_split("x", "x", n = 0)
@@ -48,7 +48,7 @@ test_that("str_split() checks its inputs", {
 
 test_that("str_split_1 takes string and returns character vector", {
   expect_equal(str_split_1("abc", ""), c("a", "b", "c"))
-  expect_snapshot_error(str_split_1(letters, ""))
+  expect_snapshot_error(cran = TRUE, str_split_1(letters, ""))
 })
 
 test_that("str_split_fixed pads with empty string", {
@@ -67,7 +67,7 @@ test_that("str_split_fixed pads with empty string", {
 })
 
 test_that("str_split_fixed check its inputs", {
-  expect_snapshot(str_split_fixed("x", "x", 0), error = TRUE)
+  expect_snapshot(cran = TRUE, str_split_fixed("x", "x", 0), error = TRUE)
 })
 
 # str_split_i -------------------------------------------------------------
@@ -86,7 +86,7 @@ test_that("str_split_i returns NA for absent components", {
 })
 
 test_that("str_split_i check its inputs", {
-  expect_snapshot(error = TRUE, {
+  expect_snapshot(cran = TRUE, error = TRUE, {
     str_split_i("x", "x", 0)
     str_split_i("x", "x", 0.5)
   })

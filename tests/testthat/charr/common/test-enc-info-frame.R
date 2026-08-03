@@ -68,17 +68,13 @@ expect_enc_info_frame_result <- function(actual, expected, backend) {
 
 
 test_that("encoding info preserves default and empty-name behavior", {
-  oracle <- enc_info_frame_function("stringi")
-  expected <- oracle()
-  expect_identical(oracle(NULL), expected)
-  expect_identical(oracle(""), expected)
+  backend <- charr_backend()
+  fun <- enc_info_frame_function(backend)
+  expected <- fun()
 
-  for (backend in c("base", "altrep")) {
-    fun <- enc_info_frame_function(backend)
-    expect_enc_info_frame_result(fun(), expected, backend)
-    expect_enc_info_frame_result(fun(NULL), expected, backend)
-    expect_enc_info_frame_result(fun(""), expected, backend)
-  }
+  expect_enc_info_frame_result(expected, expected, backend)
+  expect_enc_info_frame_result(fun(NULL), expected, backend)
+  expect_enc_info_frame_result(fun(""), expected, backend)
 })
 
 

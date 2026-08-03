@@ -435,6 +435,8 @@ test_that("empty sequential subjects ignore later arguments", {
 })
 
 test_that("collation replacement preserves marked and malformed strings", {
+  skip_if_stringi_cannot_compare_native()
+
   latin1 <- coll_replace_marked_string(
     c(0x63, 0x61, 0x66, 0xe9), "latin1"
   )

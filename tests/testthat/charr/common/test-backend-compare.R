@@ -92,6 +92,8 @@ test_that("equivalence consumes a previous unmaterialized result", {
 })
 
 test_that("equivalence preserves UTF-8 normalization and byte lengths", {
+  skip_if_stringi_cannot_compare_native()
+
   latin1 <- compare_marked_string(c(0x63, 0x61, 0x66, 0xe9), "latin1")
   malformed <- compare_marked_string(c(0x61, 0xff, 0x62), "UTF-8")
   native <- compare_marked_string(

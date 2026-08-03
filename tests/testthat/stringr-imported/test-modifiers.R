@@ -1,7 +1,7 @@
 test_that("patterns coerced to character", {
   x <- factor("a")
 
-  expect_snapshot({
+  expect_snapshot(cran = TRUE, {
     . <- regex(x)
     . <- coll(x)
     . <- fixed(x)
@@ -9,7 +9,7 @@ test_that("patterns coerced to character", {
 })
 
 test_that("useful error message for bad type", {
-  expect_snapshot(error = TRUE, {
+  expect_snapshot(cran = TRUE, error = TRUE, {
     type(1:3)
   })
 })
@@ -38,7 +38,7 @@ test_that("subsetting preserves class and options", {
 })
 
 test_that("useful errors for NAs", {
-  expect_snapshot(error = TRUE, {
+  expect_snapshot(cran = TRUE, error = TRUE, {
     type(NA)
     type(c("a", "b", NA_character_, "c"))
   })

@@ -34,7 +34,7 @@ test_that("can use fixed() and coll()", {
 })
 
 test_that("can't use boundaries", {
-  expect_snapshot(error = TRUE, {
+  expect_snapshot(cran = TRUE, error = TRUE, {
     str_subset(c("a", "b c"), "")
     str_subset(c("a", "b c"), boundary())
   })

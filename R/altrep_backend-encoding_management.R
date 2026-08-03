@@ -108,6 +108,24 @@
 # @export
 ci_enc_info <- function(enc = NULL)
 {
+    if (is.null(enc) || identical(enc, "")) {
+        # ICU may have a compile-time UTF-8 default that differs from R's
+        # native encoding. Pass the R encoding explicitly without changing
+        # ICU's process-global default.
+        locale <- l10n_info()
+        if (isTRUE(locale[["UTF-8"]])) {
+            enc <- "UTF-8"
+        } else if (!is.null(locale[["codeset"]]) &&
+                   length(locale[["codeset"]]) == 1L &&
+                   !is.na(locale[["codeset"]]) &&
+                   nzchar(locale[["codeset"]])) {
+            enc <- locale[["codeset"]]
+        } else if (!is.null(locale[["codepage"]]) &&
+                   length(locale[["codepage"]]) == 1L &&
+                   !is.na(locale[["codepage"]])) {
+            enc <- paste0("windows-", locale[["codepage"]])
+        }
+    }
     .Call(C_ci_enc_info, enc)
 }
 

@@ -35,7 +35,7 @@ test_that("can use fixed() and coll()", {
 })
 
 test_that("can't empty/boundary", {
-  expect_snapshot(error = TRUE, {
+  expect_snapshot(cran = TRUE, error = TRUE, {
     str_detect("x", "")
     str_starts("x", "")
     str_ends("x", "")
@@ -43,7 +43,7 @@ test_that("can't empty/boundary", {
 })
 
 test_that("functions use tidyverse recycling rules", {
-  expect_snapshot(error = TRUE, {
+  expect_snapshot(cran = TRUE, error = TRUE, {
     str_detect(1:2, 1:3)
     str_starts(1:2, 1:3)
     str_ends(1:2, 1:3)
@@ -85,11 +85,11 @@ test_that("detection preserves names when pattern and string have same length", 
 test_that("str_like is case sensitive", {
   expect_true(str_like("abc", "ab%"))
   expect_false(str_like("abc", "AB%"))
-  expect_snapshot(str_like("abc", regex("x")), error = TRUE)
+  expect_snapshot(cran = TRUE, str_like("abc", regex("x")), error = TRUE)
 })
 
 test_that("ignore_case is deprecated but still respected", {
-  expect_snapshot(out <- str_like("abc", "AB%", ignore_case = TRUE))
+  expect_snapshot(cran = TRUE, out <- str_like("abc", "AB%", ignore_case = TRUE))
   expect_equal(out, TRUE)
 
   expect_warning(out <- str_like("abc", "AB%", ignore_case = FALSE))
@@ -99,7 +99,7 @@ test_that("ignore_case is deprecated but still respected", {
 test_that("str_ilike works", {
   expect_true(str_ilike("abc", "ab%"))
   expect_true(str_ilike("abc", "AB%"))
-  expect_snapshot(str_ilike("abc", regex("x")), error = TRUE)
+  expect_snapshot(cran = TRUE, str_ilike("abc", regex("x")), error = TRUE)
 })
 
 test_that("like_to_regex generates expected regexps", {

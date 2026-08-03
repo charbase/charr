@@ -32,9 +32,7 @@ public:
     // Whether R's native encoding is UTF-8, decided by probing the same
     // converter the native() path uses. This is the only such predicate:
     // do not reintroduce a locale-name test or ICU's default converter name.
-    // Resolved at most once per instance; because instances are per-operation
-    // and Riconv_open("") binds the locale when it opens, a Sys.setlocale()
-    // between operations is picked up automatically.
+    // The result is cached only for the lifetime of this per-operation object.
     CHARR_CXX_HELPER bool native_is_utf8();
 
     CHARR_CXX_HELPER void reset() noexcept;

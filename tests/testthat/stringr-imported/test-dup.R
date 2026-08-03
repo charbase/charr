@@ -30,7 +30,7 @@ test_that("uses sep argument", {
 })
 
 test_that("separator must be a single string", {
-  expect_snapshot(error = TRUE, {
+  expect_snapshot(cran = TRUE, error = TRUE, {
     str_dup("a", 3, sep = 1)
     str_dup("a", 3, sep = c("-", ";"))
   })

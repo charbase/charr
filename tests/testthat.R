@@ -1,68 +1,110 @@
-library(testthat)
-library(charr)
+source("testthat/support/startup-locales.R")
 
-requested_backend <- Sys.getenv("CHARR_BACKEND", unset = "")
-test_backends <- if (identical(requested_backend, "all")) {
-  c("stringi", "base", "altrep")
-} else if (nzchar(requested_backend)) {
-  requested_backend
-} else {
-  charr_backend()
+rscript <- file.path(R.home("bin"), "Rscript")
+locale_support <- normalizePath(
+  "testthat/support/startup-locales.R",
+  mustWork = TRUE
+)
+test_worker <- normalizePath(
+  "testthat/support/run-backend-tests.R",
+  mustWork = TRUE
+)
+
+r_literal <- function(value) {
+  paste(deparse(value), collapse = "")
 }
 
-run_charr_tests <- function(path) {
-  test_env <- new.env(parent = globalenv())
-  sys.source("testthat/helper-charr.R", envir = test_env)
-  test_dir(
-    path,
-    package = "charr",
-    reporter = check_reporter(),
-    env = test_env,
-    load_helpers = FALSE,
-    load_package = "installed",
-    stop_on_failure = TRUE
+probe_startup_locale <- function(locale, expected_class) {
+  probe <- paste0(
+    "source(", r_literal(locale_support), "); ",
+    "quit(save = 'no', status = if (identical(startup_locale_class(), ",
+    r_literal(expected_class), ")) 0L else 1L)"
   )
+  status <- suppressWarnings(system2(
+    rscript,
+    c("--vanilla", "-e", shQuote(probe)),
+    stdout = FALSE,
+    stderr = FALSE,
+    env = startup_locale_environment(locale)
+  ))
+  identical(status, 0L)
 }
 
-prepare_backend <- function(backend) {
-  # test_check() sources setup-charr.R, which reads CHARR_BACKEND. Replace the
-  # runner-only "all" value with the concrete backend for each pass.
-  Sys.setenv(CHARR_BACKEND = backend)
-  charr_backend(backend)
-}
+select_startup_locales <- function() {
+  candidates <- startup_locale_candidates()
+  runs <- list()
+  covered <- character()
+  current_class <- startup_locale_class()
 
-run_backend_suite <- function(backend, suite) {
-  message("== charr backend: ", backend, "; suite: ", suite, " ==")
-  prepare_backend(backend)
-
-  if (identical(suite, "imported")) {
-    test_check("charr")
-    return(invisible(NULL))
+  if (current_class %in% names(candidates)) {
+    runs[[length(runs) + 1L]] <- list(
+      label = current_class,
+      locale = NULL
+    )
+    covered <- current_class
+  } else {
+    runs[[length(runs) + 1L]] <- list(
+      label = paste0("current:", Sys.getlocale("LC_CTYPE")),
+      locale = NULL
+    )
   }
-  if (!identical(suite, "common")) {
-    stop("unknown test suite: ", suite, call. = FALSE)
-  }
 
-  run_charr_tests("testthat/charr/common")
-}
-
-suite_errors <- list()
-for (backend in test_backends) {
-  for (suite in c("imported", "common")) {
-    key <- paste(backend, suite, sep = "/")
-    tryCatch(
-      run_backend_suite(backend, suite),
-      error = function(error) {
-        suite_errors[[key]] <<- error
+  for (target in setdiff(names(candidates), covered)) {
+    selected <- NULL
+    for (candidate in candidates[[target]]) {
+      if (probe_startup_locale(candidate, target)) {
+        selected <- candidate
+        break
       }
+    }
+
+    if (is.null(selected)) {
+      message("Skipping unavailable startup locale class: ", target)
+    } else {
+      runs[[length(runs) + 1L]] <- list(
+        label = target,
+        locale = selected
+      )
+    }
+  }
+
+  runs
+}
+
+backends <- c("stringi", "base", "altrep")
+startup_locales <- select_startup_locales()
+statuses <- integer(length(startup_locales) * length(backends))
+names(statuses) <- character(length(statuses))
+
+index <- 0L
+for (startup_locale in startup_locales) {
+  selected_locale <- if (is.null(startup_locale$locale)) {
+    Sys.getlocale("LC_CTYPE")
+  } else {
+    startup_locale$locale
+  }
+
+  for (backend in backends) {
+    index <- index + 1L
+    label <- paste(startup_locale$label, backend, sep = "/")
+    names(statuses)[[index]] <- label
+    message(
+      "== startup locale: ", startup_locale$label, " (", selected_locale,
+      "); charr backend: ", backend, " =="
+    )
+    statuses[[index]] <- system2(
+      rscript,
+      c("--vanilla", shQuote(test_worker), backend),
+      env = startup_locale_environment(startup_locale$locale)
     )
   }
 }
 
-if (length(suite_errors) > 0L) {
+failed <- names(statuses)[statuses != 0L]
+if (length(failed) > 0L) {
   stop(
-    "Test failures for backend/suite: ",
-    paste(names(suite_errors), collapse = ", "),
+    "test failures for startup locale/backend: ",
+    paste(failed, collapse = ", "),
     call. = FALSE
   )
 }

@@ -382,6 +382,8 @@ test_that("empty-pattern warnings precede collation search errors", {
 })
 
 test_that("collation predicates preserve encoding normalization", {
+  skip_if_stringi_cannot_compare_native()
+
   latin1 <- coll_pred_marked_string(c(0x63, 0x61, 0x66, 0xe9), "latin1")
   malformed <- coll_pred_marked_string(c(0x61, 0xff, 0x62), "UTF-8")
   native <- coll_pred_marked_string(c(0x63, 0x61, 0x66, 0xc3, 0xa9), "unknown")

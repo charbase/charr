@@ -19,8 +19,11 @@ UPSTREAM_COMMIT <- "ae054b1d28f630fee22ddb3cb7525396e62af4fe"
 # Package licensing is maintained locally in LICENSE and LICENSE.note.
 UPSTREAM_SUBSET <- c(
   "DESCRIPTION", "NAMESPACE",
-  "R", "data", "man", "tests", "inst"
+  "R", "data", "man", "inst"
 )
+
+UPSTREAM_TEST_SUBSET <- "tests/testthat"
+IMPORTED_TEST_DIR <- file.path("tests", "testthat", "stringr-imported")
 
 UPSTREAM_DROPPED <- c(
   "man/figures/logo.png",
@@ -92,6 +95,107 @@ ROUTED_QUALIFIERS <- c(
 )
 
 OWNED_MARKER <- "^# charr-owned"
+
+archive_subset <- function(checkout, paths, destination = ".") {
+  cmd <- sprintf(
+    "git -C %s archive %s %s | tar -x -C %s",
+    shQuote(checkout), UPSTREAM_COMMIT,
+    paste(shQuote(paths), collapse = " "),
+    shQuote(destination)
+  )
+  if (system(cmd) != 0L) stop("archive extraction failed")
+}
+
+snapshot_call_name <- function(call) {
+  if (!is.call(call)) return(NULL)
+  function_call <- call[[1L]]
+  if (is.symbol(function_call)) return(as.character(function_call))
+  if (is.call(function_call) &&
+      as.character(function_call[[1L]]) %in% c("::", ":::")) {
+    return(as.character(function_call[[3L]]))
+  }
+  NULL
+}
+
+snapshot_policy <- function(expression) {
+  if (!is.call(expression)) return(logical())
+
+  result <- logical()
+  name <- snapshot_call_name(expression)
+  if (!is.null(name) &&
+      name %in% c("expect_snapshot", "expect_snapshot_error")) {
+    arguments <- as.list(expression)[-1L]
+    cran <- which(names(arguments) == "cran")
+    result <- length(cran) == 1L && identical(arguments[[cran]], TRUE)
+  }
+
+  c(result, unlist(lapply(as.list(expression), snapshot_policy)))
+}
+
+prepare_imported_tests <- function() {
+  files <- list.files(
+    IMPORTED_TEST_DIR,
+    pattern = "[.]R$",
+    recursive = TRUE,
+    full.names = TRUE
+  )
+  changed <- 0L
+  for (file in files) {
+    lines <- readLines(file, warn = FALSE)
+    output <- gsub(
+      "\\bexpect_snapshot_error\\((?![[:space:]]*cran[[:space:]]*=)",
+      "expect_snapshot_error(cran = TRUE, ",
+      lines,
+      perl = TRUE
+    )
+    output <- gsub(
+      "\\bexpect_snapshot\\((?![[:space:]]*cran[[:space:]]*=)",
+      "expect_snapshot(cran = TRUE, ",
+      output,
+      perl = TRUE
+    )
+    if (!identical(output, lines)) {
+      writeLines(output, file)
+      changed <- changed + sum(output != lines)
+    }
+  }
+
+  policy <- unlist(lapply(files, function(file) {
+    unlist(lapply(parse(file), snapshot_policy))
+  }))
+  if (length(policy) > 0L && !all(policy)) {
+    stop("every imported snapshot assertion must set cran = TRUE")
+  }
+  cat(sprintf(
+    "prepared %d imported test file(s); %d snapshot line(s) rewritten\n",
+    length(files), changed
+  ))
+}
+
+import_upstream_tests <- function(checkout) {
+  stage <- tempfile("charr-stringr-tests-")
+  dir.create(stage)
+  on.exit(unlink(stage, recursive = TRUE, force = TRUE), add = TRUE)
+  archive_subset(checkout, UPSTREAM_TEST_SUBSET, stage)
+
+  source <- file.path(stage, UPSTREAM_TEST_SUBSET)
+  entries <- list.files(
+    source,
+    all.files = TRUE,
+    no.. = TRUE,
+    full.names = TRUE
+  )
+  if (length(entries) == 0L) stop("upstream testthat directory is empty")
+
+  if (dir.exists(IMPORTED_TEST_DIR)) {
+    unlink(IMPORTED_TEST_DIR, recursive = TRUE, force = TRUE)
+  }
+  dir.create(IMPORTED_TEST_DIR, recursive = TRUE)
+  copied <- file.copy(entries, IMPORTED_TEST_DIR, recursive = TRUE)
+  if (!all(copied)) stop("could not copy the imported stringr tests")
+
+  prepare_imported_tests()
+}
 
 prepare_line <- function(line) {
   for (name in ROUTED_QUALIFIERS) {
@@ -270,12 +374,8 @@ cmd_import <- function(checkout) {
       "checkout is at ", at, ", not UPSTREAM_COMMIT ", UPSTREAM_COMMIT
     )
   }
-  cmd <- sprintf(
-    "git -C %s archive %s %s | tar -x -C .",
-    shQuote(checkout), UPSTREAM_COMMIT,
-    paste(shQuote(UPSTREAM_SUBSET), collapse = " ")
-  )
-  if (system(cmd) != 0L) stop("archive extraction failed")
+  archive_subset(checkout, UPSTREAM_SUBSET)
+  import_upstream_tests(checkout)
   file.remove(UPSTREAM_DROPPED[file.exists(UPSTREAM_DROPPED)])
   cat(sprintf("imported upstream subset at %s\n", UPSTREAM_COMMIT))
   cmd_prepare()

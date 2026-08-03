@@ -5,6 +5,7 @@
 ^\.codex($|/)
 ^\.github($|/)
 ^\.vscode($|/)
+^\.git($|/)
 ^\.gitignore$
 ^local($|/)
 ^.*\.tar\.gz$

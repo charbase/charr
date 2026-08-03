@@ -1,12 +1,29 @@
-native_locale_find <- function(candidates, predicate) {
-  for (candidate in unique(candidates)) {
-    locale <- suppressWarnings(Sys.setlocale("LC_CTYPE", candidate))
-    if (nzchar(locale) && isTRUE(predicate())) {
-      return(locale)
-    }
+native_locale_is_latin1 <- function() {
+  !isTRUE(l10n_info()[["UTF-8"]]) && isTRUE(l10n_info()[["Latin-1"]])
+}
+
+native_locale_marked <- function(bytes, encoding = "unknown") {
+  value <- rawToChar(as.raw(bytes))
+  Encoding(value) <- encoding
+  value
+}
+
+native_locale_fixture <- function() {
+  if (isTRUE(l10n_info()[["UTF-8"]])) {
+    bytes <- as.raw(c(0x63, 0x61, 0x66, 0xc3, 0xa9))
+  } else if (native_locale_is_latin1()) {
+    bytes <- as.raw(c(0x63, 0x61, 0x66, 0xe9))
+  } else {
+    skip("The startup locale is neither UTF-8 nor Latin-1 compatible")
   }
 
-  NULL
+  native <- native_locale_marked(bytes)
+  decoded <- iconv(native, from = "", to = "UTF-8", sub = NA_character_)
+  expect_false(is.na(decoded))
+  Encoding(decoded) <- "UTF-8"
+
+  target <- native_locale_marked(c(0xc3, 0xa9), "UTF-8")
+  list(bytes = bytes, native = native, decoded = decoded, target = target)
 }
 
 native_locale_operations <- function(target) {
@@ -20,379 +37,103 @@ native_locale_operations <- function(target) {
 }
 
 native_locale_expect_operations <- function(input, decoded, target) {
-  operations <- native_locale_operations(target)
-
-  if (is.na(decoded)) {
-    for (operation in operations) {
-      expect_error(
-        operation(input),
-        "failed to convert R native encoding to UTF-8"
-      )
-    }
-    return(invisible(NULL))
-  }
-
-  Encoding(decoded) <- "UTF-8"
-  for (operation in operations) {
+  for (operation in native_locale_operations(target)) {
     expect_identical(operation(input), operation(decoded))
   }
-
   invisible(NULL)
 }
 
-native_locale_inputs <- function(value) {
-  altrep <- charport::as_charvec(value)
-  expect_true(charport::is_charvec(altrep))
-  expect_false(charport::charport_info(altrep)$is_materialized)
 
-  list(base = value, altrep = altrep)
-}
+test_that("native inputs are decoded under the startup locale", {
+  skip_if_selected_stringi_cannot_compare_native()
 
-native_locale_check_transition <- function(
-  native, target, inputs, locales
-) {
-  for (locale in locales) {
-    selected <- suppressWarnings(Sys.setlocale("LC_CTYPE", locale))
-    expect_true(nzchar(selected))
+  fixture <- native_locale_fixture()
+  inputs <- list(
+    ordinary = fixture$native,
+    charvec = charport::as_charvec(fixture$native)
+  )
 
-    decoded <- suppressWarnings(
-      iconv(native, from = "", to = "UTF-8", sub = NA_character_)
+  for (input in inputs) {
+    native_locale_expect_operations(
+      input, fixture$decoded, fixture$target
     )
-
-    for (backend in names(inputs)) {
-      with_backend(backend, {
-        native_locale_expect_operations(inputs[[backend]], decoded, target)
-      })
-    }
   }
-}
 
-native_locale_check_read_lines_transition <- function(
-  native, path, locales
-) {
-  for (locale in locales) {
-    selected <- suppressWarnings(Sys.setlocale("LC_CTYPE", locale))
-    expect_true(nzchar(selected))
-    expected <- suppressWarnings(
-      iconv(native, from = "", to = "UTF-8", sub = NA_character_)
-    )
-
-    for (backend in c("base", "altrep")) {
-      for (encoding in list(NULL, "")) {
-        if (is.na(expected)) {
-          expect_error(
-            with_backend(
-              backend,
-              str_read_lines(path, encoding = encoding)
-            ),
-            "failed to convert R native encoding to UTF-8"
-          )
-        } else {
-          Encoding(expected) <- "UTF-8"
-          actual <- with_backend(
-            backend,
-            str_read_lines(path, encoding = encoding)
-          )
-          expect_identical(actual, expected)
-        }
-      }
-    }
-  }
-}
-
-native_locale_utf8_candidates <- function(original_locale) {
-  c(
-    original_locale, "C.UTF-8", "C.utf8", "en_US.UTF-8", "en_US.utf8",
-    "English_United States.utf8"
-  )
-}
-
-native_locale_single_byte_candidates <- function(original_locale) {
-  c(
-    original_locale,
-    "en_US.ISO8859-1", "en_US.iso88591", "en_US.ISO-8859-1",
-    "de_DE.ISO8859-1", "de_DE.iso88591", "fr_FR.ISO8859-1",
-    "English_United States.1252", "English_United States"
-  )
-}
-
-test_that("native inputs are re-resolved after an invalid locale transition", {
-  original_locale <- Sys.getlocale("LC_CTYPE")
-  on.exit(Sys.setlocale("LC_CTYPE", original_locale), add = TRUE)
-
-  utf8_locale <- native_locale_find(
-    native_locale_utf8_candidates(original_locale),
-    function() isTRUE(l10n_info()[["UTF-8"]])
-  )
-  skip_if(
-    is.null(utf8_locale),
-    "No usable UTF-8 LC_CTYPE locale is available"
-  )
-
-  Sys.setlocale("LC_CTYPE", utf8_locale)
-  native <- rawToChar(as.raw(c(0x63, 0x61, 0x66, 0xc3, 0xa9)))
-  Encoding(native) <- "unknown"
-  target <- enc2utf8("\u00e9")
-  Encoding(target) <- "UTF-8"
-
-  invalid_locale <- native_locale_find(
-    c("C", "POSIX"),
-    function() {
-      !isTRUE(l10n_info()[["UTF-8"]]) && is.na(suppressWarnings(
-        iconv(native, from = "", to = "UTF-8", sub = NA_character_)
-      ))
-    }
-  )
-  skip_if(
-    is.null(invalid_locale),
-    "No non-UTF-8 LC_CTYPE locale rejects the native-marked test bytes"
-  )
-
-  Sys.setlocale("LC_CTYPE", utf8_locale)
-  expect_identical(Encoding(native), "unknown")
-  inputs <- native_locale_inputs(native)
-
-  native_locale_check_transition(
-    native,
-    target,
-    inputs,
-    c(utf8_locale, invalid_locale, utf8_locale)
-  )
-
-  path <- tempfile("charr-invalid-native-lines-")
-  on.exit(unlink(path), add = TRUE)
-  writeBin(charToRaw(native), path)
-  native_locale_check_read_lines_transition(
-    native,
-    path,
-    c(utf8_locale, invalid_locale, utf8_locale)
-  )
+  expect_identical(charToRaw(fixture$native), fixture$bytes)
+  expect_identical(Encoding(fixture$native), "unknown")
 })
 
-test_that("native inputs are re-decoded after a single-byte locale transition", {
-  original_locale <- Sys.getlocale("LC_CTYPE")
-  on.exit(Sys.setlocale("LC_CTYPE", original_locale), add = TRUE)
 
-  utf8_locale <- native_locale_find(
-    native_locale_utf8_candidates(original_locale),
-    function() isTRUE(l10n_info()[["UTF-8"]])
-  )
-  skip_if(
-    is.null(utf8_locale),
-    "No usable UTF-8 LC_CTYPE locale is available"
-  )
+test_that("str_read_lines uses the startup native encoding by default", {
+  skip_if_selected_stringi_cannot_compare_native()
 
-  Sys.setlocale("LC_CTYPE", utf8_locale)
-  native <- rawToChar(as.raw(c(0x63, 0x61, 0x66, 0xc3, 0xa9)))
-  Encoding(native) <- "unknown"
-  utf8_value <- suppressWarnings(
-    iconv(native, from = "", to = "UTF-8", sub = NA_character_)
-  )
-
-  single_byte_locale <- native_locale_find(
-    native_locale_single_byte_candidates(original_locale),
-    function() {
-      if (isTRUE(l10n_info()[["UTF-8"]])) {
-        return(FALSE)
-      }
-
-      value <- suppressWarnings(
-        iconv(native, from = "", to = "UTF-8", sub = NA_character_)
-      )
-      !is.na(value) && !identical(charToRaw(value), charToRaw(utf8_value))
-    }
-  )
-  skip_if(
-    is.null(single_byte_locale),
-    "No usable non-UTF-8 single-byte LC_CTYPE locale is available"
-  )
-
-  Sys.setlocale("LC_CTYPE", utf8_locale)
-  target <- enc2utf8("\u00e9")
-  Encoding(target) <- "UTF-8"
-  inputs <- native_locale_inputs(native)
-
-  native_locale_check_transition(
-    native,
-    target,
-    inputs,
-    c(utf8_locale, single_byte_locale, utf8_locale)
-  )
-})
-
-test_that("str_read_lines resolves its default encoding per operation", {
-  original_locale <- Sys.getlocale("LC_CTYPE")
-  on.exit(Sys.setlocale("LC_CTYPE", original_locale), add = TRUE)
-
-  utf8_locale <- native_locale_find(
-    native_locale_utf8_candidates(original_locale),
-    function() isTRUE(l10n_info()[["UTF-8"]])
-  )
-  skip_if(
-    is.null(utf8_locale),
-    "No usable UTF-8 LC_CTYPE locale is available"
-  )
-
-  Sys.setlocale("LC_CTYPE", utf8_locale)
-  native <- rawToChar(as.raw(c(0x63, 0x61, 0x66, 0xc3, 0xa9)))
-  Encoding(native) <- "unknown"
-  utf8_value <- suppressWarnings(
-    iconv(native, from = "", to = "UTF-8", sub = NA_character_)
-  )
-
-  single_byte_locale <- native_locale_find(
-    native_locale_single_byte_candidates(original_locale),
-    function() {
-      if (isTRUE(l10n_info()[["UTF-8"]])) {
-        return(FALSE)
-      }
-
-      value <- suppressWarnings(
-        iconv(native, from = "", to = "UTF-8", sub = NA_character_)
-      )
-      !is.na(value) && !identical(charToRaw(value), charToRaw(utf8_value))
-    }
-  )
-  skip_if(
-    is.null(single_byte_locale),
-    "No usable non-UTF-8 single-byte LC_CTYPE locale is available"
-  )
-
+  fixture <- native_locale_fixture()
   path <- tempfile("charr-native-lines-")
   on.exit(unlink(path), add = TRUE)
-  writeBin(charToRaw(native), path)
+  writeBin(fixture$bytes, path)
 
-  native_locale_check_read_lines_transition(
-    native,
-    path,
-    c(utf8_locale, single_byte_locale, utf8_locale)
-  )
-})
-
-
-test_that("ci_encode resolves a UTF-8 default target through LC_CTYPE", {
-  original_locale <- Sys.getlocale("LC_CTYPE")
-  on.exit(Sys.setlocale("LC_CTYPE", original_locale), add = TRUE)
-
-  utf8_locale <- native_locale_find(
-    native_locale_utf8_candidates(original_locale),
-    function() isTRUE(l10n_info()[["UTF-8"]])
-  )
-  skip_if(
-    is.null(utf8_locale),
-    "No usable UTF-8 LC_CTYPE locale is available"
-  )
-
-  Sys.setlocale("LC_CTYPE", utf8_locale)
-  value <- "\u00e9"
-  Encoding(value) <- "UTF-8"
-  utf8_bytes <- charToRaw(enc2utf8(value))
-
-  for (backend in c("base", "altrep")) {
-    for (target in list(NULL, "")) {
-      character_output <- with_backend(
-        backend,
-        charr_test_leaf("ci_encode")(value, "UTF-8", target, FALSE)
-      )
-      raw_output <- with_backend(
-        backend,
-        charr_test_leaf("ci_encode")(utf8_bytes, "UTF-8", target, TRUE)
-      )
-      expect_identical(charToRaw(character_output), utf8_bytes)
-      expect_identical(raw_output, list(utf8_bytes))
-    }
+  for (encoding in list(NULL, "")) {
+    expect_identical(
+      str_read_lines(path, encoding = encoding),
+      fixture$decoded
+    )
   }
 })
 
 
-test_that("ci_encode writes a representable single-byte default target", {
-  original_locale <- Sys.getlocale("LC_CTYPE")
-  on.exit(Sys.setlocale("LC_CTYPE", original_locale), add = TRUE)
+test_that("ci_encode uses the startup native encoding as its default target", {
+  if (identical(charr_backend(), "stringi")) {
+    skip("ci_encode is an optimized-backend internal")
+  }
 
-  value <- "\u00e9"
-  Encoding(value) <- "UTF-8"
-  single_byte_locale <- native_locale_find(
-    native_locale_single_byte_candidates(original_locale),
-    function() {
-      if (isTRUE(l10n_info()[["UTF-8"]])) {
-        return(FALSE)
-      }
-
-      !is.na(suppressWarnings(
-        iconv(value, from = "UTF-8", to = "", sub = NA_character_)
-      ))
-    }
-  )
-  skip_if(
-    is.null(single_byte_locale),
-    "No usable non-UTF-8 single-byte LC_CTYPE locale is available"
-  )
-
-  Sys.setlocale("LC_CTYPE", single_byte_locale)
-  expected <- suppressWarnings(
-    iconv(value, from = "UTF-8", to = "", sub = NA_character_)
-  )
+  value <- native_locale_marked(c(0xc3, 0xa9), "UTF-8")
+  utf8_bytes <- charToRaw(value)
+  expected <- iconv(value, from = "UTF-8", to = "", sub = NA_character_)
+  skip_if(is.na(expected), "The startup encoding cannot represent U+00E9")
   expected_bytes <- charToRaw(expected)
-  utf8_bytes <- charToRaw(enc2utf8(value))
 
-  for (backend in c("base", "altrep")) {
-    for (target in list(NULL, "")) {
-      character_output <- with_backend(
-        backend,
-        charr_test_leaf("ci_encode")(value, "UTF-8", target, FALSE)
-      )
-      raw_output <- with_backend(
-        backend,
-        charr_test_leaf("ci_encode")(utf8_bytes, "UTF-8", target, TRUE)
-      )
-      expect_identical(charToRaw(character_output), expected_bytes)
+  for (target in list(NULL, "")) {
+    character_output <- charr_test_leaf("ci_encode")(
+      value, "UTF-8", target, FALSE
+    )
+    raw_output <- charr_test_leaf("ci_encode")(
+      utf8_bytes, "UTF-8", target, TRUE
+    )
+    expect_identical(charToRaw(character_output), expected_bytes)
+    expect_identical(raw_output, list(expected_bytes))
+    if (!isTRUE(l10n_info()[["UTF-8"]])) {
       expect_identical(Encoding(character_output), "unknown")
-      expect_identical(raw_output, list(expected_bytes))
     }
   }
 })
 
 
 test_that("ci_encode rejects an unrepresentable default target", {
-  original_locale <- Sys.getlocale("LC_CTYPE")
-  on.exit(Sys.setlocale("LC_CTYPE", original_locale), add = TRUE)
-
-  value <- "\U0001f642"
-  Encoding(value) <- "UTF-8"
-  utf8_bytes <- charToRaw(enc2utf8(value))
-  invalid_locale <- native_locale_find(
-    c(
-      "C", "POSIX",
-      native_locale_single_byte_candidates(original_locale)
-    ),
-    function() {
-      !isTRUE(l10n_info()[["UTF-8"]]) && is.na(suppressWarnings(
-        iconv(value, from = "UTF-8", to = "", sub = NA_character_)
-      ))
-    }
-  )
+  if (identical(charr_backend(), "stringi")) {
+    skip("ci_encode is an optimized-backend internal")
+  }
   skip_if(
-    is.null(invalid_locale),
-    "No non-UTF-8 LC_CTYPE locale rejects the UTF-8 test value"
+    isTRUE(l10n_info()[["UTF-8"]]),
+    "Every valid Unicode value is representable in UTF-8"
   )
 
-  Sys.setlocale("LC_CTYPE", invalid_locale)
-  for (backend in c("base", "altrep")) {
-    for (target in list(NULL, "")) {
-      expect_error(
-        with_backend(
-          backend,
-          charr_test_leaf("ci_encode")(value, "UTF-8", target, FALSE)
-        ),
-        "failed to convert UTF-8 to R native encoding"
-      )
-      expect_error(
-        with_backend(
-          backend,
-          charr_test_leaf("ci_encode")(utf8_bytes, "UTF-8", target, TRUE)
-        ),
-        "failed to convert UTF-8 to R native encoding"
-      )
-    }
+  value <- native_locale_marked(c(0xf0, 0x9f, 0x99, 0x82), "UTF-8")
+  utf8_bytes <- charToRaw(value)
+  skip_if_not(
+    is.na(suppressWarnings(
+      iconv(value, from = "UTF-8", to = "", sub = NA_character_)
+    )),
+    "The startup encoding represents the test value"
+  )
+
+  for (target in list(NULL, "")) {
+    expect_error(
+      charr_test_leaf("ci_encode")(value, "UTF-8", target, FALSE),
+      "failed to convert UTF-8 to R native encoding"
+    )
+    expect_error(
+      charr_test_leaf("ci_encode")(utf8_bytes, "UTF-8", target, TRUE),
+      "failed to convert UTF-8 to R native encoding"
+    )
   }
 })

@@ -1,84 +1,88 @@
 # Covers NativeToUtf8::native_is_utf8(), the single facility deciding whether
-# R's native encoding is UTF-8. It replaced a per-backend locale-name scan that
-# could disagree with the Riconv converter actually used to transcode.
+# R's native encoding is UTF-8. It probes the same Riconv converter that the
+# conversion path uses instead of inferring the answer from a locale name.
 
-native_probe_locale <- function(candidates, predicate) {
-  for (candidate in unique(candidates)) {
-    locale <- suppressWarnings(Sys.setlocale("LC_CTYPE", candidate))
-    if (nzchar(locale) && isTRUE(predicate())) {
-      return(locale)
-    }
-  }
-
-  NULL
-}
-
-# "café" as native bytes: valid ISO-8859-1, and NOT valid UTF-8. A backend that
-# wrongly believes the native encoding is UTF-8 reads these bytes directly and
-# raises an invalid-UTF-8 condition instead of transcoding them.
-native_probe_bytes <- function() {
-  value <- rawToChar(as.raw(c(0x63, 0x61, 0x66, 0xe9)))
-  Encoding(value) <- "unknown"
+native_probe_marked <- function(bytes, encoding = "unknown") {
+  value <- rawToChar(as.raw(bytes))
+  Encoding(value) <- encoding
   value
 }
 
+native_probe_is_latin1 <- function() {
+  !isTRUE(l10n_info()[["UTF-8"]]) && isTRUE(l10n_info()[["Latin-1"]])
+}
 
-test_that("the native-encoding probe agrees with iconv in a UTF-8 locale", {
-  original <- Sys.getlocale("LC_CTYPE")
-  on.exit(Sys.setlocale("LC_CTYPE", original), add = TRUE)
 
-  utf8_locale <- native_probe_locale(
-    c(original, "C.UTF-8", "C.utf8", "en_US.UTF-8", "en_US.utf8"),
-    function() isTRUE(l10n_info()[["UTF-8"]])
+test_that("stringi follows its reported native-encoding capability", {
+  skip_if_not(
+    isTRUE(l10n_info()[["UTF-8"]]) || native_probe_is_latin1(),
+    "The startup locale is neither UTF-8 nor Latin-1 compatible"
   )
-  skip_if(is.null(utf8_locale), "No usable UTF-8 LC_CTYPE locale is available")
 
-  Sys.setlocale("LC_CTYPE", utf8_locale)
-  # Native bytes that ARE valid UTF-8 here, so no transcoding is needed and the
-  # probe must say so by leaving the payload untouched.
-  value <- rawToChar(as.raw(c(0x63, 0x61, 0x66, 0xc3, 0xa9)))
-  Encoding(value) <- "unknown"
-
-  expected <- with_backend("stringi", str_length(value))
-  expect_identical(expected, 4L)
-  for (backend in c("base", "altrep")) {
-    expect_identical(with_backend(backend, str_length(value)), expected)
+  value <- native_probe_marked(c(0xc3, 0xa9))
+  r_length <- if (isTRUE(l10n_info()[["UTF-8"]])) 1L else 2L
+  stringi_length <- if (isTRUE(stringi::stri_info()[["ICU.UTF8"]])) {
+    1L
+  } else {
+    r_length
   }
+
+  expect_identical(with_backend("stringi", str_length(value)), stringi_length)
+  expect_identical(
+    stringi_can_compare_native(),
+    identical(stringi_length, r_length)
+  )
 })
 
 
-test_that("the native-encoding probe transcodes in a single-byte locale", {
-  original <- Sys.getlocale("LC_CTYPE")
-  on.exit(Sys.setlocale("LC_CTYPE", original), add = TRUE)
+test_that("the native-encoding probe follows the startup encoding", {
+  skip_if_selected_stringi_cannot_compare_native()
 
-  value <- native_probe_bytes()
-  single_byte <- native_probe_locale(
-    c(
-      "en_US.ISO8859-1", "en_US.iso88591", "en_US.ISO-8859-1",
-      "de_DE.ISO8859-1", "de_DE.iso88591", "fr_FR.ISO8859-1",
-      "English_United States.1252", "English_United States"
-    ),
-    function() {
-      !isTRUE(l10n_info()[["UTF-8"]]) &&
-        !is.na(suppressWarnings(
-          iconv(value, from = "", to = "UTF-8", sub = NA_character_)
-        ))
-    }
-  )
-  skip_if(
-    is.null(single_byte),
-    "No usable non-UTF-8 single-byte LC_CTYPE locale is available"
-  )
-
-  # iconv is the oracle for what the native bytes decode to. The probe must
-  # route through conversion rather than reading the bytes as UTF-8.
-  decoded <- iconv(value, from = "", to = "UTF-8")
-  Encoding(decoded) <- "UTF-8"
-  expect_identical(nchar(decoded), 4L)
-
-  for (backend in c("base", "altrep")) {
-    expect_identical(with_backend(backend, str_length(value)), 4L)
+  if (isTRUE(l10n_info()[["UTF-8"]])) {
+    bytes <- c(0x63, 0x61, 0x66, 0xc3, 0xa9)
+  } else if (native_probe_is_latin1()) {
+    bytes <- c(0x63, 0x61, 0x66, 0xe9)
+  } else {
+    skip("The startup locale is neither UTF-8 nor Latin-1 compatible")
   }
+
+  value <- native_probe_marked(bytes)
+  decoded <- iconv(value, from = "", to = "UTF-8", sub = NA_character_)
+  expect_false(is.na(decoded))
+  expect_identical(
+    charToRaw(decoded),
+    as.raw(c(0x63, 0x61, 0x66, 0xc3, 0xa9))
+  )
+
+  expect_identical(str_length(value), 4L)
+})
+
+
+test_that("native byte meaning is fixed by the startup encoding", {
+  skip_if_selected_stringi_cannot_compare_native()
+
+  skip_if_not(
+    isTRUE(l10n_info()[["UTF-8"]]) || native_probe_is_latin1(),
+    "The startup locale is neither UTF-8 nor Latin-1 compatible"
+  )
+
+  # The bytes encode one character in UTF-8 and two in ISO-8859-1 or
+  # Windows-1252. Keeping the fixture unmarked makes that distinction explicit
+  # without changing LC_CTYPE after R has interned the string.
+  value <- native_probe_marked(c(0xc3, 0xa9))
+  original_bytes <- charToRaw(value)
+  expected_length <- if (isTRUE(l10n_info()[["UTF-8"]])) 1L else 2L
+  expected_utf8 <- if (isTRUE(l10n_info()[["UTF-8"]])) {
+    as.raw(c(0xc3, 0xa9))
+  } else {
+    as.raw(c(0xc3, 0x83, 0xc2, 0xa9))
+  }
+
+  decoded <- iconv(value, from = "", to = "UTF-8", sub = NA_character_)
+  expect_identical(charToRaw(decoded), expected_utf8)
+  expect_identical(str_length(value), expected_length)
+  expect_identical(charToRaw(value), original_bytes)
+  expect_identical(Encoding(value), "unknown")
 })
 
 
@@ -101,22 +105,15 @@ test_that("a BOM is stripped only where stringi strips it", {
 })
 
 
-test_that("BOM handling matches stringi for native-marked input", {
-  original <- Sys.getlocale("LC_CTYPE")
-  on.exit(Sys.setlocale("LC_CTYPE", original), add = TRUE)
-
-  utf8_locale <- native_probe_locale(
-    c(original, "C.UTF-8", "C.utf8", "en_US.UTF-8", "en_US.utf8"),
-    function() isTRUE(l10n_info()[["UTF-8"]])
+test_that("BOM handling matches stringi for native-marked UTF-8 input", {
+  skip_if_not(
+    isTRUE(l10n_info()[["UTF-8"]]),
+    "The startup locale is not UTF-8"
   )
-  skip_if(is.null(utf8_locale), "No usable UTF-8 LC_CTYPE locale is available")
 
-  Sys.setlocale("LC_CTYPE", utf8_locale)
-  # A BOM carried in native bytes. Because the native encoding is UTF-8 here,
-  # stringi strips it in container-building operations; native_is_utf8()
-  # supplies the locale fact needed by the input normalization path.
-  value <- rawToChar(as.raw(c(0xef, 0xbb, 0xbf, 0x61, 0x62, 0x63)))
-  Encoding(value) <- "unknown"
+  # Container-building operations strip a BOM carried in native UTF-8 bytes.
+  # native_is_utf8() supplies the encoding fact used by normalization.
+  value <- native_probe_marked(c(0xef, 0xbb, 0xbf, 0x61, 0x62, 0x63))
 
   for (operation in list(
     function(x) str_sub(x, 1L, 1L),
@@ -124,56 +121,31 @@ test_that("BOM handling matches stringi for native-marked input", {
     function(x) str_count(x, fixed("a"))
   )) {
     expected <- with_backend("stringi", operation(value))
-    for (backend in c("base", "altrep")) {
-      expect_identical(with_backend(backend, operation(value)), expected)
-    }
+    expect_identical(operation(value), expected)
   }
 })
 
 
-test_that("UTF-8 native input leaves validation to the consumer", {
-  original <- Sys.getlocale("LC_CTYPE")
-  on.exit(Sys.setlocale("LC_CTYPE", original), add = TRUE)
-
-  utf8_locale <- native_probe_locale(
-    c(original, "C.UTF-8", "C.utf8", "en_US.UTF-8", "en_US.utf8"),
-    function() isTRUE(l10n_info()[["UTF-8"]])
+test_that("native UTF-8 input leaves validation to the consumer", {
+  skip_if_not(
+    isTRUE(l10n_info()[["UTF-8"]]),
+    "The startup locale is not UTF-8"
   )
-  skip_if(is.null(utf8_locale), "No usable UTF-8 LC_CTYPE locale is available")
-  Sys.setlocale("LC_CTYPE", utf8_locale)
 
-  native <- rawToChar(as.raw(c(0x61, 0xff, 0x62)))
-  Encoding(native) <- "unknown"
-  declared <- rawToChar(as.raw(c(0x61, 0xff, 0x62)))
-  Encoding(declared) <- "UTF-8"
+  native <- native_probe_marked(c(0x61, 0xff, 0x62))
+  declared <- native_probe_marked(c(0x61, 0xff, 0x62), "UTF-8")
 
-  for (backend in c("stringi", "base", "altrep")) {
-    expect_identical(
-      with_backend(backend, str_detect(native, fixed("b"))),
-      TRUE,
-      info = backend
-    )
-    expect_identical(
-      with_backend(backend, str_detect(native, regex("b"))),
-      TRUE,
-      info = backend
-    )
-    expect_error(
-      with_backend(
-        backend,
-        charr_test_leaf("ci_wrap")(
-          native, normalize = FALSE, simplify = FALSE
-        )
-      ),
-      "invalid UTF-8 byte sequence",
-      fixed = TRUE,
-      info = backend
-    )
-
-    expect_identical(
-      with_backend(backend, str_detect(native, fixed("b"))),
-      with_backend(backend, str_detect(declared, fixed("b"))),
-      info = backend
-    )
-  }
+  expect_identical(str_detect(native, fixed("b")), TRUE)
+  expect_identical(str_detect(native, regex("b")), TRUE)
+  expect_error(
+    charr_test_leaf("ci_wrap")(
+      native, normalize = FALSE, simplify = FALSE
+    ),
+    "invalid UTF-8 byte sequence",
+    fixed = TRUE
+  )
+  expect_identical(
+    str_detect(native, fixed("b")),
+    str_detect(declared, fixed("b"))
+  )
 })

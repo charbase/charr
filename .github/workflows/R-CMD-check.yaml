@@ -48,7 +48,6 @@ jobs:
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
       R_KEEP_PKG_SOURCE: yes
-      CHARR_BACKEND: all
 
     steps:
       - name: Windows CRLF fix
@@ -64,7 +63,7 @@ jobs:
           http-user-agent: ${{ matrix.config.http-user-agent }}
           use-public-rspm: true
 
-      - name: Provide non-UTF-8 test locale
+      - name: Provide startup test locales
         if: runner.os == 'Linux'
         shell: bash
         run: |

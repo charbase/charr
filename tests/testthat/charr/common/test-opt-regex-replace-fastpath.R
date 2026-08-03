@@ -22,6 +22,8 @@ regex_replace_fastpath_events <- function(expr) {
 }
 
 test_that("optimized regex replacement matches stringi on multilingual text", {
+  skip_if_stringi_cannot_compare_native()
+
   malformed <- rawToChar(as.raw(c(0x61, 0xff, 0x20, 0x62)))
   Encoding(malformed) <- "UTF-8"
   latin1 <- iconv("caf\u00e9 noir", from = "UTF-8", to = "latin1")

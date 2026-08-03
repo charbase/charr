@@ -129,6 +129,8 @@ test_that("regex extraction keeps malformed UTF-8 source slices", {
 
 
 test_that("optimized regex extraction retains conversion and recycling rules", {
+  skip_if_stringi_cannot_compare_native()
+
   latin1 <- iconv("caf\u00e9 noir", from = "UTF-8", to = "latin1")
   Encoding(latin1) <- "latin1"
   native <- enc2native("na\u00efve text")

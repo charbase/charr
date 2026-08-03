@@ -43,7 +43,7 @@ test_that("truncations work for all sides", {
 })
 
 test_that("does not truncate to a length shorter than elipsis", {
-  expect_snapshot(error = TRUE, {
+  expect_snapshot(cran = TRUE, error = TRUE, {
     str_trunc("foobar", 2)
     str_trunc("foobar", 3, ellipsis = "....")
   })

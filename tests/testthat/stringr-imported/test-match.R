@@ -79,7 +79,7 @@ test_that("multiple match works", {
 })
 
 test_that("match and match_all fail when pattern is not a regex", {
-  expect_snapshot(error = TRUE, {
+  expect_snapshot(cran = TRUE, error = TRUE, {
     str_match(phones, fixed("3"))
     str_match_all(phones, coll("9"))
   })
@@ -97,7 +97,7 @@ test_that("uses tidyverse recycling rules", {
 })
 
 test_that("match can't use other modifiers", {
-  expect_snapshot(error = TRUE, {
+  expect_snapshot(cran = TRUE, error = TRUE, {
     str_match("x", coll("y"))
     str_match_all("x", coll("y"))
   })

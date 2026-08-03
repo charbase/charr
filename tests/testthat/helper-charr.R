@@ -8,6 +8,29 @@ with_backend <- function(backend, code) {
 
 charr_altrep <- function() identical(charr_backend(), "altrep")
 
+stringi_can_compare_native <- function() {
+  if (isTRUE(l10n_info()[["UTF-8"]])) {
+    return(TRUE)
+  }
+
+  # Some ICU builds hardcode the default charset to UTF-8. In that case
+  # stringi cannot serve as an oracle for R-native bytes in another locale.
+  !isTRUE(stringi::stri_info()[["ICU.UTF8"]])
+}
+
+skip_if_stringi_cannot_compare_native <- function() {
+  skip_if_not(
+    stringi_can_compare_native(),
+    "installed stringi hardcodes ICU's default charset to UTF-8"
+  )
+}
+
+skip_if_selected_stringi_cannot_compare_native <- function() {
+  if (identical(charr_backend(), "stringi")) {
+    skip_if_stringi_cannot_compare_native()
+  }
+}
+
 # The ci_* bindings in charr's namespace always target ALTREP. Tests use this
 # selector when the same semantic assertion must reach the active backend.
 charr_test_leaf <- function(name, backend = charr_backend()) {

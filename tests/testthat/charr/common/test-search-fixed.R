@@ -48,17 +48,25 @@ test_that("fixed search handles the str encoding matrix", {
 test_that("fixed search handles the pattern encoding matrix", {
   utf8_e <- mkenc_fixed(c(0xc3, 0xa9), "UTF-8")
   latin1_e <- mkenc_fixed(0xe9, "latin1")
-  native_e <- mkenc_fixed(c(0xc3, 0xa9), "unknown")
-  patterns <- c("ain", utf8_e, latin1_e, native_e, "̈", "ü", "😀")
+  patterns <- c("ain", utf8_e, latin1_e, "̈", "ü", "😀")
 
   expect_identical(
     detect_fixed("é😀ü", patterns),
-    c(FALSE, TRUE, TRUE, TRUE, TRUE, FALSE, TRUE)
+    c(FALSE, TRUE, TRUE, TRUE, FALSE, TRUE)
   )
   expect_identical(
     count_fixed("é😀ü", patterns),
-    c(0L, 1L, 1L, 1L, 1L, 0L, 1L)
+    c(0L, 1L, 1L, 1L, 0L, 1L)
   )
+})
+
+
+test_that("fixed search accepts native UTF-8 patterns", {
+  skip_if_not(l10n_info()[["UTF-8"]])
+  native_e <- mkenc_fixed(c(0xc3, 0xa9), "unknown")
+
+  expect_identical(detect_fixed("é😀ü", native_e), TRUE)
+  expect_identical(count_fixed("é😀ü", native_e), 1L)
 })
 
 
@@ -90,7 +98,6 @@ test_that("fixed search strips exactly one leading UTF-8 BOM", {
     c(0xef, 0xbb, 0xbf, 0xef, 0xbb, 0xbf, 0x61),
     "UTF-8"
   )
-  native_bom <- mkenc_fixed(c(0xef, 0xbb, 0xbf, 0x61), "unknown")
 
   expect_identical(starts_fixed(one_bom, "a"), TRUE)
   expect_identical(count_fixed(one_bom, "a"), 1L)
@@ -100,9 +107,13 @@ test_that("fixed search strips exactly one leading UTF-8 BOM", {
   expect_identical(starts_fixed(two_boms, "a"), FALSE)
   expect_identical(count_fixed(two_boms, "a"), 1L)
   expect_identical(ends_fixed(two_boms, "a"), TRUE)
+})
 
-  # On the UTF-8 native locale used by the test routes, native follows the
-  # same killbom path as a declared UTF-8 string.
+
+test_that("fixed search strips a native BOM in a UTF-8 locale", {
+  skip_if_not(l10n_info()[["UTF-8"]])
+  native_bom <- mkenc_fixed(c(0xef, 0xbb, 0xbf, 0x61), "unknown")
+
   expect_identical(starts_fixed(native_bom, "a"), TRUE)
 })
 

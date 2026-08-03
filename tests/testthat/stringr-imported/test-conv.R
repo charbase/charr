@@ -6,7 +6,7 @@ test_that("encoding conversion works", {
 })
 
 test_that("check encoding argument", {
-  expect_snapshot(str_conv("A", c("ISO-8859-1", "ISO-8859-2")), error = TRUE)
+  expect_snapshot(cran = TRUE, str_conv("A", c("ISO-8859-1", "ISO-8859-2")), error = TRUE)
 })
 
 test_that("str_conv() preserves names", {

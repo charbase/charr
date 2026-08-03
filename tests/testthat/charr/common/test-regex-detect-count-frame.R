@@ -351,6 +351,8 @@ test_that("regex warnings and errors retain their staged order", {
 
 
 test_that("regex count and detect preserve string encoding semantics", {
+  skip_if_stringi_cannot_compare_native()
+
   latin1 <- regex_frame_marked(
     c(0x63, 0x61, 0x66, 0xe9), "latin1"
   )

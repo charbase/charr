@@ -483,6 +483,8 @@ test_that("boundary iterators preserve lazy-open warning and error order", {
 })
 
 test_that("boundary character results preserve marked input semantics", {
+  skip_if_stringi_cannot_compare_native()
+
   latin1 <- boundary_char_marked_string(
     c(0x63, 0x61, 0x66, 0xe9), "latin1"
   )

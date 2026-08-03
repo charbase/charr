@@ -22,7 +22,7 @@ test_that("multiple matches respects class", {
 })
 
 test_that("replacement must be a string", {
-  expect_snapshot(str_replace("x", "x", 1), error = TRUE)
+  expect_snapshot(cran = TRUE, str_replace("x", "x", 1), error = TRUE)
 })
 
 test_that("replacement must be a string", {
@@ -46,7 +46,7 @@ test_that("can use fixed() and coll()", {
 })
 
 test_that("can't replace empty/boundary", {
-  expect_snapshot(error = TRUE, {
+  expect_snapshot(cran = TRUE, error = TRUE, {
     str_replace("x", "", "")
     str_replace("x", boundary("word"), "")
     str_replace_all("x", "", "")
@@ -86,7 +86,7 @@ test_that("is forgiving of 0 matches with paste", {
 
 test_that("useful error if not vectorised correctly", {
   x <- c("a", "b", "c")
-  expect_snapshot(
+  expect_snapshot(cran = TRUE,
     str_replace_all(x, "a|c", ~ if (length(x) > 1) stop("Bad")),
     error = TRUE
   )
@@ -102,7 +102,7 @@ test_that("works with zero length match", {
 })
 
 test_that("replacement function must return correct type/length", {
-  expect_snapshot(error = TRUE, {
+  expect_snapshot(cran = TRUE, error = TRUE, {
     str_replace_all("x", "x", ~1)
     str_replace_all("x", "x", ~ c("a", "b"))
   })
@@ -121,7 +121,7 @@ test_that("backrefs are correctly translated", {
 
   # gsub("(b)(c)(d)", "\\4", "abcde", perl=TRUE) is legal,
   # in ICU regex this gives an U_INDEX_OUTOFBOUNDS_ERROR
-  expect_snapshot(str_replace_all("abcde", "(b)(c)(d)", "\\4"), error = TRUE)
+  expect_snapshot(cran = TRUE, str_replace_all("abcde", "(b)(c)(d)", "\\4"), error = TRUE)
 
   expect_equal(str_replace_all("abcde", "bcd", "\\\\1"), "a\\1e")
 
