@@ -1,11 +1,9 @@
-# charr
+# charr <img src="man/figures/logo.svg" alt="charr logo" align="right" width="160" />
 
-
-<img src="man/figures/logo.svg" alt="charr logo" align="right" width="160"/>
 
 <a href="https://github.com/charbase/charr/actions"><img src="https://github.com/charbase/charr/actions/workflows/R-CMD-check.yaml/badge.svg" alt="R-CMD-check status"/></a>
 
-## charr: string processing reimagined for ALTREP strings
+**String processing reimagined for ALTREP strings**
 
 `charr` is an experimental fork of `stringr` reimagined for ALTREP
 strings. The functions and semantics are the same as `stringr` but
@@ -27,19 +25,6 @@ much faster.
 Committee, under the grant Universal ALTREP Interoperability for
 Strings.*
 
-## Licensing
-
-Charr’s original work and the material derived from stringr are
-distributed under the MIT License. Code copied or adapted from stringi
-remains under the BSD 3-Clause License. Bundled ICU4C source and data
-retain the Unicode License v3 and ICU’s additional component licenses.
-
-The repository’s [licensing and copyright notice](LICENSE.note) contains
-the complete MIT license and explains the component boundaries. The
-[installed aggregate notice](inst/COPYRIGHTS) supplies the complete
-stringr and stringi terms and points to ICU’s full notices. No Tatoeba
-benchmark data is included in the repository or package.
-
 ## Installation
 
 `charr` is built on [charport](https://github.com/charbase/charport),
@@ -50,9 +35,6 @@ which is not on CRAN yet, so install it first:
 remotes::install_github("charbase/charport")
 remotes::install_github("charbase/charr")
 ```
-
-`charr` bundles ICU4C and builds it from source when no allowlisted
-system ICU is present, so the first install takes a while.
 
 ## Benchmark
 
@@ -117,3 +99,16 @@ be added over time.
   model.
 - [charport](https://charbase.github.io/charport/): the ALTREP string
   interoperability layer `charr` is built on.
+
+## Licensing
+
+Charr’s original work and the material derived from stringr are
+distributed under the MIT License. Code copied or adapted from stringi
+remains under the BSD 3-Clause License. Bundled ICU4C source and data
+retain the Unicode License v3 and ICU’s additional component licenses.
+
+The repository’s [licensing and copyright notice](LICENSE.note) contains
+the complete MIT license and explains the component boundaries. The
+[installed aggregate notice](inst/COPYRIGHTS) supplies the complete
+stringr and stringi terms and points to ICU’s full notices. No Tatoeba
+benchmark data is included in the repository or package.

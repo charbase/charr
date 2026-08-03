@@ -25,16 +25,25 @@ expect_boundary_position_unmaterialized <- function(x) {
 
 boundary_position_events <- function(expr) {
   events <- character()
+  event <- function(type, condition) {
+    message <- conditionMessage(condition)
+    # The backend names its own option helper in this otherwise identical
+    # error.
+    message <- sub(
+      "?ci_opts_brkiter", "?stri_opts_brkiter", message, fixed = TRUE
+    )
+    paste0(type, ":", message)
+  }
   tryCatch(
     withCallingHandlers(
       force(expr),
       warning = function(condition) {
-        events <<- c(events, paste0("warning:", conditionMessage(condition)))
+        events <<- c(events, event("warning", condition))
         invokeRestart("muffleWarning")
       }
     ),
     error = function(condition) {
-      events <<- c(events, paste0("error:", conditionMessage(condition)))
+      events <<- c(events, event("error", condition))
     }
   )
   events
@@ -255,7 +264,7 @@ test_that("boundary iterator opening keeps copied option and error order", {
     )
   )
   expect_identical(
-    sub("stri_opts_brkiter", "ci_opts_brkiter", expected, fixed = TRUE),
+    expected,
     actual
   )
   expected <- boundary_position_events(
@@ -270,7 +279,7 @@ test_that("boundary iterator opening keeps copied option and error order", {
     )
   )
   expect_identical(
-    sub("stri_opts_brkiter", "ci_opts_brkiter", expected, fixed = TRUE),
+    expected,
     actual
   )
 

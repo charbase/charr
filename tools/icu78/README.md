@@ -37,7 +37,7 @@ canaries, and the wider comparison produced no trimming-specific failure.
 ## Source-package adjustments
 
 The bundled runtime sources come from the official ICU4C 78.3 archive, with
-six small changes for CRAN compiler diagnostics and the defects they exposed:
+seven small changes for CRAN compiler diagnostics and platform compatibility:
 
 - `common/locmap.cpp` uses an overlap-safe move when shortening the Windows
   language tags `quz` and `prs`. The upstream `strcat()` call had overlapping
@@ -55,6 +55,10 @@ six small changes for CRAN compiler diagnostics and the defects they exposed:
 - `i18n/collationiterator.h` and `i18n/collationdatabuilder.cpp` finish
   constructing the builder's `CollationData` before binding it to the base
   iterator. The upstream constructor read that derived member too early.
+- `i18n/windtfmt.cpp` and `i18n/winnmfmt.cpp` skip the optional
+  `ResolveLocaleName()` lookup on 32-bit Windows. Rtools40 does not provide the
+  symbol, and ICU already falls back to the Windows user locale when the lookup
+  is unavailable. This follows the fix for stringi issue 501.
 
 The platform-specific optimization and macro-state pragmas remain unchanged;
 they do not suppress compiler diagnostics.

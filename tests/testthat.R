@@ -24,36 +24,45 @@ run_charr_tests <- function(path) {
   )
 }
 
-run_backend_tests <- function(backend) {
-  message("== charr backend: ", backend, " ==")
-
+prepare_backend <- function(backend) {
   # test_check() sources setup-charr.R, which reads CHARR_BACKEND. Replace the
   # runner-only "all" value with the concrete backend for each pass.
   Sys.setenv(CHARR_BACKEND = backend)
   charr_backend(backend)
+}
 
-  # The top-level directory is the imported stringr suite. Charr-owned
-  # semantic tests run from common under the same selected backend.
-  test_check("charr")
+run_backend_suite <- function(backend, suite) {
+  message("== charr backend: ", backend, "; suite: ", suite, " ==")
+  prepare_backend(backend)
 
-  charr_backend(backend)
+  if (identical(suite, "imported")) {
+    test_check("charr")
+    return(invisible(NULL))
+  }
+  if (!identical(suite, "common")) {
+    stop("unknown test suite: ", suite, call. = FALSE)
+  }
+
   run_charr_tests("testthat/charr/common")
 }
 
-backend_errors <- list()
+suite_errors <- list()
 for (backend in test_backends) {
-  tryCatch(
-    run_backend_tests(backend),
-    error = function(error) {
-      backend_errors[[backend]] <<- error
-    }
-  )
+  for (suite in c("imported", "common")) {
+    key <- paste(backend, suite, sep = "/")
+    tryCatch(
+      run_backend_suite(backend, suite),
+      error = function(error) {
+        suite_errors[[key]] <<- error
+      }
+    )
+  }
 }
 
-if (length(backend_errors) > 0L) {
+if (length(suite_errors) > 0L) {
   stop(
-    "Test failures for backend(s): ",
-    paste(names(backend_errors), collapse = ", "),
+    "Test failures for backend/suite: ",
+    paste(names(suite_errors), collapse = ", "),
     call. = FALSE
   )
 }

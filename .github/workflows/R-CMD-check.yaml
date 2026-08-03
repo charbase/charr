@@ -64,6 +64,13 @@ jobs:
           http-user-agent: ${{ matrix.config.http-user-agent }}
           use-public-rspm: true
 
+      - name: Provide non-UTF-8 test locale
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          make test-locales
+          printf 'LOCPATH=%s/local/locales\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+
       - name: Check portable R string literals
         run: Rscript tools/check-r-unicode-literals.R
 

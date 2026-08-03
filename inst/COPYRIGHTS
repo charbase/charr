@@ -67,7 +67,7 @@ ICU4C 78.3 are included in `icu/LICENSE` in the installed package and
 `src/icu78/LICENSE` in the repository and source package. Those files are
 retained verbatim from ICU's distribution.
 
-Charr carries four small source adjustments for compiler diagnostics and
+Charr carries seven small source adjustments for compiler diagnostics and
 portability. They do not alter ICU's license terms. The adjusted files and
 changes are listed under "Source-package adjustments" in the repository's
 `tools/icu78/README.md`; source archive hashes and data provenance are recorded

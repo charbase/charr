@@ -347,40 +347,23 @@ test_that("fixed starts and ends preserve warning and error order", {
 })
 
 
-test_that("optimized fixed starts and ends validate native input and recover", {
+test_that("fixed starts and ends borrow native bytes on UTF-8 locales", {
   skip_if_not(l10n_info()[["UTF-8"]])
   bad_native <- startsends_fixed_frame_marked(0xff, "unknown")
 
-  # Stringi accepts this byte on a UTF-8 locale. The optimized backends
-  # validate native-marked input, so this case deliberately has no oracle.
-
   for (operation in c("starts", "ends")) {
     cases <- list(
-      list(subject = bad_native, pattern = "a"),
-      list(subject = "abc", pattern = bad_native)
+      list(subject = bad_native, pattern = "a", expected = FALSE),
+      list(subject = "abc", pattern = bad_native, expected = FALSE),
+      list(subject = bad_native, pattern = bad_native, expected = TRUE)
     )
     position <- startsends_fixed_frame_default_position(operation)
 
     for (case in cases) {
-      for (backend in c("base", "altrep")) {
-        inputs <- startsends_fixed_frame_inputs(
-          backend, case$subject, case$pattern
-        )
-        actual <- startsends_fixed_frame_events(
-          startsends_fixed_frame_invoke(
-            backend, operation, inputs, position
-          )
-        )
-        expect_length(actual$events, 1L)
-        expect_match(
-          actual$events,
-          "^error:failed to convert R native encoding to UTF-8",
-          info = paste(backend, operation)
-        )
-        expect_startsends_fixed_frame_unmaterialized(backend, inputs)
-
-        expect_startsends_fixed_frame_valid(backend, operation)
-      }
+      expect_startsends_fixed_frame_parity(
+        operation, case$subject, case$pattern, position,
+        expected = case$expected
+      )
     }
   }
 })

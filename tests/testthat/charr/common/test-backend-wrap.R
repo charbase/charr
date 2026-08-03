@@ -42,7 +42,7 @@ wrap_backend_event_types <- function(events) {
 }
 
 wrap_backend_normalize_events <- function(events) {
-  gsub("stri_", "ci_", events, fixed = TRUE)
+  gsub("(stri|ci)_enc_toutf8", "enc_toutf8", events, perl = TRUE)
 }
 
 test_that("wrap preserves serial line breaking and list shape", {
@@ -198,7 +198,9 @@ test_that("wrap preserves missing, empty, bytes, and malformed behavior", {
   malformed <- wrap_backend_marked(c(0x61, 0xc3, 0x28, 0x62), "UTF-8")
   malformed_subject <- charport::as_charvec(malformed)
   expect_identical(
-    wrap_backend_events(TRUE, malformed_subject, width = 2L),
+    wrap_backend_normalize_events(
+      wrap_backend_events(TRUE, malformed_subject, width = 2L)
+    ),
     wrap_backend_normalize_events(
       wrap_backend_events(FALSE, malformed, width = 2L)
     )

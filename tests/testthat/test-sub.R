@@ -108,10 +108,13 @@ test_that("replacement with NA works", {
 
 test_that("bad vectorisation gives informative error", {
   x <- "a"
-  expect_snapshot(error = TRUE, {
-    str_sub(x, 1:2, 1:3)
+  expect_error(
+    str_sub(x, 1:2, 1:3),
+    class = "vctrs_error_incompatible_size"
+  )
+  expect_error({
     str_sub(x, 1:2, 1:2) <- 1:3
-  })
+  }, class = "vctrs_error_incompatible_size")
 })
 
 test_that("str_sub() preserves names", {

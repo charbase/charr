@@ -38,6 +38,24 @@ wrap_with_warnings <- function(expr) {
   list(value = value, warnings = warnings)
 }
 
+wrap_condition_result <- function(expr) {
+  events <- character()
+  value <- tryCatch(
+    withCallingHandlers(
+      force(expr),
+      warning = function(condition) {
+        events <<- c(events, "warning")
+        invokeRestart("muffleWarning")
+      }
+    ),
+    error = function(condition) {
+      events <<- c(events, "error")
+      NULL
+    }
+  )
+  list(value = value, events = events)
+}
+
 test_that("wrap preserves supplementary graphemes", {
   family_text <- paste0(
     "\U0001f469\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466",
@@ -177,10 +195,18 @@ test_that("native wrap keeps normalize aliases and invalid inputs compatible", {
     wrap_selected_leaf("a", normalize = NA),
     "missing value where TRUE/FALSE needed"
   )
-  expect_error(
-    wrap_selected_leaf("a", normalize = c(TRUE, FALSE)),
-    "condition has length > 1"
-  )
+  # On R 4.1, R CMD check turns this condition into a fatal process abort
+  # before tryCatch can observe it. R 4.2 and later raise a catchable error.
+  if (getRversion() >= "4.2.0") {
+    expect_identical(
+      wrap_condition_result(
+        wrap_selected_leaf("a", normalize = c(TRUE, FALSE))
+      ),
+      wrap_condition_result(
+        stringi::stri_wrap("a", normalize = c(TRUE, FALSE))
+      )
+    )
+  }
 
   bytes <- rawToChar(as.raw(c(0x61, 0x20, 0xff)))
   Encoding(bytes) <- "bytes"

@@ -12,6 +12,13 @@
 #endif
 #include <R_ext/Error.h>
 
+/* Rtools40's 32-bit import library does not provide ResolveLocaleName. */
+#if defined(_WIN32) && !defined(_WIN64)
+#define CHARR_DISABLE_RESOLVE_LOCALE_NAME 1
+#else
+#define CHARR_DISABLE_RESOLVE_LOCALE_NAME 0
+#endif
+
 /* Never terminate the R process for an ICU internal invariant failure. */
 #define UPRV_UNREACHABLE_EXIT \
     (Rf_error("ICU internal error: UPRV_UNREACHABLE"))

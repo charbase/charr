@@ -8,7 +8,7 @@
 \description{
 \if{html}{\figure{logo.svg}{options: style='float: right' alt='logo' width='120'}}
 
-An optimization and benchmarking experiment derived from the 'stringr' package. It provides the original route through installed 'stringi', an independent backend returning ordinary R character vectors, and an independent backend returning 'ALTREP' character vectors through 'charport'. The package records both a mechanical translation and later architecture and performance work; it is not currently intended as a drop-in replacement for 'stringr' or 'stringi'.
+An optimization and benchmarking experiment derived from the 'stringr' package. It provides the original route through installed 'stringi', an independent backend returning ordinary R character vectors, and an independent backend returning 'ALTREP' character vectors through 'charport'. It is not currently intended as a drop-in replacement for 'stringr' or 'stringi'.
 }
 \seealso{
 Useful links:

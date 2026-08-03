@@ -351,22 +351,29 @@ test_that("fixed search passes malformed UTF-8 through verbatim (no validation)"
 })
 
 
-test_that("fixed predicates retain native tail validation", {
+test_that("fixed predicates borrow native bytes on UTF-8 locales", {
   skip_if_not(l10n_info()[["UTF-8"]])
-  bad_native <- mkenc_fixed(0xff, "unknown")
+  bad_native <- mkenc_fixed(c(0x61, 0xff, 0x62), "unknown")
+  bad_pattern <- mkenc_fixed(0xff, "unknown")
 
-  expect_error(
-    detect_fixed(c("hit", bad_native), "hit", max_count = 1L)
+  expect_identical(
+    detect_fixed(c("hit", bad_native), "hit", max_count = 1L),
+    c(TRUE, NA)
   )
-  expect_error(
-    count_fixed(c("hit", bad_native), "i")
+  expect_identical(
+    count_fixed(c("hit", bad_native), "i"),
+    c(1L, 0L)
   )
-  expect_error(
-    starts_fixed(c("hit", bad_native), "h")
+  expect_identical(
+    starts_fixed(c("hit", bad_native), "h"),
+    c(TRUE, FALSE)
   )
-  expect_error(
-    ends_fixed(c("hit", bad_native), "t")
+  expect_identical(
+    ends_fixed(c("hit", bad_native), "t"),
+    c(TRUE, FALSE)
   )
+  expect_identical(detect_fixed(bad_native, bad_pattern), TRUE)
+  expect_identical(count_fixed(bad_native, bad_pattern), 1L)
 })
 
 

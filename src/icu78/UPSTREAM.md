@@ -12,8 +12,8 @@ The runtime source and data come from the official ICU4C 78.3 release:
 `common/`, `i18n/`, and `stubdata/` contain every `.cpp` and `.h` runtime file
 from the corresponding official source directories. `unicode/` combines the
 public headers from `common/unicode/` and `i18n/unicode/`. These 965 files were
-imported from the official archive. Charr carries six source adjustments
-prompted by CRAN compiler diagnostics. They are listed under
+imported from the official archive. Charr carries seven source adjustments for
+CRAN compiler diagnostics and platform compatibility. They are listed under
 [Source-package adjustments](../../tools/icu78/README.md#source-package-adjustments).
 
 Package-specific static-build settings are supplied by `src/Makevars`,

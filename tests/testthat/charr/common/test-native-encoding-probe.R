@@ -129,3 +129,51 @@ test_that("BOM handling matches stringi for native-marked input", {
     }
   }
 })
+
+
+test_that("UTF-8 native input leaves validation to the consumer", {
+  original <- Sys.getlocale("LC_CTYPE")
+  on.exit(Sys.setlocale("LC_CTYPE", original), add = TRUE)
+
+  utf8_locale <- native_probe_locale(
+    c(original, "C.UTF-8", "C.utf8", "en_US.UTF-8", "en_US.utf8"),
+    function() isTRUE(l10n_info()[["UTF-8"]])
+  )
+  skip_if(is.null(utf8_locale), "No usable UTF-8 LC_CTYPE locale is available")
+  Sys.setlocale("LC_CTYPE", utf8_locale)
+
+  native <- rawToChar(as.raw(c(0x61, 0xff, 0x62)))
+  Encoding(native) <- "unknown"
+  declared <- rawToChar(as.raw(c(0x61, 0xff, 0x62)))
+  Encoding(declared) <- "UTF-8"
+
+  for (backend in c("stringi", "base", "altrep")) {
+    expect_identical(
+      with_backend(backend, str_detect(native, fixed("b"))),
+      TRUE,
+      info = backend
+    )
+    expect_identical(
+      with_backend(backend, str_detect(native, regex("b"))),
+      TRUE,
+      info = backend
+    )
+    expect_error(
+      with_backend(
+        backend,
+        charr_test_leaf("ci_wrap")(
+          native, normalize = FALSE, simplify = FALSE
+        )
+      ),
+      "invalid UTF-8 byte sequence",
+      fixed = TRUE,
+      info = backend
+    )
+
+    expect_identical(
+      with_backend(backend, str_detect(native, fixed("b"))),
+      with_backend(backend, str_detect(declared, fixed("b"))),
+      info = backend
+    )
+  }
+})

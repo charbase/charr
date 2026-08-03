@@ -86,7 +86,7 @@ component licenses. The complete Unicode License v3 and every third-party
 notice supplied with ICU are in `src/icu78/LICENSE` in the repository and
 source package. The same file is installed as `icu/LICENSE`.
 
-Charr carries four small ICU source adjustments for compiler diagnostics and
+Charr carries seven small ICU source adjustments for compiler diagnostics and
 portability. They do not alter ICU's license terms. The repository documents
 the adjusted files under "Source-package adjustments" in
 `tools/icu78/README.md`. Source archive hashes, the complete import inventory,

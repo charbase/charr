@@ -27,6 +27,21 @@ test_that("optimized escape matches stringi across input encodings", {
 })
 
 
+escape_fastpath_error <- function(expr) {
+  tryCatch(
+    {
+      force(expr)
+      NA_character_
+    },
+    error = conditionMessage
+  )
+}
+
+escape_fastpath_normalize_error <- function(message) {
+  gsub("(stri|ci)_enc_toutf8", "enc_toutf8", message, perl = TRUE)
+}
+
+
 test_that("optimized escape retains invalid-input behavior", {
   malformed <- rawToChar(as.raw(c(0x61, 0xc3, 0x28)))
   Encoding(malformed) <- "UTF-8"
@@ -34,22 +49,27 @@ test_that("optimized escape retains invalid-input behavior", {
   Encoding(bytes) <- "bytes"
 
   for (value in list(malformed, bytes)) {
-    expected <- tryCatch(
-      with_backend("stringi", charr_test_leaf("ci_escape_unicode")(value)),
-      error = conditionMessage
+    expected <- escape_fastpath_error(
+      with_backend("stringi", charr_test_leaf("ci_escape_unicode")(value))
     )
-    expect_error(
-      with_backend("base", charr_test_leaf("ci_escape_unicode")(value)),
-      expected,
-      fixed = TRUE
+    actual_base <- escape_fastpath_error(
+      with_backend("base", charr_test_leaf("ci_escape_unicode")(value))
     )
-    expect_error(
+    actual_altrep <- escape_fastpath_error(
       with_backend(
         "altrep",
         charr_test_leaf("ci_escape_unicode")(charport::as_charvec(value))
-      ),
-      expected,
-      fixed = TRUE
+      )
+    )
+
+    expect_false(is.na(expected))
+    expect_identical(
+      escape_fastpath_normalize_error(actual_base),
+      escape_fastpath_normalize_error(expected)
+    )
+    expect_identical(
+      escape_fastpath_normalize_error(actual_altrep),
+      escape_fastpath_normalize_error(expected)
     )
   }
 })

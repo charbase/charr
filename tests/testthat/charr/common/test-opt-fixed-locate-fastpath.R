@@ -150,7 +150,7 @@ test_that("optimized fixed locate keeps prefix outputs on conversion fallback", 
 })
 
 
-test_that("optimized fixed locate validates incompatible tails", {
+test_that("optimized fixed locate rejects bytes-marked tails", {
   bytes <- rawToChar(as.raw(0xff))
   Encoding(bytes) <- "bytes"
 
@@ -170,23 +170,61 @@ test_that("optimized fixed locate validates incompatible tails", {
       "bytes encoding"
     )
   }
+})
 
-  if (l10n_info()[["UTF-8"]]) {
-    native <- rawToChar(as.raw(0xff))
-    Encoding(native) <- "unknown"
-    for (backend in c("base", "altrep")) {
-      values <- c("a", native)
-      input <- if (identical(backend, "altrep")) {
-        charport::as_charvec(values)
-      } else {
-        values
-      }
-      expect_error(
-        with_backend(backend, charr_test_leaf("ci_locate_first_fixed")(input, "a"))
-      )
-      expect_error(
-        with_backend(backend, charr_test_leaf("ci_locate_all_fixed")(input, "a"))
-      )
+
+test_that("optimized fixed locate accepts native tails on UTF-8 locales", {
+  skip_if_not(l10n_info()[["UTF-8"]])
+  native <- rawToChar(as.raw(0xff))
+  Encoding(native) <- "unknown"
+  values <- c("a", native)
+  expected_first <- structure(
+    c(1L, NA_integer_, 1L, NA_integer_),
+    dim = c(2L, 2L),
+    dimnames = list(NULL, c("start", "end"))
+  )
+  expected_all <- list(
+    structure(
+      c(1L, 1L), dim = c(1L, 2L),
+      dimnames = list(NULL, c("start", "end"))
+    ),
+    structure(
+      c(NA_integer_, NA_integer_), dim = c(1L, 2L),
+      dimnames = list(NULL, c("start", "end"))
+    )
+  )
+
+  expect_identical(
+    with_backend(
+      "stringi", charr_test_leaf("ci_locate_first_fixed")(values, "a")
+    ),
+    expected_first
+  )
+  expect_identical(
+    with_backend(
+      "stringi", charr_test_leaf("ci_locate_all_fixed")(values, "a")
+    ),
+    expected_all
+  )
+
+  for (backend in c("base", "altrep")) {
+    input <- if (identical(backend, "altrep")) {
+      charport::as_charvec(values)
+    } else {
+      values
     }
+
+    expect_identical(
+      with_backend(
+        backend, charr_test_leaf("ci_locate_first_fixed")(input, "a")
+      ),
+      expected_first
+    )
+    expect_identical(
+      with_backend(
+        backend, charr_test_leaf("ci_locate_all_fixed")(input, "a")
+      ),
+      expected_all
+    )
   }
 })

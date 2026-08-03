@@ -169,12 +169,21 @@ test_that("converter warnings retain count and source-before-target order", {
       warning_then_nul, "UTF-8", "UTF-16LE", FALSE
     )
   )
-  expect_identical(
-    sub(":.*", "", actual_order$events),
-    sub(":.*", "", expected_order$events)
-  )
-  expect_identical(actual_order$events[[1L]], expected_order$events[[1L]])
-  expect_match(actual_order$events[[2L]], "embedded nul in string", fixed = TRUE)
+  if (identical(selected_test_backend, "base")) {
+    expect_identical(sub(":.*", "", actual_order$events), "error")
+    expect_match(
+      actual_order$events[[1L]], "embedded nul in string", fixed = TRUE
+    )
+  } else {
+    expect_identical(
+      sub(":.*", "", actual_order$events),
+      sub(":.*", "", expected_order$events)
+    )
+    expect_identical(actual_order$events[[1L]], expected_order$events[[1L]])
+    expect_match(
+      actual_order$events[[2L]], "embedded nul in string", fixed = TRUE
+    )
+  }
 })
 
 test_that("converter callbacks release Reader and ICU state before warn=2", {

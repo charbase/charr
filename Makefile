@@ -16,7 +16,7 @@ LINT_EFFECT_ARGS := \
 	--effect-overrides tools/charr-lint/effect-overrides.tsv
 
 .PHONY: doc build install install-dev check check-no-vignette rhub-platforms \
-	test test-stringi \
+	test test-stringi test-locales \
 	test-base test-altrep test-system test-bundle \
 	test-san test-valgrind vignette figures pkgdown pkgdown-index \
 	lint lint-tool lint-fixtures lint-db lint-frontier lint-converted lint-audit \
@@ -359,6 +359,14 @@ endef
 # Export LOCPATH only when both locales exist; a partial directory would hide
 # the system archive and leave the suite with no usable UTF-8 locale at all.
 use_test_locales = if [ -d "$(LOCALE_DIR)/en_US.ISO-8859-1" ] && [ -d "$(LOCALE_DIR)/en_US.UTF-8" ]; then export LOCPATH="$(LOCALE_DIR)"; fi
+
+# CI calls this strict target before R CMD check. The ordinary test targets
+# remain portable and skip locale-specific cases when localedef is unavailable.
+test-locales:
+	@$(build_test_locales)
+	@test -d "$(LOCALE_DIR)/en_US.ISO-8859-1"
+	@test -d "$(LOCALE_DIR)/en_US.UTF-8"
+	@LOCPATH="$(LOCALE_DIR)" Rscript -e 'latin <- Sys.setlocale("LC_CTYPE", "en_US.ISO-8859-1"); stopifnot(nzchar(latin), !isTRUE(l10n_info()[["UTF-8"]])); value <- rawToChar(as.raw(0xe9)); Encoding(value) <- "unknown"; converted <- iconv(value, from = "", to = "UTF-8"); stopifnot(identical(charToRaw(converted), as.raw(c(0xc3, 0xa9)))); utf8 <- Sys.setlocale("LC_CTYPE", "en_US.UTF-8"); stopifnot(nzchar(utf8), isTRUE(l10n_info()[["UTF-8"]]))'
 
 # Run the complete suite against all three public backends after one install.
 test: install

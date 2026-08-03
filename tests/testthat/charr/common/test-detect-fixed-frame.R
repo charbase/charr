@@ -146,6 +146,27 @@ test_that("fixed-detect preserves grouped max-count traversal", {
       expected = c(FALSE, TRUE, TRUE, NA)
     )
   )
+  if (isTRUE(l10n_info()[["UTF-8"]])) {
+    bad_native <- detect_fixed_frame_marked(
+      c(0x61, 0xff, 0x62), "unknown"
+    )
+    bad_pattern <- detect_fixed_frame_marked(0xff, "unknown")
+    cases <- c(
+      cases,
+      list(
+        list(
+          subject = c("hit", bad_native), pattern = "hit",
+          negate = FALSE, max_count = 1L,
+          expected = c(TRUE, NA)
+        ),
+        list(
+          subject = bad_native, pattern = bad_pattern,
+          negate = FALSE, max_count = -1L,
+          expected = TRUE
+        )
+      )
+    )
+  }
 
   for (case in cases) {
     oracle_inputs <- detect_fixed_frame_inputs(
@@ -189,36 +210,15 @@ test_that("fixed-detect input errors are not hidden and permit recovery", {
     list(subject = "abc", pattern = bytes, max_count = -1L, events = "error")
   )
 
-  if (isTRUE(l10n_info()[["UTF-8"]])) {
-    bad_native <- detect_fixed_frame_marked(0xff, "unknown")
-    scenarios <- c(
-      scenarios,
-      list(
-        list(
-          subject = bad_native, pattern = "a",
-          max_count = 0L, events = "error", compare_stringi = FALSE
-        ),
-        list(
-          subject = c("hit", bad_native), pattern = "hit",
-          max_count = 1L, events = "error", compare_stringi = FALSE
-        )
-      )
-    )
-  }
-
   for (scenario in scenarios) {
-    if (isFALSE(scenario$compare_stringi)) {
-      expected_events <- scenario$events
-    } else {
-      oracle_inputs <- detect_fixed_frame_inputs(
-        "stringi", scenario$subject, scenario$pattern
-      )
-      oracle <- detect_fixed_frame_events(detect_fixed_frame_invoke(
-        "stringi", oracle_inputs, max_count = scenario$max_count
-      ))
-      expected_events <- oracle$events
-      expect_identical(expected_events, scenario$events)
-    }
+    oracle_inputs <- detect_fixed_frame_inputs(
+      "stringi", scenario$subject, scenario$pattern
+    )
+    oracle <- detect_fixed_frame_events(detect_fixed_frame_invoke(
+      "stringi", oracle_inputs, max_count = scenario$max_count
+    ))
+    expected_events <- oracle$events
+    expect_identical(expected_events, scenario$events)
 
     for (backend in c("base", "altrep")) {
       inputs <- detect_fixed_frame_inputs(

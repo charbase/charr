@@ -75,7 +75,14 @@ CHARR_CXX_HELPER StringView normalize_utf8_transient_slow(
         break;
     }
     case StringEncoding::native: {
-        const bool strip_bom = converter.native_is_utf8();
+        if (converter.native_is_utf8()) {
+            if (utf8::has_bom(data, length)) {
+                data += 3;
+                length -= 3;
+            }
+            break;
+        }
+
         const ByteView converted = converter.native(data, length);
         if (converted.len < 0 ||
                 (converted.ptr == nullptr && converted.len > 0)) {
@@ -85,10 +92,6 @@ CHARR_CXX_HELPER StringView normalize_utf8_transient_slow(
         }
         data = converted.ptr;
         length = converted.len;
-        if (strip_bom && utf8::has_bom(data, length)) {
-            data += 3;
-            length -= 3;
-        }
         break;
     }
     case StringEncoding::missing:
@@ -148,8 +151,14 @@ CHARR_CXX_HELPER StringView normalize_utf8_slow(
     case StringEncoding::latin1:
     case StringEncoding::native: {
         const bool native = source.enc == StringEncoding::native;
-        const bool native_bom = strip_bom_policy && native &&
-            converter.native_is_utf8();
+        // A native mark names the active encoding. When that encoding is
+        // UTF-8, borrow the bytes just as CE_UTF8 does; conversion is not an
+        // extra validation pass.
+        if (native && converter.native_is_utf8()) {
+            strip_bom = strip_bom_policy && utf8::has_bom(data, length);
+            break;
+        }
+
         const ByteView converted_view = native
             ? converter.native(data, length)
             : converter.latin1(data, length);
@@ -163,7 +172,6 @@ CHARR_CXX_HELPER StringView normalize_utf8_slow(
             ? &utf8::empty
             : converted_view.ptr;
         length = converted_view.len;
-        strip_bom = native_bom && utf8::has_bom(data, length);
         converted = true;
         break;
     }
