@@ -119,7 +119,9 @@ ci_detect_fixed <- function(
 ) {
     if (!missing(...))
         opts_fixed <- do.call(ci_opts_fixed, as.list(c(opts_fixed, ...)))
-    .Call(C_ci_detect_fixed, str, pattern, negate, max_count, opts_fixed)
+    .Call(
+        C_ci_detect_fixed, str, pattern, negate, max_count, opts_fixed
+    )
 }
 
 
@@ -135,7 +137,9 @@ ci_detect_coll <- function(
 ) {
     if (!missing(...))
         opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-    .Call(C_ci_detect_coll, str, pattern, negate, max_count, opts_collator)
+    .Call(
+        C_ci_detect_coll, str, pattern, negate, max_count, opts_collator
+    )
 }
 
 
@@ -148,5 +152,7 @@ ci_detect_regex <- function(
 ) {
     if (!missing(...))
         opts_regex <- do.call(ci_opts_regex, as.list(c(opts_regex, ...)))
-    .Call(C_ci_detect_regex, str, pattern, negate, max_count, opts_regex)
+    .Call(
+        C_ci_detect_regex, str, pattern, negate, max_count, opts_regex
+    )
 }

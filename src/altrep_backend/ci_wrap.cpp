@@ -31,6 +31,7 @@
  */
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "io/string_view.h"
 #include "io/utf8_output.h"
@@ -80,6 +81,131 @@ CHARR_R_HELPER void emit_locale_warning_r(
         );
     }
 }
+
+
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const shared::wrap::Options& options,
+        const std::vector<shared::StringView>& inputs,
+        const shared::wrap::LineStart& initial_indent,
+        const shared::wrap::LineStart& prefix_indent,
+        const shared::wrap::LineStart& prefix_exdent,
+        bool missing_start,
+        bool flatten,
+        bool join,
+        std::vector<io::OutputStore>& stores,
+        io::ParallelOutputBuilder& joined_output,
+        io::ChunkStores& flat_stores
+    ) noexcept
+        : options_(options), inputs_(inputs),
+          initial_indent_(initial_indent), prefix_indent_(prefix_indent),
+          prefix_exdent_(prefix_exdent), missing_start_(missing_start),
+          flatten_(flatten), join_(join), stores_(stores),
+          joined_output_(joined_output), flat_stores_(flat_stores)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        shared::wrap::Engine engine;
+        const shared::wrap::OpenResult opened = engine.reset(options_);
+        require_icu_success(opened.status);
+        io::OutputBuilder child_output(0);
+        // Flattened output has no fixed cardinality per element, so it is
+        // appended rather than written at an index. Its staging is keyed by
+        // chunk, not by worker: a worker's chunks are not contiguous, so only
+        // the chunk's first task says where its lines belong.
+        io::GrowableOutputBuilder flat_output;
+
+        while (context.next_chunk()) {
+            if (flatten_) {
+                flat_output.reset();
+                flat_stores_.open(context.worker, context.begin);
+            }
+            for (R_len_t i = static_cast<R_len_t>(context.begin);
+                    i < static_cast<R_len_t>(context.end); ++i) {
+                const shared::StringView input = inputs_[
+                    static_cast<std::size_t>(i)
+                ];
+                if (input.is_na() || missing_start_) {
+                    if (flatten_) {
+                        flat_output.append_na();
+                    }
+                    else if (join_) {
+                        joined_output_.set_na(context.worker, i);
+                    }
+                    else {
+                        stores_[static_cast<std::size_t>(i)] =
+                            io::scalar_store(io::missing_output_record());
+                    }
+                    continue;
+                }
+
+                const shared::wrap::LineStart& first = i == 0
+                    ? initial_indent_ : prefix_indent_;
+                require_icu_success(engine.plan(
+                    input, first, prefix_exdent_
+                ));
+
+                if (join_) {
+                    const shared::wrap::Joined staged = engine.joined(
+                        first, prefix_exdent_, true
+                    );
+                    char* destination = joined_output_.reserve(
+                        context.worker, i, staged.size,
+                        staged.ascii ? CETYPE_EXT_ASCII : CETYPE_EXT_UTF8
+                    );
+                    engine.write_joined(
+                        destination, first, prefix_exdent_
+                    );
+                    continue;
+                }
+
+                const int line_count = engine.line_count();
+                if (!flatten_)
+                    child_output.reset(line_count);
+
+                for (int line = 0; line < line_count; ++line) {
+                    const shared::wrap::Line staged = engine.line(
+                        line, first, prefix_exdent_, true
+                    );
+                    const cetype_ext_t encoding = staged.ascii
+                        ? CETYPE_EXT_ASCII : CETYPE_EXT_UTF8;
+                    char* destination = flatten_
+                        ? flat_output.append_reserve(staged.size, encoding)
+                        : child_output.reserve(line, staged.size, encoding);
+                    shared::wrap::Engine::write_line(staged, destination);
+                }
+
+                if (!flatten_) {
+                    stores_[static_cast<std::size_t>(i)] =
+                        child_output.release_store();
+                }
+            }
+            if (flatten_) {
+                flat_stores_.current(context.worker) =
+                    flat_output.release_store();
+            }
+
+        }
+    }
+
+private:
+    shared::wrap::Options options_;
+    const std::vector<shared::StringView>& inputs_;
+    const shared::wrap::LineStart& initial_indent_;
+    const shared::wrap::LineStart& prefix_indent_;
+    const shared::wrap::LineStart& prefix_exdent_;
+    bool missing_start_;
+    bool flatten_;
+    bool join_;
+    std::vector<io::OutputStore>& stores_;
+    io::ParallelOutputBuilder& joined_output_;
+    io::ChunkStores& flat_stores_;
+};
 
 } // namespace wrap
 
@@ -203,10 +329,15 @@ CHARR_ENTRYPOINT SEXP ci_wrap(
         shared::wrap::LineStart prefix_indent;
         shared::wrap::LineStart prefix_exdent;
         shared::wrap::Engine engine;
+        std::vector<shared::StringView> normalized_inputs;
         std::vector<io::OutputStore> stores;
+        io::ChunkStores flat_stores;
+        io::OutputStore flat_store(0, 0);
         io::OutputBuilder child_output(0);
         io::OutputBuilder joined_output(0);
+        io::ParallelOutputBuilder parallel_joined_output;
         io::GrowableOutputBuilder flat_output;
+        std::exception_ptr prepass_error;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -262,101 +393,173 @@ CHARR_ENTRYPOINT SEXP ci_wrap(
                 prefix_indent.reset(prefix_value, indent_value);
                 prefix_exdent.reset(prefix_value, exdent_value);
 
-                if (!flatten && !join) {
-                    stores.reserve(static_cast<std::size_t>(input_length));
-                }
-                else if (join) {
-                    joined_output.reset(input_length);
-                }
-                else {
-                    flat_output.reset();
-                }
-
                 const bool missing_start = initial_indent.is_na() ||
                     prefix_indent.is_na();
-                for (R_len_t i = 0; i < input_length; ++i) {
-                    const shared::StringView input = normalize_input(
-                        input_views[i], converter, storage
-                    );
-                    if (input.is_na() || missing_start) {
-                        if (flatten) {
-                            flat_output.append_na();
-                        }
-                        else if (join) {
-                            joined_output.set_na(i);
-                        }
-                        else {
-                            stores.push_back(io::scalar_store(
-                                io::missing_output_record()
-                            ));
-                        }
-                        continue;
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, input_length
+                );
+                if (plan.workers == 1) {
+                    if (!flatten && !join) {
+                        stores.reserve(
+                            static_cast<std::size_t>(input_length)
+                        );
+                    }
+                    else if (join) {
+                        joined_output.reset(input_length);
+                    }
+                    else {
+                        flat_output.reset();
                     }
 
-                    require_icu_success(engine.plan(
-                        input,
-                        i == 0 ? initial_indent : prefix_indent,
-                        prefix_exdent
-                    ));
+                    for (R_len_t i = 0; i < input_length; ++i) {
+                        const shared::StringView input = normalize_input(
+                            input_views[i], converter, storage
+                        );
+                        if (input.is_na() || missing_start) {
+                            if (flatten) {
+                                flat_output.append_na();
+                            }
+                            else if (join) {
+                                joined_output.set_na(i);
+                            }
+                            else {
+                                stores.push_back(io::scalar_store(
+                                    io::missing_output_record()
+                                ));
+                            }
+                            continue;
+                        }
 
-                    if (join) {
-                        const shared::wrap::Joined staged = engine.joined(
-                            i == 0 ? initial_indent : prefix_indent,
-                            prefix_exdent, true
-                        );
-                        char* destination = joined_output.reserve(
-                            i, staged.size,
-                            staged.ascii
-                                ? CETYPE_EXT_ASCII
-                                : CETYPE_EXT_UTF8
-                        );
-                        engine.write_joined(
-                            destination,
+                        require_icu_success(engine.plan(
+                            input,
                             i == 0 ? initial_indent : prefix_indent,
                             prefix_exdent
-                        );
-                        continue;
-                    }
+                        ));
 
-                    const int line_count = engine.line_count();
-                    if (!flatten)
-                        child_output.reset(line_count);
-
-                    for (int line = 0; line < line_count; ++line) {
-                        const shared::wrap::Line staged = engine.line(
-                            line,
-                            i == 0 ? initial_indent : prefix_indent,
-                            prefix_exdent, true
-                        );
-                        const cetype_ext_t encoding = staged.ascii
-                            ? CETYPE_EXT_ASCII
-                            : CETYPE_EXT_UTF8;
-                        char* destination = flatten
-                            ? flat_output.append_reserve(
-                                staged.size, encoding
-                            )
-                            : child_output.reserve(
-                                line, staged.size, encoding
+                        if (join) {
+                            const shared::wrap::Joined staged = engine.joined(
+                                i == 0 ? initial_indent : prefix_indent,
+                                prefix_exdent, true
                             );
-                        shared::wrap::Engine::write_line(
-                            staged, destination
+                            char* destination = joined_output.reserve(
+                                i, staged.size,
+                                staged.ascii
+                                    ? CETYPE_EXT_ASCII
+                                    : CETYPE_EXT_UTF8
+                            );
+                            engine.write_joined(
+                                destination,
+                                i == 0 ? initial_indent : prefix_indent,
+                                prefix_exdent
+                            );
+                            continue;
+                        }
+
+                        const int line_count = engine.line_count();
+                        if (!flatten)
+                            child_output.reset(line_count);
+
+                        for (int line = 0; line < line_count; ++line) {
+                            const shared::wrap::Line staged = engine.line(
+                                line,
+                                i == 0 ? initial_indent : prefix_indent,
+                                prefix_exdent, true
+                            );
+                            const cetype_ext_t encoding = staged.ascii
+                                ? CETYPE_EXT_ASCII
+                                : CETYPE_EXT_UTF8;
+                            char* destination = flatten
+                                ? flat_output.append_reserve(
+                                    staged.size, encoding
+                                )
+                                : child_output.reserve(
+                                    line, staged.size, encoding
+                                );
+                            shared::wrap::Engine::write_line(
+                                staged, destination
+                            );
+                        }
+
+                        if (!flatten) {
+                            stores.push_back(
+                                child_output.release_store()
+                            );
+                        }
+                    }
+                }
+                else {
+                    normalized_inputs.reserve(
+                        static_cast<std::size_t>(input_length)
+                    );
+                    for (R_len_t i = 0; i < input_length; ++i) {
+                        try {
+                            normalized_inputs.push_back(normalize_input(
+                                input_views[i], converter, storage
+                            ));
+                        }
+                        catch (...) {
+                            prepass_error = std::current_exception();
+                            break;
+                        }
+                    }
+                    const R_len_t work_length = static_cast<R_len_t>(
+                        normalized_inputs.size()
+                    );
+                    const shared::ParallelPlan work_plan =
+                        shared::parallel_plan(true, work_length);
+
+                    if (!flatten && !join) {
+                        stores.reserve(
+                            static_cast<std::size_t>(work_length)
+                        );
+                        for (R_len_t i = 0; i < work_length; ++i)
+                            stores.emplace_back(0, 0);
+                    }
+                    else if (join) {
+                        parallel_joined_output.reset(
+                            work_length, work_plan.workers
                         );
                     }
-
-                    if (!flatten) {
-                        stores.push_back(child_output.release_store());
+                    else {
+                        flat_stores.reset(work_plan.workers);
                     }
+
+                    Body body(
+                        options, normalized_inputs,
+                        initial_indent, prefix_indent, prefix_exdent,
+                        missing_start, flatten, join,
+                        stores, parallel_joined_output, flat_stores
+                    );
+                    shared::run_parallel(work_plan, work_length, body);
+                    if (prepass_error)
+                        std::rethrow_exception(prepass_error);
                 }
 
                 if (flatten) {
-                    result = entry_protections.reprotect_one(
-                        flat_output.to_sexp(), result_index
-                    );
+                    if (plan.workers == 1) {
+                        result = entry_protections.reprotect_one(
+                            flat_output.to_sexp(), result_index
+                        );
+                    }
+                    else {
+                        flat_store = flat_stores.concatenate();
+                        result = entry_protections.reprotect_one(
+                            io::finalize(std::move(flat_store)),
+                            result_index
+                        );
+                    }
                 }
                 else if (join) {
-                    result = entry_protections.reprotect_one(
-                        joined_output.to_sexp(), result_index
-                    );
+                    if (plan.workers == 1) {
+                        result = entry_protections.reprotect_one(
+                            joined_output.to_sexp(), result_index
+                        );
+                    }
+                    else {
+                        result = entry_protections.reprotect_one(
+                            parallel_joined_output.to_sexp(), result_index
+                        );
+                    }
                 }
                 else {
                     result = entry_protections.reprotect_one(

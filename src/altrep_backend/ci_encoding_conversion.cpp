@@ -31,6 +31,7 @@
  */
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "ci_string8buf.h"
 #include "ci_ucnv.h"
 #include "io/string_view.h"
@@ -39,6 +40,7 @@
 #include "../shared/entrypoint.h"
 #include "../shared/native_to_utf8.h"
 #include "../shared/protect.h"
+#include "../shared/slice_arena.h"
 #include "../shared/string_view.h"
 #include "../shared/unwind.h"
 
@@ -410,6 +412,729 @@ CHARR_CXX_HELPER void store_converted(
     );
 }
 
+CHARR_CXX_HELPER void store_parallel_converted(
+    R_len_t index,
+    bool stage_output,
+    const char* data,
+    std::size_t length,
+    cetype_ext_t encoding,
+    std::vector<RawResult>& staged_results,
+    io::ParallelOutputBuilder& output,
+    unsigned worker
+) {
+    if (stage_output) {
+        if (data == nullptr && length != 0) {
+            throw std::invalid_argument(
+                "null byte output has nonzero length"
+            );
+        }
+        RawResult& value = staged_results[
+            static_cast<std::size_t>(index)
+        ];
+        value.missing = false;
+        if (length == 0) {
+            value.data.clear();
+        }
+        else {
+            value.data.assign(
+                reinterpret_cast<const unsigned char*>(data),
+                reinterpret_cast<const unsigned char*>(data)+length
+            );
+        }
+        return;
+    }
+
+    reject_embedded_nul(data, length);
+    if (length > maximum_buffer_length) {
+        throw std::length_error(
+            "character output exceeds R's string length limit"
+        );
+    }
+    if (data == nullptr) {
+        if (length != 0) {
+            throw std::invalid_argument(
+                "null character output has nonzero length"
+            );
+        }
+        data = "";
+    }
+    output.set_validated(
+        worker, index,
+        make_strview(data, static_cast<int>(length), encoding)
+    );
+}
+
+CHARR_CXX_HELPER R_len_t preconvert_native_records(
+    std::vector<ByteRecord>& records,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage,
+    std::exception_ptr& pending_error
+) {
+    for (std::size_t i = 0; i < records.size(); ++i) {
+        try {
+            ByteRecord& input = records[i];
+            if (!input.missing) {
+                const shared::ByteView converted = converter.native(
+                    input.data, input.length
+                );
+                const std::size_t length = static_cast<std::size_t>(
+                    converted.len
+                );
+                char* stable = storage.allocate(length);
+                if (length > 0)
+                    std::memcpy(stable, converted.ptr, length);
+                input.data = stable;
+                input.length = converted.len;
+            }
+        }
+        catch (...) {
+            pending_error = std::current_exception();
+            return static_cast<R_len_t>(i);
+        }
+    }
+    return static_cast<R_len_t>(records.size());
+}
+
+class IdentityBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER IdentityBody(
+        const charport::StrViews& input,
+        const std::vector<cetype_ext_t>& encodings,
+        io::ParallelOutputBuilder& output
+    ) noexcept
+        : input_(input), encodings_(encodings), output_(output)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        while (context.next_chunk()) {
+            for (R_xlen_t i = context.begin; i < context.end; ++i) {
+                const cetype_ext_t encoding = encodings_[
+                    static_cast<std::size_t>(i)
+                ];
+                if (encoding == CETYPE_EXT_NA) {
+                    output_.set_na(context.worker, i);
+                    continue;
+                }
+                const charport::StrView value = input_[i];
+                output_.set(
+                    context.worker, i, value.ptr,
+                    static_cast<std::size_t>(value.len), encoding
+                );
+            }
+        }
+    }
+
+private:
+    const charport::StrViews& input_;
+    const std::vector<cetype_ext_t>& encodings_;
+    io::ParallelOutputBuilder& output_;
+};
+
+/*
+ * The warnings one chunk of the task range produced, tagged with the first
+ * task of that chunk.
+ *
+ * A worker no longer holds one ascending run of tasks: it draws chunks from a
+ * shared ascending cursor, so a queue per worker records the elements in an
+ * order that has nothing to do with the order they appear in the input. A
+ * queue per chunk does record it, because a chunk is contiguous and the
+ * converter pushes as the loop walks it, so putting the chunks back in task
+ * order puts the warnings back in element order.
+ *
+ * Only a chunk that produced a warning gets a record. An empty one carries
+ * nothing: where emission stops is decided by a WarningCutoff, not by which
+ * chunks left a record behind.
+ */
+struct CHARR_OWNER_TYPE ChunkWarnings {
+    R_xlen_t begin;
+    shared::DeferredWarnings warnings;
+};
+
+/*
+ * One worker's records, and the cursor the merge reads them with. The worker
+ * only ever appends to its own row. `emitted` is touched on the main thread
+ * after the join and lives beside the row so that ordering the rows costs the
+ * emitting R helper no allocation.
+ */
+struct CHARR_OWNER_TYPE WorkerChunkWarnings {
+    std::size_t emitted;
+    std::vector<ChunkWarnings> chunks;
+};
+
+/*
+ * Where warning emission stops after a failure. `chunk_begin` is the first
+ * task of the chunk holding the first failing task, and `prefix` is how many
+ * of that chunk's warnings a serial run would have emitted before it reached
+ * the same failure.
+ */
+struct WarningCutoff {
+    bool active;
+    R_xlen_t chunk_begin;
+    std::size_t prefix;
+};
+
+CHARR_CXX_HELPER void close_chunk_warnings(
+    std::vector<ChunkWarnings>& chunks,
+    R_xlen_t begin,
+    shared::DeferredWarnings& queue
+) {
+    if (queue.size() == 0)
+        return;
+    chunks.emplace_back();
+    ChunkWarnings& chunk = chunks.back();
+    chunk.begin = begin;
+    chunk.warnings = queue;
+    // The queue holds one chunk at a time, so each message is copied once,
+    // into the record for the chunk that produced it.
+    queue = shared::DeferredWarnings();
+}
+
+/*
+ * The failure a serial run would have reached first. Cutoffs are ordered by
+ * the chunk they stop at, because chunk order is task order. A worker that
+ * failed before claiming a chunk stops at task 0 with an empty prefix, which
+ * is why an equal chunk is settled by the shorter prefix.
+ */
+CHARR_NEUTRAL_HELPER WarningCutoff first_warning_cutoff(
+    const std::vector<WarningCutoff>& worker_cutoffs,
+    const WarningCutoff& output_cutoff
+) noexcept {
+    WarningCutoff first = output_cutoff;
+    for (std::size_t i = 0; i < worker_cutoffs.size(); ++i) {
+        const WarningCutoff& candidate = worker_cutoffs[i];
+        if (!candidate.active)
+            continue;
+        if (!first.active ||
+                candidate.chunk_begin < first.chunk_begin ||
+                (candidate.chunk_begin == first.chunk_begin &&
+                    candidate.prefix < first.prefix)) {
+            first = candidate;
+        }
+    }
+    return first;
+}
+
+class ConversionBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER ConversionBody(
+        const char* selected_from,
+        const char* selected_to,
+        bool marked_input,
+        bool character_input,
+        bool stage_output,
+        cetype_ext_t target_mark,
+        const charport::StrViews& character_views,
+        const std::vector<ByteRecord>& explicit_records,
+        const std::vector<icu::UnicodeString>& marked_records,
+        std::vector<RawResult>& staged_results,
+        io::ParallelOutputBuilder& output,
+        std::vector<WorkerChunkWarnings>& warnings,
+        std::vector<WarningCutoff>& cutoffs,
+        std::vector<std::size_t>& task_prefix,
+        std::vector<R_xlen_t>& task_chunk
+    ) noexcept
+        : selected_from_(selected_from), selected_to_(selected_to),
+          marked_input_(marked_input), character_input_(character_input),
+          stage_output_(stage_output), target_mark_(target_mark),
+          character_views_(character_views),
+          explicit_records_(explicit_records),
+          marked_records_(marked_records),
+          staged_results_(staged_results), output_(output),
+          warnings_(warnings), cutoffs_(cutoffs),
+          task_prefix_(task_prefix), task_chunk_(task_chunk)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        try {
+            run_worker(context);
+        }
+        catch (...) {
+            // Failing with no chunk held -- opening a converter, sizing the
+            // buffer -- happens before this worker's first task, and so
+            // before every task a serial run would have reached.
+            WarningCutoff& cutoff = cutoffs_[
+                static_cast<std::size_t>(context.worker)
+            ];
+            if (!cutoff.active) {
+                cutoff.active = true;
+                cutoff.chunk_begin = 0;
+                cutoff.prefix = 0;
+            }
+            throw;
+        }
+    }
+
+private:
+    CHARR_CXX_HELPER void run_worker(
+        shared::WorkerContext& context
+    ) {
+        // The queue both converters push into. It holds one chunk at a time:
+        // closing a chunk moves what that chunk collected into this worker's
+        // row and leaves the queue empty for the next one. Nothing in it
+        // outlives the region, so it is a local of run(); it is declared
+        // before the converters because it has to outlive them.
+        shared::DeferredWarnings queue;
+        StriUcnv source_converter(
+            selected_from_ == nullptr ? "UTF-8" : selected_from_,
+            queue
+        );
+        StriUcnv target_converter(
+            selected_to_ == nullptr ? "UTF-8" : selected_to_,
+            queue
+        );
+        String8buf buffer(0);
+
+        UConverter* source_handle = nullptr;
+        if (!marked_input_)
+            source_handle = source_converter.getConverter();
+        UConverter* target_handle = target_converter.getConverter();
+
+        std::vector<ChunkWarnings>& chunks = warnings_[
+            static_cast<std::size_t>(context.worker)
+        ].chunks;
+
+        while (context.next_chunk()) {
+            const R_xlen_t begin = context.begin;
+            try {
+                convert_chunk(
+                    context, source_handle, target_handle, buffer, queue
+                );
+            }
+            catch (...) {
+                // The chunk stopped at its first failing task, so what the
+                // queue holds is already the prefix a serial run would have
+                // emitted before reaching the same failure.
+                record_failure(context.worker, begin, queue.size());
+                close_chunk_warnings(chunks, begin, queue);
+                throw;
+            }
+            close_chunk_warnings(chunks, begin, queue);
+        }
+    }
+
+    // Const, because claiming a chunk belongs to run_worker's loop alone.
+    CHARR_CXX_HELPER void convert_chunk(
+        const shared::WorkerContext& context,
+        UConverter* source_handle,
+        UConverter* target_handle,
+        String8buf& buffer,
+        const shared::DeferredWarnings& queue
+    ) {
+        for (R_xlen_t task = context.begin;
+                task < context.end; ++task) {
+            const R_len_t i = static_cast<R_len_t>(task);
+            if (marked_input_) {
+                const icu::UnicodeString& input = marked_records_[
+                    static_cast<std::size_t>(i)
+                ];
+                if (input.isBogus()) {
+                    if (!stage_output_)
+                        output_.set_na(context.worker, i);
+                    record_task_prefix(context.begin, i, queue);
+                    continue;
+                }
+
+                const std::size_t converted_size = transcode_utf16(
+                    target_handle, input, buffer
+                );
+                store_parallel_converted(
+                    i, stage_output_, buffer.data(), converted_size,
+                    target_mark_, staged_results_, output_,
+                    context.worker
+                );
+                record_task_prefix(context.begin, i, queue);
+                continue;
+            }
+
+            const ByteRecord input = character_input_
+                ? reader_record(character_views_[i])
+                : explicit_records_[static_cast<std::size_t>(i)];
+            if (input.missing) {
+                if (!stage_output_)
+                    output_.set_na(context.worker, i);
+                record_task_prefix(context.begin, i, queue);
+                continue;
+            }
+
+            const std::size_t converted_size = transcode_direct(
+                source_handle, target_handle,
+                input.data, input.length, buffer
+            );
+            store_parallel_converted(
+                i, stage_output_, buffer.data(), converted_size,
+                target_mark_, staged_results_, output_, context.worker
+            );
+            record_task_prefix(context.begin, i, queue);
+        }
+    }
+
+    /*
+     * Where a serial run would have stopped had it failed just after this
+     * task: the chunk that ran it, and how much that chunk's queue held once
+     * the task was finished. Only the staged native path records it, because
+     * only that path can still fail on the main thread once the region has
+     * joined.
+     */
+    CHARR_NEUTRAL_HELPER void record_task_prefix(
+        R_xlen_t chunk_begin,
+        R_len_t index,
+        const shared::DeferredWarnings& queue
+    ) noexcept {
+        if (task_prefix_.empty())
+            return;
+        const std::size_t task = static_cast<std::size_t>(index);
+        task_prefix_[task] = queue.size();
+        task_chunk_[task] = chunk_begin;
+    }
+
+    CHARR_NEUTRAL_HELPER void record_failure(
+        unsigned worker,
+        R_xlen_t chunk_begin,
+        std::size_t prefix
+    ) noexcept {
+        WarningCutoff& cutoff = cutoffs_[static_cast<std::size_t>(worker)];
+        cutoff.active = true;
+        cutoff.chunk_begin = chunk_begin;
+        cutoff.prefix = prefix;
+    }
+
+    const char* selected_from_;
+    const char* selected_to_;
+    bool marked_input_;
+    bool character_input_;
+    bool stage_output_;
+    cetype_ext_t target_mark_;
+    const charport::StrViews& character_views_;
+    const std::vector<ByteRecord>& explicit_records_;
+    const std::vector<icu::UnicodeString>& marked_records_;
+    std::vector<RawResult>& staged_results_;
+    io::ParallelOutputBuilder& output_;
+    std::vector<WorkerChunkWarnings>& warnings_;
+    std::vector<WarningCutoff>& cutoffs_;
+    std::vector<std::size_t>& task_prefix_;
+    std::vector<R_xlen_t>& task_chunk_;
+};
+
+CHARR_CXX_HELPER void finish_native_output(
+    bool raw_output,
+    cetype_ext_t target_mark,
+    const std::vector<RawResult>& staged_results,
+    shared::NativeToUtf8& native_converter,
+    std::vector<RawResult>& raw_results,
+    io::OutputBuilder& output,
+    R_len_t& attempted_index
+) {
+    const R_len_t size = static_cast<R_len_t>(staged_results.size());
+    for (R_len_t i = 0; i < size; ++i) {
+        attempted_index = i;
+        const RawResult& staged = staged_results[
+            static_cast<std::size_t>(i)
+        ];
+        if (staged.missing) {
+            if (!raw_output)
+                output.set_na(i);
+            continue;
+        }
+        const char* data = staged.data.empty()
+            ? ""
+            : reinterpret_cast<const char*>(staged.data.data());
+        const shared::ByteView converted = native_converter.utf8_to_native(
+            data, static_cast<int>(staged.data.size())
+        );
+        store_converted(
+            i, raw_output, converted.ptr,
+            static_cast<std::size_t>(converted.len), target_mark,
+            raw_results, output
+        );
+    }
+}
+
+CHARR_CXX_HELPER void transcode_records(
+    const shared::ParallelPlan& plan,
+    const char* selected_from,
+    const char* selected_to,
+    bool marked_input,
+    bool character_input,
+    bool raw_output,
+    R_len_t input_size,
+    const charport::StrViews& character_views,
+    std::vector<ByteRecord>& explicit_records,
+    const std::vector<icu::UnicodeString>& marked_records,
+    StriUcnv& source_converter,
+    StriUcnv& target_converter,
+    shared::NativeToUtf8& native_converter,
+    String8buf& buffer,
+    shared::SliceArena& native_storage,
+    std::vector<RawResult>& raw_results,
+    std::vector<RawResult>& staged_results,
+    io::OutputBuilder& output,
+    io::ParallelOutputBuilder& parallel_output,
+    std::vector<WorkerChunkWarnings>& worker_chunks,
+    std::vector<WarningCutoff>& worker_cutoffs,
+    std::vector<std::size_t>& task_warning_prefix,
+    std::vector<R_xlen_t>& task_chunk_begin,
+    WarningCutoff& output_cutoff,
+    std::exception_ptr& native_input_error,
+    bool& use_parallel_output
+) {
+    UConverter* source_handle = nullptr;
+    if (!marked_input)
+        source_handle = source_converter.getConverter();
+    UConverter* target_handle = target_converter.getConverter();
+    cetype_ext_t target_mark = extended_encoding(
+        raw_output
+            ? CE_BYTES
+            : (selected_to == nullptr
+                ? CE_NATIVE
+                : target_converter.getCE())
+    );
+    if (target_mark == CETYPE_EXT_UTF8)
+        target_mark = CETYPE_EXT_ASCII_OR_UTF8;
+
+    bool native_input = false;
+    bool native_output = false;
+    if ((!marked_input && selected_from == nullptr) ||
+            selected_to == nullptr) {
+        const bool native_is_utf8 = native_converter.native_is_utf8();
+        native_input = !marked_input &&
+            selected_from == nullptr && !native_is_utf8;
+        native_output = selected_to == nullptr && !native_is_utf8;
+    }
+
+    if (plan.workers == 1) {
+        if (!raw_output)
+            output.reset(input_size);
+
+        for (R_len_t i = 0; i < input_size; ++i) {
+            if (marked_input) {
+                const icu::UnicodeString& input = marked_records[
+                    static_cast<std::size_t>(i)
+                ];
+                if (input.isBogus()) {
+                    if (!raw_output)
+                        output.set_na(i);
+                    continue;
+                }
+
+                const std::size_t converted_size = transcode_utf16(
+                    target_handle, input, buffer
+                );
+                const char* output_data = buffer.data();
+                std::size_t output_size = converted_size;
+                if (native_output) {
+                    const shared::ByteView converted =
+                        native_converter.utf8_to_native(
+                            output_data,
+                            static_cast<int>(output_size)
+                        );
+                    output_data = converted.ptr;
+                    output_size = static_cast<std::size_t>(converted.len);
+                }
+                store_converted(
+                    i, raw_output, output_data, output_size,
+                    target_mark, raw_results, output
+                );
+                continue;
+            }
+
+            const ByteRecord input = character_input
+                ? reader_record(character_views[i])
+                : explicit_records[static_cast<std::size_t>(i)];
+            if (input.missing) {
+                if (!raw_output)
+                    output.set_na(i);
+                continue;
+            }
+
+            const char* input_data = input.data;
+            R_len_t input_length = input.length;
+            if (native_input) {
+                const shared::ByteView converted = native_converter.native(
+                    input_data, input_length
+                );
+                input_data = converted.ptr;
+                input_length = converted.len;
+            }
+
+            const std::size_t converted_size = transcode_direct(
+                source_handle, target_handle,
+                input_data, input_length, buffer
+            );
+            const char* output_data = buffer.data();
+            std::size_t output_size = converted_size;
+            if (native_output) {
+                const shared::ByteView converted =
+                    native_converter.utf8_to_native(
+                        output_data,
+                        static_cast<int>(output_size)
+                    );
+                output_data = converted.ptr;
+                output_size = static_cast<std::size_t>(converted.len);
+            }
+            store_converted(
+                i, raw_output, output_data, output_size,
+                target_mark, raw_results, output
+            );
+        }
+        return;
+    }
+
+    R_len_t work_size = input_size;
+    if (native_input) {
+        if (character_input) {
+            explicit_records.resize(static_cast<std::size_t>(input_size));
+            for (R_len_t i = 0; i < input_size; ++i) {
+                explicit_records[static_cast<std::size_t>(i)] =
+                    reader_record(character_views[i]);
+            }
+            character_input = false;
+        }
+        work_size = preconvert_native_records(
+            explicit_records, native_converter, native_storage,
+            native_input_error
+        );
+    }
+    // The native prepass can shorten the range, so the plan is re-derived
+    // here. The planner reads only native settings, so a helper that may not
+    // touch R can still call it.
+    const shared::ParallelPlan work_plan = shared::parallel_plan(
+        true, work_size
+    );
+
+    const bool stage_output = raw_output || native_output;
+    std::vector<RawResult>& worker_results = native_output
+        ? staged_results
+        : raw_results;
+    if (native_output)
+        staged_results.resize(static_cast<std::size_t>(work_size));
+    if (!raw_output && native_output)
+        output.reset(input_size);
+    if (!stage_output) {
+        parallel_output.reset(work_size, work_plan.workers);
+        use_parallel_output = true;
+    }
+
+    worker_chunks.resize(work_plan.workers);
+    worker_cutoffs.resize(work_plan.workers);
+    if (native_output) {
+        task_warning_prefix.resize(static_cast<std::size_t>(work_size));
+        task_chunk_begin.resize(static_cast<std::size_t>(work_size));
+    }
+    ConversionBody body(
+        selected_from, selected_to, marked_input, character_input,
+        stage_output, target_mark, character_views, explicit_records,
+        marked_records, worker_results, parallel_output,
+        worker_chunks, worker_cutoffs,
+        task_warning_prefix, task_chunk_begin
+    );
+    shared::run_parallel(work_plan, work_size, body);
+
+    if (native_input_error && !native_output)
+        std::rethrow_exception(native_input_error);
+
+    if (native_output) {
+        R_len_t attempted_index = -1;
+        try {
+            finish_native_output(
+                raw_output, target_mark, staged_results, native_converter,
+                raw_results, output, attempted_index
+            );
+        }
+        catch (...) {
+            if (attempted_index >= 0) {
+                const std::size_t task = static_cast<std::size_t>(
+                    attempted_index
+                );
+                // This task's own conversion succeeded on the worker and its
+                // warnings belong to the serial prefix; converting its result
+                // to the native encoding, here, did not. Stop at the chunk
+                // that ran it, where its queue stood when the task finished.
+                output_cutoff.active = true;
+                output_cutoff.chunk_begin = task_chunk_begin[task];
+                output_cutoff.prefix = task_warning_prefix[task];
+            }
+            throw;
+        }
+    }
+
+    if (native_input_error)
+        std::rethrow_exception(native_input_error);
+}
+
+/*
+ * Warnings staged natively during the operation, emitted in the order of the
+ * elements that produced them.
+ *
+ * Everything the main thread converted is in one queue and comes first. The
+ * parallel region's queues are keyed by chunk, and each worker's row is
+ * already ascending, because a worker claims chunks in the order the cursor
+ * hands them out; recovering task order is therefore a merge of ordered rows
+ * and never a sort. The merge cursor lives in the row, so this helper owns
+ * nothing and cannot throw.
+ *
+ * A failure stops the walk. Chunks below the cutoff emit in full, the chunk
+ * holding the first failing task emits only the prefix a serial run would
+ * have reached, and chunks above it emit nothing.
+ */
+CHARR_R_HELPER void emit_conversion_warnings_r(
+    const shared::DeferredWarnings& warnings,
+    std::vector<WorkerChunkWarnings>& worker_chunks,
+    const std::vector<WarningCutoff>& worker_cutoffs,
+    const WarningCutoff& output_cutoff
+) noexcept {
+    warnings.emit_r();
+
+    const WarningCutoff cutoff = first_warning_cutoff(
+        worker_cutoffs, output_cutoff
+    );
+    const std::size_t rows = worker_chunks.size();
+    for (;;) {
+        std::size_t next = rows;
+        R_xlen_t lowest = 0;
+        // An R helper may not hold a cleanup-bearing local: an R error here
+        // longjmps past every destructor. So the merge walks by index and
+        // binds nothing that owns anything.
+        for (std::size_t row = 0; row < rows; ++row) {
+            if (worker_chunks[row].emitted >=
+                    worker_chunks[row].chunks.size()) {
+                continue;
+            }
+            const R_xlen_t begin = worker_chunks[row].chunks[
+                worker_chunks[row].emitted
+            ].begin;
+            if (next == rows || begin < lowest) {
+                next = row;
+                lowest = begin;
+            }
+        }
+        if (next == rows)
+            return;
+
+        const std::size_t at = worker_chunks[next].emitted;
+        const R_xlen_t begin = worker_chunks[next].chunks[at].begin;
+        ++worker_chunks[next].emitted;
+        if (cutoff.active && begin >= cutoff.chunk_begin) {
+            // The cutoff's own chunk may have left no record, so stopping is
+            // keyed on reaching it rather than on matching it.
+            if (begin == cutoff.chunk_begin) {
+                worker_chunks[next].chunks[at].warnings.emit_prefix_r(
+                    cutoff.prefix
+                );
+            }
+            return;
+        }
+        worker_chunks[next].chunks[at].warnings.emit_r();
+    }
+}
+
 CHARR_CXX_HELPER void release_conversion_state(
     charport::Reader& reader,
     StriUcnv& source,
@@ -427,7 +1152,7 @@ CHARR_R_HELPER SEXP assemble_raw_output_r(
     shared::ProtHelper& protections
 ) noexcept {
     const R_xlen_t size = static_cast<R_xlen_t>(values.size());
-    SEXP output = Rf_allocVector(VECSXP, size);
+    SEXP output = protections.protect_one(Rf_allocVector(VECSXP, size));
     for (R_xlen_t i = 0; i < size; ++i) {
         const std::size_t index = static_cast<std::size_t>(i);
         if (values[index].missing)
@@ -452,7 +1177,7 @@ CHARR_R_HELPER SEXP assemble_raw_output_r(
 
 using namespace encoding_conversion;
 
-CHARR_ENTRYPOINT SEXP ci_encode(
+CHARR_ENTRYPOINT SEXP ci_encode_string(
     SEXP str,
     SEXP from,
     SEXP to,
@@ -507,6 +1232,7 @@ CHARR_ENTRYPOINT SEXP ci_encode(
     const bool identity_candidate = !raw_output && character_input &&
         utf8_encoding_name(selected_to) &&
         (marked_input || utf8_encoding_name(selected_from));
+    const shared::ParallelPlan plan = shared::parallel_plan(true, input_size);
 
     try {
         shared::DeferredWarnings warnings;
@@ -538,8 +1264,237 @@ CHARR_ENTRYPOINT SEXP ci_encode(
         std::vector<RawResult> raw_results(
             raw_output ? static_cast<std::size_t>(input_size) : 0U
         );
+        std::vector<RawResult> staged_results;
         io::OutputBuilder output(0);
+        io::ParallelOutputBuilder parallel_output;
+        shared::SliceArena native_storage;
+        std::vector<WorkerChunkWarnings> worker_chunks;
+        std::vector<WarningCutoff> worker_cutoffs;
+        std::vector<std::size_t> task_warning_prefix;
+        std::vector<R_xlen_t> task_chunk_begin;
+        WarningCutoff output_cutoff = {false, 0, 0};
+        std::exception_ptr native_input_error;
         std::exception_ptr pending_error;
+        bool use_parallel_output = false;
+
+        result = shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                try {
+                    if (character_input) {
+                        reader.reset(str);
+                        if (reader.size() != input_size) {
+                            throw std::runtime_error(
+                                "Reader length changed during encoding conversion"
+                            );
+                        }
+                        if (input_size > 0) {
+                            reader.views(
+                                0, input_size,
+                                character_views.ptrs(),
+                                character_views.lengths(),
+                                character_views.encodings()
+                            );
+                        }
+                    }
+
+                    if (identity_candidate &&
+                            validate_identity_views(
+                            character_views, marked_input,
+                            identity_encodings
+                            )) {
+                        if (plan.workers > 1) {
+                            parallel_output.reset(
+                                input_size, plan.workers
+                            );
+                            use_parallel_output = true;
+                            IdentityBody body(
+                                character_views, identity_encodings,
+                                parallel_output
+                            );
+                            shared::run_parallel(
+                                plan, input_size, body
+                            );
+                        }
+                        else {
+                            copy_identity_views(
+                                character_views, identity_encodings, output
+                            );
+                        }
+                    }
+                    else if (input_size <= 0) {
+                        if (!raw_output)
+                            output.reset(0);
+                    }
+                    else {
+                        if (marked_input) {
+                            for (R_len_t i = 0; i < input_size; ++i) {
+                                decode_marked(
+                                    io::as_shared_view(character_views[i]),
+                                    native_converter,
+                                    marked_records[
+                                        static_cast<std::size_t>(i)
+                                    ]
+                                );
+                            }
+                        }
+                        else if (!character_input) {
+                            for (R_len_t i = 0; i < input_size; ++i) {
+                                explicit_records[
+                                    static_cast<std::size_t>(i)
+                                ] = explicit_record_r(str, input_kind, i);
+                            }
+                        }
+                        transcode_records(
+                            plan, selected_from, selected_to,
+                            marked_input, character_input, raw_output,
+                            input_size, character_views, explicit_records,
+                            marked_records, source_converter,
+                            target_converter, native_converter, buffer,
+                            native_storage, raw_results, staged_results,
+                            output, parallel_output, worker_chunks,
+                            worker_cutoffs, task_warning_prefix,
+                            task_chunk_begin, output_cutoff,
+                            native_input_error, use_parallel_output
+                        );
+                    }
+                }
+                catch (...) {
+                    pending_error = std::current_exception();
+                }
+
+                release_conversion_state(
+                    reader, source_converter,
+                    target_converter, native_converter
+                );
+                emit_conversion_warnings_r(
+                    warnings, worker_chunks, worker_cutoffs, output_cutoff
+                );
+                if (pending_error)
+                    std::rethrow_exception(pending_error);
+
+                if (raw_output) {
+                    result = entry_protections.reprotect_one(
+                        assemble_raw_output_r(
+                            raw_results, callback_protections
+                        ),
+                        result_index
+                    );
+                }
+                else {
+                    result = entry_protections.reprotect_one(
+                        use_parallel_output
+                            ? parallel_output.to_sexp()
+                            : output.to_sexp(),
+                        result_index
+                    );
+                }
+                CHARR_UNWIND_RETURN();
+            }
+        );
+    }
+    CHARR_ENTRYPOINT_END();
+}
+
+CHARR_ENTRYPOINT SEXP ci_encode_raw(
+    SEXP str,
+    SEXP from,
+    SEXP to,
+    SEXP to_raw
+) noexcept {
+    CHARR_ENTRYPOINT_BEGIN();
+
+    const char* selected_from = ci__prepare_arg_enc_r(
+        from, "from", true
+    );
+    const bool marked_input = selected_from == nullptr &&
+        Rf_isVectorAtomic(str) && !isRaw(str);
+
+    PROTECT_INDEX str_index;
+    entry_protections.protect_with_index(str, &str_index);
+
+    const char* selected_to = nullptr;
+    bool raw_output = false;
+    if (marked_input) {
+        SEXP prepared = ci__prepare_arg_string_r(str, "str");
+        str = entry_protections.reprotect_one(prepared, str_index);
+        selected_to = ci__prepare_arg_enc_r(to, "to", true);
+        raw_output = ci__prepare_arg_logical_1_notNA_r(
+            to_raw, "to_raw"
+        );
+    }
+    else {
+        selected_to = ci__prepare_arg_enc_r(to, "to", true);
+        raw_output = ci__prepare_arg_logical_1_notNA_r(
+            to_raw, "to_raw"
+        );
+        SEXP prepared = ci__prepare_arg_list_raw_r(str, "str");
+        str = entry_protections.reprotect_one(prepared, str_index);
+    }
+
+    InputKind input_kind = InputKind::character;
+    R_len_t input_size = LENGTH(str);
+    if (!marked_input) {
+        if (Rf_isNull(str)) {
+            input_kind = InputKind::null_value;
+            input_size = 1;
+        }
+        else if (isRaw(str)) {
+            input_kind = InputKind::raw_vector;
+            input_size = 1;
+        }
+        else if (Rf_isVectorList(str)) {
+            input_kind = InputKind::raw_list;
+        }
+    }
+    const bool character_input = input_kind == InputKind::character;
+    const bool identity_candidate = !raw_output && character_input &&
+        utf8_encoding_name(selected_to) &&
+        (marked_input || utf8_encoding_name(selected_from));
+    const shared::ParallelPlan plan = shared::parallel_plan(true, input_size);
+
+    try {
+        shared::DeferredWarnings warnings;
+        StriUcnv source_converter(
+            selected_from == nullptr ? "UTF-8" : selected_from,
+            warnings
+        );
+        StriUcnv target_converter(
+            selected_to == nullptr ? "UTF-8" : selected_to,
+            warnings
+        );
+        shared::NativeToUtf8 native_converter;
+        String8buf buffer(0);
+        charport::Reader reader;
+        charport::StrViews character_views(
+            character_input ? input_size : 0
+        );
+        std::vector<cetype_ext_t> identity_encodings(
+            identity_candidate ? static_cast<std::size_t>(input_size) : 0U
+        );
+        std::vector<ByteRecord> explicit_records(
+            !marked_input && !character_input
+                ? static_cast<std::size_t>(input_size)
+                : 0U
+        );
+        std::vector<icu::UnicodeString> marked_records(
+            marked_input ? static_cast<std::size_t>(input_size) : 0U
+        );
+        std::vector<RawResult> raw_results(
+            raw_output ? static_cast<std::size_t>(input_size) : 0U
+        );
+        std::vector<RawResult> staged_results;
+        io::OutputBuilder output(0);
+        io::ParallelOutputBuilder parallel_output;
+        shared::SliceArena native_storage;
+        std::vector<WorkerChunkWarnings> worker_chunks;
+        std::vector<WarningCutoff> worker_cutoffs;
+        std::vector<std::size_t> task_warning_prefix;
+        std::vector<R_xlen_t> task_chunk_begin;
+        WarningCutoff output_cutoff = {false, 0, 0};
+        std::exception_ptr native_input_error;
+        std::exception_ptr pending_error;
+        bool use_parallel_output = false;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -567,9 +1522,24 @@ CHARR_ENTRYPOINT SEXP ci_encode(
                                 character_views, marked_input,
                                 identity_encodings
                             )) {
-                        copy_identity_views(
-                            character_views, identity_encodings, output
-                        );
+                        if (plan.workers > 1) {
+                            parallel_output.reset(
+                                input_size, plan.workers
+                            );
+                            use_parallel_output = true;
+                            IdentityBody body(
+                                character_views, identity_encodings,
+                                parallel_output
+                            );
+                            shared::run_parallel(
+                                plan, input_size, body
+                            );
+                        }
+                        else {
+                            copy_identity_views(
+                                character_views, identity_encodings, output
+                            );
+                        }
                     }
                     else if (input_size <= 0) {
                         if (!raw_output)
@@ -594,119 +1564,18 @@ CHARR_ENTRYPOINT SEXP ci_encode(
                                 ] = explicit_record_r(str, input_kind, i);
                             }
                         }
-
-                        UConverter* source_handle = nullptr;
-                        if (!marked_input) {
-                            source_handle = source_converter.getConverter();
-                        }
-                        UConverter* target_handle =
-                            target_converter.getConverter();
-                        cetype_ext_t target_mark = extended_encoding(
-                            raw_output
-                                ? CE_BYTES
-                                : (selected_to == nullptr
-                                    ? CE_NATIVE
-                                    : target_converter.getCE())
+                        transcode_records(
+                            plan, selected_from, selected_to,
+                            marked_input, character_input, raw_output,
+                            input_size, character_views, explicit_records,
+                            marked_records, source_converter,
+                            target_converter, native_converter, buffer,
+                            native_storage, raw_results, staged_results,
+                            output, parallel_output, worker_chunks,
+                            worker_cutoffs, task_warning_prefix,
+                            task_chunk_begin, output_cutoff,
+                            native_input_error, use_parallel_output
                         );
-                        if (target_mark == CETYPE_EXT_UTF8)
-                            target_mark = CETYPE_EXT_ASCII_OR_UTF8;
-
-                        bool native_input = false;
-                        bool native_output = false;
-                        if ((!marked_input && selected_from == nullptr) ||
-                                selected_to == nullptr) {
-                            const bool native_is_utf8 =
-                                native_converter.native_is_utf8();
-                            native_input = !marked_input &&
-                                selected_from == nullptr && !native_is_utf8;
-                            native_output = selected_to == nullptr &&
-                                !native_is_utf8;
-                        }
-
-                        if (!raw_output)
-                            output.reset(input_size);
-
-                        for (R_len_t i = 0; i < input_size; ++i) {
-                            if (marked_input) {
-                                const icu::UnicodeString& input =
-                                    marked_records[
-                                        static_cast<std::size_t>(i)
-                                    ];
-                                if (input.isBogus()) {
-                                    if (!raw_output)
-                                        output.set_na(i);
-                                    continue;
-                                }
-
-                                const std::size_t converted_size =
-                                    transcode_utf16(
-                                        target_handle, input, buffer
-                                    );
-                                const char* output_data = buffer.data();
-                                std::size_t output_size = converted_size;
-                                if (native_output) {
-                                    const shared::ByteView converted =
-                                        native_converter.utf8_to_native(
-                                            output_data,
-                                            static_cast<int>(output_size)
-                                        );
-                                    output_data = converted.ptr;
-                                    output_size = static_cast<std::size_t>(
-                                        converted.len
-                                    );
-                                }
-                                store_converted(
-                                    i, raw_output, output_data, output_size,
-                                    target_mark, raw_results, output
-                                );
-                                continue;
-                            }
-
-                            const ByteRecord input = character_input
-                                ? reader_record(character_views[i])
-                                : explicit_records[
-                                    static_cast<std::size_t>(i)
-                                ];
-                            if (input.missing) {
-                                if (!raw_output)
-                                    output.set_na(i);
-                                continue;
-                            }
-
-                            const char* input_data = input.data;
-                            R_len_t input_length = input.length;
-                            if (native_input) {
-                                const shared::ByteView converted =
-                                    native_converter.native(
-                                        input_data, input_length
-                                    );
-                                input_data = converted.ptr;
-                                input_length = converted.len;
-                            }
-
-                            const std::size_t converted_size =
-                                transcode_direct(
-                                    source_handle, target_handle,
-                                    input_data, input_length, buffer
-                                );
-                            const char* output_data = buffer.data();
-                            std::size_t output_size = converted_size;
-                            if (native_output) {
-                                const shared::ByteView converted =
-                                    native_converter.utf8_to_native(
-                                        output_data,
-                                        static_cast<int>(output_size)
-                                    );
-                                output_data = converted.ptr;
-                                output_size = static_cast<std::size_t>(
-                                    converted.len
-                                );
-                            }
-                            store_converted(
-                                i, raw_output, output_data, output_size,
-                                target_mark, raw_results, output
-                            );
-                        }
                     }
                 }
                 catch (...) {
@@ -717,7 +1586,9 @@ CHARR_ENTRYPOINT SEXP ci_encode(
                     reader, source_converter,
                     target_converter, native_converter
                 );
-                warnings.emit_r();
+                emit_conversion_warnings_r(
+                    warnings, worker_chunks, worker_cutoffs, output_cutoff
+                );
                 if (pending_error)
                     std::rethrow_exception(pending_error);
 
@@ -731,7 +1602,10 @@ CHARR_ENTRYPOINT SEXP ci_encode(
                 }
                 else {
                     result = entry_protections.reprotect_one(
-                        output.to_sexp(), result_index
+                        use_parallel_output
+                            ? parallel_output.to_sexp()
+                            : output.to_sexp(),
+                        result_index
                     );
                 }
                 CHARR_UNWIND_RETURN();

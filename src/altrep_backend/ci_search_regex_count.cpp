@@ -31,6 +31,7 @@
  */
 
 
+#include "ci_parallel.h"
 #include "ci_stringi.h"
 #include "io/string_view.h"
 #include "regex/options_r.h"
@@ -113,6 +114,123 @@ CHARR_R_HELPER void emit_empty_pattern_warnings(int count) noexcept
         Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
 }
 
+
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        shared::RegexOptions options,
+        const std::vector<shared::StringView>& subjects,
+        const shared::RegexPatterns& patterns,
+        R_len_t subject_length,
+        R_len_t pattern_length,
+        R_len_t vectorize_length,
+        int* output
+    ) noexcept
+        : options_(options), subjects_(subjects), patterns_(patterns),
+          subject_length_(subject_length), pattern_length_(pattern_length),
+          vectorize_length_(vectorize_length), output_(output)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        shared::RegexMatcher matcher(options_);
+
+        if (pattern_length_ == 1) {
+            const std::size_t pattern_index = 0;
+            const shared::RegexInput current_pattern =
+                patterns_.get(pattern_index);
+            const bool pattern_unusable =
+                current_pattern.missing || current_pattern.length <= 0;
+            bool pattern_bound = false;
+
+            while (context.next_chunk()) {
+                const R_len_t begin = static_cast<R_len_t>(context.begin);
+                const R_len_t end = static_cast<R_len_t>(context.end);
+                for (R_len_t i = begin; i < end; ++i) {
+                    const shared::StringView& current = subjects_[
+                        static_cast<std::size_t>(i)
+                    ];
+                    if (current.is_na() || pattern_unusable) {
+                        output_[i] = NA_INTEGER;
+                        continue;
+                    }
+
+                    if (!pattern_bound) {
+                        bind_pattern(
+                            matcher, current_pattern, patterns_, pattern_index
+                        );
+                        pattern_bound = true;
+                    }
+                    UErrorCode status = U_ZERO_ERROR;
+                    output_[i] = matcher.count(current, &current, status);
+                    if (U_FAILURE(status)) {
+                        throw_regex_error(
+                            status, false, patterns_, pattern_index
+                        );
+                    }
+                }
+            }
+            return;
+        }
+
+        while (context.next_chunk()) {
+            const R_len_t begin = static_cast<R_len_t>(context.begin);
+            const R_len_t end = static_cast<R_len_t>(context.end);
+            for (R_len_t lane = begin; lane < end; ++lane) {
+                const std::size_t pattern_index =
+                    static_cast<std::size_t>(lane);
+                const shared::RegexInput current_pattern =
+                    patterns_.get(pattern_index);
+                bool pattern_bound = false;
+
+                R_len_t i = lane;
+                for (;;) {
+                    const std::size_t subject_index =
+                        static_cast<std::size_t>(i % subject_length_);
+                    const shared::StringView& current =
+                        subjects_[subject_index];
+                    if (current.is_na() || current_pattern.missing ||
+                            current_pattern.length <= 0) {
+                        output_[i] = NA_INTEGER;
+                    }
+                    else {
+                        if (!pattern_bound) {
+                            bind_pattern(
+                                matcher, current_pattern, patterns_,
+                                pattern_index
+                            );
+                            pattern_bound = true;
+                        }
+                        UErrorCode status = U_ZERO_ERROR;
+                        output_[i] = matcher.count(current, &current, status);
+                        if (U_FAILURE(status)) {
+                            throw_regex_error(
+                                status, false, patterns_, pattern_index
+                            );
+                        }
+                    }
+
+                    if (pattern_length_ >= vectorize_length_-i)
+                        break;
+                    i += pattern_length_;
+                }
+            }
+        }
+    }
+
+private:
+    shared::RegexOptions options_;
+    const std::vector<shared::StringView>& subjects_;
+    const shared::RegexPatterns& patterns_;
+    R_len_t subject_length_;
+    R_len_t pattern_length_;
+    R_len_t vectorize_length_;
+    int* output_;
+};
+
 } // namespace search_regex_count
 
 using namespace search_regex_count;
@@ -188,7 +306,6 @@ CHARR_ENTRYPOINT SEXP ci_count_regex(
         shared::SliceArena subject_storage;
         std::vector<shared::StringView> normalized_subjects;
         shared::RegexPatterns patterns;
-        shared::RegexMatcher matcher(options);
 
         result = shared::unwind_protect(
             unwind_token,
@@ -247,94 +364,18 @@ CHARR_ENTRYPOINT SEXP ci_count_regex(
                     }
 
                     empty_pattern_warnings = patterns.empty_count();
-
-                    if (pattern_length == 1) {
-                        const std::size_t pattern_index = 0;
-                        const shared::RegexInput current_pattern =
-                            patterns.get(pattern_index);
-                        const bool pattern_unusable =
-                            current_pattern.missing ||
-                            current_pattern.length <= 0;
-                        bool pattern_bound = false;
-
-                        for (R_len_t i = 0;
-                                i < vectorize_length; ++i) {
-                            const shared::StringView& current =
-                                normalized_subjects[
-                                    static_cast<std::size_t>(i)
-                                ];
-                            if (current.is_na() || pattern_unusable) {
-                                output[i] = NA_INTEGER;
-                                continue;
-                            }
-
-                            if (!pattern_bound) {
-                                bind_pattern(
-                                    matcher, current_pattern, patterns,
-                                    pattern_index
-                                );
-                                pattern_bound = true;
-                            }
-                            UErrorCode status = U_ZERO_ERROR;
-                            output[i] = matcher.count(
-                                current, &current, status
-                            );
-                            if (U_FAILURE(status)) {
-                                throw_regex_error(
-                                    status, false,
-                                    patterns, pattern_index
-                                );
-                            }
-                        }
-                    }
-                    else {
-                        for (R_len_t lane = 0;
-                                lane < pattern_length; ++lane) {
-                            const std::size_t pattern_index =
-                                static_cast<std::size_t>(lane);
-                            const shared::RegexInput current_pattern =
-                                patterns.get(pattern_index);
-                            bool pattern_bound = false;
-
-                            R_len_t i = lane;
-                            for (;;) {
-                                const std::size_t subject_index =
-                                    static_cast<std::size_t>(
-                                        i % subject_length
-                                    );
-                                const shared::StringView& current =
-                                    normalized_subjects[subject_index];
-                                if (current.is_na() ||
-                                        current_pattern.missing ||
-                                        current_pattern.length <= 0) {
-                                    output[i] = NA_INTEGER;
-                                }
-                                else {
-                                    if (!pattern_bound) {
-                                        bind_pattern(
-                                            matcher, current_pattern,
-                                            patterns, pattern_index
-                                        );
-                                        pattern_bound = true;
-                                    }
-                                    UErrorCode status = U_ZERO_ERROR;
-                                    output[i] = matcher.count(
-                                        current, &current, status
-                                    );
-                                    if (U_FAILURE(status)) {
-                                        throw_regex_error(
-                                            status, false,
-                                            patterns, pattern_index
-                                        );
-                                    }
-                                }
-
-                                if (pattern_length >= vectorize_length-i)
-                                    break;
-                                i += pattern_length;
-                            }
-                        }
-                    }
+                    const R_xlen_t tasks = pattern_length == 1
+                        ? vectorize_length
+                        : pattern_length;
+                    const shared::ParallelPlan plan = shared::parallel_plan(
+                        true, tasks
+                    );
+                    Body body(
+                        options, normalized_subjects, patterns,
+                        subject_length, pattern_length, vectorize_length,
+                        output
+                    );
+                    shared::run_parallel(plan, tasks, body);
                 }
 
                 CHARR_UNWIND_RETURN();

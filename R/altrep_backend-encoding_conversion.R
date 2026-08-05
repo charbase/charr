@@ -116,7 +116,20 @@
 # @rdname ci_encode
 # @export
 ci_encode <- function(str, from = NULL, to = NULL, to_raw = FALSE) {
-    .Call(C_ci_encode, str, from, to, to_raw)
+    force(str)
+    force(from)
+    force(to)
+    force(to_raw)
+    if (isTRUE(to_raw)) {
+        .Call(
+            C_ci_encode_raw, str, from, to, to_raw
+        )
+    }
+    else {
+        .Call(
+            C_ci_encode_string, str, from, to, to_raw
+        )
+    }
 }
 
 

@@ -32,6 +32,7 @@
 
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "../shared/character_class.h"
 #include "../shared/entrypoint.h"
@@ -313,7 +314,7 @@ template<
 CHARR_CXX_HELPER void trim_records(
     const charport::StrViews& original_source,
     const std::vector<shared::StringView>& source,
-    R_len_t output_length,
+    R_len_t output_begin, R_len_t output_end,
     const shared::CharacterClassSet& patterns,
     const ScalarTrimPattern& scalar,
     charport::charvec::Store& output
@@ -322,9 +323,16 @@ CHARR_CXX_HELPER void trim_records(
     const R_len_t source_length = static_cast<R_len_t>(
         original_source.size()
     );
+    const R_len_t output_length = output_end - output_begin;
+    output = charport::charvec::Store(
+        static_cast<std::size_t>(output_length), 0
+    );
     std::size_t payload_length = 0;
 
-    for (R_len_t i = 0; i < output_length; ++i) {
+    for (R_len_t i = output_begin; i < output_end; ++i) {
+        const std::size_t output_index = static_cast<std::size_t>(
+            i - output_begin
+        );
         const R_len_t source_index = RecycledSource
             ? i % source_length
             : i;
@@ -342,7 +350,7 @@ CHARR_CXX_HELPER void trim_records(
             const charport::StrView missing =
                 charport::charvec::components::na_record();
             output.records.set(
-                static_cast<std::size_t>(i),
+                output_index,
                 missing.ptr, missing.len, missing.enc
             );
             continue;
@@ -359,7 +367,7 @@ CHARR_CXX_HELPER void trim_records(
             ? charport::charvec::components::empty_data()
             : trimmed.data;
         output.records.set(
-            static_cast<std::size_t>(i),
+            output_index,
             record_data, trimmed.length, encoding
         );
         add_payload_length(payload_length, trimmed.length);
@@ -401,26 +409,26 @@ CHARR_CXX_HELPER void trim_dispatch(
     if (scalar_pattern) {
         if (recycled_source) {
             trim_records<Left, Right, NormalizedSource, true, true>(
-                original_source, source, output_length,
+                original_source, source, 0, output_length,
                 patterns, scalar, output
             );
         }
         else {
             trim_records<Left, Right, NormalizedSource, true, false>(
-                original_source, source, output_length,
+                original_source, source, 0, output_length,
                 patterns, scalar, output
             );
         }
     }
     else if (recycled_source) {
         trim_records<Left, Right, NormalizedSource, false, true>(
-            original_source, source, output_length,
+            original_source, source, 0, output_length,
             patterns, scalar, output
         );
     }
     else {
         trim_records<Left, Right, NormalizedSource, false, false>(
-            original_source, source, output_length,
+            original_source, source, 0, output_length,
             patterns, scalar, output
         );
     }
@@ -452,9 +460,6 @@ CHARR_CXX_HELPER void compute_trim(
         return;
 
     const bool direct_source = source_is_direct_utf8(subject_views);
-    output = charport::charvec::Store(
-        static_cast<std::size_t>(vectorize_length), 0
-    );
     if (direct_source) {
         trim_dispatch<Left, Right, false>(
             subject_views, subjects, vectorize_length,
@@ -469,6 +474,254 @@ CHARR_CXX_HELPER void compute_trim(
         trim_dispatch<Left, Right, true>(
             subject_views, subjects, vectorize_length,
             pattern_set, output
+        );
+    }
+}
+
+
+/*
+ * Where the threaded trim plan stages its output. trim_records sizes its
+ * store to the range it is handed and addresses it from that range's start,
+ * so a worker that draws several chunks produces one store per chunk rather
+ * than one store covering a contiguous slice. Worker order is therefore no
+ * longer task order, and each store has to travel with the first task of the
+ * chunk that produced it so the stores can be put back in task order before
+ * they are joined.
+ *
+ * The rows are sized before the region starts and a worker only ever appends
+ * to its own row, so no two workers touch the same vector.
+ */
+class CHARR_OWNER_TYPE TrimChunkOutputs {
+public:
+    CHARR_CXX_HELPER TrimChunkOutputs()
+        : begins_(), stores_()
+    {
+    }
+
+    TrimChunkOutputs(const TrimChunkOutputs&) = delete;
+    TrimChunkOutputs& operator=(const TrimChunkOutputs&) = delete;
+    TrimChunkOutputs(TrimChunkOutputs&&) = delete;
+    TrimChunkOutputs& operator=(TrimChunkOutputs&&) = delete;
+
+    CHARR_CXX_HELPER void reset(unsigned workers)
+    {
+        begins_.clear();
+        stores_.clear();
+        begins_.resize(static_cast<std::size_t>(workers));
+        stores_.resize(static_cast<std::size_t>(workers));
+    }
+
+    CHARR_CXX_HELPER void add(
+        unsigned worker, R_len_t begin, io::OutputStore&& store
+    )
+    {
+        const std::size_t row = static_cast<std::size_t>(worker);
+        begins_[row].push_back(begin);
+        stores_[row].push_back(std::move(store));
+    }
+
+    // Chunks ascend within a worker, so recovering task order is a merge of
+    // rows that are already ordered rather than a sort.
+    CHARR_CXX_HELPER [[nodiscard]] io::OutputStore concatenate()
+    {
+        const std::size_t rows = stores_.size();
+        std::size_t total = 0;
+        for (std::size_t row = 0; row < rows; ++row)
+            total += stores_[row].size();
+
+        std::vector<std::size_t> cursors(rows, 0);
+        std::vector<io::OutputStore> ordered;
+        ordered.reserve(total);
+        for (;;) {
+            std::size_t next = rows;
+            R_len_t lowest = 0;
+            for (std::size_t row = 0; row < rows; ++row) {
+                if (cursors[row] >= stores_[row].size())
+                    continue;
+                const R_len_t candidate = begins_[row][cursors[row]];
+                if (next == rows || candidate < lowest) {
+                    next = row;
+                    lowest = candidate;
+                }
+            }
+            if (next == rows)
+                break;
+            ordered.push_back(std::move(stores_[next][cursors[next]]));
+            ++cursors[next];
+        }
+        return io::concat_stores(ordered);
+    }
+
+private:
+    std::vector<std::vector<R_len_t>> begins_;
+    std::vector<std::vector<io::OutputStore>> stores_;
+};
+
+
+template<
+    bool Left, bool Right, bool NormalizedSource,
+    bool ScalarPattern, bool RecycledSource
+>
+class TrimBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER TrimBody(
+        const charport::StrViews& original,
+        const std::vector<shared::StringView>& normalized,
+        const shared::CharacterClassSet& patterns,
+        const ScalarTrimPattern& scalar,
+        TrimChunkOutputs& outputs
+    )
+        : original_(original), normalized_(normalized),
+          patterns_(patterns), scalar_(scalar), outputs_(outputs)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        while (context.next_chunk()) {
+            const R_len_t begin = static_cast<R_len_t>(context.begin);
+            io::OutputStore chunk;
+            trim_records<
+                Left, Right, NormalizedSource, ScalarPattern, RecycledSource
+            >(
+                original_, normalized_, begin,
+                static_cast<R_len_t>(context.end),
+                patterns_, scalar_, chunk
+            );
+            outputs_.add(context.worker, begin, std::move(chunk));
+        }
+    }
+
+private:
+    const charport::StrViews& original_;
+    const std::vector<shared::StringView>& normalized_;
+    const shared::CharacterClassSet& patterns_;
+    ScalarTrimPattern scalar_;
+    TrimChunkOutputs& outputs_;
+};
+
+
+template<
+    bool Left, bool Right, bool NormalizedSource,
+    bool ScalarPattern, bool RecycledSource
+>
+CHARR_CXX_HELPER void run_trim_parallel(
+    const charport::StrViews& subject_views,
+    const std::vector<shared::StringView>& subjects,
+    const shared::CharacterClassSet& pattern_set,
+    const ScalarTrimPattern& scalar,
+    R_len_t vectorize_length,
+    const shared::ParallelPlan& plan,
+    TrimChunkOutputs& outputs
+)
+{
+    TrimBody<
+        Left, Right, NormalizedSource, ScalarPattern, RecycledSource
+    > body(subject_views, subjects, pattern_set, scalar, outputs);
+    shared::run_parallel(plan, vectorize_length, body);
+}
+
+
+template<bool Left, bool Right, bool NormalizedSource>
+CHARR_CXX_HELPER void trim_parallel_dispatch(
+    const charport::StrViews& subject_views,
+    const std::vector<shared::StringView>& subjects,
+    R_len_t vectorize_length,
+    const shared::CharacterClassSet& pattern_set,
+    const shared::ParallelPlan& plan,
+    TrimChunkOutputs& outputs,
+    io::OutputStore& output
+)
+{
+    outputs.reset(plan.workers);
+
+    const bool scalar_pattern = pattern_set.size() == 1;
+    const ScalarTrimPattern scalar = scalar_pattern
+        ? make_scalar_pattern(pattern_set)
+        : ScalarTrimPattern{nullptr, {}, false};
+    const bool recycled_source =
+        static_cast<R_len_t>(subject_views.size()) != vectorize_length;
+
+    if (scalar_pattern) {
+        if (recycled_source) {
+            run_trim_parallel<
+                Left, Right, NormalizedSource, true, true
+            >(
+                subject_views, subjects, pattern_set, scalar,
+                vectorize_length, plan, outputs
+            );
+        }
+        else {
+            run_trim_parallel<
+                Left, Right, NormalizedSource, true, false
+            >(
+                subject_views, subjects, pattern_set, scalar,
+                vectorize_length, plan, outputs
+            );
+        }
+    }
+    else if (recycled_source) {
+        run_trim_parallel<
+            Left, Right, NormalizedSource, false, true
+        >(
+            subject_views, subjects, pattern_set, scalar,
+            vectorize_length, plan, outputs
+        );
+    }
+    else {
+        run_trim_parallel<
+            Left, Right, NormalizedSource, false, false
+        >(
+            subject_views, subjects, pattern_set, scalar,
+            vectorize_length, plan, outputs
+        );
+    }
+
+    output = outputs.concatenate();
+}
+
+
+template<bool Left, bool Right>
+CHARR_CXX_HELPER void compute_trim_parallel(
+    const charport::StrViews& subject_views,
+    const charport::StrViews& pattern_views,
+    R_len_t vectorize_length, bool negate,
+    shared::NativeToUtf8& subject_converter,
+    shared::NativeToUtf8& pattern_converter,
+    shared::SliceArena& subject_storage,
+    shared::SliceArena& pattern_storage,
+    std::vector<shared::StringView>& subjects,
+    std::vector<shared::StringView>& patterns,
+    shared::CharacterClassSet& pattern_set,
+    const shared::ParallelPlan& plan,
+    TrimChunkOutputs& outputs,
+    io::OutputStore& output
+)
+{
+    normalize_views(
+        pattern_views, pattern_converter, pattern_storage,
+        patterns, false
+    );
+    require_icu_success(pattern_set.reset(patterns, negate));
+    const bool direct_source = source_is_direct_utf8(subject_views);
+    if (!direct_source) {
+        normalize_views(
+            subject_views, subject_converter, subject_storage,
+            subjects, true
+        );
+    }
+    if (direct_source) {
+        trim_parallel_dispatch<Left, Right, false>(
+            subject_views, subjects, vectorize_length,
+            pattern_set, plan, outputs, output
+        );
+    }
+    else {
+        trim_parallel_dispatch<Left, Right, true>(
+            subject_views, subjects, vectorize_length,
+            pattern_set, plan, outputs, output
         );
     }
 }
@@ -508,6 +761,7 @@ CHARR_ENTRYPOINT SEXP ci_trim_both(
 {
     CHARR_ENTRYPOINT_BEGIN();
 
+
     const bool negate_value = ci__prepare_arg_logical_1_notNA_r(
         negate, "negate"
     );
@@ -534,13 +788,13 @@ CHARR_ENTRYPOINT SEXP ci_trim_both(
         std::vector<shared::StringView> patterns;
         shared::CharacterClassSet pattern_set;
         charport::charvec::Store output;
+        TrimChunkOutputs parallel_outputs;
 
         result = shared::unwind_protect(
             unwind_token,
             [&]() -> SEXP {
-                subject_reader.reset(str);
                 const R_len_t subject_length = io::checked_r_len(
-                    subject_reader.size(), "character vectors"
+                    XLENGTH(str), "character vectors"
                 );
                 const R_len_t pattern_length = io::checked_r_len(
                     XLENGTH(pattern), "character vectors"
@@ -548,6 +802,15 @@ CHARR_ENTRYPOINT SEXP ci_trim_both(
                 const R_len_t vectorize_length = recycling_length(
                     subject_length, pattern_length, recycling_warning
                 );
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, vectorize_length
+                );
+                subject_reader.reset(str);
+                if (subject_reader.size() != subject_length) {
+                    throw std::runtime_error(
+                        "Reader length changed during character-class trimming"
+                    );
+                }
 
                 subject_views.resize(subject_length);
                 if (subject_length > 0) {
@@ -572,17 +835,30 @@ CHARR_ENTRYPOINT SEXP ci_trim_both(
                         pattern_views.encodings()
                     );
 
-                    compute_trim<true, true>(
-                        subject_views, pattern_views,
-                        vectorize_length, negate_value,
-                        subject_converter, pattern_converter,
-                        subject_storage, pattern_storage,
-                        subjects, patterns, pattern_set, output
-                    );
+                    if (plan.workers > 1) {
+                        compute_trim_parallel<true, true>(
+                            subject_views, pattern_views,
+                            vectorize_length, negate_value,
+                            subject_converter, pattern_converter,
+                            subject_storage, pattern_storage,
+                            subjects, patterns, pattern_set, plan,
+                            parallel_outputs, output
+                        );
+                    }
+                    else {
+                        compute_trim<true, true>(
+                            subject_views, pattern_views,
+                            vectorize_length, negate_value,
+                            subject_converter, pattern_converter,
+                            subject_storage, pattern_storage,
+                            subjects, patterns, pattern_set, output
+                        );
+                    }
                 }
 
                 result = entry_protections.reprotect_one(
-                    io::finalize(std::move(output)), result_index
+                    io::finalize(std::move(output)),
+                    result_index
                 );
                 CHARR_UNWIND_RETURN();
             }
@@ -614,6 +890,7 @@ CHARR_ENTRYPOINT SEXP ci_trim_left(
 {
     CHARR_ENTRYPOINT_BEGIN();
 
+
     const bool negate_value = ci__prepare_arg_logical_1_notNA_r(
         negate, "negate"
     );
@@ -640,13 +917,13 @@ CHARR_ENTRYPOINT SEXP ci_trim_left(
         std::vector<shared::StringView> patterns;
         shared::CharacterClassSet pattern_set;
         charport::charvec::Store output;
+        TrimChunkOutputs parallel_outputs;
 
         result = shared::unwind_protect(
             unwind_token,
             [&]() -> SEXP {
-                subject_reader.reset(str);
                 const R_len_t subject_length = io::checked_r_len(
-                    subject_reader.size(), "character vectors"
+                    XLENGTH(str), "character vectors"
                 );
                 const R_len_t pattern_length = io::checked_r_len(
                     XLENGTH(pattern), "character vectors"
@@ -654,6 +931,15 @@ CHARR_ENTRYPOINT SEXP ci_trim_left(
                 const R_len_t vectorize_length = recycling_length(
                     subject_length, pattern_length, recycling_warning
                 );
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, vectorize_length
+                );
+                subject_reader.reset(str);
+                if (subject_reader.size() != subject_length) {
+                    throw std::runtime_error(
+                        "Reader length changed during character-class trimming"
+                    );
+                }
 
                 subject_views.resize(subject_length);
                 if (subject_length > 0) {
@@ -678,17 +964,30 @@ CHARR_ENTRYPOINT SEXP ci_trim_left(
                         pattern_views.encodings()
                     );
 
-                    compute_trim<true, false>(
-                        subject_views, pattern_views,
-                        vectorize_length, negate_value,
-                        subject_converter, pattern_converter,
-                        subject_storage, pattern_storage,
-                        subjects, patterns, pattern_set, output
-                    );
+                    if (plan.workers > 1) {
+                        compute_trim_parallel<true, false>(
+                            subject_views, pattern_views,
+                            vectorize_length, negate_value,
+                            subject_converter, pattern_converter,
+                            subject_storage, pattern_storage,
+                            subjects, patterns, pattern_set, plan,
+                            parallel_outputs, output
+                        );
+                    }
+                    else {
+                        compute_trim<true, false>(
+                            subject_views, pattern_views,
+                            vectorize_length, negate_value,
+                            subject_converter, pattern_converter,
+                            subject_storage, pattern_storage,
+                            subjects, patterns, pattern_set, output
+                        );
+                    }
                 }
 
                 result = entry_protections.reprotect_one(
-                    io::finalize(std::move(output)), result_index
+                    io::finalize(std::move(output)),
+                    result_index
                 );
                 CHARR_UNWIND_RETURN();
             }
@@ -720,6 +1019,7 @@ CHARR_ENTRYPOINT SEXP ci_trim_right(
 {
     CHARR_ENTRYPOINT_BEGIN();
 
+
     const bool negate_value = ci__prepare_arg_logical_1_notNA_r(
         negate, "negate"
     );
@@ -746,13 +1046,13 @@ CHARR_ENTRYPOINT SEXP ci_trim_right(
         std::vector<shared::StringView> patterns;
         shared::CharacterClassSet pattern_set;
         charport::charvec::Store output;
+        TrimChunkOutputs parallel_outputs;
 
         result = shared::unwind_protect(
             unwind_token,
             [&]() -> SEXP {
-                subject_reader.reset(str);
                 const R_len_t subject_length = io::checked_r_len(
-                    subject_reader.size(), "character vectors"
+                    XLENGTH(str), "character vectors"
                 );
                 const R_len_t pattern_length = io::checked_r_len(
                     XLENGTH(pattern), "character vectors"
@@ -760,6 +1060,15 @@ CHARR_ENTRYPOINT SEXP ci_trim_right(
                 const R_len_t vectorize_length = recycling_length(
                     subject_length, pattern_length, recycling_warning
                 );
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, vectorize_length
+                );
+                subject_reader.reset(str);
+                if (subject_reader.size() != subject_length) {
+                    throw std::runtime_error(
+                        "Reader length changed during character-class trimming"
+                    );
+                }
 
                 subject_views.resize(subject_length);
                 if (subject_length > 0) {
@@ -784,17 +1093,30 @@ CHARR_ENTRYPOINT SEXP ci_trim_right(
                         pattern_views.encodings()
                     );
 
-                    compute_trim<false, true>(
-                        subject_views, pattern_views,
-                        vectorize_length, negate_value,
-                        subject_converter, pattern_converter,
-                        subject_storage, pattern_storage,
-                        subjects, patterns, pattern_set, output
-                    );
+                    if (plan.workers > 1) {
+                        compute_trim_parallel<false, true>(
+                            subject_views, pattern_views,
+                            vectorize_length, negate_value,
+                            subject_converter, pattern_converter,
+                            subject_storage, pattern_storage,
+                            subjects, patterns, pattern_set, plan,
+                            parallel_outputs, output
+                        );
+                    }
+                    else {
+                        compute_trim<false, true>(
+                            subject_views, pattern_views,
+                            vectorize_length, negate_value,
+                            subject_converter, pattern_converter,
+                            subject_storage, pattern_storage,
+                            subjects, patterns, pattern_set, output
+                        );
+                    }
                 }
 
                 result = entry_protections.reprotect_one(
-                    io::finalize(std::move(output)), result_index
+                    io::finalize(std::move(output)),
+                    result_index
                 );
                 CHARR_UNWIND_RETURN();
             }

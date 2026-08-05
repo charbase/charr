@@ -1,14 +1,25 @@
 arguments <- commandArgs(trailingOnly = TRUE)
-if (length(arguments) != 1L ||
+if (length(arguments) != 2L ||
     !arguments[[1L]] %in% c("stringi", "base", "altrep")) {
-  stop("expected one backend argument: stringi, base, or altrep", call. = FALSE)
+  stop(
+    "expected a backend (stringi, base, or altrep) and a thread count",
+    call. = FALSE
+  )
 }
 backend <- arguments[[1L]]
+threads <- suppressWarnings(as.integer(arguments[[2L]]))
+if (!grepl("^[1-9][0-9]*$", arguments[[2L]]) ||
+    is.na(threads) || threads < 1L) {
+  stop("thread count must be a positive integer", call. = FALSE)
+}
 
 library(testthat)
 library(charr)
 
 charr_backend(backend)
+if (identical(backend, "altrep")) {
+  charr_threads(threads)
+}
 
 run_test_directory <- function(path) {
   test_env <- testthat::test_env("charr")

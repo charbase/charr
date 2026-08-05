@@ -111,7 +111,10 @@ ci_locate_all_boundaries <- function(
     if (!missing(...))
         opts_brkiter <- do.call(ci_opts_brkiter, as.list(c(opts_brkiter, ...)))
 
-    .Call(C_ci_locate_all_boundaries, str, omit_no_match, opts_brkiter, get_length)
+    .Call(
+        C_ci_locate_all_boundaries, str, omit_no_match, opts_brkiter,
+        get_length
+    )
 }
 
 
@@ -127,7 +130,9 @@ ci_locate_first_boundaries <- function(
     if (!missing(...))
         opts_brkiter <- do.call(ci_opts_brkiter, as.list(c(opts_brkiter, ...)))
 
-    .Call(C_ci_locate_first_boundaries, str, opts_brkiter, get_length)
+    .Call(
+        C_ci_locate_first_boundaries, str, opts_brkiter, get_length
+    )
 }
 
 

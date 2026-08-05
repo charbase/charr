@@ -12,7 +12,8 @@ namespace entrypoints {
     extern "C" CHARR_ABI_SHIM SEXP C_charr_base_##name( \
         CHARR_BACKEND_FORMALS_##arity \
     ) noexcept;
-CHARR_BACKEND_METHODS(CHARR_BASE_DECLARE)
+CHARR_SHARED_BACKEND_METHODS(CHARR_BASE_DECLARE)
+CHARR_BASE_ONLY_BACKEND_METHODS(CHARR_BASE_DECLARE)
 #undef CHARR_BASE_DECLARE
 
 } // namespace entrypoints

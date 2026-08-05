@@ -31,6 +31,7 @@
  */
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "collator/options.h"
 #include "io/string_view.h"
@@ -274,6 +275,216 @@ CHARR_R_HELPER void emit_warnings(
         Rf_warning(MSG__EMPTY_SEARCH_PATTERN_UNSUPPORTED);
 }
 
+
+CHARR_NEUTRAL_HELPER void reduce_fallback_prefix(
+    bool& warning,
+    const std::vector<unsigned char>& fallback,
+    const std::vector<unsigned char>& failures,
+    bool failed
+) noexcept
+{
+    std::size_t limit = fallback.size();
+    if (failed) {
+        limit = 0;
+        while (limit < failures.size() && failures[limit] == 0)
+            ++limit;
+        if (limit < failures.size())
+            ++limit;
+    }
+    for (std::size_t i = 0; i < limit; ++i)
+        warning = warning || fallback[i] != 0;
+}
+
+
+class SplitBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER SplitBody(
+        const charport::StrViews& subjects,
+        const shared::CollationInputs& patterns,
+        R_len_t vectorize_length,
+        const int* n, R_len_t n_length,
+        const int* omit_empty, R_len_t omit_empty_length,
+        bool tokens_only, bool track_maximum,
+        const shared::CollatorOptions& options,
+        std::vector<io::OutputStore>& stores,
+        std::vector<R_len_t>& maxima,
+        std::vector<unsigned char>& fallback,
+        std::vector<unsigned char>& failures
+    ) noexcept
+        : subjects_(subjects), patterns_(patterns),
+          vectorize_length_(vectorize_length), n_(n), n_length_(n_length),
+          omit_empty_(omit_empty), omit_empty_length_(omit_empty_length),
+          tokens_only_(tokens_only), track_maximum_(track_maximum),
+          options_(options), stores_(stores), maxima_(maxima),
+          fallback_(fallback), failures_(failures)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        try {
+            run_worker(context);
+        }
+        catch (...) {
+            failures_[context.worker] = 1;
+            throw;
+        }
+    }
+
+private:
+    CHARR_CXX_HELPER void run_worker(
+        shared::WorkerContext& context
+    )
+    {
+        shared::Collator collator;
+        const shared::CollatorOpenResult opened = collator.reset(options_);
+        fallback_[context.worker] =
+            static_cast<unsigned char>(opened.root_fallback);
+        require_icu_success(opened.status);
+
+        shared::CollationCursor subject_cursor;
+        shared::CollationMatcher matcher;
+        std::vector<shared::CollationRange> fields;
+        std::vector<char> utf8_buffer;
+        io::OutputBuilder child_builder(0);
+        R_len_t maximum = 0;
+        const R_len_t subject_length =
+            static_cast<R_len_t>(subjects_.size());
+        const R_len_t pattern_length =
+            static_cast<R_len_t>(patterns_.size());
+
+        if (pattern_length == 1) {
+            const shared::CollationInput pattern = patterns_.get(0);
+            while (context.next_chunk()) {
+                for (R_xlen_t task = context.begin;
+                        task < context.end; ++task) {
+                    fill_one(
+                        static_cast<R_len_t>(task), subject_length,
+                        pattern, collator.get(), subject_cursor, matcher,
+                        fields, utf8_buffer, child_builder, maximum
+                    );
+                }
+            }
+        }
+        else {
+            while (context.next_chunk()) {
+                for (R_xlen_t task = context.begin;
+                        task < context.end; ++task) {
+                    const R_len_t lane = static_cast<R_len_t>(task);
+                    const shared::CollationInput pattern = patterns_.get(
+                        static_cast<std::size_t>(lane)
+                    );
+                    R_len_t i = lane;
+                    for (;;) {
+                        fill_one(
+                            i, subject_length, pattern, collator.get(),
+                            subject_cursor, matcher, fields, utf8_buffer,
+                            child_builder, maximum
+                        );
+                        if (pattern_length >= vectorize_length_-i)
+                            break;
+                        i += pattern_length;
+                    }
+                }
+            }
+        }
+        maxima_[context.worker] = maximum;
+    }
+
+    CHARR_CXX_HELPER void fill_one(
+        R_len_t i,
+        R_len_t subject_length,
+        const shared::CollationInput& pattern,
+        UCollator* collator,
+        shared::CollationCursor& subject_cursor,
+        shared::CollationMatcher& matcher,
+        std::vector<shared::CollationRange>& fields,
+        std::vector<char>& utf8_buffer,
+        io::OutputBuilder& child_builder,
+        R_len_t& maximum
+    )
+    {
+        io::OutputStore& output = stores_[static_cast<std::size_t>(i)];
+        const int n_current = n_[i % n_length_];
+        const int omit_current = omit_empty_[i % omit_empty_length_];
+        const bool omit_missing = omit_current == NA_LOGICAL;
+        const bool omit = !omit_missing && omit_current != 0;
+
+        if (n_current == NA_INTEGER) {
+            set_scalar_missing(output);
+        }
+        else {
+            const R_len_t subject_index = i % subject_length;
+            const shared::StringView source = io::as_shared_view(
+                subjects_[subject_index]
+            );
+            if (source.is_na() || pattern.missing || pattern.length <= 0) {
+                set_scalar_missing(output);
+            }
+            else {
+                const shared::CollationInput subject = subject_cursor.get(
+                    static_cast<const void*>(
+                        subjects_.ptrs() + subject_index
+                    ),
+                    source
+                );
+                if (subject.length <= 0) {
+                    if (omit_missing) {
+                        set_scalar_missing(output);
+                    }
+                    else if (!(omit || n_current == 0)) {
+                        set_scalar_empty(output);
+                    }
+                }
+                else {
+                    UErrorCode status = U_ZERO_ERROR;
+                    const shared::CollationSplitResult split = matcher.split(
+                        collator, subject, pattern, n_current, omit,
+                        tokens_only_, fields, status
+                    );
+                    require_icu_success(status);
+                    if (split ==
+                            shared::CollationSplitResult::limit_too_large) {
+                        throw StriException(
+                            MSG__INCORRECT_NAMED_ARG "; "
+                            MSG__EXPECTED_SMALLER,
+                            "n"
+                        );
+                    }
+                    build_store(
+                        source, subject, fields, omit_missing,
+                        utf8_buffer, child_builder, output
+                    );
+                }
+            }
+        }
+
+        if (track_maximum_) {
+            const R_len_t current_size =
+                static_cast<R_len_t>(output.size());
+            if (maximum < current_size)
+                maximum = current_size;
+        }
+    }
+
+    const charport::StrViews& subjects_;
+    const shared::CollationInputs& patterns_;
+    R_len_t vectorize_length_;
+    const int* n_;
+    R_len_t n_length_;
+    const int* omit_empty_;
+    R_len_t omit_empty_length_;
+    bool tokens_only_;
+    bool track_maximum_;
+    shared::CollatorOptions options_;
+    std::vector<io::OutputStore>& stores_;
+    std::vector<R_len_t>& maxima_;
+    std::vector<unsigned char>& fallback_;
+    std::vector<unsigned char>& failures_;
+};
+
 } // namespace search_coll_split
 
 using namespace search_coll_split;
@@ -346,6 +557,9 @@ CHARR_ENTRYPOINT SEXP ci_split_coll(
         std::vector<io::OutputStore> stores;
         io::OutputBuilder child_builder(0);
         io::OutputBuilder matrix_builder(0);
+        std::vector<R_len_t> maxima;
+        std::vector<unsigned char> fallback;
+        std::vector<unsigned char> failures;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -368,6 +582,14 @@ CHARR_ENTRYPOINT SEXP ci_split_coll(
                     subject_length, pattern_length,
                     n_length, omit_empty_length,
                     pending_recycling_warning
+                );
+                const R_len_t tasks = vectorize_length <= 0
+                    ? 0
+                    : pattern_length == 1
+                        ? vectorize_length
+                        : pattern_length;
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, tasks
                 );
 
                 const shared::CollatorOpenResult opened =
@@ -427,94 +649,130 @@ CHARR_ENTRYPOINT SEXP ci_split_coll(
                     );
                 }
 
-                for (R_len_t lane = 0;
-                        lane < (vectorize_length > 0 ? pattern_length : 0);
-                        ++lane) {
-                    const shared::CollationInput prepared_pattern =
-                        patterns.get(static_cast<std::size_t>(lane));
-                    R_len_t i = lane;
-                    for (;;) {
-                        io::OutputStore& output = stores[
-                            static_cast<std::size_t>(i)
-                        ];
-                        const int n_current = n_values[i % n_length];
-                        const int omit_current =
-                            omit_empty_values[i % omit_empty_length];
-                        const bool omit_missing =
-                            omit_current == NA_LOGICAL;
-                        const bool omit =
-                            !omit_missing && omit_current != 0;
+                if (plan.workers > 1) {
+                    maxima.assign(plan.workers, 0);
+                    fallback.assign(plan.workers, 0);
+                    failures.assign(plan.workers, 0);
+                    SplitBody body(
+                        subject_views, patterns, vectorize_length,
+                        n_values, n_length,
+                        omit_empty_values, omit_empty_length,
+                        tokens_only_value,
+                        simplify_value == NA_LOGICAL || simplify_value,
+                        options, stores, maxima, fallback, failures
+                    );
+                    try {
+                        shared::run_parallel(plan, tasks, body);
+                    }
+                    catch (...) {
+                        reduce_fallback_prefix(
+                            root_fallback_warning,
+                            fallback, failures, true
+                        );
+                        throw;
+                    }
+                    reduce_fallback_prefix(
+                        root_fallback_warning,
+                        fallback, failures, false
+                    );
+                    for (unsigned worker = 0;
+                            worker < plan.workers; ++worker) {
+                        if (max_columns < maxima[worker])
+                            max_columns = maxima[worker];
+                    }
+                }
+                else {
+                    for (R_len_t lane = 0;
+                            lane < (vectorize_length > 0 ? pattern_length : 0);
+                            ++lane) {
+                        const shared::CollationInput prepared_pattern =
+                            patterns.get(static_cast<std::size_t>(lane));
+                        R_len_t i = lane;
+                        for (;;) {
+                            io::OutputStore& output = stores[
+                                static_cast<std::size_t>(i)
+                            ];
+                            const int n_current = n_values[i % n_length];
+                            const int omit_current =
+                                omit_empty_values[i % omit_empty_length];
+                            const bool omit_missing =
+                                omit_current == NA_LOGICAL;
+                            const bool omit =
+                                !omit_missing && omit_current != 0;
 
-                        if (n_current == NA_INTEGER) {
-                            set_scalar_missing(output);
-                        }
-                        else {
-                            const R_len_t subject_index =
-                                i % subject_length;
-                            const shared::StringView source =
-                                io::as_shared_view(
-                                    subject_views[subject_index]
-                                );
-                            if (source.is_na() ||
-                                    prepared_pattern.missing ||
-                                    prepared_pattern.length <= 0) {
+                            if (n_current == NA_INTEGER) {
                                 set_scalar_missing(output);
                             }
                             else {
-                                const shared::CollationInput subject =
-                                    subject_cursor.get(
-                                        static_cast<const void*>(
-                                            subject_views.ptrs() +
-                                                subject_index
-                                        ),
-                                        source
+                                const R_len_t subject_index =
+                                    i % subject_length;
+                                const shared::StringView source =
+                                    io::as_shared_view(
+                                        subject_views[subject_index]
                                     );
-                                if (subject.length <= 0) {
-                                    if (omit_missing) {
-                                        set_scalar_missing(output);
-                                    }
-                                    else if (!(omit || n_current == 0)) {
-                                        set_scalar_empty(output);
-                                    }
+                                if (source.is_na() ||
+                                        prepared_pattern.missing ||
+                                        prepared_pattern.length <= 0) {
+                                    set_scalar_missing(output);
                                 }
                                 else {
-                                    UErrorCode status = U_ZERO_ERROR;
-                                    const shared::CollationSplitResult split =
-                                        matcher.split(
-                                            collator_owner.get(),
-                                            subject, prepared_pattern,
-                                            n_current, omit,
-                                            tokens_only_value,
-                                            fields, status
+                                    const shared::CollationInput subject =
+                                        subject_cursor.get(
+                                            static_cast<const void*>(
+                                                subject_views.ptrs() +
+                                                    subject_index
+                                            ),
+                                            source
                                         );
-                                    require_icu_success(status);
-                                    if (split ==
-                                            shared::CollationSplitResult::
-                                                limit_too_large) {
-                                        throw StriException(
-                                            MSG__INCORRECT_NAMED_ARG "; "
-                                            MSG__EXPECTED_SMALLER,
-                                            "n"
+                                    if (subject.length <= 0) {
+                                        if (omit_missing) {
+                                            set_scalar_missing(output);
+                                        }
+                                        else if (!(omit || n_current == 0)) {
+                                            set_scalar_empty(output);
+                                        }
+                                    }
+                                    else {
+                                        UErrorCode status = U_ZERO_ERROR;
+                                        const shared::CollationSplitResult
+                                            split = matcher.split(
+                                                collator_owner.get(),
+                                                subject, prepared_pattern,
+                                                n_current, omit,
+                                                tokens_only_value,
+                                                fields, status
+                                            );
+                                        require_icu_success(status);
+                                        if (split ==
+                                                shared::CollationSplitResult::
+                                                    limit_too_large) {
+                                            throw StriException(
+                                                MSG__INCORRECT_NAMED_ARG "; "
+                                                MSG__EXPECTED_SMALLER,
+                                                "n"
+                                            );
+                                        }
+                                        build_store(
+                                            source, subject, fields,
+                                            omit_missing, utf8_buffer,
+                                            child_builder, output
                                         );
                                     }
-                                    build_store(
-                                        source, subject, fields, omit_missing,
-                                        utf8_buffer, child_builder, output
-                                    );
                                 }
                             }
-                        }
 
-                        if (simplify_value == NA_LOGICAL || simplify_value) {
-                            const R_len_t current_size =
-                                static_cast<R_len_t>(output.size());
-                            if (max_columns < current_size)
-                                max_columns = current_size;
-                        }
+                            if (simplify_value == NA_LOGICAL ||
+                                    simplify_value) {
+                                const R_len_t current_size =
+                                    static_cast<R_len_t>(output.size());
+                                if (max_columns < current_size)
+                                    max_columns = current_size;
+                            }
 
-                        if (pattern_length >= vectorize_length-i)
-                            break;
-                        i += pattern_length;
+                            if (pattern_length >= vectorize_length-i)
+                                break;
+                            i += pattern_length;
+                        }
                     }
                 }
 

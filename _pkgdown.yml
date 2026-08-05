@@ -39,6 +39,10 @@ reference:
 - title: Backend Selection
   contents:
   - charr_backend
+- title: Threading
+  contents:
+  - charr_threads
+  - charr_chunking
 - title: Detect Matches
   contents:
   - str_detect

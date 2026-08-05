@@ -21,12 +21,13 @@ extract_first_fixed_frame_call <- function(
     ))
   }
 
-  .Call(
-    extract_first_fixed_frame_symbol(backend),
-    subject,
-    pattern,
-    opts_fixed
-  )
+  symbol <- extract_first_fixed_frame_symbol(backend)
+  if (identical(backend, "altrep")) {
+    return(.Call(
+      symbol, subject, pattern, opts_fixed
+    ))
+  }
+  .Call(symbol, subject, pattern, opts_fixed)
 }
 
 

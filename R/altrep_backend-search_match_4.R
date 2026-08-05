@@ -142,7 +142,10 @@ ci_match_all_regex <- function(str, pattern,
 {
     if (!missing(...))
         opts_regex <- do.call(ci_opts_regex, as.list(c(opts_regex, ...)))
-    .Call(C_ci_match_all_regex, str, pattern, omit_no_match, cg_missing, opts_regex)
+    .Call(
+        C_ci_match_all_regex, str, pattern, omit_no_match, cg_missing,
+        opts_regex
+    )
 }
 
 

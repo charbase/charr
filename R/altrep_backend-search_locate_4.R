@@ -193,7 +193,10 @@ ci_locate_all_coll <- function(
     if (!missing(...))
         opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
 
-    .Call(C_ci_locate_all_coll, str, pattern, omit_no_match, opts_collator, get_length)
+    .Call(
+        C_ci_locate_all_coll, str, pattern, omit_no_match, opts_collator,
+        get_length
+    )
 }
 
 
@@ -205,7 +208,9 @@ ci_locate_first_coll <- function(
     if (!missing(...))
         opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
 
-    .Call(C_ci_locate_first_coll, str, pattern, opts_collator, get_length)
+    .Call(
+        C_ci_locate_first_coll, str, pattern, opts_collator, get_length
+    )
 }
 
 
@@ -225,7 +230,10 @@ ci_locate_all_regex <- function(
     if (!missing(...))
         opts_regex <- do.call(ci_opts_regex, as.list(c(opts_regex, ...)))
 
-    .Call(C_ci_locate_all_regex, str, pattern, omit_no_match, opts_regex, capture_groups, get_length)
+    .Call(
+        C_ci_locate_all_regex, str, pattern, omit_no_match, opts_regex,
+        capture_groups, get_length
+    )
 }
 
 
@@ -237,7 +245,10 @@ ci_locate_first_regex <- function(
     if (!missing(...))
         opts_regex <- do.call(ci_opts_regex, as.list(c(opts_regex, ...)))
 
-    .Call(C_ci_locate_first_regex, str, pattern, opts_regex, capture_groups, get_length)
+    .Call(
+        C_ci_locate_first_regex, str, pattern, opts_regex, capture_groups,
+        get_length
+    )
 }
 
 
@@ -253,7 +264,10 @@ ci_locate_all_fixed <- function(
     if (!missing(...))
         opts_fixed <- do.call(ci_opts_fixed, as.list(c(opts_fixed, ...)))
 
-    .Call(C_ci_locate_all_fixed, str, pattern, omit_no_match, opts_fixed, get_length)
+    .Call(
+        C_ci_locate_all_fixed, str, pattern, omit_no_match, opts_fixed,
+        get_length
+    )
 }
 
 
@@ -265,7 +279,9 @@ ci_locate_first_fixed <- function(
     if (!missing(...))
         opts_fixed <- do.call(ci_opts_fixed, as.list(c(opts_fixed, ...)))
 
-    .Call(C_ci_locate_first_fixed, str, pattern, opts_fixed, get_length)
+    .Call(
+        C_ci_locate_first_fixed, str, pattern, opts_fixed, get_length
+    )
 }
 
 

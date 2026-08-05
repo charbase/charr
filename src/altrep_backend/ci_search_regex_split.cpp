@@ -32,6 +32,7 @@
 
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "io/string_view.h"
 #include "io/utf8_output.h"
@@ -252,6 +253,232 @@ CHARR_CXX_HELPER CHARR_ALWAYS_INLINE void build_store(
 }
 
 
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const std::vector<shared::StringView>& subjects,
+        const shared::RegexPatterns& patterns,
+        const int* n_values,
+        const int* omit_empty_values,
+        R_len_t subject_length,
+        R_len_t pattern_length,
+        R_len_t n_length,
+        R_len_t omit_empty_length,
+        R_len_t vectorize_length,
+        const shared::RegexOptions& options,
+        bool scalar_default,
+        bool tokens_only,
+        bool simplifying,
+        std::vector<io::OutputStore>& stores,
+        std::vector<R_len_t>& max_columns
+    ) noexcept
+        : subjects_(subjects), patterns_(patterns), n_values_(n_values),
+          omit_empty_values_(omit_empty_values),
+          subject_length_(subject_length), pattern_length_(pattern_length),
+          n_length_(n_length), omit_empty_length_(omit_empty_length),
+          vectorize_length_(vectorize_length), options_(options),
+          scalar_default_(scalar_default), tokens_only_(tokens_only),
+          simplifying_(simplifying), stores_(stores),
+          max_columns_(max_columns)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        shared::RegexMatcher matcher(options_);
+        std::vector<shared::RegexRange> fields;
+        io::OutputBuilder builder(0);
+        fields.reserve(16);
+        // Accumulates over every chunk this worker draws, so it stays out
+        // here and is published once the queue is drained.
+        R_len_t local_max_columns = 0;
+
+        if (scalar_default_) {
+            const shared::RegexInput pattern = patterns_.get(0);
+            // Binds the matcher on the first element this worker handles
+            // and stays bound for every later chunk.
+            bool matcher_bound = false;
+            while (context.next_chunk()) {
+                const R_len_t begin = static_cast<R_len_t>(context.begin);
+                const R_len_t end = static_cast<R_len_t>(context.end);
+                for (R_len_t i = begin; i < end; ++i) {
+                    split_default_one(
+                        i, pattern, matcher_bound, matcher, fields, builder
+                    );
+                }
+            }
+            return;
+        }
+
+        if (pattern_length_ == 1) {
+            const shared::RegexInput pattern = patterns_.get(0);
+            while (context.next_chunk()) {
+                const R_len_t begin = static_cast<R_len_t>(context.begin);
+                const R_len_t end = static_cast<R_len_t>(context.end);
+                for (R_len_t i = begin; i < end; ++i) {
+                    split_one(
+                        i, pattern, 0, matcher, fields, builder,
+                        local_max_columns
+                    );
+                }
+            }
+        }
+        else {
+            while (context.next_chunk()) {
+                const R_len_t begin = static_cast<R_len_t>(context.begin);
+                const R_len_t end = static_cast<R_len_t>(context.end);
+                for (R_len_t lane = begin; lane < end; ++lane) {
+                    const std::size_t pattern_index =
+                        static_cast<std::size_t>(lane);
+                    const shared::RegexInput pattern =
+                        patterns_.get(pattern_index);
+                    R_len_t i = lane;
+                    for (;;) {
+                        split_one(
+                            i, pattern, pattern_index,
+                            matcher, fields, builder, local_max_columns
+                        );
+                        if (pattern_length_ >= vectorize_length_-i)
+                            break;
+                        i += pattern_length_;
+                    }
+                }
+            }
+        }
+
+        if (simplifying_)
+            max_columns_[context.worker] = local_max_columns;
+    }
+
+private:
+    CHARR_CXX_HELPER void split_default_one(
+        R_len_t i,
+        const shared::RegexInput& pattern,
+        bool& matcher_bound,
+        shared::RegexMatcher& matcher,
+        std::vector<shared::RegexRange>& fields,
+        io::OutputBuilder& builder
+    )
+    {
+        io::OutputStore& output = stores_[static_cast<std::size_t>(i)];
+        const std::size_t subject_index = static_cast<std::size_t>(i);
+        const shared::StringView subject = subjects_[subject_index];
+        const bool pattern_unusable =
+            pattern.missing || pattern.length <= 0;
+
+        if (subject.is_na() || pattern_unusable) {
+            set_scalar_missing(output);
+        }
+        else if (subject.len <= 0) {
+            set_scalar_empty(output);
+        }
+        else {
+            if (!matcher_bound) {
+                bind_pattern(matcher, pattern, patterns_, 0);
+                matcher_bound = true;
+            }
+            UErrorCode status = U_ZERO_ERROR;
+            matcher.split_default(
+                subject, &subjects_[subject_index], fields, status
+            );
+            if (U_FAILURE(status))
+                throw StriException(status);
+            build_store(
+                subject, fields, false, matcher.subject_is_ascii(),
+                builder, output
+            );
+        }
+    }
+
+    CHARR_CXX_HELPER void split_one(
+        R_len_t i,
+        const shared::RegexInput& pattern,
+        std::size_t pattern_index,
+        shared::RegexMatcher& matcher,
+        std::vector<shared::RegexRange>& fields,
+        io::OutputBuilder& builder,
+        R_len_t& max_columns
+    )
+    {
+        io::OutputStore& output = stores_[static_cast<std::size_t>(i)];
+        const int raw_n = n_values_[i % n_length_];
+        const int raw_omit = omit_empty_values_[i % omit_empty_length_];
+        const bool omit_missing = raw_omit == NA_LOGICAL;
+        const bool omit = !omit_missing && raw_omit != 0;
+        const std::size_t subject_index =
+            static_cast<std::size_t>(i % subject_length_);
+        const shared::StringView subject = subjects_[subject_index];
+        const bool pattern_unusable =
+            pattern.missing || pattern.length <= 0;
+
+        if (raw_n == NA_INTEGER || subject.is_na() || pattern_unusable) {
+            set_scalar_missing(output);
+        }
+        else if (subject.len <= 0) {
+            if (omit_missing) {
+                set_scalar_missing(output);
+            }
+            else if (!(omit || raw_n == 0)) {
+                set_scalar_empty(output);
+            }
+        }
+        else if (raw_n != 0) {
+            if (raw_n >= INT_MAX-1) {
+                throw StriException(
+                    MSG__INCORRECT_NAMED_ARG "; "
+                    MSG__EXPECTED_SMALLER,
+                    "n"
+                );
+            }
+            bind_pattern(matcher, pattern, patterns_, pattern_index);
+            UErrorCode status = U_ZERO_ERROR;
+            const shared::RegexSplitResult split = matcher.split(
+                subject, &subjects_[subject_index],
+                raw_n, omit, tokens_only_, fields, status
+            );
+            if (split == shared::RegexSplitResult::limit_too_large) {
+                throw StriException(
+                    MSG__INCORRECT_NAMED_ARG "; "
+                    MSG__EXPECTED_SMALLER,
+                    "n"
+                );
+            }
+            if (U_FAILURE(status))
+                throw StriException(status);
+            build_store(
+                subject, fields, omit_missing,
+                matcher.subject_is_ascii(), builder, output
+            );
+        }
+
+        if (simplifying_) {
+            const R_len_t current_size =
+                static_cast<R_len_t>(output.size());
+            if (max_columns < current_size)
+                max_columns = current_size;
+        }
+    }
+
+    const std::vector<shared::StringView>& subjects_;
+    const shared::RegexPatterns& patterns_;
+    const int* n_values_;
+    const int* omit_empty_values_;
+    R_len_t subject_length_;
+    R_len_t pattern_length_;
+    R_len_t n_length_;
+    R_len_t omit_empty_length_;
+    R_len_t vectorize_length_;
+    shared::RegexOptions options_;
+    bool scalar_default_;
+    bool tokens_only_;
+    bool simplifying_;
+    std::vector<io::OutputStore>& stores_;
+    std::vector<R_len_t>& max_columns_;
+};
+
+
 CHARR_R_HELPER void emit_empty_pattern_warnings_r(int count) noexcept
 {
     for (int i = 0; i < count; ++i)
@@ -363,6 +590,7 @@ CHARR_ENTRYPOINT SEXP ci_split_regex(
         std::vector<io::OutputStore> stores;
         io::OutputBuilder child_builder(0);
         io::OutputBuilder matrix_builder(0);
+        std::vector<R_len_t> worker_max_columns;
 
         fields.reserve(16);
 
@@ -420,7 +648,12 @@ CHARR_ENTRYPOINT SEXP ci_split_regex(
                     );
                 }
 
-                if (scalar_default) {
+                const R_len_t tasks = vectorize_length == 0
+                    ? 0 : pattern_length == 1
+                        ? vectorize_length : pattern_length;
+                const shared::ParallelPlan parallel_plan =
+                    shared::parallel_plan(true, tasks);
+                if (parallel_plan.workers == 1 && scalar_default) {
                     const std::size_t pattern_index = 0;
                     const shared::RegexInput prepared_pattern =
                         patterns.get(0);
@@ -468,7 +701,7 @@ CHARR_ENTRYPOINT SEXP ci_split_regex(
                         }
                     }
                 }
-                else {
+                else if (parallel_plan.workers == 1) {
                     for (R_len_t lane = 0;
                             lane < (vectorize_length > 0
                                 ? pattern_length : 0);
@@ -563,6 +796,33 @@ CHARR_ENTRYPOINT SEXP ci_split_regex(
                             if (pattern_length >= vectorize_length-i)
                                 break;
                             i += pattern_length;
+                        }
+                    }
+                }
+                else {
+                    worker_max_columns.assign(
+                        static_cast<std::size_t>(
+                            parallel_plan.workers
+                        ),
+                        0
+                    );
+                    Body body(
+                        subjects, patterns,
+                        n_values, omit_empty_values,
+                        subject_length, pattern_length,
+                        n_length, omit_empty_length,
+                        vectorize_length, options,
+                        scalar_default, tokens_only_value, simplifying,
+                        stores, worker_max_columns
+                    );
+                    shared::run_parallel(
+                        parallel_plan, tasks, body
+                    );
+                    if (simplifying) {
+                        for (std::size_t i = 0;
+                                i < worker_max_columns.size(); ++i) {
+                            if (max_columns < worker_max_columns[i])
+                                max_columns = worker_max_columns[i];
                         }
                     }
                 }

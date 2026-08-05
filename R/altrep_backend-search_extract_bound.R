@@ -98,7 +98,10 @@ ci_extract_all_boundaries <- function(str, simplify = FALSE, omit_no_match = FAL
 {
     if (!missing(...))
         opts_brkiter <- do.call(ci_opts_brkiter, as.list(c(opts_brkiter, ...)))
-    .Call(C_ci_extract_all_boundaries, str, simplify, omit_no_match, opts_brkiter)
+    .Call(
+        C_ci_extract_all_boundaries, str, simplify, omit_no_match,
+        opts_brkiter
+    )
 }
 
 

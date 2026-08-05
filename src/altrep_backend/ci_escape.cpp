@@ -31,17 +31,23 @@
  */
 
 
+#include "ci_parallel.h"
 #include "ci_stringi.h"
 #include "io/reader_utils.h"
 #include "../shared/entrypoint.h"
 #include "../shared/native_to_utf8.h"
+#include "../shared/parallel.h"
 #include "../shared/protect.h"
+#include "../shared/slice_arena.h"
+#include "../shared/string_view.h"
 #include "../shared/unwind.h"
 #include "altrep_backend/io/utf8_output.h"
 
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <stdexcept>
+#include <vector>
 
 namespace charr { namespace altrep_backend {
 
@@ -213,6 +219,173 @@ CHARR_NEUTRAL_HELPER void write_escape(
     }
 }
 
+
+CHARR_NEUTRAL_HELPER std::size_t no_slot() noexcept
+{
+    return static_cast<std::size_t>(-1);
+}
+
+
+CHARR_CXX_HELPER shared::StringView stable_copy(
+    const EscapeInput& input, shared::SliceArena& storage
+)
+{
+    if (input.length <= 0)
+        return shared::StringView{
+            "", 0, shared::StringEncoding::utf8
+        };
+    char* output = storage.allocate(static_cast<std::size_t>(input.length));
+    std::memcpy(output, input.ptr, static_cast<std::size_t>(input.length));
+    return shared::StringView{
+        output, input.length, shared::StringEncoding::utf8
+    };
+}
+
+
+CHARR_CXX_HELPER EscapeInput direct_escape_input(
+    const charport::StrView& value
+)
+{
+    if (value.ptr == nullptr || value.len < 0)
+        throw std::runtime_error("Reader returned an invalid string view");
+    if (value.enc == CETYPE_EXT_ASCII)
+        return EscapeInput{value.ptr, value.len};
+    if (value.enc == CETYPE_EXT_BYTES)
+        throw StriException(MSG__BYTESENC);
+    if (value.enc != CETYPE_EXT_UTF8 &&
+            value.enc != CETYPE_EXT_ASCII_OR_UTF8) {
+        throw std::runtime_error("Reader returned an unknown string encoding");
+    }
+
+    const bool strip_bom = has_utf8_bom(value.ptr, value.len);
+    return strip_bom
+        ? EscapeInput{value.ptr+3, value.len-3}
+        : EscapeInput{value.ptr, value.len};
+}
+
+
+/*
+ * Prepare the records a worker may not prepare for itself. Latin-1 and
+ * native input goes through R's converter, which stays on this thread, so
+ * it is converted here and copied into storage that outlives the region.
+ *
+ * A record needs nothing else. The worker reaches every remaining check
+ * itself through input_at() and escaped_size(), so sizing an ASCII or UTF-8
+ * record here would run the whole sizing pass twice, once serially. The
+ * encoding tags are still classified: that is one comparison per record and
+ * it keeps a rejected encoding raising from the thread a serial run raises
+ * it from.
+ */
+CHARR_CXX_HELPER void preflight_inputs(
+    const charport::StrViews& values,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage,
+    std::vector<std::size_t>& converted_slots,
+    std::vector<shared::StringView>& converted_values
+)
+{
+    const R_xlen_t size = values.size();
+    for (R_xlen_t i = 0; i < size; ++i) {
+        const charport::StrView value = values[i];
+        if (value.is_na())
+            continue;
+        if (value.ptr == nullptr || value.len < 0)
+            throw std::runtime_error("Reader returned an invalid string view");
+
+        switch (value.enc.value) {
+        case CETYPE_EXT_ASCII.value:
+        case CETYPE_EXT_UTF8.value:
+        case CETYPE_EXT_ASCII_OR_UTF8.value:
+            break;
+        case CETYPE_EXT_BYTES.value:
+            throw StriException(MSG__BYTESENC);
+        case CETYPE_EXT_LATIN1.value:
+        case CETYPE_EXT_NATIVE.value:
+            if (converted_slots.empty()) {
+                converted_slots.assign(
+                    static_cast<std::size_t>(size), no_slot()
+                );
+            }
+            converted_slots[static_cast<std::size_t>(i)] =
+                converted_values.size();
+            converted_values.push_back(stable_copy(
+                normalize_escape_input(value, converter), storage
+            ));
+            break;
+        default:
+            throw std::runtime_error(
+                "Reader returned an unknown string encoding"
+            );
+        }
+    }
+}
+
+
+CHARR_CXX_HELPER EscapeInput input_at(
+    const charport::StrViews& values,
+    const std::vector<std::size_t>& converted_slots,
+    const std::vector<shared::StringView>& converted_values,
+    R_xlen_t index
+)
+{
+    if (!converted_slots.empty()) {
+        const std::size_t slot = converted_slots[
+            static_cast<std::size_t>(index)
+        ];
+        if (slot != no_slot()) {
+            const shared::StringView& value = converted_values[slot];
+            return EscapeInput{value.ptr, value.len};
+        }
+    }
+    return direct_escape_input(values[index]);
+}
+
+
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const charport::StrViews& values,
+        const std::vector<std::size_t>& converted_slots,
+        const std::vector<shared::StringView>& converted_values,
+        io::ParallelOutputBuilder& builder
+    ) noexcept
+        : values_(values), converted_slots_(converted_slots),
+          converted_values_(converted_values), builder_(builder)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        while (context.next_chunk()) {
+            for (R_xlen_t i = context.begin; i < context.end; ++i) {
+                const charport::StrView source = values_[i];
+                if (source.is_na()) {
+                    builder_.set_na(context.worker, i);
+                    continue;
+                }
+
+                const EscapeInput input = input_at(
+                    values_, converted_slots_, converted_values_, i
+                );
+                const std::size_t output_size = escaped_size(input);
+                char* output = builder_.reserve(
+                    context.worker, i, output_size, CETYPE_EXT_ASCII
+                );
+                if (output_size > 0)
+                    write_escape(input, output);
+            }
+        }
+    }
+
+private:
+    const charport::StrViews& values_;
+    const std::vector<std::size_t>& converted_slots_;
+    const std::vector<shared::StringView>& converted_values_;
+    io::ParallelOutputBuilder& builder_;
+};
+
 } // namespace escape
 
 using namespace escape;
@@ -246,7 +419,11 @@ CHARR_ENTRYPOINT SEXP ci_escape_unicode(SEXP str) noexcept
         charport::Reader reader;
         charport::StrViews values;
         io::OutputBuilder builder(0);
+        io::ParallelOutputBuilder parallel_builder;
         shared::NativeToUtf8 converter;
+        shared::SliceArena storage;
+        std::vector<std::size_t> converted_slots;
+        std::vector<shared::StringView> converted_values;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -260,28 +437,49 @@ CHARR_ENTRYPOINT SEXP ci_escape_unicode(SEXP str) noexcept
                         values.ptrs(), values.lengths(), values.encodings()
                     );
                 }
-                builder.reset(str_length);
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, str_length
+                );
 
-                for (R_xlen_t i = 0; i < str_length; ++i) {
-                    const charport::StrView source = values[i];
-                    if (source.is_na()) {
-                        builder.set_na(i);
-                        continue;
+                if (plan.workers > 1) {
+                    preflight_inputs(
+                        values, converter, storage,
+                        converted_slots, converted_values
+                    );
+                    parallel_builder.reset(str_length, plan.workers);
+                    Body body(
+                        values, converted_slots, converted_values,
+                        parallel_builder
+                    );
+                    shared::run_parallel(plan, str_length, body);
+                }
+                else {
+                    builder.reset(str_length);
+
+                    for (R_xlen_t i = 0; i < str_length; ++i) {
+                        const charport::StrView source = values[i];
+                        if (source.is_na()) {
+                            builder.set_na(i);
+                            continue;
+                        }
+
+                        const EscapeInput input = normalize_escape_input(
+                            source, converter
+                        );
+                        const std::size_t output_size = escaped_size(input);
+                        char* output = builder.reserve(
+                            i, output_size, CETYPE_EXT_ASCII
+                        );
+                        if (output_size > 0)
+                            write_escape(input, output);
                     }
-
-                    const EscapeInput input = normalize_escape_input(
-                        source, converter
-                    );
-                    const std::size_t output_size = escaped_size(input);
-                    char* output = builder.reserve(
-                        i, output_size, CETYPE_EXT_ASCII
-                    );
-                    if (output_size > 0)
-                        write_escape(input, output);
                 }
 
                 result = entry_protections.reprotect_one(
-                    builder.to_sexp(), result_index
+                    plan.workers > 1
+                        ? parallel_builder.to_sexp()
+                        : builder.to_sexp(),
+                    result_index
                 );
                 CHARR_UNWIND_RETURN();
             }

@@ -54,6 +54,132 @@ charr_backend <- function(value = NULL) {
   invisible(old)
 }
 
+.charr_threads_value <- function(value) {
+  if (length(value) == 1L && is.numeric(value) && is.finite(value) &&
+      value >= 1 && value == trunc(value)) {
+    if (value <= .Machine$integer.max) {
+      return(as.integer(value))
+    }
+    return(value)
+  }
+
+  cli::cli_abort(
+    "{.option charr_threads} must be a single whole number of at least {.val {1L}}."
+  )
+}
+
+#' Set the number of worker threads
+#'
+#' `charr_threads()` sets how many threads charr's `"altrep"` backend may use
+#' for the operations that have a data-parallel shape. Operations without that
+#' shape, and the `"base"` and `"stringi"` backends, always run on one thread.
+#'
+#' An eligible operation uses the requested count, capped by its number of
+#' tasks and an internal safety limit of 256. Charr does not apply an
+#' input-size heuristic, so even a small eligible input starts workers when the
+#' count is greater than one. A few modes must stay serial because their
+#' results depend on the order in which elements run.
+#'
+#' The count defaults to `1`, so charr is single-threaded until asked
+#' otherwise. It is held in native code rather than in an R option, because
+#' threading happens only in native code. This accessor is the only way to
+#' change it: setting an option named `charr_threads` has no effect.
+#'
+#' @param value `NULL` to query the current count, or a positive whole number
+#'   of threads. [parallel::detectCores()] is the usual source of an upper
+#'   bound; note that CRAN limits checks to two cores.
+#' @return The current count when querying. When setting, the previous count
+#'   is returned invisibly.
+#' @export
+#' @examples
+#' old <- charr_threads(2)
+#' charr_threads()
+#' charr_threads(old)
+charr_threads <- function(value = NULL) {
+  if (is.null(value)) {
+    return(.Call(C_charr_threads, NULL))
+  }
+
+  invisible(.Call(C_charr_threads, .charr_threads_value(value)))
+}
+
+.charr_chunking_value <- function(value, option) {
+  if (length(value) == 1L && is.numeric(value) && is.finite(value) &&
+      value >= 1 && value == trunc(value)) {
+    if (value <= .Machine$integer.max) {
+      return(as.integer(value))
+    }
+    return(value)
+  }
+
+  cli::cli_abort(
+    "{.option {option}} must be a single whole number of at least {.val {1L}}."
+  )
+}
+
+#' Tune how parallel work is divided
+#'
+#' These control how a data-parallel operation cuts its work into chunks once
+#' [charr_threads()] has decided how many threads to use. Neither affects
+#' whether threads are used at all, and neither changes any result.
+#'
+#' Threads draw chunks one at a time rather than taking a fixed slice each, so
+#' a thread that finishes a cheap chunk comes back for another. That is what
+#' keeps uneven input balanced: element cost is not uniform, and one long
+#' string can outweigh a thousand short ones.
+#'
+#' `charr_chunks_per_worker()` sets how many chunks each thread should get,
+#' defaulting to `128`. Higher values balance skewed input better and cost a
+#' little more bookkeeping. `charr_min_chunk()` sets the smallest number of
+#' elements a chunk may hold, defaulting to `256`, which stops a large thread
+#' count from cutting the work finer than it is worth handing out.
+#'
+#' With `n` elements and `w` threads the chunk size is
+#' `ceiling(n / (w * chunks_per_worker))`, raised to at least `min_chunk` and
+#' then lowered if needed so that there are never fewer chunks than threads. A
+#' short vector therefore still spreads across every thread.
+#'
+#' Like [charr_threads()], both settings are held in native code rather than in
+#' an R option, because they are only ever read there. These accessors are the
+#' only way to change them.
+#'
+#' @param value `NULL` to query the current setting, or a positive whole
+#'   number.
+#' @return The current setting when querying. When setting, the previous value
+#'   is returned invisibly.
+#' @name charr_chunking
+#' @examples
+#' old <- charr_chunks_per_worker(256)
+#' charr_chunks_per_worker()
+#' charr_chunks_per_worker(old)
+NULL
+
+#' @rdname charr_chunking
+#' @export
+charr_chunks_per_worker <- function(value = NULL) {
+  if (is.null(value)) {
+    return(.Call(C_charr_chunks_per_worker, NULL))
+  }
+
+  invisible(.Call(
+    C_charr_chunks_per_worker,
+    .charr_chunking_value(value, "charr_chunks_per_worker")
+  ))
+}
+
+#' @rdname charr_chunking
+#' @export
+charr_min_chunk <- function(value = NULL) {
+  if (is.null(value)) {
+    return(.Call(C_charr_min_chunk, NULL))
+  }
+
+  invisible(.Call(
+    C_charr_min_chunk,
+    .charr_chunking_value(value, "charr_min_chunk")
+  ))
+}
+
 .charr_leaf_map <- c(
   stri_detect_fixed = "ci_detect_fixed",
   stri_startswith_fixed = "ci_startswith_fixed",

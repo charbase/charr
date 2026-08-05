@@ -31,6 +31,7 @@
  */
 
 #include "ci_builder.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "ci_stringi.h"
 #include "io/string_view.h"
@@ -316,6 +317,165 @@ CHARR_CXX_HELPER void set_output(
 }
 
 
+CHARR_CXX_HELPER void set_output_parallel(
+    io::ParallelOutputBuilder& output, unsigned worker, R_len_t index,
+    const icu::UnicodeString& value, std::vector<char>& utf8_buffer
+)
+{
+    int32_t utf8_length = 0;
+    cetype_ext_t encoding = CETYPE_EXT_ASCII;
+    const char* utf8 = ci::unicode_to_utf8(
+        value, utf8_buffer, utf8_length, encoding
+    );
+    output.set_validated(
+        worker, index, io::OutputRecord{utf8, utf8_length, encoding}
+    );
+}
+
+
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const std::vector<shared::StringView>& subjects,
+        const shared::RegexPatterns& patterns,
+        const std::vector<shared::StringView>& replacements,
+        const std::vector<icu::UnicodeString>& sequential_subjects,
+        const std::vector<icu::UnicodeString>& sequential_replacements,
+        R_len_t output_length, const shared::RegexOptions& options,
+        bool sequential, shared::RegexReplaceMode mode,
+        std::vector<int>& warning_slots,
+        io::ParallelOutputBuilder& output
+    ) noexcept
+        : subjects_(subjects), patterns_(patterns),
+          replacements_(replacements),
+          sequential_subjects_(sequential_subjects),
+          sequential_replacements_(sequential_replacements),
+          output_length_(output_length), options_(options),
+          sequential_(sequential), mode_(mode),
+          warning_slots_(warning_slots), output_(output)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        if (sequential_) {
+            run_sequential(context);
+            return;
+        }
+        shared::RegexMatcher matcher(options_);
+        icu::UnicodeString replacement_text;
+        icu::UnicodeString output_text;
+        std::vector<char> utf8_buffer;
+        const R_len_t subject_length =
+            static_cast<R_len_t>(subjects_.size());
+        const R_len_t pattern_length =
+            static_cast<R_len_t>(patterns_.size());
+        const R_len_t replacement_length =
+            static_cast<R_len_t>(replacements_.size());
+        const bool scalar_pattern = pattern_length == 1;
+        const bool scalar_replacement = replacement_length == 1;
+        const shared::RegexInput scalar_pattern_input = scalar_pattern
+            ? patterns_.get(0)
+            : shared::RegexInput{nullptr, nullptr, 0, true};
+        bool scalar_pattern_bound = false;
+        const icu::UnicodeString* scalar_replacement_text = nullptr;
+        if (scalar_replacement && !replacements_[0].is_na()) {
+            shared::set_regex_utf16(replacement_text, replacements_[0]);
+            scalar_replacement_text = &replacement_text;
+        }
+
+        while (context.next_chunk()) {
+            for (R_xlen_t task = context.begin; task < context.end; ++task) {
+                const R_len_t i = static_cast<R_len_t>(task);
+                const std::size_t subject_index =
+                    subject_length == output_length_
+                        ? static_cast<std::size_t>(i)
+                        : static_cast<std::size_t>(i % subject_length);
+                const std::size_t pattern_index = scalar_pattern
+                    ? 0 : static_cast<std::size_t>(i % pattern_length);
+                const std::size_t replacement_index = scalar_replacement
+                    ? 0 : static_cast<std::size_t>(i % replacement_length);
+                const shared::RegexReplaceResult replace_result =
+                    replace_vectorized_record(
+                        subjects_[subject_index],
+                        replacements_[replacement_index],
+                        scalar_replacement_text, scalar_replacement,
+                        patterns_,
+                        scalar_pattern ? &scalar_pattern_input : nullptr,
+                        scalar_pattern ? &scalar_pattern_bound : nullptr,
+                        pattern_index, matcher, mode_, replacement_text,
+                        output_text
+                    );
+                if (replace_result == shared::RegexReplaceResult::missing)
+                    output_.set_na(context.worker, i);
+                else
+                    set_output_parallel(
+                        output_, context.worker, i, output_text, utf8_buffer
+                    );
+            }
+        }
+    }
+
+private:
+    CHARR_CXX_HELPER void run_sequential(
+        shared::WorkerContext& context
+    )
+    {
+        shared::RegexMatcher matcher(options_);
+        icu::UnicodeString output_text;
+        std::vector<char> utf8_buffer;
+        // Holds one chunk's subjects. The allocation is reused across
+        // chunks; the contents belong to the chunk and are refilled below.
+        std::vector<icu::UnicodeString> subjects;
+
+        while (context.next_chunk()) {
+            subjects.clear();
+            subjects.reserve(static_cast<std::size_t>(
+                context.end-context.begin
+            ));
+            for (R_xlen_t i = context.begin; i < context.end; ++i) {
+                subjects.push_back(
+                    sequential_subjects_[static_cast<std::size_t>(i)]
+                );
+            }
+            // Every chunk applies the same pattern list, so each one counts
+            // the same empty patterns and the slot is assigned, not summed.
+            int warnings = 0;
+            replace_sequential(
+                subjects, patterns_, sequential_replacements_, matcher,
+                output_text, warnings
+            );
+            warning_slots_[context.worker] = warnings;
+            for (R_xlen_t i = context.begin; i < context.end; ++i) {
+                const icu::UnicodeString& value = subjects[
+                    static_cast<std::size_t>(i-context.begin)
+                ];
+                if (value.isBogus())
+                    output_.set_na(context.worker, i);
+                else
+                    set_output_parallel(
+                        output_, context.worker, i, value, utf8_buffer
+                    );
+            }
+        }
+    }
+
+    const std::vector<shared::StringView>& subjects_;
+    const shared::RegexPatterns& patterns_;
+    const std::vector<shared::StringView>& replacements_;
+    const std::vector<icu::UnicodeString>& sequential_subjects_;
+    const std::vector<icu::UnicodeString>& sequential_replacements_;
+    R_len_t output_length_;
+    shared::RegexOptions options_;
+    bool sequential_;
+    shared::RegexReplaceMode mode_;
+    std::vector<int>& warning_slots_;
+    io::ParallelOutputBuilder& output_;
+};
+
+
 CHARR_R_HELPER void require_sequential_lengths(
     R_len_t pattern_length,
     R_len_t replacement_length
@@ -349,6 +509,7 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_regex(
 ) noexcept
 {
     CHARR_ENTRYPOINT_BEGIN();
+
 
     const bool vectorize = ci__prepare_arg_logical_1_notNA_r(
         vectorize_all, "vectorize_all"
@@ -390,6 +551,8 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_regex(
         std::vector<icu::UnicodeString> sequential_replacements;
         std::vector<char> utf8_buffer;
         io::OutputBuilder output(0);
+        io::ParallelOutputBuilder parallel_output;
+        std::vector<int> warning_slots;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -451,8 +614,12 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_regex(
 
                 vectorized_core = vectorize || pattern_length == 1;
                 matcher.reset_options(options);
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, output_length
+                );
 
-                output.reset(output_length);
+                if (plan.workers == 1)
+                    output.reset(output_length);
                 if (!empty_sequential && output_length > 0) {
                     subject_reader.reset(str);
                     if (subject_reader.size() != subject_length) {
@@ -519,7 +686,40 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_regex(
                         replacement_storage, replacements
                     );
 
-                    if (vectorized_core) {
+                    if (!vectorized_core) {
+                        load_utf16(
+                            replacements, sequential_replacements
+                        );
+                    }
+                    if (plan.workers > 1) {
+                        warning_slots.assign(plan.workers, 0);
+                        parallel_output.reset(
+                            output_length, plan.workers
+                        );
+                        Body body(
+                            subjects, patterns, replacements,
+                            sequential_subjects, sequential_replacements,
+                            output_length, options, !vectorized_core,
+                            shared::RegexReplaceMode::all,
+                            warning_slots, parallel_output
+                        );
+                        shared::run_parallel(plan, output_length, body);
+                        if (!vectorized_core) {
+                            for (unsigned worker = 0;
+                                    worker < plan.workers; ++worker) {
+                                if (warning_slots[worker] >
+                                        additional_empty_warnings) {
+                                    additional_empty_warnings =
+                                        warning_slots[worker];
+                                }
+                            }
+                        }
+                        result = entry_protections.reprotect_one(
+                            parallel_output.to_sexp(), result_index
+                        );
+                    }
+
+                    if (plan.workers == 1 && vectorized_core) {
                         const bool scalar_pattern = pattern_length == 1;
                         const shared::RegexInput scalar_pattern_input =
                             scalar_pattern
@@ -586,10 +786,7 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_regex(
                             }
                         }
                     }
-                    else {
-                        load_utf16(
-                            replacements, sequential_replacements
-                        );
+                    else if (plan.workers == 1) {
                         replace_sequential(
                             sequential_subjects, patterns,
                             sequential_replacements, matcher, output_text,
@@ -608,9 +805,11 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_regex(
                     }
                 }
 
-                result = entry_protections.reprotect_one(
-                    output.to_sexp(), result_index
-                );
+                if (plan.workers == 1) {
+                    result = entry_protections.reprotect_one(
+                        output.to_sexp(), result_index
+                    );
+                }
                 CHARR_UNWIND_RETURN();
             }
         );
@@ -632,6 +831,7 @@ CHARR_ENTRYPOINT SEXP ci_replace_first_regex(
 ) noexcept
 {
     CHARR_ENTRYPOINT_BEGIN();
+
 
     str = entry_protections.protect_one(
         ci__prepare_arg_string_r(str, "str")
@@ -656,6 +856,9 @@ CHARR_ENTRYPOINT SEXP ci_replace_first_regex(
     );
     if (recycling_warning)
         Rf_warning(MSG__WARN_RECYCLING_RULE);
+    const shared::ParallelPlan plan = shared::parallel_plan(
+        true, output_length
+    );
 
 
     int empty_pattern_warnings = 0;
@@ -682,11 +885,16 @@ CHARR_ENTRYPOINT SEXP ci_replace_first_regex(
         icu::UnicodeString output_text;
         std::vector<char> utf8_buffer;
         io::OutputBuilder output(0);
+        io::ParallelOutputBuilder parallel_output;
+        std::vector<icu::UnicodeString> sequential_subjects;
+        std::vector<icu::UnicodeString> sequential_replacements;
+        std::vector<int> warning_slots;
 
         result = shared::unwind_protect(
             unwind_token,
             [&]() -> SEXP {
-                output.reset(output_length);
+                if (plan.workers == 1)
+                    output.reset(output_length);
                 if (output_length > 0) {
                     subject_reader.reset(str);
                     if (subject_reader.size() != subject_length) {
@@ -751,76 +959,97 @@ CHARR_ENTRYPOINT SEXP ci_replace_first_regex(
                         replacement_storage, replacements
                     );
 
-                    const bool scalar_replacement =
-                        replacement_length == 1;
-                    const bool scalar_pattern = pattern_length == 1;
-                    const shared::RegexInput scalar_pattern_input =
-                        scalar_pattern
-                            ? patterns.get(0)
-                            : shared::RegexInput{
-                                nullptr, nullptr, 0, true
-                            };
-                    bool scalar_pattern_bound = false;
-                    const icu::UnicodeString* scalar_replacement_text =
-                        nullptr;
-                    if (scalar_replacement && !replacements[0].is_na()) {
-                        shared::set_regex_utf16(
-                            replacement_text, replacements[0]
+                    if (plan.workers > 1) {
+                        warning_slots.assign(plan.workers, 0);
+                        parallel_output.reset(
+                            output_length, plan.workers
                         );
-                        scalar_replacement_text = &replacement_text;
+                        Body body(
+                            subjects, patterns, replacements,
+                            sequential_subjects, sequential_replacements,
+                            output_length, options, false,
+                            shared::RegexReplaceMode::first,
+                            warning_slots, parallel_output
+                        );
+                        shared::run_parallel(plan, output_length, body);
+                        result = entry_protections.reprotect_one(
+                            parallel_output.to_sexp(), result_index
+                        );
                     }
-
-                    for (R_len_t i = 0; i < output_length; ++i) {
-                        const std::size_t subject_index =
-                            subject_length == output_length
-                                ? static_cast<std::size_t>(i)
-                                : static_cast<std::size_t>(
-                                    i % subject_length
-                                );
-                        const std::size_t pattern_index =
+                    else {
+                        const bool scalar_replacement =
+                            replacement_length == 1;
+                        const bool scalar_pattern = pattern_length == 1;
+                        const shared::RegexInput scalar_pattern_input =
                             scalar_pattern
-                                ? 0
-                                : static_cast<std::size_t>(
-                                    i % pattern_length
-                                );
-                        const std::size_t replacement_index =
-                            scalar_replacement
-                                ? 0
-                                : static_cast<std::size_t>(
-                                    i % replacement_length
-                                );
-                        const shared::RegexReplaceResult replace_result =
-                            replace_vectorized_record(
-                                subjects[subject_index],
-                                replacements[replacement_index],
-                                scalar_replacement_text,
-                                scalar_replacement,
-                                patterns,
-                                scalar_pattern
-                                    ? &scalar_pattern_input
-                                    : nullptr,
-                                scalar_pattern
-                                    ? &scalar_pattern_bound
-                                    : nullptr,
-                                pattern_index, matcher,
-                                shared::RegexReplaceMode::first,
-                                replacement_text, output_text
+                                ? patterns.get(0)
+                                : shared::RegexInput{
+                                    nullptr, nullptr, 0, true
+                                };
+                        bool scalar_pattern_bound = false;
+                        const icu::UnicodeString* scalar_replacement_text =
+                            nullptr;
+                        if (scalar_replacement && !replacements[0].is_na()) {
+                            shared::set_regex_utf16(
+                                replacement_text, replacements[0]
                             );
-                        if (replace_result ==
-                                shared::RegexReplaceResult::missing) {
-                            output.set_na(i);
+                            scalar_replacement_text = &replacement_text;
                         }
-                        else {
-                            set_output(
-                                output, i, output_text, utf8_buffer
-                            );
+
+                        for (R_len_t i = 0; i < output_length; ++i) {
+                            const std::size_t subject_index =
+                                subject_length == output_length
+                                    ? static_cast<std::size_t>(i)
+                                    : static_cast<std::size_t>(
+                                        i % subject_length
+                                    );
+                            const std::size_t pattern_index =
+                                scalar_pattern
+                                    ? 0
+                                    : static_cast<std::size_t>(
+                                        i % pattern_length
+                                    );
+                            const std::size_t replacement_index =
+                                scalar_replacement
+                                    ? 0
+                                    : static_cast<std::size_t>(
+                                        i % replacement_length
+                                    );
+                            const shared::RegexReplaceResult replace_result =
+                                replace_vectorized_record(
+                                    subjects[subject_index],
+                                    replacements[replacement_index],
+                                    scalar_replacement_text,
+                                    scalar_replacement,
+                                    patterns,
+                                    scalar_pattern
+                                        ? &scalar_pattern_input
+                                        : nullptr,
+                                    scalar_pattern
+                                        ? &scalar_pattern_bound
+                                        : nullptr,
+                                    pattern_index, matcher,
+                                    shared::RegexReplaceMode::first,
+                                    replacement_text, output_text
+                                );
+                            if (replace_result ==
+                                    shared::RegexReplaceResult::missing) {
+                                output.set_na(i);
+                            }
+                            else {
+                                set_output(
+                                    output, i, output_text, utf8_buffer
+                                );
+                            }
                         }
                     }
                 }
 
-                result = entry_protections.reprotect_one(
-                    output.to_sexp(), result_index
-                );
+                if (plan.workers == 1) {
+                    result = entry_protections.reprotect_one(
+                        output.to_sexp(), result_index
+                    );
+                }
                 CHARR_UNWIND_RETURN();
             }
         );

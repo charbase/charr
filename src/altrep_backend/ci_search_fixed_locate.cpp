@@ -32,6 +32,7 @@
 
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "fixed/options.h"
 #include "io/string_view.h"
@@ -228,6 +229,91 @@ CHARR_NEUTRAL_HELPER R_len_t recycling_length(
 }
 
 
+/*
+ * Everything the ASCII scalar-pattern fast path resolves once, on the main
+ * thread, before any element is examined. A plain value, so a worker reads
+ * it without touching R, a Reader, or shared mutable state.
+ */
+struct DirectFirstState {
+    R_len_t vectorize_length;
+    unsigned char pattern_byte;
+    bool return_length;
+};
+
+
+/*
+ * Pattern and options eligibility for the fast path: O(1), main thread.
+ * The path requires a scalar pattern, which also forces vectorize_length to
+ * equal the subject length, so element index i addresses subjects[i]
+ * directly and the kernel needs no recycling arithmetic.
+ */
+CHARR_NEUTRAL_HELPER bool direct_first_eligible(
+    const charport::StrViews& patterns,
+    R_len_t pattern_length,
+    R_len_t vectorize_length,
+    shared::FixedSearchOptions options,
+    bool return_length,
+    DirectFirstState& state
+) noexcept
+{
+    if (options.case_insensitive || options.overlap || pattern_length != 1)
+        return false;
+
+    unsigned char pattern_byte;
+    if (!direct_fixed_pattern(patterns[0], pattern_byte))
+        return false;
+
+    state.vectorize_length = vectorize_length;
+    state.pattern_byte = pattern_byte;
+    state.return_length = return_length;
+    return true;
+}
+
+
+/*
+ * One element of the fast path, shared by the serial and the threaded run.
+ * It reads one prefetched subject view and writes the two cells of the
+ * output matrix that belong to element i: the matrix has vectorize_length
+ * rows and 2 columns, so element i owns result[i] and
+ * result[i+vectorize_length], and no other element writes either cell. That
+ * disjointness is what makes the parallel writes safe.
+ *
+ * Returns false, having written nothing, when the subject is not directly
+ * usable; the caller then restarts the general path at that index.
+ */
+CHARR_NEUTRAL_HELPER bool locate_first_direct_element(
+    const DirectFirstState& state,
+    const charport::StrView& subject,
+    R_len_t i,
+    int* result
+) noexcept
+{
+    DirectFixedString value;
+    if (!direct_fixed_string(subject, value))
+        return false;
+
+    int& start_result = result[i];
+    int& end_result = result[i+state.vectorize_length];
+    start_result = NA_INTEGER;
+    end_result = NA_INTEGER;
+    if (value.is_na)
+        return true;
+
+    const R_len_t byte_position = first_fixed_byte(
+        value.data, value.length, state.pattern_byte
+    );
+    if (byte_position < 0) {
+        if (state.return_length)
+            start_result = end_result = -1;
+        return true;
+    }
+
+    start_result = fixed_codepoint_position(value, byte_position);
+    end_result = state.return_length ? 1 : start_result;
+    return true;
+}
+
+
 CHARR_NEUTRAL_HELPER bool locate_first_ascii_scalar_direct(
     const charport::StrViews& subjects,
     const charport::StrViews& patterns,
@@ -238,41 +324,98 @@ CHARR_NEUTRAL_HELPER bool locate_first_ascii_scalar_direct(
     int* result, R_len_t& general_start
 ) noexcept
 {
-    if (options.case_insensitive || options.overlap || pattern_length != 1)
+    DirectFirstState state;
+    if (!direct_first_eligible(
+            patterns, pattern_length, vectorize_length, options,
+            return_length, state)) {
         return false;
-
-    unsigned char pattern_byte;
-    if (!direct_fixed_pattern(patterns[0], pattern_byte))
-        return false;
+    }
 
     for (R_len_t i = 0; i < vectorize_length; ++i) {
-        int& start_result = result[i];
-        int& end_result = result[i+vectorize_length];
-        start_result = NA_INTEGER;
-        end_result = NA_INTEGER;
-
-        DirectFixedString value;
-        if (!direct_fixed_string(subjects[i], value)) {
+        if (!locate_first_direct_element(state, subjects[i], i, result)) {
             general_start = i;
             return false;
         }
-        if (value.is_na)
-            continue;
-
-        const R_len_t byte_position = first_fixed_byte(
-            value.data, value.length, pattern_byte
-        );
-        if (byte_position < 0) {
-            if (return_length)
-                start_result = end_result = -1;
-            continue;
-        }
-
-        start_result = fixed_codepoint_position(value, byte_position);
-        end_result = return_length ? 1 : start_result;
     }
 
     return true;
+}
+
+
+/*
+ * The same element kernel on worker threads. A worker reads prefetched
+ * views only: no R API, no Reader, no allocation, no warning. Its writes go
+ * to the output cells of its own indices and to its own slot of
+ * first_ineligible, which the entry point's Frame owns.
+ *
+ * A worker that meets an unusable subject stops there and claims no further
+ * chunk, leaving the rest of its share unwritten, just as the serial scan
+ * stops.
+ */
+class DirectFirstBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER DirectFirstBody(
+        const charport::StrViews& subjects,
+        const DirectFirstState& state,
+        int* result,
+        std::vector<R_len_t>& first_ineligible
+    ) noexcept
+        : subjects_(subjects), state_(state), result_(result),
+          first_ineligible_(first_ineligible)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        while (context.next_chunk()) {
+            const R_len_t begin = static_cast<R_len_t>(context.begin);
+            const R_len_t end = static_cast<R_len_t>(context.end);
+            for (R_len_t i = begin; i < end; ++i) {
+                if (locate_first_direct_element(
+                        state_, subjects_[i], i, result_)) {
+                    continue;
+                }
+                first_ineligible_[
+                    static_cast<std::size_t>(context.worker)
+                ] = i;
+                context.stop_early();
+                return;
+            }
+        }
+    }
+
+private:
+    const charport::StrViews& subjects_;
+    DirectFirstState state_;
+    int* result_;
+    std::vector<R_len_t>& first_ineligible_;
+};
+
+
+/*
+ * The lowest index any worker refused, or `none` when every worker finished
+ * its chunk.
+ *
+ * Chunks are contiguous and ordered, and a worker leaves an index unwritten
+ * only at or after its own refusal. So every index below the minimum was
+ * written by the direct kernel and is kept, and every index at or above the
+ * minimum is either unwritten or will be overwritten, because the general
+ * path resumes at general_start and rewrites the rest of the vector. Taking
+ * the minimum therefore reproduces exactly what the serial scan would have
+ * produced.
+ */
+CHARR_NEUTRAL_HELPER R_len_t first_ineligible_index(
+    const std::vector<R_len_t>& reports, R_len_t none
+) noexcept
+{
+    R_len_t first = none;
+    for (std::size_t i = 0; i < reports.size(); ++i) {
+        if (reports[i] < first)
+            first = reports[i];
+    }
+    return first;
 }
 
 
@@ -383,72 +526,119 @@ CHARR_NEUTRAL_HELPER shared::FixedRange no_match_range(
 }
 
 
-CHARR_CXX_HELPER void locate_first_general(
-    const std::vector<shared::StringView>& subjects,
-    const std::vector<shared::StringView>& patterns,
-    R_len_t vectorize_length,
-    R_len_t general_start,
-    shared::FixedSearchOptions options,
-    bool return_length,
-    shared::FixedMatcher& matcher,
-    int* starts
-)
-{
-    if (vectorize_length <= 0)
-        return;
-    int* ends = starts+vectorize_length;
-
-    const R_len_t subject_length = static_cast<R_len_t>(subjects.size());
-    const R_len_t pattern_length = static_cast<R_len_t>(patterns.size());
-    if (general_start > 0 && pattern_length != 1) {
-        throw std::logic_error(
-            "fixed-locate direct prefix requires a scalar pattern"
-        );
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const std::vector<shared::StringView>& subjects,
+        const std::vector<shared::StringView>& patterns,
+        R_len_t vectorize_length,
+        R_len_t general_start,
+        shared::FixedSearchOptions options,
+        bool return_length,
+        int* starts
+    ) noexcept
+        : subjects_(subjects), patterns_(patterns),
+          vectorize_length_(vectorize_length), general_start_(general_start),
+          options_(options), return_length_(return_length), starts_(starts),
+          ends_(starts+vectorize_length)
+    {
     }
 
-    for (R_len_t lane = 0; lane < pattern_length; ++lane) {
-        const shared::StringView& pattern =
-            patterns[static_cast<std::size_t>(lane)];
-        const R_len_t first = general_start > 0 ? general_start : lane;
-        R_len_t i = first;
-        for (;;) {
-            const shared::StringView& subject = subjects[
-                static_cast<std::size_t>(i % subject_length)
-            ];
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        const R_len_t subject_length =
+            static_cast<R_len_t>(subjects_.size());
+        const R_len_t pattern_length =
+            static_cast<R_len_t>(patterns_.size());
+        if (general_start_ > 0 && pattern_length != 1) {
+            throw std::logic_error(
+                "fixed-locate direct prefix requires a scalar pattern"
+            );
+        }
 
-            if (subject.is_na() || pattern.is_na() || pattern.len <= 0) {
-                starts[i] = NA_INTEGER;
-                ends[i] = NA_INTEGER;
+        shared::FixedMatcher matcher;
+        if (pattern_length == 1) {
+            const shared::StringView& pattern = patterns_[0];
+            while (context.next_chunk()) {
+                R_len_t begin = static_cast<R_len_t>(context.begin);
+                if (begin < general_start_)
+                    begin = general_start_;
+                const R_len_t end = static_cast<R_len_t>(context.end);
+                for (R_len_t i = begin; i < end; ++i)
+                    locate_one(i, subject_length, pattern, matcher);
             }
-            else if (subject.len <= 0) {
-                const shared::FixedRange location =
-                    no_match_range(return_length);
-                starts[i] = location.start;
-                ends[i] = location.end;
-            }
-            else {
-                shared::FixedRange match{0, 0};
-                if (!matcher.find_first(subject, pattern, options, match)) {
-                    const shared::FixedRange location =
-                        no_match_range(return_length);
-                    starts[i] = location.start;
-                    ends[i] = location.end;
-                }
-                else {
-                    shared::Utf8PositionCursor positions(subject);
-                    const int start = positions.at_byte(match.start)+1;
-                    const int end = positions.at_byte(match.end);
-                    starts[i] = start;
-                    ends[i] = return_length ? end-start+1 : end;
-                }
-            }
+            return;
+        }
 
-            if (pattern_length >= vectorize_length-i)
-                break;
-            i += pattern_length;
+        while (context.next_chunk()) {
+            const R_len_t begin = static_cast<R_len_t>(context.begin);
+            const R_len_t end = static_cast<R_len_t>(context.end);
+            for (R_len_t lane = begin; lane < end; ++lane) {
+                const shared::StringView& pattern = patterns_[
+                    static_cast<std::size_t>(lane)
+                ];
+                R_len_t i = lane;
+                for (;;) {
+                    locate_one(i, subject_length, pattern, matcher);
+                    if (pattern_length >= vectorize_length_-i)
+                        break;
+                    i += pattern_length;
+                }
+            }
         }
     }
-}
+
+private:
+    CHARR_CXX_HELPER void locate_one(
+        R_len_t i,
+        R_len_t subject_length,
+        const shared::StringView& pattern,
+        shared::FixedMatcher& matcher
+    ) const
+    {
+        const shared::StringView& subject = subjects_[
+            static_cast<std::size_t>(i % subject_length)
+        ];
+
+        if (subject.is_na() || pattern.is_na() || pattern.len <= 0) {
+            starts_[i] = NA_INTEGER;
+            ends_[i] = NA_INTEGER;
+        }
+        else if (subject.len <= 0) {
+            const shared::FixedRange location =
+                no_match_range(return_length_);
+            starts_[i] = location.start;
+            ends_[i] = location.end;
+        }
+        else {
+            shared::FixedRange match{0, 0};
+            if (!matcher.find_first(subject, pattern, options_, match)) {
+                const shared::FixedRange location =
+                    no_match_range(return_length_);
+                starts_[i] = location.start;
+                ends_[i] = location.end;
+            }
+            else {
+                shared::Utf8PositionCursor positions(subject);
+                const int start = positions.at_byte(match.start)+1;
+                const int end = positions.at_byte(match.end);
+                starts_[i] = start;
+                ends_[i] = return_length_ ? end-start+1 : end;
+            }
+        }
+    }
+
+    const std::vector<shared::StringView>& subjects_;
+    const std::vector<shared::StringView>& patterns_;
+    R_len_t vectorize_length_;
+    R_len_t general_start_;
+    shared::FixedSearchOptions options_;
+    bool return_length_;
+    int* starts_;
+    int* ends_;
+};
 
 
 CHARR_CXX_HELPER bool fill_all_matches(
@@ -479,6 +669,152 @@ CHARR_CXX_HELPER bool fill_all_matches(
     }
     return false;
 }
+
+
+class CHARR_OWNER_TYPE AllMatchesRows {
+public:
+    CHARR_CXX_HELPER AllMatchesRows() noexcept
+        : rows_(nullptr) {}
+
+    CHARR_CXX_HELPER ~AllMatchesRows() noexcept
+    {
+        delete[] rows_;
+    }
+
+    AllMatchesRows(const AllMatchesRows&) = delete;
+    AllMatchesRows& operator=(const AllMatchesRows&) = delete;
+    AllMatchesRows(AllMatchesRows&&) = delete;
+    AllMatchesRows& operator=(AllMatchesRows&&) = delete;
+
+    CHARR_CXX_HELPER void reset(std::size_t size)
+    {
+        std::vector<shared::FixedRange>* replacement = size == 0
+            ? nullptr
+            : new std::vector<shared::FixedRange>[size];
+        delete[] rows_;
+        rows_ = replacement;
+    }
+
+    CHARR_CXX_HELPER void copy_from(
+        std::size_t index,
+        const std::vector<shared::FixedRange>& source
+    )
+    {
+        std::vector<shared::FixedRange>& output = rows_[index];
+        output.clear();
+        output.reserve(source.size());
+        for (std::size_t i = 0; i < source.size(); ++i)
+            output.push_back(source[i]);
+    }
+
+    CHARR_NEUTRAL_HELPER std::size_t match_count(
+        std::size_t index
+    ) const noexcept
+    {
+        return rows_[index].size();
+    }
+
+    CHARR_NEUTRAL_HELPER const shared::FixedRange& match(
+        std::size_t index, std::size_t match_index
+    ) const noexcept
+    {
+        return rows_[index][match_index];
+    }
+
+private:
+    std::vector<shared::FixedRange>* rows_;
+};
+
+
+class AllBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER AllBody(
+        const std::vector<shared::StringView>& subjects,
+        const std::vector<shared::StringView>& patterns,
+        R_len_t vectorize_length,
+        shared::FixedSearchOptions options,
+        bool return_length,
+        std::vector<int>& missing,
+        AllMatchesRows& matches
+    ) noexcept
+        : subjects_(subjects), patterns_(patterns),
+          vectorize_length_(vectorize_length), options_(options),
+          return_length_(return_length), missing_(missing), matches_(matches)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        shared::FixedMatcher matcher;
+        std::vector<shared::FixedRange> scratch;
+        const R_len_t subject_length =
+            static_cast<R_len_t>(subjects_.size());
+        const R_len_t pattern_length =
+            static_cast<R_len_t>(patterns_.size());
+
+        if (pattern_length == 1) {
+            const shared::StringView& pattern = patterns_[0];
+            while (context.next_chunk()) {
+                const R_len_t begin = static_cast<R_len_t>(context.begin);
+                const R_len_t end = static_cast<R_len_t>(context.end);
+                for (R_len_t i = begin; i < end; ++i) {
+                    fill_row(
+                        i, subject_length, pattern, matcher, scratch
+                    );
+                }
+            }
+            return;
+        }
+
+        while (context.next_chunk()) {
+            const R_len_t begin = static_cast<R_len_t>(context.begin);
+            const R_len_t end = static_cast<R_len_t>(context.end);
+            for (R_len_t lane = begin; lane < end; ++lane) {
+                const shared::StringView& pattern = patterns_[
+                    static_cast<std::size_t>(lane)
+                ];
+                R_len_t i = lane;
+                for (;;) {
+                    fill_row(
+                        i, subject_length, pattern, matcher, scratch
+                    );
+                    if (pattern_length >= vectorize_length_-i)
+                        break;
+                    i += pattern_length;
+                }
+            }
+        }
+    }
+
+private:
+    CHARR_CXX_HELPER void fill_row(
+        R_len_t i,
+        R_len_t subject_length,
+        const shared::StringView& pattern,
+        shared::FixedMatcher& matcher,
+        std::vector<shared::FixedRange>& scratch
+    )
+    {
+        const shared::StringView& subject = subjects_[
+            static_cast<std::size_t>(i % subject_length)
+        ];
+        const std::size_t index = static_cast<std::size_t>(i);
+        missing_[index] = fill_all_matches(
+            subject, pattern, options_, return_length_, matcher, scratch
+        ) ? 1 : 0;
+        matches_.copy_from(index, scratch);
+    }
+
+    const std::vector<shared::StringView>& subjects_;
+    const std::vector<shared::StringView>& patterns_;
+    R_len_t vectorize_length_;
+    shared::FixedSearchOptions options_;
+    bool return_length_;
+    std::vector<int>& missing_;
+    AllMatchesRows& matches_;
+};
 
 
 CHARR_R_HELPER void emit_warnings(
@@ -552,7 +888,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_first_fixed(
         shared::SliceArena pattern_storage;
         std::vector<shared::StringView> subjects;
         std::vector<shared::StringView> patterns;
-        shared::FixedMatcher matcher;
+        std::vector<R_len_t> first_ineligible;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -600,11 +936,45 @@ CHARR_ENTRYPOINT SEXP ci_locate_first_fixed(
                         pattern_views.encodings()
                     );
 
-                    if (!locate_first_ascii_scalar_direct(
+                    const R_len_t tasks = pattern_length == 1
+                        ? vectorize_length
+                        : pattern_length;
+                    const shared::ParallelPlan plan = shared::parallel_plan(
+                        true, tasks
+                    );
+                    // One past the last index: no worker refused an
+                    // element.
+                    const R_len_t none = vectorize_length;
+                    DirectFirstState state{};
+                    bool direct = false;
+                    if (plan.workers == 1) {
+                        direct = locate_first_ascii_scalar_direct(
                             subject_views, pattern_views, pattern_length,
                             vectorize_length, options, return_length,
                             output, general_start
-                    )) {
+                        );
+                    }
+                    else if (direct_first_eligible(
+                            pattern_views, pattern_length, vectorize_length,
+                            options, return_length, state)) {
+                        first_ineligible.assign(
+                            static_cast<std::size_t>(plan.workers), none
+                        );
+                        DirectFirstBody body(
+                            subject_views, state, output, first_ineligible
+                        );
+                        // Eligibility required a scalar pattern, so the
+                        // recycled length is the subject length and task i
+                        // is subject i.
+                        shared::run_parallel(plan, vectorize_length, body);
+                        const R_len_t first = first_ineligible_index(
+                            first_ineligible, none
+                        );
+                        direct = first == none;
+                        if (!direct)
+                            general_start = first;
+                    }
+                    if (!direct) {
                         normalize_views(
                             subject_views, subject_length,
                             subject_converter, subject_storage, subjects
@@ -614,11 +984,12 @@ CHARR_ENTRYPOINT SEXP ci_locate_first_fixed(
                             pattern_converter, pattern_storage, patterns
                         );
                         empty_pattern_warnings = count_empty_patterns(patterns);
-                        locate_first_general(
+                        Body body(
                             subjects, patterns, vectorize_length,
                             general_start, options, return_length,
-                            matcher, output
+                            output
                         );
+                        shared::run_parallel(plan, tasks, body);
                     }
                 }
 
@@ -703,6 +1074,8 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_fixed(
         std::vector<shared::StringView> patterns;
         shared::FixedMatcher matcher;
         std::vector<shared::FixedRange> matches;
+        std::vector<int> row_missing;
+        AllMatchesRows row_matches;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -751,13 +1124,19 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_fixed(
                         pattern_views.encodings()
                     );
 
-                    const bool direct = locate_all_ascii_scalar_direct(
-                        subject_views, pattern_views, pattern_length,
-                        vectorize_length, options, omit, return_length,
-                        callback_protections, current_index,
-                        current, result,
-                        general_start
-                    );
+                    const R_len_t tasks = pattern_length == 1
+                        ? vectorize_length
+                        : pattern_length;
+                    const shared::ParallelPlan parallel_plan =
+                        shared::parallel_plan(true, tasks);
+                    const bool direct = parallel_plan.workers == 1 &&
+                        locate_all_ascii_scalar_direct(
+                            subject_views, pattern_views, pattern_length,
+                            vectorize_length, options, omit, return_length,
+                            callback_protections, current_index,
+                            current, result,
+                            general_start
+                        );
 
                     if (!direct) {
                         normalize_views(
@@ -769,73 +1148,149 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_fixed(
                             pattern_converter, pattern_storage, patterns
                         );
                         empty_pattern_warnings = count_empty_patterns(patterns);
-                        if (general_start > 0 && pattern_length != 1) {
-                            throw std::logic_error(
-                                "fixed-locate direct prefix requires a "
-                                "scalar pattern"
-                            );
-                        }
-
-                        for (R_len_t lane = 0;
-                                lane < pattern_length; ++lane) {
-                            const shared::StringView& current_pattern =
-                                patterns[static_cast<std::size_t>(lane)];
-                            R_len_t i = general_start > 0
-                                ? general_start
-                                : lane;
-                            for (;;) {
-                                const shared::StringView& subject = subjects[
-                                    static_cast<std::size_t>(
-                                        i % subject_length
-                                    )
-                                ];
-                                const bool missing = fill_all_matches(
-                                    subject, current_pattern, options,
-                                    return_length, matcher, matches
+                        if (parallel_plan.workers == 1) {
+                            if (general_start > 0 && pattern_length != 1) {
+                                throw std::logic_error(
+                                    "fixed-locate direct prefix requires a "
+                                    "scalar pattern"
                                 );
+                            }
 
-                                if (missing) {
-                                    current = callback_protections.reprotect_slot(
-                                        shared::filled_integer_matrix_r(1, 2),
-                                        current_index
+                            for (R_len_t lane = 0;
+                                    lane < pattern_length; ++lane) {
+                                const shared::StringView& current_pattern =
+                                    patterns[static_cast<std::size_t>(lane)];
+                                R_len_t i = general_start > 0
+                                    ? general_start
+                                    : lane;
+                                for (;;) {
+                                    const shared::StringView& subject = subjects[
+                                        static_cast<std::size_t>(
+                                            i % subject_length
+                                        )
+                                    ];
+                                    const bool missing = fill_all_matches(
+                                        subject, current_pattern, options,
+                                        return_length, matcher, matches
                                     );
-                                }
-                                else if (matches.size() == 0) {
-                                    current = callback_protections.reprotect_slot(
-                                        shared::filled_integer_matrix_r(
-                                            omit ? 0 : 1, 2,
-                                            return_length
-                                                ? -1
-                                                : NA_INTEGER
-                                        ),
-                                        current_index
-                                    );
-                                }
-                                else {
-                                    const R_len_t match_count =
-                                        static_cast<R_len_t>(matches.size());
-                                    current = callback_protections.reprotect_slot(
-                                        Rf_allocMatrix(
-                                            INTSXP, match_count, 2
-                                        ),
-                                        current_index
-                                    );
-                                    int* output = INTEGER(current);
-                                    for (R_len_t j = 0;
-                                            j < match_count; ++j) {
-                                        const shared::FixedRange& match =
-                                            matches[
-                                                static_cast<std::size_t>(j)
-                                            ];
-                                        output[j] = match.start;
-                                        output[j+match_count] = match.end;
+
+                                    if (missing) {
+                                        current = callback_protections.reprotect_slot(
+                                            shared::filled_integer_matrix_r(1, 2),
+                                            current_index
+                                        );
                                     }
-                                }
-                                SET_VECTOR_ELT(result, i, current);
+                                    else if (matches.size() == 0) {
+                                        current = callback_protections.reprotect_slot(
+                                            shared::filled_integer_matrix_r(
+                                                omit ? 0 : 1, 2,
+                                                return_length
+                                                    ? -1
+                                                    : NA_INTEGER
+                                            ),
+                                            current_index
+                                        );
+                                    }
+                                    else {
+                                        const R_len_t match_count =
+                                            static_cast<R_len_t>(matches.size());
+                                        current = callback_protections.reprotect_slot(
+                                            Rf_allocMatrix(
+                                                INTSXP, match_count, 2
+                                            ),
+                                            current_index
+                                        );
+                                        int* output = INTEGER(current);
+                                        for (R_len_t j = 0;
+                                                j < match_count; ++j) {
+                                            const shared::FixedRange& match =
+                                                matches[
+                                                    static_cast<std::size_t>(j)
+                                                ];
+                                            output[j] = match.start;
+                                            output[j+match_count] = match.end;
+                                        }
+                                    }
+                                    SET_VECTOR_ELT(result, i, current);
 
-                                if (pattern_length >= vectorize_length-i)
-                                    break;
-                                i += pattern_length;
+                                    if (pattern_length >= vectorize_length-i)
+                                        break;
+                                    i += pattern_length;
+                                }
+                            }
+                        }
+                        else {
+                            row_missing.resize(
+                                static_cast<std::size_t>(vectorize_length)
+                            );
+                            row_matches.reset(
+                                static_cast<std::size_t>(vectorize_length)
+                            );
+                            AllBody body(
+                                subjects, patterns, vectorize_length,
+                                options, return_length,
+                                row_missing, row_matches
+                            );
+                            shared::run_parallel(
+                                parallel_plan, tasks, body
+                            );
+
+                            for (R_len_t lane = 0;
+                                    lane < pattern_length; ++lane) {
+                                R_len_t i = lane;
+                                for (;;) {
+                                    const std::size_t row_index =
+                                        static_cast<std::size_t>(i);
+                                    if (row_missing[row_index] != 0) {
+                                        current = callback_protections.reprotect_slot(
+                                            shared::filled_integer_matrix_r(1, 2),
+                                            current_index
+                                        );
+                                    }
+                                    else if (row_matches.match_count(
+                                            row_index
+                                        ) == 0) {
+                                        current = callback_protections.reprotect_slot(
+                                            shared::filled_integer_matrix_r(
+                                                omit ? 0 : 1, 2,
+                                                return_length
+                                                    ? -1
+                                                    : NA_INTEGER
+                                            ),
+                                            current_index
+                                        );
+                                    }
+                                    else {
+                                        const R_len_t match_count =
+                                            static_cast<R_len_t>(
+                                                row_matches.match_count(
+                                                    row_index
+                                                )
+                                            );
+                                        current = callback_protections.reprotect_slot(
+                                            Rf_allocMatrix(
+                                                INTSXP, match_count, 2
+                                            ),
+                                            current_index
+                                        );
+                                        int* output = INTEGER(current);
+                                        for (R_len_t j = 0;
+                                                j < match_count; ++j) {
+                                            const shared::FixedRange& match =
+                                                row_matches.match(
+                                                    row_index,
+                                                    static_cast<std::size_t>(j)
+                                                );
+                                            output[j] = match.start;
+                                            output[j+match_count] = match.end;
+                                        }
+                                    }
+                                    SET_VECTOR_ELT(result, i, current);
+
+                                    if (pattern_length >= vectorize_length-i)
+                                        break;
+                                    i += pattern_length;
+                                }
                             }
                         }
                     }

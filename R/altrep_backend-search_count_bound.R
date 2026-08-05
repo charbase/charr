@@ -98,7 +98,9 @@ ci_count_boundaries <- function(str, ..., opts_brkiter = NULL)
 {
     if (!missing(...))
         opts_brkiter <- do.call(ci_opts_brkiter, as.list(c(opts_brkiter, ...)))
-    .Call(C_ci_count_boundaries, str, opts_brkiter)
+    .Call(
+        C_ci_count_boundaries, str, opts_brkiter
+    )
 }
 
 

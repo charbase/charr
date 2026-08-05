@@ -48,6 +48,23 @@ StringView NfcNormalizer::normalize(
     const StringView& source, UErrorCode& status
 )
 {
+    return normalize_impl(source, status, &converter_);
+}
+
+
+StringView NfcNormalizer::normalize_utf8(
+    const StringView& source, UErrorCode& status
+)
+{
+    return normalize_impl(source, status, nullptr);
+}
+
+
+StringView NfcNormalizer::normalize_impl(
+    const StringView& source, UErrorCode& status,
+    NativeToUtf8* converter
+)
+{
     if (source.is_na())
         return missing();
     if (normalizer_ == nullptr)
@@ -63,13 +80,17 @@ StringView NfcNormalizer::normalize(
     case StringEncoding::ascii_or_utf8:
         break;
     case StringEncoding::latin1: {
-        const ByteView converted = converter_.latin1(data, length);
+        if (converter == nullptr)
+            throw std::invalid_argument("NFC input was not prepared as UTF-8");
+        const ByteView converted = converter->latin1(data, length);
         data = converted.ptr;
         length = converted.len;
         break;
     }
     case StringEncoding::native: {
-        const ByteView converted = converter_.native(data, length);
+        if (converter == nullptr)
+            throw std::invalid_argument("NFC input was not prepared as UTF-8");
+        const ByteView converted = converter->native(data, length);
         data = converted.ptr;
         length = converted.len;
         break;
@@ -86,6 +107,14 @@ StringView NfcNormalizer::normalize(
         throw std::invalid_argument("unknown NFC input encoding");
     }
 
+    return normalize_bytes(data, length, status);
+}
+
+
+StringView NfcNormalizer::normalize_bytes(
+    const char* data, int length, UErrorCode& status
+)
+{
     input_.setTo(icu::UnicodeString::fromUTF8(
         icu::StringPiece(data, length)
     ));

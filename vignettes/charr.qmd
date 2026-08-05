@@ -45,7 +45,7 @@ remotes::install_github("charbase/charr")
 
 ## Benchmark
 
-The figure below shows thirteen representative operations measured on a multilingual [Tatoeba](https://tatoeba.org/) corpus, from 1,000,000 records for the cheapest operations down to 10,000 for the most expensive. Each bar is the median of five runs, each in a fresh R process, and its length is how many times faster `charr` is than the reference.
+The figure below shows thirteen representative operations, one from each family of the benchmark, measured on a multilingual [Tatoeba](https://tatoeba.org/) corpus, from 1,000,000 records for the cheapest operations down to 10,000 for the most expensive. Each operation gets three bars: `charr`'s ordinary-string backend, and its ALTREP backend on one thread and on four. Each bar is the median of five runs, each in a fresh R process, and its length is how many times faster `charr` is than the reference.
 
 ::: {.content-visible when-format="gfm"}
 ![](man/figures/bench-summary.png)

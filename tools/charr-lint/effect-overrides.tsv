@@ -23,6 +23,7 @@ raw-acquire	r	Riconv_open	void *(const char *, const char *)	Riconv_open returns
 r	cxx	charport::Reader::reset	void (struct SEXPREC *)	charport Reader initialization may raise an R error and does not propagate C++ exceptions.
 r		charport::charvec::Builder::to_sexp	struct SEXPREC *(void) noexcept	charport permits R errors during ALTREP wrapping and does not propagate C++ exceptions.
 r		charport::charvec::GrowableBuilder::to_sexp	struct SEXPREC *(void) noexcept	charport permits R errors during ALTREP wrapping and does not propagate C++ exceptions.
+r		charport::charvec::ParallelBuilder::to_sexp	struct SEXPREC *(void) noexcept	charport permits R errors during ALTREP wrapping and does not propagate C++ exceptions.
 r		charport::charvec::wrap	struct SEXPREC *(class charport::charvec::Store &&) noexcept	charport permits R errors during ALTREP wrapping and does not propagate C++ exceptions.
 r	cxx	charport::check_abi	_Bool (void)	The first ABI check may raise an R error while resolving charport through R_GetCCallable; it does not propagate C++ exceptions.
 raw-release		fclose	int (struct _IO_FILE *)	Closes and releases an owned FILE handle.

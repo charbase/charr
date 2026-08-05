@@ -32,6 +32,7 @@
 
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "io/string_view.h"
 #include "io/utf8_output.h"
@@ -306,6 +307,204 @@ CHARR_R_HELPER void emit_recycling_warning(bool should_warn) noexcept
         Rf_warning(MSG__WARN_RECYCLING_RULE);
 }
 
+
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const std::vector<shared::StringView>& subjects,
+        const std::vector<shared::StringView>& replacements,
+        const shared::CharacterClassSet& patterns,
+        R_len_t output_length, bool merge, bool sequential,
+        io::ParallelOutputBuilder& output
+    ) noexcept
+        : subjects_(subjects), replacements_(replacements),
+          patterns_(patterns), output_length_(output_length),
+          merge_(merge), sequential_(sequential), output_(output)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        if (sequential_) {
+            // Each chunk is a whole sequential pass over its own range: an
+            // element's result depends on its own subject and the pattern
+            // list alone, so the range it is passed is the only thing that
+            // changes from chunk to chunk.
+            while (context.next_chunk())
+                run_sequential(context);
+            return;
+        }
+        std::vector<shared::CharacterClassRange> ranges;
+        const R_len_t subject_length =
+            static_cast<R_len_t>(subjects_.size());
+        const R_len_t pattern_length =
+            static_cast<R_len_t>(patterns_.size());
+        const R_len_t replacement_length =
+            static_cast<R_len_t>(replacements_.size());
+        while (context.next_chunk()) {
+            if (pattern_length == 1) {
+                for (R_xlen_t task = context.begin;
+                        task < context.end; ++task) {
+                    replace_one(
+                        static_cast<R_len_t>(task), subject_length,
+                        replacement_length, ranges, context.worker
+                    );
+                }
+                continue;
+            }
+            for (R_xlen_t task = context.begin;
+                    task < context.end; ++task) {
+                const R_len_t lane = static_cast<R_len_t>(task);
+                R_len_t i = lane;
+                for (;;) {
+                    replace_one(
+                        i, subject_length, replacement_length,
+                        ranges, context.worker
+                    );
+                    if (pattern_length >= output_length_-i)
+                        break;
+                    i += pattern_length;
+                }
+            }
+        }
+    }
+
+private:
+    CHARR_CXX_HELPER void replace_one(
+        R_len_t i, R_len_t subject_length, R_len_t replacement_length,
+        std::vector<shared::CharacterClassRange>& ranges,
+        unsigned worker
+    )
+    {
+        const shared::StringView& subject = subjects_[
+            static_cast<std::size_t>(i % subject_length)
+        ];
+        if (subject.is_na() || patterns_.is_na(
+                static_cast<std::size_t>(i)
+            )) {
+            output_.set_na(worker, i);
+            return;
+        }
+        const std::size_t matched_bytes =
+            shared::find_character_class_ranges(
+                subject, patterns_.get(static_cast<std::size_t>(i)),
+                merge_, ranges
+            );
+        if (ranges.empty()) {
+            output_.set(worker, i, io::as_charport_view(subject));
+            return;
+        }
+        const shared::StringView& replacement = replacements_[
+            static_cast<std::size_t>(i % replacement_length)
+        ];
+        if (replacement.is_na()) {
+            output_.set_na(worker, i);
+            return;
+        }
+        const std::size_t output_size = shared::checked_replacement_size(
+            subject, matched_bytes, ranges, replacement
+        );
+        const bool ascii = shared::replacement_is_ascii(
+            subject, ranges, replacement
+        );
+        char* destination = output_.reserve(
+            worker, i, output_size,
+            ascii ? CETYPE_EXT_ASCII : CETYPE_EXT_UTF8
+        );
+        shared::write_replacement(
+            subject, ranges, replacement, destination, output_size
+        );
+    }
+
+    CHARR_CXX_HELPER void run_sequential(
+        const shared::WorkerContext& context
+    )
+    {
+        const std::size_t size = static_cast<std::size_t>(
+            context.end-context.begin
+        );
+        std::vector<shared::StringView> working(size);
+        for (R_xlen_t i = context.begin; i < context.end; ++i) {
+            working[static_cast<std::size_t>(i-context.begin)] =
+                subjects_[static_cast<std::size_t>(i)];
+        }
+        std::vector<shared::CharacterClassRange> ranges;
+        shared::SliceArena storage;
+        bool all_missing = false;
+        for (std::size_t pattern_index = 0;
+                pattern_index < patterns_.size(); ++pattern_index) {
+            if (patterns_.is_na(pattern_index)) {
+                all_missing = true;
+                break;
+            }
+            const icu::UnicodeSet& pattern = patterns_.get(pattern_index);
+            const shared::StringView& replacement = replacements_[
+                pattern_index % replacements_.size()
+            ];
+            for (std::size_t i = 0; i < size; ++i) {
+                const shared::StringView subject = working[i];
+                if (subject.is_na())
+                    continue;
+                const std::size_t matched_bytes =
+                    shared::find_character_class_ranges(
+                        subject, pattern, merge_, ranges
+                    );
+                if (ranges.empty())
+                    continue;
+                if (replacement.is_na()) {
+                    working[i] = shared::StringView{
+                        nullptr, shared::missing_string_length,
+                        shared::StringEncoding::missing
+                    };
+                    continue;
+                }
+                const std::size_t output_size =
+                    shared::checked_replacement_size(
+                        subject, matched_bytes, ranges, replacement
+                    );
+                const bool ascii = sequential_subject_is_ascii(subject) &&
+                    io::is_ascii(
+                        replacement.ptr,
+                        static_cast<std::size_t>(replacement.len)
+                    );
+                char* destination = output_size > 0
+                    ? storage.allocate(output_size) : nullptr;
+                shared::write_replacement(
+                    subject, ranges, replacement,
+                    destination, output_size
+                );
+                working[i] = shared::StringView{
+                    output_size > 0 ? destination : replacement.ptr,
+                    static_cast<R_len_t>(output_size),
+                    ascii ? shared::StringEncoding::ascii
+                          : shared::StringEncoding::utf8
+                };
+            }
+        }
+        for (R_xlen_t i = context.begin; i < context.end; ++i) {
+            const shared::StringView& value = working[
+                static_cast<std::size_t>(i-context.begin)
+            ];
+            if (all_missing || value.is_na())
+                output_.set_na(context.worker, i);
+            else
+                output_.set(
+                    context.worker, i, io::as_charport_view(value)
+                );
+        }
+    }
+
+    const std::vector<shared::StringView>& subjects_;
+    const std::vector<shared::StringView>& replacements_;
+    const shared::CharacterClassSet& patterns_;
+    R_len_t output_length_;
+    bool merge_;
+    bool sequential_;
+    io::ParallelOutputBuilder& output_;
+};
+
 } // namespace search_class_replace
 
 using namespace search_class_replace;
@@ -331,6 +530,7 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_charclass(
 ) noexcept
 {
     CHARR_ENTRYPOINT_BEGIN();
+
 
     const bool vectorize = ci__prepare_arg_logical_1_notNA_r(
         vectorize_all, "vectorize_all"
@@ -379,6 +579,10 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_charclass(
             merge, "merge"
         );
     }
+    const bool sequential = !vectorize && pattern_length != 1;
+    const R_len_t tasks = sequential || pattern_length == 1
+        ? vectorize_length : pattern_length;
+    const shared::ParallelPlan plan = shared::parallel_plan(true, tasks);
 
     try {
         charport::Reader subject_reader;
@@ -401,6 +605,7 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_charclass(
         shared::CharacterClassSet character_classes;
         std::vector<shared::CharacterClassRange> ranges;
         io::OutputBuilder output(0);
+        io::ParallelOutputBuilder parallel_output;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -464,13 +669,29 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_charclass(
                     }
                     compile_patterns(patterns, character_classes);
 
-                    if (vectorize || pattern_length == 1) {
+                    if (plan.workers > 1) {
+                        parallel_output.reset(
+                            vectorize_length, plan.workers
+                        );
+                        Body body(
+                            subjects, replacements, character_classes,
+                            vectorize_length, merge_value, sequential,
+                            parallel_output
+                        );
+                        shared::run_parallel(plan, tasks, body);
+                        result = entry_protections.reprotect_one(
+                            parallel_output.to_sexp(), result_index
+                        );
+                    }
+
+                    if (plan.workers == 1 &&
+                            (vectorize || pattern_length == 1)) {
                         replace_vectorized(
                             subjects, replacements, character_classes,
                             vectorize_length, merge_value, ranges, output
                         );
                     }
-                    else {
+                    else if (plan.workers == 1) {
                         replace_sequential(
                             subjects, replacements, character_classes,
                             merge_value, sequential_output, ranges,
@@ -482,9 +703,11 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_charclass(
                     output.reset(0);
                 }
 
-                result = entry_protections.reprotect_one(
-                    output.to_sexp(), result_index
-                );
+                if (plan.workers == 1) {
+                    result = entry_protections.reprotect_one(
+                        output.to_sexp(), result_index
+                    );
+                }
                 CHARR_UNWIND_RETURN();
             }
         );

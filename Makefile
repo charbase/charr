@@ -4,14 +4,16 @@ VERSION := $(shell perl -aF: -ne 'print, exit if s/^Version:\s+//' DESCRIPTION)
 BUILD   := $(PACKAGE)_$(VERSION).tar.gz
 RLIBS   := $(shell Rscript -e 'cat(paste(.libPaths(), collapse = ":"))')
 INSTALL_CONFIGURE_ARGS ?=
+TEST_ALTREP_THREADS ?= 1,4
 # The code map is published as part of the pkgdown site, so it is generated
 # into pkgdown/assets, which pkgdown copies verbatim into docs/. Override
 # CODE_MAP_DIR to write a throwaway copy while iterating on the viewer.
 CODE_MAP_DIR ?= pkgdown/assets/code-map
-# Public stringr operations implemented by each optimized backend. The map has
-# one semantic entrypoint and one ABI shim per operation per backend, so
-# validate.R derives its expected counts from this one number.
-CODE_MAP_BACKEND_METHODS ?= 70
+# Public operations implemented by each optimized backend. The code-map
+# validator checks the two counts independently because their native APIs may
+# contain different entrypoints.
+CODE_MAP_BASE_BACKEND_METHODS ?= 70
+CODE_MAP_ALTREP_BACKEND_METHODS ?= 71
 LINT_EFFECT_ARGS := \
 	--effects tools/charr-lint/effects.tsv \
 	--effect-overrides tools/charr-lint/effect-overrides.tsv
@@ -41,6 +43,7 @@ LINT_CONVERTED := \
 	src/shared/line_split.cpp \
 	src/shared/native_to_utf8.cpp \
 	src/shared/nfc_normalizer.cpp \
+	src/shared/parallel.cpp \
 	src/shared/r_matrix.cpp \
 	src/shared/read_lines.cpp \
 	src/shared/regex_search.cpp \
@@ -252,7 +255,8 @@ code-map-current: lint-tool
 code-map-validate:
 	Rscript tools/charr-map/validate.R \
 	  "$(CODE_MAP_DIR)" "$(words $(LINT_CONVERTED))" \
-	  "$(CODE_MAP_BACKEND_METHODS)"
+	  "$(CODE_MAP_BASE_BACKEND_METHODS)" \
+	  "$(CODE_MAP_ALTREP_BACKEND_METHODS)"
 
 check: $(BUILD)
 	R CMD check --as-cran $<
@@ -373,7 +377,8 @@ test-locales:
 test: install-dev
 	@$(build_test_locales)
 	$(use_test_locales); \
-	cd tests && Rscript testthat.R
+	cd tests && CHARR_TEST_ALTREP_THREADS="$(TEST_ALTREP_THREADS)" \
+	  Rscript testthat.R
 
 # ICU-mode validation uses the same three-backend matrix with configure's
 # choice made explicit. The system target fails instead of falling back when
@@ -423,10 +428,12 @@ test-valgrind:
 
 # Documentation. The main vignette is also the README and the pkgdown home
 # page, rendered from one source so the three cannot drift apart.
-BENCH_LABEL := optimized-backends-record-20260731
+BENCH_LABEL ?=
 
 figures:
-	Rscript inst/extra/benchmark/make-vignette-figures.R $(BENCH_LABEL)
+	@test -n "$(BENCH_LABEL)" || \
+	  { echo "set BENCH_LABEL to a local benchmark run" >&2; exit 1; }
+	Rscript tools/benchmark/make-vignette-figures.R $(BENCH_LABEL)
 
 vignette:
 	mkdir -p local/cache

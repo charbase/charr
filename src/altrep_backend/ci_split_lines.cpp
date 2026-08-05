@@ -32,6 +32,7 @@
 
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "io/string_view.h"
 #include "io/utf8_output.h"
@@ -149,6 +150,86 @@ CHARR_CXX_HELPER void build_store(
     }
     output = builder.release_store();
 }
+
+
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const std::vector<shared::StringView>& normalized,
+        const int* omit_values,
+        R_len_t source_length,
+        R_len_t omit_length,
+        R_len_t vectorize_length,
+        std::vector<io::OutputStore>& stores
+    ) noexcept
+        : normalized_(normalized), omit_values_(omit_values),
+          source_length_(source_length), omit_length_(omit_length),
+          vectorize_length_(vectorize_length), stores_(stores)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        shared::line_split::ScanResult scan;
+        io::OutputBuilder builder(0);
+
+        while (context.next_chunk()) {
+            const R_len_t begin = static_cast<R_len_t>(context.begin);
+            const R_len_t end = static_cast<R_len_t>(context.end);
+
+            if (source_length_ == 1) {
+                const shared::StringView& value = normalized_[0];
+                for (R_len_t i = begin; i < end; ++i) {
+                    split_one(i, value, scan, builder);
+                }
+                continue;
+            }
+
+            for (R_len_t lane = begin; lane < end; ++lane) {
+                const shared::StringView& value = normalized_[
+                    static_cast<std::size_t>(lane)
+                ];
+                for (R_len_t i = lane; i < vectorize_length_;
+                        i += source_length_) {
+                    split_one(i, value, scan, builder);
+                }
+            }
+        }
+    }
+
+private:
+    CHARR_CXX_HELPER void split_one(
+        R_len_t i,
+        const shared::StringView& value,
+        shared::line_split::ScanResult& scan,
+        io::OutputBuilder& builder
+    )
+    {
+        io::OutputStore& output = stores_[static_cast<std::size_t>(i)];
+        if (value.is_na()) {
+            output = io::scalar_store(io::missing_output_record());
+            return;
+        }
+
+        build_store(
+            value,
+            omit_values_[i % omit_length_] != 0,
+            true,
+            scan,
+            builder,
+            output
+        );
+    }
+
+    const std::vector<shared::StringView>& normalized_;
+    const int* omit_values_;
+    R_len_t source_length_;
+    R_len_t omit_length_;
+    R_len_t vectorize_length_;
+    std::vector<io::OutputStore>& stores_;
+};
 
 
 } // namespace split_lines
@@ -289,33 +370,49 @@ CHARR_ENTRYPOINT SEXP ci_split_lines(
                 for (R_len_t i = 0; i < vectorize_length; ++i)
                     stores.emplace_back(0, 0);
 
-                // Visit recycled outputs source by source, matching the
-                // original container's traversal and allocation order.
-                for (R_len_t i = 0; i < vectorize_length;
-                        i = vectorize_next(
-                            i, source_length, vectorize_length
-                        )) {
-                    io::OutputStore& output = stores[
-                        static_cast<std::size_t>(i)
-                    ];
-                    const shared::StringView& value = normalized[
-                        static_cast<std::size_t>(i % source_length)
-                    ];
-                    if (value.is_na()) {
-                        output = io::scalar_store(
-                            io::missing_output_record()
-                        );
-                        continue;
-                    }
+                const R_len_t tasks = vectorize_length == 0
+                    ? 0 : source_length == 1
+                        ? vectorize_length : source_length;
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, tasks
+                );
+                if (plan.workers == 1) {
+                    // Visit recycled outputs source by source, matching the
+                    // original container's traversal and allocation order.
+                    for (R_len_t i = 0; i < vectorize_length;
+                            i = vectorize_next(
+                                i, source_length, vectorize_length
+                            )) {
+                        io::OutputStore& output = stores[
+                            static_cast<std::size_t>(i)
+                        ];
+                        const shared::StringView& value = normalized[
+                            static_cast<std::size_t>(i % source_length)
+                        ];
+                        if (value.is_na()) {
+                            output = io::scalar_store(
+                                io::missing_output_record()
+                            );
+                            continue;
+                        }
 
-                    build_store(
-                        value,
-                        omit_values[i % omit_length] != 0,
-                        true,
-                        scan,
-                        builder,
-                        output
+                        build_store(
+                            value,
+                            omit_values[i % omit_length] != 0,
+                            true,
+                            scan,
+                            builder,
+                            output
+                        );
+                    }
+                }
+                else {
+                    Body body(
+                        normalized, omit_values,
+                        source_length, omit_length, vectorize_length,
+                        stores
                     );
+                    shared::run_parallel(plan, tasks, body);
                 }
 
                 // All child Stores are complete before list allocation and

@@ -43,7 +43,7 @@ namespace charr { namespace altrep_backend {
 
 // compare.cpp:
 CHARR_ENTRYPOINT SEXP ci_cmp_equiv(
-    SEXP e1, SEXP e2, SEXP opts_collator=R_NilValue
+    SEXP e1, SEXP e2, SEXP opts_collator
 ) noexcept;
 
 // order_rank.cpp
@@ -70,9 +70,7 @@ CHARR_ENTRYPOINT SEXP ci_flatten(
     SEXP omit_empty=Rf_ScalarLogical(FALSE)
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_join(
-    SEXP strlist, SEXP sep=Rf_mkString(""),
-    SEXP collapse=R_NilValue,
-    SEXP ignore_null=Rf_ScalarLogical(FALSE)
+    SEXP strlist, SEXP sep, SEXP collapse, SEXP ignore_null
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_dup(SEXP str, SEXP times) noexcept;
 
@@ -86,22 +84,19 @@ CHARR_ENTRYPOINT SEXP ci_reverse(SEXP s) noexcept;
 // sub.cpp
 CHARR_ENTRYPOINT SEXP ci_sub(
     SEXP str, SEXP from, SEXP to, SEXP length,
-    SEXP use_matrix=Rf_ScalarLogical(TRUE),
-    SEXP ignore_negative_length=Rf_ScalarLogical(FALSE)
+    SEXP use_matrix, SEXP ignore_negative_length
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_sub_replacement(
     SEXP str, SEXP from, SEXP to, SEXP length, SEXP omit_na, SEXP value,
-    SEXP use_matrix=Rf_ScalarLogical(TRUE)
+    SEXP use_matrix
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_sub_all(
     SEXP str, SEXP from, SEXP to, SEXP length,
-    SEXP use_matrix=Rf_ScalarLogical(TRUE),
-    SEXP ignore_negative_length=Rf_ScalarLogical(TRUE)
+    SEXP use_matrix, SEXP ignore_negative_length
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_sub_replacement_all(
     SEXP str, SEXP from, SEXP to, SEXP length,
-    SEXP omit_na, SEXP value,
-    SEXP use_matrix=Rf_ScalarLogical(TRUE)
+    SEXP omit_na, SEXP value, SEXP use_matrix
 ) noexcept;
 
 // encoding_management.cpp:
@@ -110,25 +105,28 @@ CHARR_ENTRYPOINT SEXP ci_enc_info(SEXP enc=R_NilValue) noexcept;
 
 // trim.cpp:
 CHARR_ENTRYPOINT SEXP ci_trim_both(
-    SEXP str, SEXP pattern, SEXP negate=Rf_ScalarLogical(FALSE)
+    SEXP str, SEXP pattern, SEXP negate
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_trim_left(
-    SEXP str, SEXP pattern, SEXP negate=Rf_ScalarLogical(FALSE)
+    SEXP str, SEXP pattern, SEXP negate
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_trim_right(
-    SEXP str, SEXP pattern, SEXP negate=Rf_ScalarLogical(FALSE)
+    SEXP str, SEXP pattern, SEXP negate
 ) noexcept;
 
 
 // encoding_conversion.cpp:
-CHARR_ENTRYPOINT SEXP ci_encode(SEXP str, SEXP from=R_NilValue, SEXP to=R_NilValue,
-    SEXP to_raw=Rf_ScalarLogical(FALSE)) noexcept;
+CHARR_ENTRYPOINT SEXP ci_encode_string(
+    SEXP str, SEXP from, SEXP to, SEXP to_raw
+) noexcept;
+CHARR_ENTRYPOINT SEXP ci_encode_raw(
+    SEXP str, SEXP from, SEXP to, SEXP to_raw
+) noexcept;
 
 
 // pad.cpp
 CHARR_ENTRYPOINT SEXP ci_pad(
-    SEXP str, SEXP width, SEXP side=Rf_mkString("left"),
-    SEXP pad=Rf_mkString(" "), SEXP use_length=Rf_ScalarLogical(FALSE)
+    SEXP str, SEXP width, SEXP side, SEXP pad, SEXP use_length
 ) noexcept;
 
 
@@ -144,15 +142,15 @@ CHARR_ENTRYPOINT SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent=Rf_Scalar
 
 // trans_title.cpp:
 CHARR_ENTRYPOINT SEXP ci_trans_totitle(
-    SEXP str, SEXP opts_brkiter=R_NilValue
+    SEXP str, SEXP opts_brkiter
 ) noexcept;
 
 // trans_casemap.cpp:
 CHARR_ENTRYPOINT SEXP ci_trans_tolower(
-    SEXP str, SEXP locale=R_NilValue
+    SEXP str, SEXP locale
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_trans_toupper(
-    SEXP str, SEXP locale=R_NilValue
+    SEXP str, SEXP locale
 ) noexcept;
 
 // trans_normalization.cpp:
@@ -163,156 +161,139 @@ CHARR_ENTRYPOINT SEXP ci_read_lines(
     SEXP path, SEXP encoding
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_split_lines(
-    SEXP str, SEXP omit_empty=Rf_ScalarLogical(FALSE)
+    SEXP str, SEXP omit_empty
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_split_lines1(SEXP str) noexcept;
 
 CHARR_ENTRYPOINT SEXP ci_replace_na(
-    SEXP str, SEXP replacement=Rf_mkString("NA")
+    SEXP str, SEXP replacement
 ) noexcept;
 
-CHARR_ENTRYPOINT SEXP ci_detect_coll(SEXP str, SEXP pattern,
-    SEXP negate=Rf_ScalarLogical(FALSE), SEXP max_count=Rf_ScalarInteger(-1),
-    SEXP opts_collator=R_NilValue) noexcept;
-CHARR_ENTRYPOINT SEXP ci_count_coll(
-    SEXP str, SEXP pattern, SEXP opts_collator=R_NilValue
+CHARR_ENTRYPOINT SEXP ci_detect_coll(
+    SEXP str, SEXP pattern, SEXP negate, SEXP max_count,
+    SEXP opts_collator
 ) noexcept;
-CHARR_ENTRYPOINT SEXP ci_locate_all_coll(SEXP str, SEXP pattern,
-    SEXP omit_no_match=Rf_ScalarLogical(FALSE),
-    SEXP opts_collator=R_NilValue,
-    SEXP get_length=Rf_ScalarLogical(FALSE)
+CHARR_ENTRYPOINT SEXP ci_count_coll(
+    SEXP str, SEXP pattern, SEXP opts_collator
+) noexcept;
+CHARR_ENTRYPOINT SEXP ci_locate_all_coll(
+    SEXP str, SEXP pattern, SEXP omit_no_match,
+    SEXP opts_collator, SEXP get_length
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_locate_first_coll(
-    SEXP str, SEXP pattern, SEXP opts_collator=R_NilValue,
-    SEXP get_length=Rf_ScalarLogical(FALSE)
+    SEXP str, SEXP pattern, SEXP opts_collator, SEXP get_length
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_extract_first_coll(
-    SEXP str, SEXP pattern, SEXP opts_collator=R_NilValue
+    SEXP str, SEXP pattern, SEXP opts_collator
 ) noexcept;
-CHARR_ENTRYPOINT SEXP ci_extract_all_coll(SEXP str, SEXP pattern,
-    SEXP simplify=Rf_ScalarLogical(FALSE),
-    SEXP omit_no_match=Rf_ScalarLogical(FALSE),
-    SEXP opts_collator=R_NilValue) noexcept;
+CHARR_ENTRYPOINT SEXP ci_extract_all_coll(
+    SEXP str, SEXP pattern, SEXP simplify,
+    SEXP omit_no_match, SEXP opts_collator
+) noexcept;
 CHARR_ENTRYPOINT SEXP ci_replace_all_coll(
-    SEXP str, SEXP pattern, SEXP replacement,
-    SEXP vectorize_all=Rf_ScalarLogical(TRUE),
-    SEXP opts_collator=R_NilValue
+    SEXP str, SEXP pattern, SEXP replacement, SEXP vectorize_all,
+    SEXP opts_collator
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_replace_first_coll(
-    SEXP str, SEXP pattern, SEXP replacement,
-    SEXP opts_collator=R_NilValue
+    SEXP str, SEXP pattern, SEXP replacement, SEXP opts_collator
 ) noexcept;
-CHARR_ENTRYPOINT SEXP ci_split_coll(SEXP str, SEXP split, SEXP n=Rf_ScalarInteger(-1),
-    SEXP omit_empty=Rf_ScalarLogical(FALSE), SEXP tokens_only=Rf_ScalarLogical(FALSE),
-    SEXP simplify=Rf_ScalarLogical(FALSE),
-    SEXP opts_collator=R_NilValue) noexcept;
-CHARR_ENTRYPOINT SEXP ci_endswith_coll(SEXP str, SEXP pattern, SEXP to=Rf_ScalarInteger(-1),
-    SEXP negate=Rf_ScalarLogical(FALSE),
-    SEXP opts_collator=R_NilValue) noexcept;
-CHARR_ENTRYPOINT SEXP ci_startswith_coll(SEXP str, SEXP pattern, SEXP from=Rf_ScalarInteger(1),
-    SEXP negate=Rf_ScalarLogical(FALSE),
-    SEXP opts_collator=R_NilValue) noexcept;
+CHARR_ENTRYPOINT SEXP ci_split_coll(
+    SEXP str, SEXP split, SEXP n, SEXP omit_empty,
+    SEXP tokens_only, SEXP simplify, SEXP opts_collator
+) noexcept;
+CHARR_ENTRYPOINT SEXP ci_endswith_coll(
+    SEXP str, SEXP pattern, SEXP to, SEXP negate,
+    SEXP opts_collator
+) noexcept;
+CHARR_ENTRYPOINT SEXP ci_startswith_coll(
+    SEXP str, SEXP pattern, SEXP from, SEXP negate,
+    SEXP opts_collator
+) noexcept;
 
-CHARR_ENTRYPOINT SEXP ci_detect_fixed(SEXP str, SEXP pattern,
-    SEXP negate=Rf_ScalarLogical(FALSE), SEXP max_count=Rf_ScalarInteger(-1),
-    SEXP opts_fixed=R_NilValue) noexcept;
+CHARR_ENTRYPOINT SEXP ci_detect_fixed(
+    SEXP str, SEXP pattern, SEXP negate, SEXP max_count,
+    SEXP opts_fixed
+) noexcept;
 CHARR_ENTRYPOINT SEXP ci_count_fixed(
-    SEXP str, SEXP pattern, SEXP opts_fixed=R_NilValue
+    SEXP str, SEXP pattern, SEXP opts_fixed
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_locate_all_fixed(
-    SEXP str, SEXP pattern,
-    SEXP omit_no_match=Rf_ScalarLogical(FALSE), SEXP opts_fixed=R_NilValue,
-    SEXP get_length=Rf_ScalarLogical(FALSE)
+    SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_fixed,
+    SEXP get_length
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_locate_first_fixed(
-    SEXP str, SEXP pattern, SEXP opts_fixed=R_NilValue,
-    SEXP get_length=Rf_ScalarLogical(FALSE)
+    SEXP str, SEXP pattern, SEXP opts_fixed, SEXP get_length
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_extract_first_fixed(
-    SEXP str, SEXP pattern, SEXP opts_fixed=R_NilValue
+    SEXP str, SEXP pattern, SEXP opts_fixed
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_extract_all_fixed(
-    SEXP str, SEXP pattern,
-    SEXP simplify=Rf_ScalarLogical(FALSE),
-    SEXP omit_no_match=Rf_ScalarLogical(FALSE), SEXP opts_fixed=R_NilValue
+    SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_match,
+    SEXP opts_fixed
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_replace_all_fixed(
-    SEXP str, SEXP pattern, SEXP replacement,
-    SEXP vectorize_all=Rf_ScalarLogical(TRUE),
-    SEXP opts_fixed=R_NilValue
+    SEXP str, SEXP pattern, SEXP replacement, SEXP vectorize_all,
+    SEXP opts_fixed
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_replace_first_fixed(
-    SEXP str, SEXP pattern, SEXP replacement,
-    SEXP opts_fixed=R_NilValue
+    SEXP str, SEXP pattern, SEXP replacement, SEXP opts_fixed
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_split_fixed(
-    SEXP str, SEXP split, SEXP n=Rf_ScalarInteger(-1),
-    SEXP omit_empty=Rf_ScalarLogical(FALSE),
-    SEXP tokens_only=Rf_ScalarLogical(FALSE),
-    SEXP simplify=Rf_ScalarLogical(FALSE), SEXP opts_fixed=R_NilValue
+    SEXP str, SEXP split, SEXP n, SEXP omit_empty,
+    SEXP tokens_only, SEXP simplify, SEXP opts_fixed
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_endswith_fixed(
-    SEXP str, SEXP pattern, SEXP to=Rf_ScalarInteger(-1),
-    SEXP negate=Rf_ScalarLogical(FALSE),
-    SEXP opts_fixed=R_NilValue
+    SEXP str, SEXP pattern, SEXP to, SEXP negate,
+    SEXP opts_fixed
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_startswith_fixed(
-    SEXP str, SEXP pattern, SEXP from=Rf_ScalarInteger(1),
-    SEXP negate=Rf_ScalarLogical(FALSE),
-    SEXP opts_fixed=R_NilValue
+    SEXP str, SEXP pattern, SEXP from, SEXP negate,
+    SEXP opts_fixed
 ) noexcept;
 
 CHARR_ENTRYPOINT SEXP ci_detect_regex(
-    SEXP str, SEXP pattern,
-    SEXP negate=Rf_ScalarLogical(FALSE),
-    SEXP max_count=Rf_ScalarInteger(-1),
-    SEXP opts_regex=R_NilValue
+    SEXP str, SEXP pattern, SEXP negate, SEXP max_count,
+    SEXP opts_regex
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_count_regex(
-    SEXP str, SEXP pattern, SEXP opts_regex=R_NilValue
+    SEXP str, SEXP pattern, SEXP opts_regex
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_locate_all_regex(
-    SEXP str, SEXP pattern,
-    SEXP omit_no_match=Rf_ScalarLogical(FALSE),
-    SEXP opts_regex=R_NilValue,
-    SEXP capture_groups=Rf_ScalarLogical(FALSE),
-    SEXP get_length=Rf_ScalarLogical(FALSE)
+    SEXP str, SEXP pattern, SEXP omit_no_match, SEXP opts_regex,
+    SEXP capture_groups, SEXP get_length
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_locate_first_regex(
-    SEXP str, SEXP pattern, SEXP opts_regex=R_NilValue,
-    SEXP capture_groups=Rf_ScalarLogical(FALSE),
-    SEXP get_length=Rf_ScalarLogical(FALSE)
+    SEXP str, SEXP pattern, SEXP opts_regex, SEXP capture_groups,
+    SEXP get_length
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_replace_all_regex(
-    SEXP str, SEXP pattern, SEXP replacement,
-    SEXP vectorize_all=Rf_ScalarLogical(FALSE), SEXP opts_regex=R_NilValue
+    SEXP str, SEXP pattern, SEXP replacement, SEXP vectorize_all,
+    SEXP opts_regex
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_replace_first_regex(
-    SEXP str, SEXP pattern, SEXP replacement,
-    SEXP opts_regex=R_NilValue
+    SEXP str, SEXP pattern, SEXP replacement, SEXP opts_regex
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_split_regex(
-    SEXP str, SEXP pattern, SEXP n=Rf_ScalarInteger(-1),
-    SEXP omit_empty=Rf_ScalarLogical(FALSE), SEXP tokens_only=Rf_ScalarLogical(FALSE),
-    SEXP simplify=Rf_ScalarLogical(FALSE), SEXP opts_regex=R_NilValue
+    SEXP str, SEXP pattern, SEXP n, SEXP omit_empty,
+    SEXP tokens_only, SEXP simplify, SEXP opts_regex
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_extract_first_regex(
-    SEXP str, SEXP pattern, SEXP opts_regex=R_NilValue
+    SEXP str, SEXP pattern, SEXP opts_regex
 ) noexcept;
-CHARR_ENTRYPOINT SEXP ci_extract_all_regex(SEXP str, SEXP pattern,
-    SEXP simplify=Rf_ScalarLogical(FALSE), SEXP omit_no_match=Rf_ScalarLogical(FALSE),
-    SEXP opts_regex=R_NilValue) noexcept;
-CHARR_ENTRYPOINT SEXP ci_match_first_regex(SEXP str, SEXP pattern,
-    SEXP cg_missing=Rf_ScalarString(NA_STRING),
-    SEXP opts_regex=R_NilValue) noexcept;
-CHARR_ENTRYPOINT SEXP ci_match_all_regex(SEXP str, SEXP pattern,
-    SEXP omit_no_match=Rf_ScalarLogical(FALSE),
-    SEXP cg_missing=Rf_ScalarString(NA_STRING),
-    SEXP opts_regex=R_NilValue) noexcept;
+CHARR_ENTRYPOINT SEXP ci_extract_all_regex(
+    SEXP str, SEXP pattern, SEXP simplify, SEXP omit_no_match,
+    SEXP opts_regex
+) noexcept;
+CHARR_ENTRYPOINT SEXP ci_match_first_regex(
+    SEXP str, SEXP pattern, SEXP cg_missing, SEXP opts_regex
+) noexcept;
+CHARR_ENTRYPOINT SEXP ci_match_all_regex(
+    SEXP str, SEXP pattern, SEXP omit_no_match,
+    SEXP cg_missing, SEXP opts_regex
+) noexcept;
 CHARR_ENTRYPOINT SEXP ci_replace_all_charclass(
-    SEXP str, SEXP pattern, SEXP replacement,
-    SEXP merge=Rf_ScalarLogical(FALSE),
-    SEXP vectorize_all=Rf_ScalarLogical(TRUE)
+    SEXP str, SEXP pattern, SEXP replacement, SEXP merge,
+    SEXP vectorize_all
 ) noexcept;
 
 CHARR_ENTRYPOINT SEXP ci_extract_all_boundaries(
@@ -321,7 +302,7 @@ CHARR_ENTRYPOINT SEXP ci_extract_all_boundaries(
     SEXP opts_brkiter=R_NilValue
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_extract_first_boundaries(
-    SEXP str, SEXP opts_brkiter=R_NilValue
+    SEXP str, SEXP opts_brkiter
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_locate_all_boundaries(
     SEXP str, SEXP omit_no_match=Rf_ScalarLogical(FALSE),
@@ -329,9 +310,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_boundaries(
     SEXP get_length=Rf_ScalarLogical(FALSE)
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_locate_first_boundaries(
-    SEXP str,
-    SEXP opts_brkiter=R_NilValue,
-    SEXP get_length=Rf_ScalarLogical(FALSE)
+    SEXP str, SEXP opts_brkiter, SEXP get_length
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_split_boundaries(
     SEXP str, SEXP n=Rf_ScalarInteger(-1),
@@ -339,7 +318,7 @@ CHARR_ENTRYPOINT SEXP ci_split_boundaries(
     SEXP simplify=Rf_ScalarLogical(FALSE), SEXP opts_brkiter=R_NilValue
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_count_boundaries(
-    SEXP str, SEXP opts_brkiter=R_NilValue
+    SEXP str, SEXP opts_brkiter
 ) noexcept;
 
 

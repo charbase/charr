@@ -47,6 +47,10 @@ public:
         const StringView& source
     );
 
+    CHARR_CXX_HELPER CaseMapInput prepare_utf8(
+        const StringView& source
+    );
+
     CHARR_NEUTRAL_HELPER bool has_ascii_fast_path(
         const CaseMapInput& input
     ) const noexcept;
@@ -69,6 +73,9 @@ private:
 
     CHARR_CXX_HELPER void close() noexcept;
     CHARR_CXX_HELPER bool open(UErrorCode& status) noexcept;
+    CHARR_CXX_HELPER CaseMapInput prepare_impl(
+        const StringView& source, NativeToUtf8* converter
+    );
 };
 
 } // namespace shared

@@ -32,6 +32,7 @@
 
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "io/string_view.h"
 #include "io/utf8_output.h"
@@ -249,12 +250,242 @@ CHARR_NEUTRAL_HELPER cetype_ext_t output_encoding(
     return ascii ? CETYPE_EXT_ASCII : CETYPE_EXT_UTF8;
 }
 
+
+class MissingBody final : public ParallelBody {
+public:
+    CHARR_NEUTRAL_HELPER explicit MissingBody(
+        io::ParallelOutputBuilder& builder
+    ) noexcept : builder_(builder) {}
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        while (context.next_chunk()) {
+            for (R_xlen_t i = context.begin; i < context.end; ++i)
+                builder_.set_na(context.worker, i);
+        }
+    }
+
+private:
+    io::ParallelOutputBuilder& builder_;
+};
+
+
+class DirectPairBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER DirectPairBody(
+        const vector<charport::StrViews>& views,
+        const vector<R_len_t>& lengths, R_len_t rows,
+        io::ParallelOutputBuilder& builder
+    ) noexcept
+        : views_(views), lengths_(lengths), rows_(rows), builder_(builder)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        const R_len_t first_length = lengths_[0];
+        const R_len_t second_length = lengths_[1];
+        const bool first_scalar = first_length == 1;
+        const bool second_scalar = second_length == 1;
+        const shared::StringView first_scalar_value = first_scalar
+            ? direct_input(views_[0][0])
+            : shared::StringView{
+                nullptr, 0, shared::StringEncoding::missing
+            };
+        const shared::StringView second_scalar_value = second_scalar
+            ? direct_input(views_[1][0])
+            : shared::StringView{
+                nullptr, 0, shared::StringEncoding::missing
+            };
+        while (context.next_chunk()) {
+            for (R_xlen_t task = context.begin; task < context.end; ++task) {
+                const R_len_t row = static_cast<R_len_t>(task);
+                const shared::StringView first = first_scalar
+                    ? first_scalar_value
+                    : direct_input(views_[0][
+                        first_length == rows_ ? row : row % first_length
+                    ]);
+                const shared::StringView second = second_scalar
+                    ? second_scalar_value
+                    : direct_input(views_[1][
+                        second_length == rows_ ? row : row % second_length
+                    ]);
+                if (first.is_na() || second.is_na()) {
+                    builder_.set_na(context.worker, row);
+                    continue;
+                }
+                const size_t first_bytes = static_cast<size_t>(first.len);
+                const size_t second_bytes = static_cast<size_t>(second.len);
+                if (first_bytes > static_cast<size_t>(POW_2_31_M_1)-
+                        second_bytes) {
+                    throw StriException(MSG__CHARSXP_2147483647);
+                }
+                char* destination = builder_.reserve(
+                    context.worker, row, first_bytes+second_bytes,
+                    output_encoding(
+                        first.enc == shared::StringEncoding::ascii &&
+                        second.enc == shared::StringEncoding::ascii
+                    )
+                );
+                if (first_bytes > 0)
+                    memcpy(destination, first.ptr, first_bytes);
+                if (second_bytes > 0)
+                    memcpy(destination+first_bytes, second.ptr, second_bytes);
+            }
+        }
+    }
+
+private:
+    const vector<charport::StrViews>& views_;
+    const vector<R_len_t>& lengths_;
+    R_len_t rows_;
+    io::ParallelOutputBuilder& builder_;
+};
+
+
+class RowsBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER RowsBody(
+        const vector<shared::join::Column>& columns,
+        const shared::StringView& separator, R_len_t rows,
+        io::ParallelOutputBuilder& builder
+    ) noexcept
+        : columns_(columns), separator_(separator), rows_(rows),
+          builder_(builder)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        while (context.next_chunk()) {
+            for (R_xlen_t task = context.begin; task < context.end; ++task) {
+                const R_len_t row = static_cast<R_len_t>(task);
+                shared::join::FlattenPlan plan;
+                shared::join::plan_join_row(
+                    columns_.data(), columns_.size(),
+                    static_cast<size_t>(row), static_cast<size_t>(rows_),
+                    separator_, plan
+                );
+                if (plan.has_na) {
+                    builder_.set_na(context.worker, row);
+                    continue;
+                }
+                if (plan.too_large)
+                    throw StriException(MSG__CHARSXP_2147483647);
+                char* destination = builder_.reserve(
+                    context.worker, row, plan.bytes,
+                    output_encoding(plan.ascii)
+                );
+                shared::join::write_join_row(
+                    columns_.data(), columns_.size(),
+                    static_cast<size_t>(row), static_cast<size_t>(rows_),
+                    separator_, destination
+                );
+            }
+        }
+    }
+
+private:
+    const vector<shared::join::Column>& columns_;
+    shared::StringView separator_;
+    R_len_t rows_;
+    io::ParallelOutputBuilder& builder_;
+};
+
+
+class CollapsePlanBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER CollapsePlanBody(
+        const vector<shared::join::Column>& columns,
+        const shared::StringView& separator, R_len_t rows,
+        vector<shared::join::FlattenPlan>& plans
+    ) noexcept
+        : columns_(columns), separator_(separator), rows_(rows), plans_(plans)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        while (context.next_chunk()) {
+            for (R_xlen_t task = context.begin; task < context.end; ++task) {
+                const size_t row = static_cast<size_t>(task);
+                shared::join::plan_join_row(
+                    columns_.data(), columns_.size(), row,
+                    static_cast<size_t>(rows_), separator_, plans_[row]
+                );
+            }
+        }
+    }
+
+private:
+    const vector<shared::join::Column>& columns_;
+    shared::StringView separator_;
+    R_len_t rows_;
+    vector<shared::join::FlattenPlan>& plans_;
+};
+
+
+class CollapseWriteBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER CollapseWriteBody(
+        const vector<shared::join::Column>& columns,
+        const shared::StringView& separator,
+        const shared::StringView& collapse, R_len_t rows,
+        const vector<size_t>& offsets, char* output
+    ) noexcept
+        : columns_(columns), separator_(separator), collapse_(collapse),
+          rows_(rows), offsets_(offsets), output_(output)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        while (context.next_chunk()) {
+            for (R_xlen_t task = context.begin; task < context.end; ++task) {
+                const size_t row = static_cast<size_t>(task);
+                char* destination = output_;
+                if (offsets_[row] > 0)
+                    destination += offsets_[row];
+                if (row > 0 && collapse_.len > 0) {
+                    const size_t collapse_bytes =
+                        static_cast<size_t>(collapse_.len);
+                    memcpy(destination, collapse_.ptr, collapse_bytes);
+                    destination += collapse_bytes;
+                }
+                shared::join::write_join_row(
+                    columns_.data(), columns_.size(), row,
+                    static_cast<size_t>(rows_), separator_, destination
+                );
+            }
+        }
+    }
+
+private:
+    const vector<shared::join::Column>& columns_;
+    shared::StringView separator_;
+    shared::StringView collapse_;
+    R_len_t rows_;
+    const vector<size_t>& offsets_;
+    char* output_;
+};
+
 } // namespace join_frame
 CHARR_ENTRYPOINT SEXP ci_join(
     SEXP strlist, SEXP sep, SEXP collapse, SEXP ignore_null
 ) noexcept
 {
     CHARR_ENTRYPOINT_BEGIN();
+
 
     const bool collapse_output = !Rf_isNull(collapse);
     const bool remove_empty = ci__prepare_arg_logical_1_notNA_r(
@@ -295,7 +526,9 @@ CHARR_ENTRYPOINT SEXP ci_join(
             static_cast<size_t>(column_count)
         );
         vector<shared::join::FlattenPlan> row_plans;
+        vector<size_t> row_offsets;
         io::OutputBuilder builder(0);
+        io::ParallelOutputBuilder parallel_builder;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -328,6 +561,8 @@ CHARR_ENTRYPOINT SEXP ci_join(
                         join_frame::recycling_length(
                             lengths, recycling_warning
                         );
+                    const shared::ParallelPlan parallel_plan =
+                        shared::parallel_plan(true, row_count);
                     if (row_count <= 0) {
                         builder.reset(0);
                         result = entry_protections.reprotect_one(
@@ -348,6 +583,19 @@ CHARR_ENTRYPOINT SEXP ci_join(
                     const charport::StrView separator_raw =
                         row_separator_reader.view(0);
                     if (separator_raw.is_na()) {
+                        if (parallel_plan.workers > 1) {
+                            parallel_builder.reset(
+                                row_count, parallel_plan.workers
+                            );
+                            join_frame::MissingBody body(parallel_builder);
+                            shared::run_parallel(
+                                parallel_plan, row_count, body
+                            );
+                            result = entry_protections.reprotect_one(
+                                parallel_builder.to_sexp(), result_index
+                            );
+                            break;
+                        }
                         builder.reset(row_count);
                         for (R_len_t row = 0; row < row_count; ++row)
                             builder.set_na(row);
@@ -396,6 +644,22 @@ CHARR_ENTRYPOINT SEXP ci_join(
                         join_frame::are_direct_inputs(row_views[0]) &&
                         join_frame::are_direct_inputs(row_views[1]);
                     if (direct_pair) {
+                        if (parallel_plan.workers > 1) {
+                            parallel_builder.reset(
+                                row_count, parallel_plan.workers
+                            );
+                            join_frame::DirectPairBody body(
+                                row_views, lengths, row_count,
+                                parallel_builder
+                            );
+                            shared::run_parallel(
+                                parallel_plan, row_count, body
+                            );
+                            result = entry_protections.reprotect_one(
+                                parallel_builder.to_sexp(), result_index
+                            );
+                            break;
+                        }
                         const R_len_t first_length = lengths[0];
                         const R_len_t second_length = lengths[1];
                         const bool first_scalar = first_length == 1;
@@ -504,6 +768,23 @@ CHARR_ENTRYPOINT SEXP ci_join(
                         }
                     }
                     join_frame::point_columns(inputs, columns);
+
+                    if (parallel_plan.workers > 1) {
+                        parallel_builder.reset(
+                            row_count, parallel_plan.workers
+                        );
+                        join_frame::RowsBody body(
+                            columns, separator, row_count,
+                            parallel_builder
+                        );
+                        shared::run_parallel(
+                            parallel_plan, row_count, body
+                        );
+                        result = entry_protections.reprotect_one(
+                            parallel_builder.to_sexp(), result_index
+                        );
+                        break;
+                    }
 
                     row_plans.resize(static_cast<size_t>(row_count));
                     for (R_len_t row = 0; row < row_count; ++row) {
@@ -736,6 +1017,90 @@ CHARR_ENTRYPOINT SEXP ci_join(
                 }
 
                 join_frame::point_columns(inputs, columns);
+                const shared::ParallelPlan collapse_plan =
+                    shared::parallel_plan(true, row_count);
+                if (collapse_plan.workers > 1) {
+                    row_plans.resize(static_cast<size_t>(row_count));
+                    join_frame::CollapsePlanBody plan_body(
+                        columns, separator, row_count, row_plans
+                    );
+                    shared::run_parallel(
+                        collapse_plan, row_count, plan_body
+                    );
+
+                    bool has_na = false;
+                    for (R_len_t row = 0; row < row_count; ++row) {
+                        if (row_plans[static_cast<size_t>(row)].has_na) {
+                            has_na = true;
+                            break;
+                        }
+                    }
+                    if (has_na) {
+                        builder.reset(1);
+                        builder.set_na(0);
+                        result = entry_protections.reprotect_one(
+                            builder.to_sexp(), result_index
+                        );
+                        break;
+                    }
+
+                    const size_t limit =
+                        static_cast<size_t>(POW_2_31_M_1);
+                    const size_t collapse_bytes =
+                        static_cast<size_t>(collapse_value.len);
+                    const bool collapse_ascii =
+                        collapse_value.enc ==
+                            shared::StringEncoding::ascii ||
+                        (collapse_value.enc ==
+                            shared::StringEncoding::ascii_or_utf8 &&
+                            join_frame::is_ascii(
+                                collapse_value.ptr, collapse_value.len
+                            ));
+                    size_t total_bytes = 0;
+                    bool too_large = false;
+                    bool ascii = true;
+                    row_offsets.assign(
+                        static_cast<size_t>(row_count), 0
+                    );
+                    for (R_len_t row = 0; row < row_count; ++row) {
+                        const size_t index = static_cast<size_t>(row);
+                        const shared::join::FlattenPlan& row_plan =
+                            row_plans[index];
+                        row_offsets[index] = total_bytes;
+                        const size_t leading_bytes = row > 0
+                            ? collapse_bytes : 0;
+                        if (row_plan.too_large ||
+                                leading_bytes > limit-total_bytes ||
+                                row_plan.bytes >
+                                    limit-total_bytes-leading_bytes) {
+                            too_large = true;
+                            break;
+                        }
+                        total_bytes += leading_bytes+row_plan.bytes;
+                        ascii = ascii && row_plan.ascii &&
+                            (row == 0 || collapse_ascii);
+                    }
+                    if (too_large)
+                        throw StriException(MSG__CHARSXP_2147483647);
+
+                    builder.reset(1);
+                    char* destination = builder.reserve(
+                        0, total_bytes,
+                        join_frame::output_encoding(ascii)
+                    );
+                    join_frame::CollapseWriteBody write_body(
+                        columns, separator, collapse_value, row_count,
+                        row_offsets, destination
+                    );
+                    shared::run_parallel(
+                        collapse_plan, row_count, write_body
+                    );
+                    result = entry_protections.reprotect_one(
+                        builder.to_sexp(), result_index
+                    );
+                    break;
+                }
+
                 shared::join::FlattenPlan plan{
                     0, 0, false, false, true
                 };

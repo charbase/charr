@@ -32,6 +32,7 @@
 
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "boundary/options_r.h"
 #include "io/string_view.h"
@@ -126,6 +127,175 @@ CHARR_NEUTRAL_HELPER io::OutputRecord boundary_record(
 }
 
 
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const std::vector<shared::StringView>& normalized,
+        const int* n_values,
+        R_len_t source_length,
+        R_len_t n_length,
+        const shared::BoundaryOptions& options,
+        bool scalar_unlimited_n,
+        bool tokens_only,
+        bool simplifying,
+        std::vector<io::OutputStore>& stores,
+        std::vector<R_len_t>& max_columns,
+        std::vector<unsigned char>& fallback,
+        std::vector<int>& failures
+    ) noexcept
+        : normalized_(normalized), n_values_(n_values),
+          source_length_(source_length), n_length_(n_length),
+          options_(options), scalar_unlimited_n_(scalar_unlimited_n),
+          tokens_only_(tokens_only), simplifying_(simplifying),
+          stores_(stores), max_columns_(max_columns),
+          fallback_(fallback), failures_(failures)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        shared::BoundaryIterator iterator;
+        std::vector<shared::BoundaryRange> ranges;
+        io::OutputBuilder builder(0);
+        bool opened = false;
+        bool root_fallback = false;
+        R_len_t local_max_columns = 0;
+        try {
+            while (context.next_chunk()) {
+                for (R_xlen_t task = context.begin;
+                        task < context.end; ++task) {
+                    const R_len_t i = static_cast<R_len_t>(task);
+                    io::OutputStore& output = stores_[
+                        static_cast<std::size_t>(i)
+                    ];
+                    int n_current = scalar_unlimited_n_
+                        ? INT_MAX
+                        : n_values_[i % n_length_];
+                    if (n_current == NA_INTEGER) {
+                        output = io::scalar_store(
+                            io::missing_output_record()
+                        );
+                        update_max(output, local_max_columns);
+                        continue;
+                    }
+
+                    const std::size_t source_index =
+                        static_cast<std::size_t>(i % source_length_);
+                    const shared::StringView& value =
+                        normalized_[source_index];
+                    if (value.is_na()) {
+                        output = io::scalar_store(
+                            io::missing_output_record()
+                        );
+                        update_max(output, local_max_columns);
+                        continue;
+                    }
+                    if (!scalar_unlimited_n_ && n_current >= INT_MAX-1) {
+                        throw StriException(
+                            MSG__INCORRECT_NAMED_ARG "; "
+                            MSG__EXPECTED_SMALLER, "n"
+                        );
+                    }
+                    if (n_current < 0)
+                        n_current = INT_MAX;
+                    if (n_current == 0)
+                        continue;
+
+                    ensure_iterator(
+                        iterator, options_, opened, root_fallback
+                    );
+                    require_icu_success(iterator.set_text(value));
+                    iterator.first();
+                    ranges.clear();
+                    shared::BoundaryRange range{0, 0};
+                    if (scalar_unlimited_n_) {
+                        while (iterator.next(range))
+                            ranges.push_back(range);
+                    }
+                    else {
+                        while (ranges.size() <
+                                static_cast<std::size_t>(n_current) &&
+                                iterator.next(range)) {
+                            ranges.push_back(range);
+                        }
+                    }
+
+                    const R_len_t range_count = io::checked_r_len(
+                        static_cast<R_xlen_t>(ranges.size()),
+                        "split results"
+                    );
+                    if (range_count <= 0)
+                        continue;
+                    if (!scalar_unlimited_n_ &&
+                            range_count == n_current && !tokens_only_) {
+                        ranges[
+                            static_cast<std::size_t>(range_count-1)
+                        ].end = value.len;
+                    }
+                    if (range_count == 1) {
+                        output = io::scalar_store(
+                            boundary_record(value, ranges[0])
+                        );
+                        update_max(output, local_max_columns);
+                        continue;
+                    }
+
+                    builder.reset(range_count);
+                    for (R_len_t j = 0; j < range_count; ++j) {
+                        builder.set_validated(
+                            j, boundary_record(
+                                value,
+                                ranges[static_cast<std::size_t>(j)]
+                            )
+                        );
+                    }
+                    output = builder.release_store();
+                    update_max(output, local_max_columns);
+                }
+            }
+        }
+        catch (...) {
+            fallback_[context.worker] =
+                static_cast<unsigned char>(root_fallback);
+            failures_[context.worker] = 1;
+            throw;
+        }
+        fallback_[context.worker] =
+            static_cast<unsigned char>(root_fallback);
+        if (simplifying_)
+            max_columns_[context.worker] = local_max_columns;
+    }
+
+private:
+    CHARR_NEUTRAL_HELPER void update_max(
+        const io::OutputStore& output,
+        R_len_t& max_columns
+    ) const noexcept
+    {
+        if (!simplifying_)
+            return;
+        const R_len_t size = static_cast<R_len_t>(output.size());
+        if (max_columns < size)
+            max_columns = size;
+    }
+
+    const std::vector<shared::StringView>& normalized_;
+    const int* n_values_;
+    R_len_t source_length_;
+    R_len_t n_length_;
+    const shared::BoundaryOptions& options_;
+    bool scalar_unlimited_n_;
+    bool tokens_only_;
+    bool simplifying_;
+    std::vector<io::OutputStore>& stores_;
+    std::vector<R_len_t>& max_columns_;
+    std::vector<unsigned char>& fallback_;
+    std::vector<int>& failures_;
+};
+
+
 CHARR_R_HELPER void emit_recycling_warning_r() noexcept
 {
     Rf_warning(MSG__WARN_RECYCLING_RULE);
@@ -218,6 +388,9 @@ CHARR_ENTRYPOINT SEXP ci_split_boundaries(
         std::vector<io::OutputStore> stores;
         io::OutputBuilder child_builder(0);
         io::OutputBuilder matrix_builder(0);
+        std::vector<R_len_t> worker_max_columns;
+        std::vector<unsigned char> fallback;
+        std::vector<int> failures;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -268,6 +441,11 @@ CHARR_ENTRYPOINT SEXP ci_split_boundaries(
                 for (R_len_t i = 0; i < vectorize_length; ++i)
                     stores.emplace_back(0, 0);
 
+                const bool simplifying =
+                    simplify_value == NA_LOGICAL || simplify_value != 0;
+                const shared::ParallelPlan parallel_plan =
+                    shared::parallel_plan(true, vectorize_length);
+                if (parallel_plan.workers == 1) {
                 R_len_t source_index = 0;
                 R_len_t n_index = 0;
                 for (R_len_t i = 0; i < vectorize_length; ++i) {
@@ -365,6 +543,47 @@ CHARR_ENTRYPOINT SEXP ci_split_boundaries(
                     }
                     output = child_builder.release_store();
                 }
+                }
+                else {
+                    worker_max_columns.assign(
+                        parallel_plan.workers, 0
+                    );
+                    fallback.assign(parallel_plan.workers, 0);
+                    failures.assign(parallel_plan.workers, 0);
+                    Body body(
+                        normalized, n_values,
+                        source_length, n_length, options,
+                        scalar_unlimited_n, tokens_only_value, simplifying,
+                        stores, worker_max_columns, fallback, failures
+                    );
+                    try {
+                        shared::run_parallel(
+                            parallel_plan, vectorize_length, body
+                        );
+                    }
+                    catch (...) {
+                        unsigned limit = 0;
+                        while (limit < parallel_plan.workers &&
+                                failures[limit] == 0) {
+                            ++limit;
+                        }
+                        if (limit < parallel_plan.workers)
+                            ++limit;
+                        for (unsigned worker = 0;
+                                worker < limit; ++worker) {
+                            root_fallback_warning = root_fallback_warning ||
+                                fallback[worker] != 0;
+                        }
+                        throw;
+                    }
+                    for (unsigned worker = 0;
+                            worker < parallel_plan.workers; ++worker) {
+                        root_fallback_warning = root_fallback_warning ||
+                            fallback[worker] != 0;
+                        if (max_columns < worker_max_columns[worker])
+                            max_columns = worker_max_columns[worker];
+                    }
+                }
 
                 callback_protections.protect_with_index(
                     temporary, &temporary_index
@@ -385,6 +604,7 @@ CHARR_ENTRYPOINT SEXP ci_split_boundaries(
                     }
                 }
                 else {
+                    if (parallel_plan.workers == 1) {
                     for (R_len_t i = 0; i < vectorize_length; ++i) {
                         const R_len_t current_size = io::checked_r_len(
                             static_cast<R_xlen_t>(stores[
@@ -394,6 +614,7 @@ CHARR_ENTRYPOINT SEXP ci_split_boundaries(
                         );
                         if (max_columns < current_size)
                             max_columns = current_size;
+                    }
                     }
 
                     const R_xlen_t rows = vectorize_length;

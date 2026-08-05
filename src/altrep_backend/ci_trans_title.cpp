@@ -32,9 +32,11 @@
  */
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "../shared/entrypoint.h"
 #include "../shared/protect.h"
+#include "../shared/slice_arena.h"
 #include "../shared/title_case.h"
 #include "../shared/unwind.h"
 #include "io/string_view.h"
@@ -46,6 +48,7 @@
 #include <cstring>
 #include <exception>
 #include <stdexcept>
+#include <vector>
 
 namespace charr { namespace altrep_backend {
 
@@ -261,6 +264,159 @@ CHARR_CXX_HELPER void require_icu_success(UErrorCode status)
         throw StriException(status);
 }
 
+
+CHARR_NEUTRAL_HELPER std::size_t no_slot() noexcept
+{
+    return static_cast<std::size_t>(-1);
+}
+
+
+CHARR_CXX_HELPER void prepare_parallel_inputs(
+    const charport::StrViews& values,
+    shared::TitleCaseMapper& mapper,
+    shared::SliceArena& storage,
+    std::vector<std::size_t>& converted_slots,
+    std::vector<shared::TitleCaseInput>& converted_inputs
+)
+{
+    const R_xlen_t size = values.size();
+    for (R_xlen_t i = 0; i < size; ++i) {
+        const shared::StringView value = io::as_shared_view(values[i]);
+        if (value.is_na())
+            continue;
+
+        switch (value.enc) {
+        case shared::StringEncoding::ascii:
+        case shared::StringEncoding::utf8:
+        case shared::StringEncoding::ascii_or_utf8:
+            break;
+        case shared::StringEncoding::latin1:
+        case shared::StringEncoding::native:
+            if (converted_slots.empty()) {
+                converted_slots.assign(
+                    static_cast<std::size_t>(size), no_slot()
+                );
+            }
+            converted_slots[static_cast<std::size_t>(i)] =
+                converted_inputs.size();
+            {
+                shared::TitleCaseInput input = mapper.prepare(value);
+                if (input.length > 0) {
+                    char* stable = storage.allocate(
+                        static_cast<std::size_t>(input.length)
+                    );
+                    std::memcpy(
+                        stable, input.data,
+                        static_cast<std::size_t>(input.length)
+                    );
+                    input.data = stable;
+                }
+                converted_inputs.push_back(input);
+            }
+            break;
+        case shared::StringEncoding::bytes:
+            throw std::runtime_error(
+                "bytes encoding is not supported by this function"
+            );
+        case shared::StringEncoding::missing:
+            throw std::invalid_argument(
+                "non-missing titlecase input has NA encoding"
+            );
+        case shared::StringEncoding::unknown:
+            throw std::invalid_argument("unknown titlecase input encoding");
+        }
+    }
+}
+
+
+CHARR_CXX_HELPER shared::TitleCaseInput input_at(
+    const charport::StrViews& values,
+    const std::vector<std::size_t>& converted_slots,
+    const std::vector<shared::TitleCaseInput>& converted_inputs,
+    R_len_t index,
+    shared::TitleCaseMapper& mapper
+)
+{
+    if (!converted_slots.empty()) {
+        const std::size_t slot =
+            converted_slots[static_cast<std::size_t>(index)];
+        if (slot != no_slot())
+            return converted_inputs[slot];
+    }
+    return mapper.prepare_utf8(io::as_shared_view(values[index]));
+}
+
+
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const shared::TitleCaseOptions& options,
+        const charport::StrViews& values,
+        const std::vector<std::size_t>& converted_slots,
+        const std::vector<shared::TitleCaseInput>& converted_inputs,
+        std::vector<unsigned char>& fallback_slots,
+        io::ParallelOutputBuilder& builder
+    ) noexcept
+        : options_(options), values_(values),
+          converted_slots_(converted_slots),
+          converted_inputs_(converted_inputs),
+          fallback_slots_(fallback_slots), builder_(builder)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        shared::TitleCaseMapper mapper;
+        const shared::TitleCaseOpenResult opened = mapper.reset(options_);
+        fallback_slots_[context.worker] =
+            static_cast<unsigned char>(opened.root_fallback);
+        require_icu_success(opened.status);
+
+        while (context.next_chunk()) {
+            for (R_xlen_t i = context.begin; i < context.end; ++i) {
+                const shared::StringView source =
+                    io::as_shared_view(values_[i]);
+                if (source.is_na()) {
+                    builder_.set_na(context.worker, i);
+                    continue;
+                }
+
+                const shared::TitleCaseInput input = input_at(
+                    values_, converted_slots_, converted_inputs_,
+                    static_cast<R_len_t>(i), mapper
+                );
+                if (mapper.has_ascii_fast_path(input)) {
+                    char* output = builder_.reserve(
+                        context.worker, i,
+                        static_cast<std::size_t>(input.length),
+                        CETYPE_EXT_ASCII
+                    );
+                    mapper.map_ascii(input, output);
+                    continue;
+                }
+
+                UErrorCode status = U_ZERO_ERROR;
+                const shared::StringView mapped =
+                    mapper.map_icu(input, status);
+                require_icu_success(status);
+                builder_.set(
+                    context.worker, i, io::as_charport_view(mapped)
+                );
+            }
+        }
+    }
+
+private:
+    shared::TitleCaseOptions options_;
+    const charport::StrViews& values_;
+    const std::vector<std::size_t>& converted_slots_;
+    const std::vector<shared::TitleCaseInput>& converted_inputs_;
+    std::vector<unsigned char>& fallback_slots_;
+    io::ParallelOutputBuilder& builder_;
+};
+
 } // namespace trans_title
 
 using namespace trans_title;
@@ -292,7 +448,12 @@ CHARR_ENTRYPOINT SEXP ci_trans_totitle(
         charport::Reader reader;
         charport::StrViews values;
         io::OutputBuilder builder(0);
+        io::ParallelOutputBuilder parallel_builder;
         shared::TitleCaseMapper mapper;
+        shared::SliceArena storage;
+        std::vector<std::size_t> converted_slots;
+        std::vector<shared::TitleCaseInput> converted_inputs;
+        std::vector<unsigned char> fallback_slots;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -300,11 +461,16 @@ CHARR_ENTRYPOINT SEXP ci_trans_totitle(
                 const R_len_t str_length = io::checked_r_len(
                     XLENGTH(str), "character vectors"
                 );
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, str_length
+                );
 
-                const shared::TitleCaseOpenResult open_result =
-                    mapper.reset(options);
-                root_fallback_warning = open_result.root_fallback;
-                require_icu_success(open_result.status);
+                if (plan.workers == 1) {
+                    const shared::TitleCaseOpenResult open_result =
+                        mapper.reset(options);
+                    root_fallback_warning = open_result.root_fallback;
+                    require_icu_success(open_result.status);
+                }
 
                 reader.reset(str);
                 if (reader.size() != str_length) {
@@ -319,38 +485,71 @@ CHARR_ENTRYPOINT SEXP ci_trans_totitle(
                         values.ptrs(), values.lengths(), values.encodings()
                     );
                 }
-                builder.reset(str_length);
-
-                for (R_len_t i = 0; i < str_length; ++i) {
-                    const charport::StrView source_view = values[i];
-                    if (source_view.is_na()) {
-                        builder.set_na(i);
-                        continue;
-                    }
-
-                    const shared::TitleCaseInput input = mapper.prepare(
-                        io::as_shared_view(source_view)
+                if (plan.workers > 1) {
+                    prepare_parallel_inputs(
+                        values, mapper, storage,
+                        converted_slots, converted_inputs
                     );
-                    if (mapper.has_ascii_fast_path(input)) {
-                        char* output = builder.reserve(
-                            i, static_cast<std::size_t>(input.length),
-                            CETYPE_EXT_ASCII
-                        );
-                        mapper.map_ascii(input, output);
-                        continue;
-                    }
-
-                    UErrorCode status = U_ZERO_ERROR;
-                    const shared::StringView mapped = mapper.map_icu(
-                        input, status
+                    fallback_slots.assign(plan.workers, 0);
+                    parallel_builder.reset(str_length, plan.workers);
+                    Body body(
+                        options, values, converted_slots, converted_inputs,
+                        fallback_slots, parallel_builder
                     );
-                    require_icu_success(status);
-                    builder.set(i, io::as_charport_view(mapped));
+                    try {
+                        shared::run_parallel(plan, str_length, body);
+                    }
+                    catch (...) {
+                        for (unsigned worker = 0;
+                                worker < plan.workers; ++worker) {
+                            root_fallback_warning = root_fallback_warning ||
+                                fallback_slots[worker] != 0;
+                        }
+                        throw;
+                    }
+                    for (unsigned worker = 0;
+                            worker < plan.workers; ++worker) {
+                        root_fallback_warning = root_fallback_warning ||
+                            fallback_slots[worker] != 0;
+                    }
+                    result = entry_protections.reprotect_one(
+                        parallel_builder.to_sexp(), result_index
+                    );
                 }
+                else {
+                    builder.reset(str_length);
 
-                result = entry_protections.reprotect_one(
-                    builder.to_sexp(), result_index
-                );
+                    for (R_len_t i = 0; i < str_length; ++i) {
+                        const charport::StrView source_view = values[i];
+                        if (source_view.is_na()) {
+                            builder.set_na(i);
+                            continue;
+                        }
+
+                        const shared::TitleCaseInput input = mapper.prepare(
+                            io::as_shared_view(source_view)
+                        );
+                        if (mapper.has_ascii_fast_path(input)) {
+                            char* output = builder.reserve(
+                                i, static_cast<std::size_t>(input.length),
+                                CETYPE_EXT_ASCII
+                            );
+                            mapper.map_ascii(input, output);
+                            continue;
+                        }
+
+                        UErrorCode status = U_ZERO_ERROR;
+                        const shared::StringView mapped = mapper.map_icu(
+                            input, status
+                        );
+                        require_icu_success(status);
+                        builder.set(i, io::as_charport_view(mapped));
+                    }
+
+                    result = entry_protections.reprotect_one(
+                        builder.to_sexp(), result_index
+                    );
+                }
                 CHARR_UNWIND_RETURN();
             }
         );

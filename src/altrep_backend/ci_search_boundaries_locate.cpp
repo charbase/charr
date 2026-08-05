@@ -31,6 +31,7 @@
  */
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "boundary/options_r.h"
 #include "io/string_view.h"
@@ -96,6 +97,255 @@ CHARR_CXX_HELPER void normalize_input(
 }
 
 
+CHARR_CXX_HELPER bool normalize_first_input(
+    const charport::StrViews& source,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage,
+    bool ascii_word_first,
+    std::vector<shared::StringView>& output
+)
+{
+    bool needs_iterator = false;
+    output.reserve(static_cast<std::size_t>(source.size()));
+    for (R_xlen_t i = 0; i < source.size(); ++i) {
+        const shared::StringView input = io::as_shared_view(source[i]);
+        if (input.enc == shared::StringEncoding::bytes)
+            throw StriException(MSG__BYTESENC);
+        const shared::StringView value = shared::normalize_utf8(
+            input, converter, storage
+        );
+        output.push_back(value);
+
+        int ascii_word_end = 0;
+        needs_iterator = needs_iterator ||
+            (!value.is_na() && value.len > 0 &&
+             !(ascii_word_first &&
+               shared::boundary_ascii_initial_word(
+                   value.ptr, value.len, ascii_word_end
+               )));
+    }
+    return needs_iterator;
+}
+
+
+class FirstBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER FirstBody(
+        const std::vector<shared::StringView>& values,
+        const shared::BoundaryOptions& options,
+        bool return_length, bool ascii_word_first, bool needs_iterator,
+        R_len_t length, int* output, bool& root_fallback
+    ) noexcept
+        : values_(values), options_(options), return_length_(return_length),
+          ascii_word_first_(ascii_word_first),
+          needs_iterator_(needs_iterator), length_(length), output_(output),
+          root_fallback_(root_fallback)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        shared::BoundaryIterator iterator;
+        if (needs_iterator_) {
+            const shared::BoundaryOpenResult opened = iterator.reset(options_);
+            if (context.worker == 0)
+                root_fallback_ = opened.root_fallback;
+            require_icu_success(opened.status);
+        }
+
+        while (context.next_chunk()) {
+            const R_len_t begin = static_cast<R_len_t>(context.begin);
+            const R_len_t end = static_cast<R_len_t>(context.end);
+            for (R_len_t i = begin; i < end; ++i) {
+                output_[i] = NA_INTEGER;
+                output_[i+length_] = NA_INTEGER;
+
+                const shared::StringView& value = values_[
+                    static_cast<std::size_t>(i)
+                ];
+                if (value.is_na())
+                    continue;
+
+                if (return_length_) {
+                    output_[i] = -1;
+                    output_[i+length_] = -1;
+                }
+                if (value.len == 0)
+                    continue;
+
+                int ascii_word_end = 0;
+                if (ascii_word_first_ &&
+                        shared::boundary_ascii_initial_word(
+                            value.ptr, value.len, ascii_word_end
+                        )) {
+                    output_[i] = 1;
+                    output_[i+length_] = ascii_word_end;
+                    continue;
+                }
+
+                require_icu_success(iterator.set_text(value));
+                iterator.first();
+                shared::BoundaryRange range{0, 0};
+                if (!iterator.next(range))
+                    continue;
+
+                shared::Utf8PositionCursor cursor(value);
+                const int start = cursor.at_byte(range.start) + 1;
+                const int finish = cursor.at_byte(range.end);
+                output_[i] = start;
+                output_[i+length_] = return_length_
+                    ? finish - start + 1
+                    : finish;
+            }
+        }
+    }
+
+private:
+    const std::vector<shared::StringView>& values_;
+    const shared::BoundaryOptions& options_;
+    bool return_length_;
+    bool ascii_word_first_;
+    bool needs_iterator_;
+    R_len_t length_;
+    int* output_;
+    bool& root_fallback_;
+};
+
+
+class CHARR_OWNER_TYPE AllBoundaryRows {
+public:
+    CHARR_CXX_HELPER AllBoundaryRows() noexcept
+        : rows_(nullptr) {}
+
+    CHARR_CXX_HELPER ~AllBoundaryRows() noexcept
+    {
+        delete[] rows_;
+    }
+
+    AllBoundaryRows(const AllBoundaryRows&) = delete;
+    AllBoundaryRows& operator=(const AllBoundaryRows&) = delete;
+    AllBoundaryRows(AllBoundaryRows&&) = delete;
+    AllBoundaryRows& operator=(AllBoundaryRows&&) = delete;
+
+    CHARR_CXX_HELPER void reset(std::size_t size)
+    {
+        std::vector<shared::BoundaryRange>* replacement = size == 0
+            ? nullptr : new std::vector<shared::BoundaryRange>[size];
+        delete[] rows_;
+        rows_ = replacement;
+    }
+
+    CHARR_CXX_HELPER void copy_from(
+        std::size_t index,
+        std::vector<shared::BoundaryRange>& source
+    )
+    {
+        std::vector<shared::BoundaryRange>& output = rows_[index];
+        output.clear();
+        for (std::size_t i = 0; i < source.size(); ++i)
+            output.push_back(source[i]);
+    }
+
+    CHARR_NEUTRAL_HELPER std::size_t count(
+        std::size_t index
+    ) noexcept
+    {
+        return rows_[index].size();
+    }
+
+    CHARR_NEUTRAL_HELPER shared::BoundaryRange& range(
+        std::size_t index, std::size_t range_index
+    ) noexcept
+    {
+        return rows_[index][range_index];
+    }
+
+private:
+    std::vector<shared::BoundaryRange>* rows_;
+};
+
+
+class AllBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER AllBody(
+        const std::vector<shared::StringView>& normalized,
+        const shared::BoundaryOptions& options,
+        bool return_length,
+        std::vector<int>& missing,
+        AllBoundaryRows& rows,
+        std::vector<unsigned char>& fallback,
+        std::vector<int>& failures
+    ) noexcept
+        : normalized_(normalized), options_(options),
+          return_length_(return_length), missing_(missing), rows_(rows),
+          fallback_(fallback), failures_(failures)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        shared::BoundaryIterator iterator;
+        std::vector<shared::BoundaryRange> occurrences;
+        bool opened = false;
+        bool root_fallback = false;
+        try {
+            while (context.next_chunk()) {
+                for (R_xlen_t task = context.begin;
+                        task < context.end; ++task) {
+                    const std::size_t index = static_cast<std::size_t>(task);
+                    const shared::StringView& value = normalized_[index];
+                    if (value.is_na()) {
+                        missing_[index] = 1;
+                        continue;
+                    }
+                    missing_[index] = 0;
+
+                    ensure_iterator(
+                        iterator, options_, opened, root_fallback
+                    );
+                    require_icu_success(iterator.set_text(value));
+                    iterator.first();
+                    occurrences.clear();
+                    shared::Utf8PositionCursor cursor(value);
+                    shared::BoundaryRange range{0, 0};
+                    while (iterator.next(range)) {
+                        const int start = cursor.at_byte(range.start)+1;
+                        const int end = cursor.at_byte(range.end);
+                        const shared::BoundaryRange occurrence{
+                            start,
+                            return_length_ ? end-start+1 : end
+                        };
+                        occurrences.push_back(occurrence);
+                    }
+                    rows_.copy_from(index, occurrences);
+                }
+            }
+        }
+        catch (...) {
+            fallback_[context.worker] =
+                static_cast<unsigned char>(root_fallback);
+            failures_[context.worker] = 1;
+            throw;
+        }
+        fallback_[context.worker] =
+            static_cast<unsigned char>(root_fallback);
+    }
+
+private:
+    const std::vector<shared::StringView>& normalized_;
+    const shared::BoundaryOptions& options_;
+    bool return_length_;
+    std::vector<int>& missing_;
+    AllBoundaryRows& rows_;
+    std::vector<unsigned char>& fallback_;
+    std::vector<int>& failures_;
+};
+
+
 CHARR_R_HELPER void emit_fallback_warning_r() noexcept
 {
     Rf_warning(
@@ -137,7 +387,6 @@ CHARR_ENTRYPOINT SEXP ci_locate_first_boundaries(
         boundary::prepare_options_r(opts_brkiter, UBRK_LINE);
 
 
-    bool iterator_open = false;
     bool root_fallback_warning = false;
 
     try {
@@ -146,8 +395,6 @@ CHARR_ENTRYPOINT SEXP ci_locate_first_boundaries(
         shared::NativeToUtf8 converter;
         shared::SliceArena storage;
         std::vector<shared::StringView> normalized;
-        shared::BoundaryIterator iterator;
-
         result = shared::unwind_protect(
             unwind_token,
             [&]() -> SEXP {
@@ -173,57 +420,20 @@ CHARR_ENTRYPOINT SEXP ci_locate_first_boundaries(
                         source_views.encodings()
                     );
                 }
-                normalize_input(
-                    source_views, converter, storage, normalized
-                );
-
                 const bool ascii_word_first =
                     shared::boundary_ascii_word_first(options);
-                for (R_len_t i = 0; i < length; ++i) {
-                    output[i] = NA_INTEGER;
-                    output[i+length] = NA_INTEGER;
-
-                    const shared::StringView& value = normalized[
-                        static_cast<std::size_t>(i)
-                    ];
-                    if (value.is_na())
-                        continue;
-
-                    if (return_length) {
-                        output[i] = -1;
-                        output[i+length] = -1;
-                    }
-                    if (value.len == 0)
-                        continue;
-
-                    int ascii_word_end = 0;
-                    if (ascii_word_first &&
-                            shared::boundary_ascii_initial_word(
-                                value.ptr, value.len, ascii_word_end
-                            )) {
-                        output[i] = 1;
-                        output[i+length] = ascii_word_end;
-                        continue;
-                    }
-
-                    ensure_iterator(
-                        iterator, options, iterator_open,
-                        root_fallback_warning
-                    );
-                    require_icu_success(iterator.set_text(value));
-                    iterator.first();
-                    shared::BoundaryRange range{0, 0};
-                    if (!iterator.next(range))
-                        continue;
-
-                    shared::Utf8PositionCursor cursor(value);
-                    const int start = cursor.at_byte(range.start) + 1;
-                    const int end = cursor.at_byte(range.end);
-                    output[i] = start;
-                    output[i+length] = return_length
-                        ? end - start + 1
-                        : end;
-                }
+                const bool needs_iterator = normalize_first_input(
+                    source_views, converter, storage, ascii_word_first,
+                    normalized
+                );
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, length
+                );
+                FirstBody body(
+                    normalized, options, return_length, ascii_word_first,
+                    needs_iterator, length, output, root_fallback_warning
+                );
+                shared::run_parallel(plan, length, body);
 
                 ci__locate_set_dimnames_matrix(result, return_length);
                 CHARR_UNWIND_RETURN();
@@ -283,6 +493,10 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_boundaries(
         std::vector<shared::StringView> normalized;
         std::vector<shared::BoundaryRange> occurrences;
         shared::BoundaryIterator iterator;
+        std::vector<int> staged_missing;
+        AllBoundaryRows staged_occurrences;
+        std::vector<unsigned char> fallback;
+        std::vector<int> failures;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -315,6 +529,9 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_boundaries(
                     source_views, converter, storage, normalized
                 );
 
+                const shared::ParallelPlan parallel_plan =
+                    shared::parallel_plan(true, length);
+                if (parallel_plan.workers == 1) {
                 for (R_len_t i = 0; i < length; ++i) {
                     const shared::StringView& value = normalized[
                         static_cast<std::size_t>(i)
@@ -372,6 +589,88 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_boundaries(
                         output[j+count] = occurrence.end;
                     }
                     SET_VECTOR_ELT(result, i, current);
+                }
+                }
+                else {
+                    staged_missing.resize(
+                        static_cast<std::size_t>(length)
+                    );
+                    staged_occurrences.reset(
+                        static_cast<std::size_t>(length)
+                    );
+                    fallback.assign(parallel_plan.workers, 0);
+                    failures.assign(parallel_plan.workers, 0);
+                    AllBody body(
+                        normalized, options, return_length,
+                        staged_missing, staged_occurrences,
+                        fallback, failures
+                    );
+                    try {
+                        shared::run_parallel(
+                            parallel_plan, length, body
+                        );
+                    }
+                    catch (...) {
+                        unsigned limit = 0;
+                        while (limit < parallel_plan.workers &&
+                                failures[limit] == 0) {
+                            ++limit;
+                        }
+                        if (limit < parallel_plan.workers)
+                            ++limit;
+                        for (unsigned worker = 0;
+                                worker < limit; ++worker) {
+                            root_fallback_warning = root_fallback_warning ||
+                                fallback[worker] != 0;
+                        }
+                        throw;
+                    }
+                    for (unsigned worker = 0;
+                            worker < parallel_plan.workers; ++worker) {
+                        root_fallback_warning = root_fallback_warning ||
+                            fallback[worker] != 0;
+                    }
+
+                    for (R_len_t i = 0; i < length; ++i) {
+                        const std::size_t index =
+                            static_cast<std::size_t>(i);
+                        if (staged_missing[index] != 0) {
+                            current = callback_protections.reprotect_slot(
+                                shared::filled_integer_matrix_r(1, 2),
+                                current_index
+                            );
+                            SET_VECTOR_ELT(result, i, current);
+                            continue;
+                        }
+                        const int count = static_cast<int>(
+                            staged_occurrences.count(index)
+                        );
+                        if (count == 0) {
+                            current = callback_protections.reprotect_slot(
+                                shared::filled_integer_matrix_r(
+                                    omit ? 0 : 1, 2,
+                                    return_length ? -1 : NA_INTEGER
+                                ),
+                                current_index
+                            );
+                            SET_VECTOR_ELT(result, i, current);
+                            continue;
+                        }
+                        current = callback_protections.reprotect_slot(
+                            Rf_allocMatrix(INTSXP, count, 2),
+                            current_index
+                        );
+                        int* output = INTEGER(current);
+                        for (int j = 0; j < count; ++j) {
+                            shared::BoundaryRange& occurrence =
+                                staged_occurrences.range(
+                                    index, static_cast<std::size_t>(j)
+                                );
+                            output[j] = occurrence.start;
+                            output[j+count] = occurrence.end;
+                        }
+                        SET_VECTOR_ELT(result, i, current);
+                    }
                 }
 
                 ci__locate_set_dimnames_list(result, return_length);

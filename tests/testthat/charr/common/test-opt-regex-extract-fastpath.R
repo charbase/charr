@@ -7,6 +7,11 @@ regex_extract_first_backend <- function(backend, x, pattern) {
   } else {
     charr:::C_ci_extract_first_regex
   }
+  if (identical(backend, "altrep")) {
+    return(.Call(
+      native, x, pattern, NULL
+    ))
+  }
   .Call(native, x, pattern, NULL)
 }
 
@@ -23,6 +28,11 @@ regex_extract_all_backend <- function(
     charr:::C_charr_base_ci_extract_all_regex
   } else {
     charr:::C_ci_extract_all_regex
+  }
+  if (identical(backend, "altrep")) {
+    return(.Call(
+      native, x, pattern, simplify, omit_no_match, NULL
+    ))
   }
   .Call(native, x, pattern, simplify, omit_no_match, NULL)
 }

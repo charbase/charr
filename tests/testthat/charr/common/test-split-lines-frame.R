@@ -28,6 +28,9 @@ line_split_function <- function(backend, scalar = FALSE) {
   if (scalar) {
     return(function(str) .Call(symbol, str))
   }
+  if (identical(backend, "altrep")) {
+    return(function(str, omit_empty) .Call(symbol, str, omit_empty))
+  }
   function(str, omit_empty) .Call(symbol, str, omit_empty)
 }
 

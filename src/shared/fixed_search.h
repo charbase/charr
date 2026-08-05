@@ -323,6 +323,19 @@ CHARR_CXX_HELPER void plan_fixed_extract(
 );
 
 
+CHARR_CXX_HELPER void plan_fixed_extract(
+    const std::vector<StringView>& subjects,
+    const std::vector<StringView>& patterns,
+    int begin,
+    int end,
+    FixedSearchOptions options,
+    bool omit_no_match,
+    FixedMatcher& matcher,
+    std::vector<FixedRange>& scratch,
+    FixedExtractPlan& plan
+);
+
+
 CHARR_CXX_HELPER CHARR_ALWAYS_INLINE FixedSplitResult split_fixed_fields(
     FixedMatcher& matcher,
     const StringView& subject,

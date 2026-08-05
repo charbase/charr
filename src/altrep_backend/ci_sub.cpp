@@ -33,7 +33,9 @@
 
 #include "ci_stringi.h"
 #include "ci_builder.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
+#include "io/string_view.h"
 #include "io/utf8_output.h"
 #include "../shared/entrypoint.h"
 #include "../shared/native_to_utf8.h"
@@ -171,6 +173,869 @@ CHARR_CXX_HELPER CiSubFrameInput ci__sub_stabilize_frame_input(
 }
 
 
+CHARR_NEUTRAL_HELPER std::size_t ci__sub_no_slot() noexcept
+{
+    return static_cast<std::size_t>(-1);
+}
+
+
+CHARR_NEUTRAL_HELPER CiSubFrameInput ci__sub_direct_frame_input(
+    const charport::StrView& value
+) noexcept
+{
+    if (value.is_na())
+        return CiSubFrameInput{nullptr, 0, true, false, false};
+
+    const char* data = value.ptr;
+    R_len_t length = value.len;
+    if (value.enc == CETYPE_EXT_ASCII)
+        return CiSubFrameInput{data, length, false, true, false};
+    if (value.enc == CETYPE_EXT_UTF8 ||
+            value.enc == CETYPE_EXT_ASCII_OR_UTF8) {
+        const bool ascii = value.enc == CETYPE_EXT_ASCII_OR_UTF8 &&
+            io::is_ascii(data, static_cast<std::size_t>(length));
+        if (!ascii && STRI__ENC_HAS_BOM_UTF8(data, length)) {
+            data += 3;
+            length -= 3;
+        }
+        return CiSubFrameInput{data, length, false, ascii, false};
+    }
+    return CiSubFrameInput{nullptr, 0, true, false, false};
+}
+
+
+CHARR_CXX_HELPER void ci__sub_preflight_frame_inputs(
+    const charport::StrViews& values,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage,
+    std::vector<std::size_t>& converted_slots,
+    std::vector<shared::StringView>& converted_values
+)
+{
+    const R_xlen_t size = values.size();
+    for (R_xlen_t i = 0; i < size; ++i) {
+        const CiSubFrameInput input = ci__sub_normalize_frame_input(
+            values[i], converter
+        );
+        if (!input.converted)
+            continue;
+        const CiSubFrameInput stable = ci__sub_stabilize_frame_input(
+            input, storage
+        );
+        if (converted_slots.empty()) {
+            converted_slots.assign(
+                static_cast<std::size_t>(size), ci__sub_no_slot()
+            );
+        }
+        converted_slots[static_cast<std::size_t>(i)] =
+            converted_values.size();
+        converted_values.push_back(shared::StringView{
+            stable.data, stable.length, shared::StringEncoding::utf8
+        });
+    }
+}
+
+
+CHARR_CXX_HELPER void ci__sub_preflight_frame_input_at(
+    const charport::StrViews& values, R_len_t index,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage,
+    std::vector<std::size_t>& converted_slots,
+    std::vector<shared::StringView>& converted_values,
+    std::vector<unsigned char>& ready
+)
+{
+    const std::size_t position = static_cast<std::size_t>(index);
+    if (ready[position])
+        return;
+    const CiSubFrameInput input = ci__sub_normalize_frame_input(
+        values[index], converter
+    );
+    if (input.converted) {
+        const CiSubFrameInput stable = ci__sub_stabilize_frame_input(
+            input, storage
+        );
+        if (converted_slots.empty()) {
+            converted_slots.assign(
+                static_cast<std::size_t>(values.size()), ci__sub_no_slot()
+            );
+        }
+        converted_slots[position] = converted_values.size();
+        converted_values.push_back(shared::StringView{
+            stable.data, stable.length, shared::StringEncoding::utf8
+        });
+    }
+    ready[position] = 1;
+}
+
+
+CHARR_NEUTRAL_HELPER CiSubFrameInput ci__sub_parallel_frame_input_at(
+    const charport::StrViews& values,
+    const std::vector<std::size_t>& converted_slots,
+    const std::vector<shared::StringView>& converted_values,
+    R_len_t index
+) noexcept
+{
+    if (!converted_slots.empty()) {
+        const std::size_t slot = converted_slots[
+            static_cast<std::size_t>(index)
+        ];
+        if (slot != ci__sub_no_slot()) {
+            const shared::StringView& value = converted_values[slot];
+            return CiSubFrameInput{
+                value.ptr, value.len, false, false, false
+            };
+        }
+    }
+    return ci__sub_direct_frame_input(values[index]);
+}
+
+
+CHARR_CXX_HELPER void ci__sub_extract_one_parallel(
+    const CiSubFrameInput& value,
+    R_len_t current_from, R_len_t current_to, bool use_length,
+    shared::substring::Utf8Indexer& indexer,
+    io::ParallelOutputBuilder& builder,
+    unsigned worker, R_len_t output_index,
+    R_len_t& negative_lengths
+)
+{
+    if (value.is_na || current_from == NA_INTEGER ||
+            current_to == NA_INTEGER) {
+        builder.set_na(worker, output_index);
+        return;
+    }
+    if (use_length) {
+        if (current_to == 0) {
+            builder.set(
+                worker, output_index, "", 0, CETYPE_EXT_ASCII
+            );
+            return;
+        }
+        if (current_to < 0) {
+            builder.set_na(worker, output_index);
+            ++negative_lengths;
+            return;
+        }
+        current_to = shared::substring::length_endpoint(
+            current_from, current_to
+        );
+    }
+
+    indexer.reset(value.data, value.length, value.is_ascii);
+    const shared::substring::ByteRange range =
+        indexer.range(current_from, current_to);
+    if (range.end > range.begin) {
+        builder.set_validated(
+            worker, output_index,
+            charport::StrView{
+                value.data+range.begin,
+                range.end-range.begin,
+                value.is_ascii
+                    ? CETYPE_EXT_ASCII
+                    : CETYPE_EXT_ASCII_OR_UTF8
+            }
+        );
+    }
+    else {
+        builder.set(
+            worker, output_index, "", 0, CETYPE_EXT_ASCII
+        );
+    }
+}
+
+
+class CiSubBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER CiSubBody(
+        const charport::StrViews& values,
+        const std::vector<std::size_t>& converted_slots,
+        const std::vector<shared::StringView>& converted_values,
+        R_len_t str_length,
+        const int* from, R_len_t from_length,
+        const int* to, R_len_t to_length,
+        const int* lengths, R_len_t lengths_length,
+        std::vector<R_len_t>& negative_lengths,
+        io::ParallelOutputBuilder& builder
+    ) noexcept
+        : values_(values), converted_slots_(converted_slots),
+          converted_values_(converted_values), str_length_(str_length),
+          from_(from), from_length_(from_length),
+          to_(to), to_length_(to_length),
+          lengths_(lengths), lengths_length_(lengths_length),
+          negative_lengths_(negative_lengths), builder_(builder)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        shared::substring::Utf8Indexer indexer;
+        // Bound to this worker's slot, so it spans every chunk it draws.
+        R_len_t& negative_lengths = negative_lengths_[context.worker];
+        while (context.next_chunk()) {
+            for (R_xlen_t task = context.begin; task < context.end; ++task) {
+                const R_len_t i = static_cast<R_len_t>(task);
+                const CiSubFrameInput value =
+                    ci__sub_parallel_frame_input_at(
+                        values_, converted_slots_, converted_values_,
+                        i % str_length_
+                    );
+                ci__sub_extract_one_parallel(
+                    value, from_[i % from_length_],
+                    to_ ? to_[i % to_length_]
+                        : lengths_[i % lengths_length_],
+                    lengths_ != nullptr, indexer, builder_, context.worker, i,
+                    negative_lengths
+                );
+            }
+        }
+    }
+
+private:
+    const charport::StrViews& values_;
+    const std::vector<std::size_t>& converted_slots_;
+    const std::vector<shared::StringView>& converted_values_;
+    R_len_t str_length_;
+    const int* from_;
+    R_len_t from_length_;
+    const int* to_;
+    R_len_t to_length_;
+    const int* lengths_;
+    R_len_t lengths_length_;
+    std::vector<R_len_t>& negative_lengths_;
+    io::ParallelOutputBuilder& builder_;
+};
+
+
+CHARR_CXX_HELPER void ci__sub_replace_one_parallel(
+    const CiSubFrameInput& source,
+    const CiSubFrameInput& replacement,
+    R_len_t current_from, R_len_t current_to,
+    bool use_length, bool omit_na,
+    shared::substring::Utf8Indexer& indexer,
+    io::ParallelOutputBuilder& builder,
+    unsigned worker, R_len_t output_index
+)
+{
+    if (source.is_na) {
+        builder.set_na(worker, output_index);
+        return;
+    }
+    if (current_from == NA_INTEGER || current_to == NA_INTEGER ||
+            replacement.is_na) {
+        if (omit_na) {
+            builder.set_validated(
+                worker, output_index,
+                charport::StrView{
+                    source.length == 0 ? "" : source.data,
+                    source.length,
+                    source.is_ascii ? CETYPE_EXT_ASCII : CETYPE_EXT_UTF8
+                }
+            );
+        }
+        else {
+            builder.set_na(worker, output_index);
+        }
+        return;
+    }
+    if (use_length && current_to < 0) {
+        builder.set_validated(
+            worker, output_index,
+            charport::StrView{
+                source.length == 0 ? "" : source.data,
+                source.length,
+                source.is_ascii ? CETYPE_EXT_ASCII : CETYPE_EXT_UTF8
+            }
+        );
+        return;
+    }
+    if (use_length) {
+        current_to = current_to <= 0
+            ? 0
+            : shared::substring::length_endpoint(
+                current_from, current_to
+            );
+    }
+
+    indexer.reset(source.data, source.length, source.is_ascii);
+    shared::substring::ByteRange range =
+        indexer.range(current_from, current_to);
+    if (range.end < range.begin)
+        range.end = range.begin;
+
+    const std::size_t prefix = static_cast<std::size_t>(range.begin);
+    const std::size_t replacement_length =
+        static_cast<std::size_t>(replacement.length);
+    const std::size_t suffix = static_cast<std::size_t>(
+        source.length-range.end
+    );
+    std::size_t output_size = shared::substring::checked_output_size(
+        prefix, replacement_length
+    );
+    output_size = shared::substring::checked_output_size(
+        output_size, suffix
+    );
+    const bool output_ascii =
+        (source.is_ascii || io::is_ascii(source.data, prefix)) &&
+        (replacement.is_ascii ||
+         io::is_ascii(replacement.data, replacement_length)) &&
+        (source.is_ascii ||
+         io::is_ascii(source.data+range.end, suffix));
+    char* output = builder.reserve(
+        worker, output_index, output_size,
+        output_ascii ? CETYPE_EXT_ASCII : CETYPE_EXT_UTF8
+    );
+    if (prefix > 0)
+        std::memcpy(output, source.data, prefix);
+    if (replacement_length > 0) {
+        std::memcpy(
+            output+prefix, replacement.data, replacement_length
+        );
+    }
+    if (suffix > 0) {
+        std::memcpy(
+            output+prefix+replacement_length,
+            source.data+range.end, suffix
+        );
+    }
+}
+
+
+class CiSubReplacementBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER CiSubReplacementBody(
+        const charport::StrViews& source_values,
+        const std::vector<std::size_t>& source_converted_slots,
+        const std::vector<shared::StringView>& source_converted_values,
+        const charport::StrViews& replacement_values,
+        const std::vector<std::size_t>& replacement_converted_slots,
+        const std::vector<shared::StringView>& replacement_converted_values,
+        R_len_t source_length, R_len_t replacement_length,
+        const int* from, R_len_t from_length,
+        const int* to, R_len_t to_length,
+        const int* lengths, R_len_t lengths_length,
+        bool omit_na, io::ParallelOutputBuilder& builder
+    ) noexcept
+        : source_values_(source_values),
+          source_converted_slots_(source_converted_slots),
+          source_converted_values_(source_converted_values),
+          replacement_values_(replacement_values),
+          replacement_converted_slots_(replacement_converted_slots),
+          replacement_converted_values_(replacement_converted_values),
+          source_length_(source_length),
+          replacement_length_(replacement_length),
+          from_(from), from_length_(from_length),
+          to_(to), to_length_(to_length),
+          lengths_(lengths), lengths_length_(lengths_length),
+          omit_na_(omit_na), builder_(builder)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        shared::substring::Utf8Indexer indexer;
+        while (context.next_chunk()) {
+            for (R_xlen_t task = context.begin; task < context.end; ++task) {
+                const R_len_t i = static_cast<R_len_t>(task);
+                ci__sub_replace_one_parallel(
+                    ci__sub_parallel_frame_input_at(
+                        source_values_, source_converted_slots_,
+                        source_converted_values_, i % source_length_
+                    ),
+                    ci__sub_parallel_frame_input_at(
+                        replacement_values_, replacement_converted_slots_,
+                        replacement_converted_values_,
+                        i % replacement_length_
+                    ),
+                    from_[i % from_length_],
+                    to_ ? to_[i % to_length_]
+                        : lengths_[i % lengths_length_],
+                    lengths_ != nullptr, omit_na_, indexer, builder_,
+                    context.worker, i
+                );
+            }
+        }
+    }
+
+private:
+    const charport::StrViews& source_values_;
+    const std::vector<std::size_t>& source_converted_slots_;
+    const std::vector<shared::StringView>& source_converted_values_;
+    const charport::StrViews& replacement_values_;
+    const std::vector<std::size_t>& replacement_converted_slots_;
+    const std::vector<shared::StringView>& replacement_converted_values_;
+    R_len_t source_length_;
+    R_len_t replacement_length_;
+    const int* from_;
+    R_len_t from_length_;
+    const int* to_;
+    R_len_t to_length_;
+    const int* lengths_;
+    R_len_t lengths_length_;
+    bool omit_na_;
+    io::ParallelOutputBuilder& builder_;
+};
+
+
+class CiSubReplacementAllScalarBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER CiSubReplacementAllScalarBody(
+        const charport::StrViews& source_values,
+        const std::vector<std::size_t>& source_converted_slots,
+        const std::vector<shared::StringView>& source_converted_values,
+        const CiSubFrameInput& replacement,
+        R_len_t from, R_len_t to, bool omit_na,
+        io::ParallelOutputBuilder& builder
+    ) noexcept
+        : source_values_(source_values),
+          source_converted_slots_(source_converted_slots),
+          source_converted_values_(source_converted_values),
+          replacement_(replacement), from_(from), to_(to),
+          omit_na_(omit_na), builder_(builder)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        shared::substring::Utf8Indexer indexer;
+        while (context.next_chunk()) {
+            for (R_xlen_t task = context.begin; task < context.end; ++task) {
+                const R_len_t outer = static_cast<R_len_t>(task);
+                ci__sub_replace_one_parallel(
+                    ci__sub_parallel_frame_input_at(
+                        source_values_, source_converted_slots_,
+                        source_converted_values_, outer
+                    ),
+                    replacement_, from_, to_, false, omit_na_, indexer,
+                    builder_, context.worker, outer
+                );
+            }
+        }
+    }
+
+private:
+    const charport::StrViews& source_values_;
+    const std::vector<std::size_t>& source_converted_slots_;
+    const std::vector<shared::StringView>& source_converted_values_;
+    CiSubFrameInput replacement_;
+    R_len_t from_;
+    R_len_t to_;
+    bool omit_na_;
+    io::ParallelOutputBuilder& builder_;
+};
+
+
+CHARR_CXX_HELPER std::size_t ci__sub_append_int_values(
+    std::vector<int>& output, const int* values, R_len_t length
+)
+{
+    const std::size_t offset = output.size();
+    for (R_len_t i = 0; i < length; ++i)
+        output.push_back(values[i]);
+    return offset;
+}
+
+
+class CiSubAllBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER CiSubAllBody(
+        const charport::StrViews& source_values,
+        const std::vector<std::size_t>& source_converted_slots,
+        const std::vector<shared::StringView>& source_converted_values,
+        R_len_t source_length,
+        const std::vector<std::size_t>& plans,
+        const std::vector<int>& from_values,
+        const std::vector<int>& to_values,
+        const std::vector<int>& length_values,
+        bool ignore_negative_length,
+        std::vector<io::OutputStore>& stores
+    ) noexcept
+        : source_values_(source_values),
+          source_converted_slots_(source_converted_slots),
+          source_converted_values_(source_converted_values),
+          source_length_(source_length), plans_(plans),
+          from_values_(from_values), to_values_(to_values),
+          length_values_(length_values),
+          ignore_negative_length_(ignore_negative_length), stores_(stores)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        shared::substring::Utf8Indexer indexer;
+        io::OutputBuilder builder(0);
+        while (context.next_chunk()) {
+            for (R_xlen_t task = context.begin; task < context.end; ++task) {
+                const R_len_t outer = static_cast<R_len_t>(task);
+                const std::size_t plan = static_cast<std::size_t>(outer)*7;
+                const R_len_t inner_vectorize_length = plans_[plan+6];
+                if (inner_vectorize_length <= 0) {
+                    builder.reset(0);
+                    stores_[static_cast<std::size_t>(outer)] =
+                        builder.release_store();
+                    continue;
+                }
+
+                const CiSubFrameInput source =
+                    ci__sub_parallel_frame_input_at(
+                        source_values_, source_converted_slots_,
+                        source_converted_values_, outer % source_length_
+                    );
+                const R_len_t from_length = plans_[plan+1];
+                const R_len_t to_length = plans_[plan+3];
+                const R_len_t length_length = plans_[plan+5];
+                const int* from = &from_values_[
+                    static_cast<std::size_t>(plans_[plan])
+                ];
+                const int* to = to_length > 0
+                    ? &to_values_[static_cast<std::size_t>(plans_[plan+2])]
+                    : nullptr;
+                const int* lengths = length_length > 0
+                    ? &length_values_[
+                        static_cast<std::size_t>(plans_[plan+4])
+                    ]
+                    : nullptr;
+
+                R_len_t negative_lengths = 0;
+                if (lengths && !source.is_na) {
+                    for (R_len_t i = 0; i < inner_vectorize_length; ++i) {
+                        const R_len_t current_from = from[i % from_length];
+                        const R_len_t current_length =
+                            lengths[i % length_length];
+                        if (current_from != NA_INTEGER &&
+                                current_length != NA_INTEGER &&
+                                current_length < 0) {
+                            ++negative_lengths;
+                        }
+                    }
+                }
+                const R_len_t output_length = ignore_negative_length_
+                    ? inner_vectorize_length-negative_lengths
+                    : inner_vectorize_length;
+                builder.reset(output_length);
+                R_len_t output = 0;
+                for (R_len_t i = 0; i < inner_vectorize_length; ++i) {
+                    R_len_t current_from = from[i % from_length];
+                    R_len_t current_to = to
+                        ? to[i % to_length]
+                        : lengths[i % length_length];
+                    if (ignore_negative_length_ && !source.is_na &&
+                            current_from != NA_INTEGER &&
+                            current_to != NA_INTEGER && lengths &&
+                            current_to < 0) {
+                        continue;
+                    }
+                    if (source.is_na || current_from == NA_INTEGER ||
+                            current_to == NA_INTEGER) {
+                        builder.set_na(output++);
+                        continue;
+                    }
+                    if (lengths) {
+                        if (current_to == 0) {
+                            builder.set(
+                                output++, "", 0, CETYPE_EXT_ASCII
+                            );
+                            continue;
+                        }
+                        if (current_to < 0) {
+                            builder.set_na(output++);
+                            continue;
+                        }
+                        current_to = shared::substring::length_endpoint(
+                            current_from, current_to
+                        );
+                    }
+                    indexer.reset(
+                        source.data, source.length, source.is_ascii
+                    );
+                    const shared::substring::ByteRange range =
+                        indexer.range(current_from, current_to);
+                    if (range.end > range.begin) {
+                        builder.set_validated(
+                            output++,
+                            charport::StrView{
+                                source.data+range.begin,
+                                range.end-range.begin,
+                                source.is_ascii
+                                    ? CETYPE_EXT_ASCII
+                                    : CETYPE_EXT_ASCII_OR_UTF8
+                            }
+                        );
+                    }
+                    else {
+                        builder.set(
+                            output++, "", 0, CETYPE_EXT_ASCII
+                        );
+                    }
+                }
+                stores_[static_cast<std::size_t>(outer)] =
+                    builder.release_store();
+            }
+        }
+    }
+
+private:
+    const charport::StrViews& source_values_;
+    const std::vector<std::size_t>& source_converted_slots_;
+    const std::vector<shared::StringView>& source_converted_values_;
+    R_len_t source_length_;
+    const std::vector<std::size_t>& plans_;
+    const std::vector<int>& from_values_;
+    const std::vector<int>& to_values_;
+    const std::vector<int>& length_values_;
+    bool ignore_negative_length_;
+    std::vector<io::OutputStore>& stores_;
+};
+
+
+CHARR_NEUTRAL_HELPER shared::StringView ci__sub_shared_frame_input(
+    const CiSubFrameInput& input
+) noexcept
+{
+    return shared::StringView{
+        input.length == 0 ? "" : input.data,
+        input.is_na ? shared::missing_string_length : input.length,
+        input.is_na
+            ? shared::StringEncoding::missing
+            : input.is_ascii
+                ? shared::StringEncoding::ascii
+                : shared::StringEncoding::utf8
+    };
+}
+
+
+CHARR_CXX_HELPER shared::substring::ReplacementWarning
+ci__sub_validate_replacement_all(
+    const CiSubFrameInput& source,
+    const shared::StringView* replacements, R_len_t replacement_length,
+    const int* from, R_len_t from_length,
+    const int* to, R_len_t to_length,
+    const int* lengths, R_len_t lengths_length,
+    R_len_t vectorize_length, bool omit_na
+)
+{
+    using shared::substring::ReplacementWarning;
+
+    if (source.is_na || vectorize_length <= 0)
+        return ReplacementWarning::none;
+    if (replacement_length <= 0)
+        return ReplacementWarning::replacement_zero;
+
+    if (!omit_na) {
+        for (R_len_t i = 0; i < vectorize_length; ++i) {
+            const int current_from = from[i % from_length];
+            const int current_to = to
+                ? to[i % to_length]
+                : lengths[i % lengths_length];
+            if (current_from == NA_INTEGER || current_to == NA_INTEGER)
+                return ReplacementWarning::none;
+        }
+        for (R_len_t i = 0; i < vectorize_length; ++i) {
+            if (replacements[i % replacement_length].is_na())
+                return ReplacementWarning::none;
+        }
+    }
+
+    shared::substring::Utf8Indexer indexer;
+    indexer.reset(source.data, source.length, source.is_ascii);
+    const int source_codepoints = indexer.codepoint_count();
+    int replaced = 0;
+    int last_position = 0;
+    int byte_position = 0;
+    std::size_t output_size = 0;
+    for (R_len_t i = 0; i < vectorize_length; ++i) {
+        int current_from = from[i % from_length];
+        int current_to = to
+            ? to[i % to_length]
+            : lengths[i % lengths_length];
+        const shared::StringView& replacement =
+            replacements[i % replacement_length];
+        if (current_from == NA_INTEGER || current_to == NA_INTEGER ||
+                replacement.is_na() || (!to && current_to < 0)) {
+            continue;
+        }
+
+        ++replaced;
+        current_from = shared::substring::replacement_all_from(
+            current_from, source_codepoints
+        );
+        current_to = shared::substring::replacement_all_to(
+            current_to, lengths != nullptr,
+            current_from, source_codepoints
+        );
+        if (last_position > current_from) {
+            throw std::invalid_argument(
+                "index ranges must be sorted and mutually disjoint"
+            );
+        }
+
+        const int begin_byte = indexer.forward(current_from);
+        output_size = shared::substring::checked_output_size(
+            output_size,
+            static_cast<std::size_t>(begin_byte-byte_position)
+        );
+        output_size = shared::substring::checked_output_size(
+            output_size, static_cast<std::size_t>(replacement.len)
+        );
+        byte_position = indexer.forward(current_to);
+        last_position = current_to;
+    }
+    shared::substring::checked_output_size(
+        output_size,
+        static_cast<std::size_t>(source.length-byte_position)
+    );
+    return replaced > 0 && vectorize_length % replacement_length != 0
+        ? ReplacementWarning::recycling
+        : ReplacementWarning::none;
+}
+
+
+class CiSubReplacementAllBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER CiSubReplacementAllBody(
+        const charport::StrViews& source_values,
+        const std::vector<std::size_t>& source_converted_slots,
+        const std::vector<shared::StringView>& source_converted_values,
+        R_len_t source_length,
+        const std::vector<std::size_t>& plans,
+        const std::vector<shared::StringView>& replacement_values,
+        const std::vector<int>& from_values,
+        const std::vector<int>& to_values,
+        const std::vector<int>& length_values,
+        bool omit_na,
+        std::vector<io::OutputStore>& stores,
+        std::vector<int>& errors
+    ) noexcept
+        : source_values_(source_values),
+          source_converted_slots_(source_converted_slots),
+          source_converted_values_(source_converted_values),
+          source_length_(source_length), plans_(plans),
+          replacement_values_(replacement_values),
+          from_values_(from_values), to_values_(to_values),
+          length_values_(length_values),
+          omit_na_(omit_na), stores_(stores), errors_(errors)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        shared::substring::ReplacementAssembler assembler;
+        io::OutputBuilder builder(0);
+        while (context.next_chunk()) {
+            for (R_xlen_t task = context.begin; task < context.end; ++task) {
+                const R_len_t outer = static_cast<R_len_t>(task);
+                try {
+                    const CiSubFrameInput source =
+                        ci__sub_parallel_frame_input_at(
+                            source_values_, source_converted_slots_,
+                            source_converted_values_,
+                            outer % source_length_
+                        );
+                    builder.reset(1);
+                    if (source.is_na) {
+                        builder.set_na(0);
+                    }
+                    else {
+                        const std::size_t plan =
+                            static_cast<std::size_t>(outer)*9;
+                        const R_len_t from_length = static_cast<R_len_t>(
+                            plans_[plan+1]
+                        );
+                        const R_len_t to_length = static_cast<R_len_t>(
+                            plans_[plan+3]
+                        );
+                        const R_len_t length_length = static_cast<R_len_t>(
+                            plans_[plan+5]
+                        );
+                        const R_len_t vectorize_length =
+                            static_cast<R_len_t>(plans_[plan+6]);
+                        const R_len_t replacement_length =
+                            static_cast<R_len_t>(plans_[plan+8]);
+                        const int* from = from_length > 0
+                            ? &from_values_[plans_[plan]] : nullptr;
+                        const int* to = to_length > 0
+                            ? &to_values_[plans_[plan+2]] : nullptr;
+                        const int* lengths = length_length > 0
+                            ? &length_values_[plans_[plan+4]] : nullptr;
+                        const shared::StringView* replacements =
+                            replacement_length > 0
+                                ? &replacement_values_[plans_[plan+7]]
+                                : nullptr;
+                        const shared::substring::ReplacementResult output =
+                            assembler.build(
+                                ci__sub_shared_frame_input(source),
+                                replacements, replacement_length,
+                                from, from_length, to, to_length,
+                                lengths, length_length,
+                                vectorize_length, omit_na_
+                            );
+                        if (output.value.is_na()) {
+                            builder.set_na(0);
+                        }
+                        else {
+                            builder.set_validated(
+                                0,
+                                charport::StrView{
+                                    output.value.len == 0
+                                        ? "" : output.value.ptr,
+                                    output.value.len,
+                                    output.value.enc ==
+                                            shared::StringEncoding::ascii
+                                        ? CETYPE_EXT_ASCII
+                                        : CETYPE_EXT_UTF8
+                                }
+                            );
+                        }
+                    }
+                    stores_[static_cast<std::size_t>(outer)] =
+                        builder.release_store();
+                }
+                catch (const std::exception& error) {
+                    errors_[static_cast<std::size_t>(outer)] = 1;
+                    stores_[static_cast<std::size_t>(outer)] =
+                        io::OutputStore::scalar(
+                            error.what(), std::strlen(error.what())+1,
+                            CETYPE_EXT_BYTES
+                        );
+                }
+                catch (...) {
+                    errors_[static_cast<std::size_t>(outer)] = 1;
+                    stores_[static_cast<std::size_t>(outer)] =
+                        io::OutputStore::scalar(
+                            "unknown C++ exception", 22,
+                            CETYPE_EXT_BYTES
+                        );
+                }
+            }
+        }
+    }
+
+private:
+    const charport::StrViews& source_values_;
+    const std::vector<std::size_t>& source_converted_slots_;
+    const std::vector<shared::StringView>& source_converted_values_;
+    R_len_t source_length_;
+    const std::vector<std::size_t>& plans_;
+    const std::vector<shared::StringView>& replacement_values_;
+    const std::vector<int>& from_values_;
+    const std::vector<int>& to_values_;
+    const std::vector<int>& length_values_;
+    bool omit_na_;
+    std::vector<io::OutputStore>& stores_;
+    std::vector<int>& errors_;
+};
+
+
 } // namespace sub
 
 using namespace sub;
@@ -190,10 +1055,13 @@ CHARR_R_HELPER bool ci__sub_matrix_has_too_many_columns_r(
 
 
 CHARR_R_HELPER void ci__sub_emit_replacement_warnings_r(
-    const std::vector<shared::substring::ReplacementWarning>& warnings
+    const std::vector<shared::substring::ReplacementWarning>& warnings,
+    std::size_t count
 ) noexcept
 {
-    for (std::size_t i = 0; i < warnings.size(); ++i) {
+    if (count > warnings.size())
+        count = warnings.size();
+    for (std::size_t i = 0; i < count; ++i) {
         if (warnings[i] ==
                 shared::substring::ReplacementWarning::replacement_zero) {
             Rf_warning("%s", MSG__REPLACEMENT_ZERO);
@@ -206,6 +1074,14 @@ CHARR_R_HELPER void ci__sub_emit_replacement_warnings_r(
             Rf_warning("%s", MSG__WARN_RECYCLING_RULE);
         }
     }
+}
+
+
+CHARR_R_HELPER void ci__sub_emit_replacement_warnings_r(
+    const std::vector<shared::substring::ReplacementWarning>& warnings
+) noexcept
+{
+    ci__sub_emit_replacement_warnings_r(warnings, warnings.size());
 }
 
 
@@ -319,6 +1195,7 @@ CHARR_ENTRYPOINT SEXP ci_sub(
 {
     CHARR_ENTRYPOINT_BEGIN();
 
+
     str = entry_protections.protect_one(
         ci__prepare_arg_string_r(str, "str")
     );
@@ -348,9 +1225,13 @@ CHARR_ENTRYPOINT SEXP ci_sub(
         shared::SliceArena storage;
         shared::substring::Utf8Indexer indexer;
         std::vector<CiSubFrameInput> inputs;
+        std::vector<std::size_t> converted_slots;
+        std::vector<shared::StringView> converted_values;
         io::OutputBuilder builder(0);
+        io::ParallelOutputBuilder parallel_builder;
         io::OutputBuilder filtered(0);
         io::OutputStore output_store(0, 0);
+        std::vector<R_len_t> negative_length_counts;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -374,7 +1255,11 @@ CHARR_ENTRYPOINT SEXP ci_sub(
                 scalar_bounds = vectorize_len > 0 && !length_tab &&
                     to_tab && from_len == 1 && to_len == 1 &&
                     from_tab[0] > 0 && to_tab[0] > 0;
-                if (!scalar_bounds && vectorize_len > 0) {
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, vectorize_len
+                );
+                if (!scalar_bounds && plan.workers == 1 &&
+                        vectorize_len > 0) {
                     inputs.resize(static_cast<std::size_t>(str_len));
                 }
 
@@ -392,7 +1277,13 @@ CHARR_ENTRYPOINT SEXP ci_sub(
                     );
                 }
 
-                if (!scalar_bounds && vectorize_len > 0) {
+                if (plan.workers > 1) {
+                    ci__sub_preflight_frame_inputs(
+                        views, converter, storage,
+                        converted_slots, converted_values
+                    );
+                }
+                else if (!scalar_bounds && vectorize_len > 0) {
                     for (R_len_t i = 0; i < str_len; ++i) {
                         inputs[static_cast<std::size_t>(i)] =
                             ci__sub_stabilize_frame_input(
@@ -404,72 +1295,90 @@ CHARR_ENTRYPOINT SEXP ci_sub(
                     }
                 }
 
-                builder.reset(vectorize_len);
                 R_len_t negative_lengths = 0;
-                for (R_len_t i = 0; i < vectorize_len; ++i) {
-                    CiSubFrameInput value;
-                    if (scalar_bounds) {
-                        value = ci__sub_normalize_frame_input(
-                            views[i], converter
-                        );
+                if (plan.workers > 1) {
+                    negative_length_counts.assign(plan.workers, 0);
+                    parallel_builder.reset(vectorize_len, plan.workers);
+                    CiSubBody body(
+                        views, converted_slots, converted_values, str_len,
+                        from_tab, from_len, to_tab, to_len,
+                        length_tab, length_len,
+                        negative_length_counts, parallel_builder
+                    );
+                    shared::run_parallel(plan, vectorize_len, body);
+                    for (unsigned worker = 0;
+                            worker < plan.workers; ++worker) {
+                        negative_lengths += negative_length_counts[worker];
                     }
-                    else {
-                        value = inputs[
-                            static_cast<std::size_t>(i % str_len)
-                        ];
-                    }
+                    output_store = parallel_builder.release_store();
+                }
+                else {
+                    builder.reset(vectorize_len);
+                    for (R_len_t i = 0; i < vectorize_len; ++i) {
+                        CiSubFrameInput value;
+                        if (scalar_bounds) {
+                            value = ci__sub_normalize_frame_input(
+                                views[i], converter
+                            );
+                        }
+                        else {
+                            value = inputs[
+                                static_cast<std::size_t>(i % str_len)
+                            ];
+                        }
 
-                    R_len_t current_from = from_tab[i % from_len];
-                    R_len_t current_to = to_tab
-                        ? to_tab[i % to_len]
-                        : length_tab[i % length_len];
-                    if (value.is_na || current_from == NA_INTEGER ||
-                            current_to == NA_INTEGER) {
-                        builder.set_na(i);
-                        continue;
-                    }
-                    if (length_tab) {
-                        if (current_to == 0) {
+                        R_len_t current_from = from_tab[i % from_len];
+                        R_len_t current_to = to_tab
+                            ? to_tab[i % to_len]
+                            : length_tab[i % length_len];
+                        if (value.is_na || current_from == NA_INTEGER ||
+                                current_to == NA_INTEGER) {
+                            builder.set_na(i);
+                            continue;
+                        }
+                        if (length_tab) {
+                            if (current_to == 0) {
+                                builder.set(
+                                    i, "", 0, CETYPE_EXT_ASCII
+                                );
+                                continue;
+                            }
+                            if (current_to < 0) {
+                                builder.set_na(i);
+                                ++negative_lengths;
+                                continue;
+                            }
+                            current_to = shared::substring::length_endpoint(
+                                current_from, current_to
+                            );
+                        }
+
+                        indexer.reset(
+                            value.data, value.length, value.is_ascii
+                        );
+                        const shared::substring::ByteRange range =
+                            indexer.range(current_from, current_to);
+                        if (range.end > range.begin) {
+                            builder.set_validated(
+                                i,
+                                charport::StrView{
+                                    value.data+range.begin,
+                                    range.end-range.begin,
+                                    value.is_ascii
+                                        ? CETYPE_EXT_ASCII
+                                        : CETYPE_EXT_ASCII_OR_UTF8
+                                }
+                            );
+                        }
+                        else {
                             builder.set(
                                 i, "", 0, CETYPE_EXT_ASCII
                             );
-                            continue;
                         }
-                        if (current_to < 0) {
-                            builder.set_na(i);
-                            ++negative_lengths;
-                            continue;
-                        }
-                        current_to = shared::substring::length_endpoint(
-                            current_from, current_to
-                        );
                     }
-
-                    indexer.reset(
-                        value.data, value.length, value.is_ascii
-                    );
-                    const shared::substring::ByteRange range =
-                        indexer.range(current_from, current_to);
-                    if (range.end > range.begin) {
-                        builder.set_validated(
-                            i,
-                            charport::StrView{
-                                value.data+range.begin,
-                                range.end-range.begin,
-                                value.is_ascii
-                                    ? CETYPE_EXT_ASCII
-                                    : CETYPE_EXT_ASCII_OR_UTF8
-                            }
-                        );
-                    }
-                    else {
-                        builder.set(
-                            i, "", 0, CETYPE_EXT_ASCII
-                        );
-                    }
+                    output_store = builder.release_store();
                 }
 
-                output_store = builder.release_store();
                 if (negative_lengths > 0 &&
                         ignore_negative_length_1) {
                     filtered.reset(vectorize_len-negative_lengths);
@@ -482,9 +1391,14 @@ CHARR_ENTRYPOINT SEXP ci_sub(
                             i = shared::substring::recycled_order_next(
                                 i, str_len, vectorize_len
                             )) {
-                        const CiSubFrameInput& value = inputs[
-                            static_cast<std::size_t>(i % str_len)
-                        ];
+                        const CiSubFrameInput value = plan.workers > 1
+                            ? ci__sub_parallel_frame_input_at(
+                                views, converted_slots, converted_values,
+                                i % str_len
+                            )
+                            : inputs[
+                                static_cast<std::size_t>(i % str_len)
+                            ];
                         const R_len_t current_from = from_tab[i % from_len];
                         const R_len_t current_length =
                             length_tab[i % length_len];
@@ -560,6 +1474,7 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement(
 {
     CHARR_ENTRYPOINT_BEGIN();
 
+
     str = entry_protections.protect_one(
         ci__prepare_arg_string_r(str, "str")
     );
@@ -598,7 +1513,12 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement(
         shared::substring::Utf8Indexer indexer;
         std::vector<CiSubFrameInput> sources;
         std::vector<CiSubFrameInput> replacements;
+        std::vector<std::size_t> source_converted_slots;
+        std::vector<shared::StringView> source_converted_values;
+        std::vector<std::size_t> replacement_converted_slots;
+        std::vector<shared::StringView> replacement_converted_values;
         io::OutputBuilder builder(0);
+        io::ParallelOutputBuilder parallel_builder;
         io::OutputStore output_store(0, 0);
 
         result = shared::unwind_protect(
@@ -628,7 +1548,11 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement(
                 scalar_bounds = vectorize_len > 0 && !length_tab &&
                     to_tab && from_len == 1 && to_len == 1 &&
                     value_len == 1 && from_tab[0] > 0 && to_tab[0] > 0;
-                if (!scalar_bounds && vectorize_len > 0) {
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, vectorize_len
+                );
+                if (!scalar_bounds && plan.workers == 1 &&
+                        vectorize_len > 0) {
                     sources.resize(static_cast<std::size_t>(str_len));
                     replacements.resize(
                         static_cast<std::size_t>(value_len)
@@ -666,63 +1590,124 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement(
 
                 CiSubFrameInput scalar_replacement;
                 if (scalar_bounds) {
-                    scalar_replacement = ci__sub_normalize_frame_input(
-                        replacement_views[0], replacement_converter
-                    );
-                }
-                else if (vectorize_len > 0) {
-                    for (R_len_t i = 0; i < str_len; ++i) {
-                        sources[static_cast<std::size_t>(i)] =
-                            ci__sub_stabilize_frame_input(
-                                ci__sub_normalize_frame_input(
-                                    source_views[i], source_converter
-                                ),
-                                source_storage
-                            );
-                    }
-                    for (R_len_t i = 0; i < value_len; ++i) {
-                        replacements[static_cast<std::size_t>(i)] =
-                            ci__sub_stabilize_frame_input(
-                                ci__sub_normalize_frame_input(
-                                    replacement_views[i],
-                                    replacement_converter
-                                ),
-                                replacement_storage
-                            );
-                    }
-                }
-
-                builder.reset(vectorize_len);
-                for (R_len_t i = 0; i < vectorize_len; ++i) {
-                    CiSubFrameInput source;
-                    CiSubFrameInput replacement;
-                    if (scalar_bounds) {
-                        source = ci__sub_normalize_frame_input(
-                            source_views[i], source_converter
+                    if (plan.workers > 1) {
+                        ci__sub_preflight_frame_inputs(
+                            replacement_views, replacement_converter,
+                            replacement_storage,
+                            replacement_converted_slots,
+                            replacement_converted_values
                         );
-                        replacement = scalar_replacement;
+                        ci__sub_preflight_frame_inputs(
+                            source_views, source_converter, source_storage,
+                            source_converted_slots, source_converted_values
+                        );
                     }
                     else {
-                        source = sources[
-                            static_cast<std::size_t>(i % str_len)
-                        ];
-                        replacement = replacements[
-                            static_cast<std::size_t>(i % value_len)
-                        ];
+                        scalar_replacement = ci__sub_normalize_frame_input(
+                            replacement_views[0], replacement_converter
+                        );
                     }
+                }
+                else if (vectorize_len > 0) {
+                    if (plan.workers > 1) {
+                        ci__sub_preflight_frame_inputs(
+                            source_views, source_converter, source_storage,
+                            source_converted_slots, source_converted_values
+                        );
+                        ci__sub_preflight_frame_inputs(
+                            replacement_views, replacement_converter,
+                            replacement_storage,
+                            replacement_converted_slots,
+                            replacement_converted_values
+                        );
+                    }
+                    else {
+                        for (R_len_t i = 0; i < str_len; ++i) {
+                            sources[static_cast<std::size_t>(i)] =
+                                ci__sub_stabilize_frame_input(
+                                    ci__sub_normalize_frame_input(
+                                        source_views[i], source_converter
+                                    ),
+                                    source_storage
+                                );
+                        }
+                        for (R_len_t i = 0; i < value_len; ++i) {
+                            replacements[static_cast<std::size_t>(i)] =
+                                ci__sub_stabilize_frame_input(
+                                    ci__sub_normalize_frame_input(
+                                        replacement_views[i],
+                                        replacement_converter
+                                    ),
+                                    replacement_storage
+                                );
+                        }
+                    }
+                }
 
-                    R_len_t current_from = from_tab[i % from_len];
-                    R_len_t current_to = to_tab
-                        ? to_tab[i % to_len]
-                        : length_tab[i % length_len];
-                    if (source.is_na) {
-                        builder.set_na(i);
-                        continue;
-                    }
-                    if (current_from == NA_INTEGER ||
-                            current_to == NA_INTEGER ||
-                            replacement.is_na) {
-                        if (omit_na_1) {
+                if (plan.workers > 1) {
+                    parallel_builder.reset(vectorize_len, plan.workers);
+                    CiSubReplacementBody body(
+                        source_views, source_converted_slots,
+                        source_converted_values,
+                        replacement_views, replacement_converted_slots,
+                        replacement_converted_values,
+                        str_len, value_len,
+                        from_tab, from_len, to_tab, to_len,
+                        length_tab, length_len,
+                        omit_na_1, parallel_builder
+                    );
+                    shared::run_parallel(plan, vectorize_len, body);
+                    output_store = parallel_builder.release_store();
+                }
+                else {
+                    builder.reset(vectorize_len);
+                    for (R_len_t i = 0; i < vectorize_len; ++i) {
+                        CiSubFrameInput source;
+                        CiSubFrameInput replacement;
+                        if (scalar_bounds) {
+                            source = ci__sub_normalize_frame_input(
+                                source_views[i], source_converter
+                            );
+                            replacement = scalar_replacement;
+                        }
+                        else {
+                            source = sources[
+                                static_cast<std::size_t>(i % str_len)
+                            ];
+                            replacement = replacements[
+                                static_cast<std::size_t>(i % value_len)
+                            ];
+                        }
+
+                        R_len_t current_from = from_tab[i % from_len];
+                        R_len_t current_to = to_tab
+                            ? to_tab[i % to_len]
+                            : length_tab[i % length_len];
+                        if (source.is_na) {
+                            builder.set_na(i);
+                            continue;
+                        }
+                        if (current_from == NA_INTEGER ||
+                                current_to == NA_INTEGER ||
+                                replacement.is_na) {
+                            if (omit_na_1) {
+                                builder.set_validated(
+                                    i,
+                                    charport::StrView{
+                                        source.length == 0 ? "" : source.data,
+                                        source.length,
+                                        source.is_ascii
+                                            ? CETYPE_EXT_ASCII
+                                            : CETYPE_EXT_UTF8
+                                    }
+                                );
+                            }
+                            else {
+                                builder.set_na(i);
+                            }
+                            continue;
+                        }
+                        if (!to_tab && current_to < 0) {
                             builder.set_validated(
                                 i,
                                 charport::StrView{
@@ -733,87 +1718,71 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement(
                                         : CETYPE_EXT_UTF8
                                 }
                             );
+                            continue;
                         }
-                        else {
-                            builder.set_na(i);
+                        if (length_tab) {
+                            current_to = current_to <= 0
+                                ? 0
+                                : shared::substring::length_endpoint(
+                                    current_from, current_to
+                                );
                         }
-                        continue;
-                    }
-                    if (!to_tab && current_to < 0) {
-                        builder.set_validated(
-                            i,
-                            charport::StrView{
-                                source.length == 0 ? "" : source.data,
-                                source.length,
-                                source.is_ascii
-                                    ? CETYPE_EXT_ASCII
-                                    : CETYPE_EXT_UTF8
-                            }
+
+                        indexer.reset(
+                            source.data, source.length, source.is_ascii
                         );
-                        continue;
-                    }
-                    if (length_tab) {
-                        current_to = current_to <= 0
-                            ? 0
-                            : shared::substring::length_endpoint(
-                                current_from, current_to
+                        shared::substring::ByteRange range =
+                            indexer.range(current_from, current_to);
+                        if (range.end < range.begin)
+                            range.end = range.begin;
+
+                        const std::size_t prefix =
+                            static_cast<std::size_t>(range.begin);
+                        const std::size_t replacement_length =
+                            static_cast<std::size_t>(replacement.length);
+                        const std::size_t suffix = static_cast<std::size_t>(
+                            source.length-range.end
+                        );
+                        std::size_t output_size =
+                            shared::substring::checked_output_size(
+                                prefix, replacement_length
                             );
-                    }
-
-                    indexer.reset(
-                        source.data, source.length, source.is_ascii
-                    );
-                    shared::substring::ByteRange range =
-                        indexer.range(current_from, current_to);
-                    if (range.end < range.begin)
-                        range.end = range.begin;
-
-                    const std::size_t prefix =
-                        static_cast<std::size_t>(range.begin);
-                    const std::size_t replacement_length =
-                        static_cast<std::size_t>(replacement.length);
-                    const std::size_t suffix = static_cast<std::size_t>(
-                        source.length-range.end
-                    );
-                    std::size_t output_size =
-                        shared::substring::checked_output_size(
-                            prefix, replacement_length
+                        output_size = shared::substring::checked_output_size(
+                            output_size, suffix
                         );
-                    output_size = shared::substring::checked_output_size(
-                        output_size, suffix
-                    );
-                    const bool output_ascii =
-                        (source.is_ascii ||
-                         io::is_ascii(source.data, prefix)) &&
-                        (replacement.is_ascii ||
-                         io::is_ascii(
-                             replacement.data, replacement_length
-                         )) &&
-                        (source.is_ascii ||
-                         io::is_ascii(source.data+range.end, suffix));
-                    char* output = builder.reserve(
-                        i, output_size,
-                        output_ascii
-                            ? CETYPE_EXT_ASCII
-                            : CETYPE_EXT_UTF8
-                    );
-                    if (prefix > 0)
-                        std::memcpy(output, source.data, prefix);
-                    if (replacement_length > 0) {
-                        std::memcpy(
-                            output+prefix, replacement.data,
-                            replacement_length
+                        const bool output_ascii =
+                            (source.is_ascii ||
+                             io::is_ascii(source.data, prefix)) &&
+                            (replacement.is_ascii ||
+                             io::is_ascii(
+                                 replacement.data, replacement_length
+                             )) &&
+                            (source.is_ascii ||
+                             io::is_ascii(source.data+range.end, suffix));
+                        char* output = builder.reserve(
+                            i, output_size,
+                            output_ascii
+                                ? CETYPE_EXT_ASCII
+                                : CETYPE_EXT_UTF8
                         );
+                        if (prefix > 0)
+                            std::memcpy(output, source.data, prefix);
+                        if (replacement_length > 0) {
+                            std::memcpy(
+                                output+prefix, replacement.data,
+                                replacement_length
+                            );
+                        }
+                        if (suffix > 0) {
+                            std::memcpy(
+                                output+prefix+replacement_length,
+                                source.data+range.end, suffix
+                            );
+                        }
                     }
-                    if (suffix > 0) {
-                        std::memcpy(
-                            output+prefix+replacement_length,
-                            source.data+range.end, suffix
-                        );
-                    }
+                    output_store = builder.release_store();
                 }
 
-                output_store = builder.release_store();
                 result = entry_protections.reprotect_one(
                     io::finalize(std::move(output_store)), result_index
                 );
@@ -876,6 +1845,7 @@ CHARR_ENTRYPOINT SEXP ci_sub_all(
 {
     CHARR_ENTRYPOINT_BEGIN();
 
+
     str = entry_protections.protect_one(
         ci__prepare_arg_string_r(str, "str")
     );
@@ -916,6 +1886,12 @@ CHARR_ENTRYPOINT SEXP ci_sub_all(
         shared::substring::Utf8Indexer indexer;
         std::vector<CiSubFrameInput> sources;
         std::vector<unsigned char> source_ready;
+        std::vector<std::size_t> source_converted_slots;
+        std::vector<shared::StringView> source_converted_values;
+        std::vector<std::size_t> plans;
+        std::vector<int> from_values;
+        std::vector<int> to_values;
+        std::vector<int> length_values;
         io::OutputBuilder builder(0);
         std::vector<io::OutputStore> stores;
 
@@ -945,8 +1921,13 @@ CHARR_ENTRYPOINT SEXP ci_sub_all(
                     ci__sub_all_plain_list_scalar(
                         to, to_list_len, scalar_to
                     ) && scalar_from > 0 && scalar_to > 0;
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, vectorize_len
+                );
                 if (vectorize_len > 0) {
-                    sources.resize(static_cast<std::size_t>(str_len));
+                    if (plan.workers == 1) {
+                        sources.resize(static_cast<std::size_t>(str_len));
+                    }
                     source_ready.assign(
                         static_cast<std::size_t>(str_len), 0
                     );
@@ -970,7 +1951,8 @@ CHARR_ENTRYPOINT SEXP ci_sub_all(
                     Rf_allocVector(VECSXP, vectorize_len), result_index
                 );
 
-                for (R_len_t outer = 0; outer < vectorize_len; ++outer) {
+                if (plan.workers == 1) {
+                  for (R_len_t outer = 0; outer < vectorize_len; ++outer) {
                     SEXP inner_from = R_NilValue;
                     SEXP inner_to = R_NilValue;
                     SEXP inner_length = R_NilValue;
@@ -1129,6 +2111,105 @@ CHARR_ENTRYPOINT SEXP ci_sub_all(
                     }
                     stores.push_back(builder.release_store());
                     callback_protections.release(inner_protected);
+                  }
+                }
+                else {
+                    plans.assign(
+                        static_cast<std::size_t>(vectorize_len)*7, 0
+                    );
+                    for (R_len_t outer = 0;
+                            outer < vectorize_len; ++outer) {
+                        SEXP inner_from = R_NilValue;
+                        SEXP inner_to = R_NilValue;
+                        SEXP inner_length = R_NilValue;
+                        R_len_t inner_from_len = 0;
+                        R_len_t inner_to_len = 0;
+                        R_len_t inner_length_len = 0;
+                        int* inner_from_tab = nullptr;
+                        int* inner_to_tab = nullptr;
+                        int* inner_length_tab = nullptr;
+                        R_len_t inner_protected = 0;
+
+                        if (scalar_bounds) {
+                            inner_from_len = 1;
+                            inner_to_len = 1;
+                            inner_from_tab = &scalar_from;
+                            inner_to_tab = &scalar_to;
+                        }
+                        else {
+                            inner_from = VECTOR_ELT(
+                                from, outer % from_list_len
+                            );
+                            if (has_to) {
+                                inner_to = VECTOR_ELT(
+                                    to, outer % to_list_len
+                                );
+                            }
+                            else if (has_length) {
+                                inner_length = VECTOR_ELT(
+                                    length, outer % length_list_len
+                                );
+                            }
+                            inner_protected =
+                                ci__sub_prepare_from_to_length_r(
+                                    inner_from, inner_to, inner_length,
+                                    inner_from_len, inner_to_len,
+                                    inner_length_len,
+                                    inner_from_tab, inner_to_tab,
+                                    inner_length_tab, use_matrix_1
+                                );
+                            callback_protections.adopt(inner_protected);
+                        }
+
+                        const R_len_t inner_endpoint_len =
+                            inner_to_len > inner_length_len
+                                ? inner_to_len : inner_length_len;
+                        const R_len_t inner_vectorize_len =
+                            recycling_length_r(
+                                1, inner_from_len, inner_endpoint_len
+                            );
+                        const std::size_t position =
+                            static_cast<std::size_t>(outer)*7;
+                        plans[position] = ci__sub_append_int_values(
+                            from_values, inner_from_tab, inner_from_len
+                        );
+                        plans[position+1] =
+                            static_cast<std::size_t>(inner_from_len);
+                        plans[position+2] = ci__sub_append_int_values(
+                            to_values, inner_to_tab, inner_to_len
+                        );
+                        plans[position+3] =
+                            static_cast<std::size_t>(inner_to_len);
+                        plans[position+4] = ci__sub_append_int_values(
+                            length_values, inner_length_tab,
+                            inner_length_len
+                        );
+                        plans[position+5] =
+                            static_cast<std::size_t>(inner_length_len);
+                        plans[position+6] = static_cast<std::size_t>(
+                            inner_vectorize_len
+                        );
+                        if (inner_vectorize_len > 0) {
+                            ci__sub_preflight_frame_input_at(
+                                source_views, outer % str_len,
+                                converter, storage,
+                                source_converted_slots,
+                                source_converted_values, source_ready
+                            );
+                        }
+                        callback_protections.release(inner_protected);
+                    }
+                    for (R_len_t outer = 0;
+                            outer < vectorize_len; ++outer) {
+                        stores.emplace_back(0, 0);
+                    }
+                    CiSubAllBody body(
+                        source_views, source_converted_slots,
+                        source_converted_values, str_len,
+                        plans, from_values, to_values, length_values,
+                        ignore_negative_length_1, stores
+                    );
+                    shared::run_parallel(plan, vectorize_len, body);
                 }
 
                 for (R_len_t outer = 0; outer < vectorize_len; ++outer) {
@@ -1195,6 +2276,7 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement_all(
 {
     CHARR_ENTRYPOINT_BEGIN();
 
+
     str = entry_protections.protect_one(
         ci__prepare_arg_string_r(str, "str")
     );
@@ -1209,6 +2291,8 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement_all(
     try {
         charport::Reader source_reader;
         charport::Reader replacement_reader;
+        charport::Reader parallel_replacement_reader;
+        charport::Reader scalar_parallel_replacement_reader;
         charport::StrViews source_views;
         charport::StrViews replacement_views;
         shared::NativeToUtf8 source_converter;
@@ -1222,9 +2306,22 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement_all(
         };
         std::vector<CiSubFrameInput> sources;
         std::vector<shared::StringView> replacements;
+        std::vector<std::size_t> source_converted_slots;
+        std::vector<shared::StringView> source_converted_values;
+        std::vector<std::size_t> plans;
+        std::vector<shared::StringView> parallel_replacements;
+        std::vector<int> from_values;
+        std::vector<int> to_values;
+        std::vector<int> length_values;
+        std::vector<io::OutputStore> stores;
+        std::vector<std::size_t> warning_limits;
+        std::vector<int> worker_errors;
         std::vector<shared::substring::ReplacementWarning>
             pending_warnings;
+        std::size_t warning_emit_limit = 0;
+        bool has_warning_emit_limit = false;
         io::OutputBuilder builder(0);
+        io::ParallelOutputBuilder parallel_builder;
         io::OutputStore output_store(0, 0);
 
         result = shared::unwind_protect(
@@ -1234,7 +2331,6 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement_all(
                     Rf_error("long character vectors are not supported");
                 }
                 str_len = static_cast<R_len_t>(source_size);
-                sources.resize(static_cast<std::size_t>(str_len));
                 source_reader.reset(str);
                 if (source_reader.size() != source_size) {
                     throw std::runtime_error(
@@ -1247,14 +2343,48 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement_all(
                     source_views.ptrs(), source_views.lengths(),
                     source_views.encodings()
                 );
-                for (R_len_t i = 0; i < str_len; ++i) {
-                    sources[static_cast<std::size_t>(i)] =
-                        ci__sub_stabilize_frame_input(
-                            ci__sub_normalize_frame_input(
-                                source_views[i], source_converter
-                            ),
-                            source_storage
+                bool use_parallel_sources = false;
+                const bool lists_are_valid =
+                    (Rf_isNull(from) || Rf_isVectorList(from)) &&
+                    (Rf_isNull(to) || Rf_isVectorList(to)) &&
+                    (Rf_isNull(length) || Rf_isVectorList(length)) &&
+                    (Rf_isNull(value) || Rf_isVectorList(value));
+                if (lists_are_valid) {
+                    const bool raw_has_to = !Rf_isNull(to);
+                    const bool raw_has_length = !Rf_isNull(length);
+                    const int raw_outer_lengths[4] = {
+                        str_len, LENGTH(from), LENGTH(value),
+                        raw_has_to ? LENGTH(to)
+                            : raw_has_length ? LENGTH(length) : 1
+                    };
+                    bool raw_recycling_warning = false;
+                    const R_len_t raw_vectorize_len =
+                        shared::substring::recycling_length(
+                            raw_outer_lengths,
+                            raw_has_to || raw_has_length ? 4 : 3,
+                            raw_recycling_warning
                         );
+                    use_parallel_sources = shared::parallel_plan(
+                        true, raw_vectorize_len
+                    ).workers > 1;
+                }
+                if (!use_parallel_sources) {
+                    sources.resize(static_cast<std::size_t>(str_len));
+                    for (R_len_t i = 0; i < str_len; ++i) {
+                        sources[static_cast<std::size_t>(i)] =
+                            ci__sub_stabilize_frame_input(
+                                ci__sub_normalize_frame_input(
+                                    source_views[i], source_converter
+                                ),
+                                source_storage
+                            );
+                    }
+                }
+                else {
+                    ci__sub_preflight_frame_inputs(
+                        source_views, source_converter, source_storage,
+                        source_converted_slots, source_converted_values
+                    );
                 }
 
                 from = callback_protections.protect_one(
@@ -1313,6 +2443,9 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement_all(
                      !ALTREP(scalar_value) && NO_ATTRIB(scalar_value) &&
                      XLENGTH(scalar_value) == 1);
                 scalar_fast_path = scalar_bounds && scalar_replacement;
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, vectorize_len
+                );
                 if (outer_recycling_warning) {
                     pending_warnings.push_back(
                         shared::substring::ReplacementWarning::
@@ -1321,6 +2454,7 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement_all(
                 }
 
                 try {
+                 if (plan.workers == 1) {
                   builder.reset(vectorize_len);
                   for (R_len_t outer = 0;
                           outer < vectorize_len; ++outer) {
@@ -1595,11 +2729,307 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement_all(
                     callback_protections.release(replacement_protected);
                   }
                   output_store = builder.release_store();
+                 }
+                 else if (scalar_fast_path) {
+                    bool needs_replacement = false;
+                    for (R_len_t outer = 0;
+                            outer < vectorize_len; ++outer) {
+                        const CiSubFrameInput source =
+                            ci__sub_parallel_frame_input_at(
+                                source_views, source_converted_slots,
+                                source_converted_values, outer
+                            );
+                        if (!source.is_na) {
+                            needs_replacement = true;
+                            break;
+                        }
+                    }
+
+                    if (needs_replacement) {
+                        SEXP inner_value =
+                            callback_protections.protect_one(
+                                ci__prepare_arg_string_r(
+                                    scalar_value, "str"
+                                )
+                            );
+                        const R_xlen_t replacement_size =
+                            XLENGTH(inner_value);
+                        if (replacement_size < 0 ||
+                                replacement_size > R_LEN_T_MAX) {
+                            Rf_error(
+                                "long character vectors are not supported"
+                            );
+                        }
+                        scalar_parallel_replacement_reader.reset(inner_value);
+                        if (scalar_parallel_replacement_reader.size() !=
+                                replacement_size) {
+                            throw std::runtime_error(
+                                "character vector length changed during an operation"
+                            );
+                        }
+                        replacement_views.resize(replacement_size);
+                        scalar_parallel_replacement_reader.views(
+                            0, replacement_size,
+                            replacement_views.ptrs(),
+                            replacement_views.lengths(),
+                            replacement_views.encodings()
+                        );
+                        scalar_replacement_input =
+                            ci__sub_stabilize_frame_input(
+                                ci__sub_normalize_frame_input(
+                                    replacement_views[0],
+                                    replacement_converter
+                                ),
+                                replacement_storage
+                            );
+                    }
+
+                    parallel_builder.reset(vectorize_len, plan.workers);
+                    CiSubReplacementAllScalarBody body(
+                        source_views, source_converted_slots,
+                        source_converted_values, scalar_replacement_input,
+                        scalar_from, scalar_to, omit_na_1,
+                        parallel_builder
+                    );
+                    shared::run_parallel(plan, vectorize_len, body);
+                    output_store = parallel_builder.release_store();
+                 }
+                 else {
+                    plans.assign(
+                        static_cast<std::size_t>(vectorize_len)*9, 0
+                    );
+                    stores.reserve(static_cast<std::size_t>(vectorize_len));
+                    for (R_len_t outer = 0;
+                            outer < vectorize_len; ++outer) {
+                        stores.emplace_back(0, 0);
+                    }
+                    warning_limits.assign(
+                        static_cast<std::size_t>(vectorize_len),
+                        pending_warnings.size()
+                    );
+                    worker_errors.assign(
+                        static_cast<std::size_t>(vectorize_len), 0
+                    );
+                    SEXP replacement_keepalive =
+                        callback_protections.protect_one(
+                            Rf_allocVector(VECSXP, vectorize_len)
+                        );
+
+                    for (R_len_t outer = 0;
+                            outer < vectorize_len; ++outer) {
+                        warning_limits[static_cast<std::size_t>(outer)] =
+                            pending_warnings.size();
+                        const CiSubFrameInput source =
+                            ci__sub_parallel_frame_input_at(
+                                source_views, source_converted_slots,
+                                source_converted_values, outer % str_len
+                            );
+                        if (source.is_na)
+                            continue;
+
+                        const std::size_t position =
+                            static_cast<std::size_t>(outer)*9;
+                        R_len_t replacement_len = 0;
+                        SEXP inner_value =
+                            callback_protections.protect_one(
+                                ci__prepare_arg_string_r(
+                                    VECTOR_ELT(
+                                        value, outer % value_list_len
+                                    ),
+                                    "str"
+                                )
+                            );
+                        SET_VECTOR_ELT(
+                            replacement_keepalive, outer, inner_value
+                        );
+                        const R_xlen_t replacement_size =
+                            XLENGTH(inner_value);
+                        if (replacement_size < 0 ||
+                                replacement_size > R_LEN_T_MAX) {
+                            Rf_error(
+                                "long character vectors are not supported"
+                            );
+                        }
+                        replacement_len = static_cast<R_len_t>(
+                            replacement_size
+                        );
+                        parallel_replacement_reader.reset(inner_value);
+                        if (parallel_replacement_reader.size() !=
+                                replacement_size) {
+                            throw std::runtime_error(
+                                "character vector length changed during an operation"
+                            );
+                        }
+                        replacement_views.resize(replacement_size);
+                        parallel_replacement_reader.views(
+                            0, replacement_size,
+                            replacement_views.ptrs(),
+                            replacement_views.lengths(),
+                            replacement_views.encodings()
+                        );
+                        plans[position+7] =
+                            parallel_replacements.size();
+                        plans[position+8] = static_cast<std::size_t>(
+                            replacement_len
+                        );
+                        for (R_len_t i = 0;
+                                i < replacement_len; ++i) {
+                            const CiSubFrameInput replacement =
+                                ci__sub_stabilize_frame_input(
+                                    ci__sub_normalize_frame_input(
+                                        replacement_views[i],
+                                        replacement_converter
+                                    ),
+                                    replacement_storage
+                                );
+                            parallel_replacements.push_back(
+                                ci__sub_shared_frame_input(replacement)
+                            );
+                        }
+                        callback_protections.release(1);
+
+                        SEXP inner_from = VECTOR_ELT(
+                            from, outer % from_list_len
+                        );
+                        SEXP inner_to = R_NilValue;
+                        SEXP inner_length = R_NilValue;
+                        if (has_to) {
+                            inner_to = VECTOR_ELT(
+                                to, outer % to_list_len
+                            );
+                        }
+                        else if (has_length) {
+                            inner_length = VECTOR_ELT(
+                                length, outer % length_list_len
+                            );
+                        }
+                        R_len_t inner_from_len = 0;
+                        R_len_t inner_to_len = 0;
+                        R_len_t inner_length_len = 0;
+                        int* inner_from_tab = nullptr;
+                        int* inner_to_tab = nullptr;
+                        int* inner_length_tab = nullptr;
+                        if (ci__sub_matrix_has_too_many_columns_r(
+                                inner_from, use_matrix_1)) {
+                            ci__sub_emit_replacement_warnings_r(
+                                pending_warnings
+                            );
+                        }
+                        const R_len_t inner_protected =
+                            ci__sub_prepare_from_to_length_r(
+                                inner_from, inner_to, inner_length,
+                                inner_from_len, inner_to_len,
+                                inner_length_len,
+                                inner_from_tab, inner_to_tab,
+                                inner_length_tab, use_matrix_1
+                            );
+                        callback_protections.adopt(inner_protected);
+                        const int inner_endpoint_len =
+                            inner_to_len > inner_length_len
+                                ? inner_to_len : inner_length_len;
+                        const int inner_lengths[2] = {
+                            inner_from_len, inner_endpoint_len
+                        };
+                        bool inner_recycling_warning = false;
+                        const R_len_t inner_vectorize_len =
+                            shared::substring::recycling_length(
+                                inner_lengths, 2,
+                                inner_recycling_warning
+                            );
+                        if (inner_recycling_warning) {
+                            pending_warnings.push_back(
+                                shared::substring::ReplacementWarning::
+                                    recycling_rule
+                            );
+                        }
+                        const shared::substring::ReplacementWarning warning =
+                            ci__sub_validate_replacement_all(
+                                source,
+                                replacement_len > 0
+                                    ? &parallel_replacements[
+                                        plans[position+7]
+                                    ]
+                                    : nullptr,
+                                replacement_len,
+                                inner_from_tab, inner_from_len,
+                                inner_to_tab, inner_to_len,
+                                inner_length_tab, inner_length_len,
+                                inner_vectorize_len, omit_na_1
+                            );
+                        if (warning ==
+                                shared::substring::ReplacementWarning::
+                                    replacement_zero ||
+                                warning ==
+                                shared::substring::ReplacementWarning::
+                                    recycling) {
+                            pending_warnings.push_back(warning);
+                        }
+                        plans[position] = ci__sub_append_int_values(
+                            from_values, inner_from_tab, inner_from_len
+                        );
+                        plans[position+1] =
+                            static_cast<std::size_t>(inner_from_len);
+                        plans[position+2] = ci__sub_append_int_values(
+                            to_values, inner_to_tab, inner_to_len
+                        );
+                        plans[position+3] =
+                            static_cast<std::size_t>(inner_to_len);
+                        plans[position+4] = ci__sub_append_int_values(
+                            length_values, inner_length_tab,
+                            inner_length_len
+                        );
+                        plans[position+5] =
+                            static_cast<std::size_t>(inner_length_len);
+                        plans[position+6] = static_cast<std::size_t>(
+                            inner_vectorize_len
+                        );
+                        warning_limits[static_cast<std::size_t>(outer)] =
+                            pending_warnings.size();
+                        callback_protections.release(inner_protected);
+                    }
+
+                    CiSubReplacementAllBody body(
+                        source_views, source_converted_slots,
+                        source_converted_values, str_len,
+                        plans, parallel_replacements,
+                        from_values, to_values, length_values,
+                        omit_na_1,
+                        stores, worker_errors
+                    );
+                    shared::run_parallel(plan, vectorize_len, body);
+                    for (R_len_t outer = 0;
+                            outer < vectorize_len; ++outer) {
+                        if (worker_errors[
+                                static_cast<std::size_t>(outer)
+                            ]) {
+                            warning_emit_limit = warning_limits[
+                                static_cast<std::size_t>(outer)
+                            ];
+                            has_warning_emit_limit = true;
+                            const io::OutputRecord error = stores[
+                                static_cast<std::size_t>(outer)
+                            ].view(0);
+                            throw std::runtime_error(
+                                error.ptr == nullptr
+                                    ? "unknown C++ exception"
+                                    : error.ptr
+                            );
+                        }
+                    }
+                    output_store = io::concat_stores(stores);
+                 }
                 }
                 catch (...) {
-                    ci__sub_emit_replacement_warnings_r(
-                        pending_warnings
-                    );
+                    if (has_warning_emit_limit) {
+                        ci__sub_emit_replacement_warnings_r(
+                            pending_warnings, warning_emit_limit
+                        );
+                    }
+                    else {
+                        ci__sub_emit_replacement_warnings_r(
+                            pending_warnings
+                        );
+                    }
                     throw;
                 }
 

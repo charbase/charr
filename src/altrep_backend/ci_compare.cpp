@@ -37,6 +37,7 @@
 #include "../shared/collator.h"
 #include "../shared/entrypoint.h"
 #include "../shared/native_to_utf8.h"
+#include "ci_parallel.h"
 #include "../shared/protect.h"
 #include "../shared/slice_arena.h"
 #include "../shared/unwind.h"
@@ -68,6 +69,72 @@ CHARR_NEUTRAL_HELPER R_len_t recycling_length(
     warning = result % first != 0 || result % second != 0;
     return result;
 }
+
+
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const std::vector<shared::StringView>& first,
+        const std::vector<shared::StringView>& second,
+        R_len_t first_length,
+        R_len_t second_length,
+        const shared::CollatorOptions& options,
+        int* output,
+        bool& root_fallback_warning
+    ) noexcept
+        : first_(first), second_(second),
+          first_length_(first_length), second_length_(second_length),
+          options_(options), output_(output),
+          root_fallback_warning_(root_fallback_warning)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        shared::Collator collator;
+        const shared::CollatorOpenResult opened = collator.reset(options_);
+        if (context.worker == 0)
+            root_fallback_warning_ = opened.root_fallback;
+        if (U_FAILURE(opened.status))
+            throw StriException(opened.status);
+
+        while (context.next_chunk()) {
+            const R_len_t end = static_cast<R_len_t>(context.end);
+            for (R_len_t i = static_cast<R_len_t>(context.begin); i < end;
+                    ++i) {
+                const shared::StringView& first = first_[
+                    static_cast<std::size_t>(i % first_length_)
+                ];
+                const shared::StringView& second = second_[
+                    static_cast<std::size_t>(i % second_length_)
+                ];
+                if (first.is_na() || second.is_na()) {
+                    output_[i] = NA_LOGICAL;
+                    continue;
+                }
+
+                UErrorCode status = U_ZERO_ERROR;
+                output_[i] = ucol_strcollUTF8(
+                    collator.get(), first.ptr, first.len,
+                    second.ptr, second.len, &status
+                ) == UCOL_EQUAL;
+                if (U_FAILURE(status))
+                    throw StriException(status);
+            }
+        }
+    }
+
+private:
+    const std::vector<shared::StringView>& first_;
+    const std::vector<shared::StringView>& second_;
+    R_len_t first_length_;
+    R_len_t second_length_;
+    const shared::CollatorOptions& options_;
+    int* output_;
+    bool& root_fallback_warning_;
+};
 
 } // namespace compare
 
@@ -102,7 +169,6 @@ CHARR_ENTRYPOINT SEXP ci_cmp_equiv(
     bool recycling_warning = false;
 
     try {
-        shared::Collator col;
         charport::Reader e1_reader;
         charport::Reader e2_reader;
         charport::StrViews e1_views;
@@ -126,11 +192,6 @@ CHARR_ENTRYPOINT SEXP ci_cmp_equiv(
                 const R_len_t vectorize_length = recycling_length(
                     e1_length, e2_length, recycling_warning
                 );
-
-                const shared::CollatorOpenResult open = col.reset(options);
-                if (U_FAILURE(open.status))
-                    throw StriException(open.status);
-                root_fallback_warning = open.root_fallback;
 
                 if (vectorize_length > 0) {
                     e1_reader.reset(e1);
@@ -180,27 +241,14 @@ CHARR_ENTRYPOINT SEXP ci_cmp_equiv(
                     Rf_allocVector(LGLSXP, vectorize_length), result_index
                 );
                 int* output = LOGICAL(result);
-
-                for (R_len_t i = 0; i < vectorize_length; ++i) {
-                    const shared::StringView& first = e1_inputs[
-                        static_cast<std::size_t>(i % e1_length)
-                    ];
-                    const shared::StringView& second = e2_inputs[
-                        static_cast<std::size_t>(i % e2_length)
-                    ];
-                    if (first.is_na() || second.is_na()) {
-                        output[i] = NA_LOGICAL;
-                        continue;
-                    }
-
-                    UErrorCode status = U_ZERO_ERROR;
-                    output[i] = ucol_strcollUTF8(
-                        col.get(), first.ptr, first.len,
-                        second.ptr, second.len, &status
-                    ) == UCOL_EQUAL;
-                    if (U_FAILURE(status))
-                        throw StriException(status);
-                }
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, vectorize_length
+                );
+                Body body(
+                    e1_inputs, e2_inputs, e1_length, e2_length,
+                    options, output, root_fallback_warning
+                );
+                shared::run_parallel(plan, vectorize_length, body);
 
                 CHARR_UNWIND_RETURN();
             }

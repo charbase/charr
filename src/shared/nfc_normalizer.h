@@ -31,12 +31,24 @@ public:
         const StringView& source, UErrorCode& status
     );
 
+    CHARR_CXX_HELPER StringView normalize_utf8(
+        const StringView& source, UErrorCode& status
+    );
+
 private:
     const icu::Normalizer2* normalizer_;
     NativeToUtf8 converter_;
     icu::UnicodeString input_;
     icu::UnicodeString output_;
     std::vector<char> utf8_;
+
+    CHARR_CXX_HELPER StringView normalize_bytes(
+        const char* data, int length, UErrorCode& status
+    );
+    CHARR_CXX_HELPER StringView normalize_impl(
+        const StringView& source, UErrorCode& status,
+        NativeToUtf8* converter
+    );
 };
 
 } // namespace shared

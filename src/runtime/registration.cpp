@@ -37,6 +37,7 @@
 
 #include "../altrep_backend/entrypoints.h"
 #include "../base_backend/entrypoints.h"
+#include "../shared/parallel.h"
 #include "icu.h"
 
 #define CHARR_CALL(symbol, function, arity) \
@@ -52,7 +53,8 @@ const R_CallMethodDef call_methods[] = {
         charr::altrep_backend::entrypoints::C_charr_altrep_##name, \
         arity \
     ),
-    CHARR_BACKEND_METHODS(CHARR_ALTREP_REGISTER)
+    CHARR_SHARED_BACKEND_METHODS(CHARR_ALTREP_REGISTER)
+    CHARR_ALTREP_ONLY_BACKEND_METHODS(CHARR_ALTREP_REGISTER)
 #undef CHARR_ALTREP_REGISTER
 
 #define CHARR_BASE_REGISTER(name, arity) \
@@ -61,8 +63,15 @@ const R_CallMethodDef call_methods[] = {
         charr::base_backend::entrypoints::C_charr_base_##name, \
         arity \
     ),
-    CHARR_BACKEND_METHODS(CHARR_BASE_REGISTER)
+    CHARR_SHARED_BACKEND_METHODS(CHARR_BASE_REGISTER)
+    CHARR_BASE_ONLY_BACKEND_METHODS(CHARR_BASE_REGISTER)
 #undef CHARR_BASE_REGISTER
+
+    CHARR_CALL("C_charr_threads", shared::C_charr_threads, 1),
+    CHARR_CALL(
+        "C_charr_chunks_per_worker", shared::C_charr_chunks_per_worker, 1
+    ),
+    CHARR_CALL("C_charr_min_chunk", shared::C_charr_min_chunk, 1),
 
     CHARR_CALL("C_charr_abi_ok", icu::C_charr_abi_ok, 0),
     CHARR_CALL("C_charr_icu_init", icu::C_charr_icu_init, 1),

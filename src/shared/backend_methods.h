@@ -3,7 +3,7 @@
 
 #include <Rinternals.h>
 
-#define CHARR_BACKEND_METHODS(X) \
+#define CHARR_SHARED_BACKEND_METHODS(X) \
     X(ci_detect_fixed, 5) \
     X(ci_startswith_fixed, 5) \
     X(ci_endswith_fixed, 5) \
@@ -69,11 +69,17 @@
     X(ci_pad, 5) \
     X(ci_width, 1) \
     X(ci_escape_unicode, 1) \
-    X(ci_encode, 4) \
     X(ci_enc_info, 1) \
     X(ci_read_lines, 2) \
     X(ci_split_lines, 2) \
     X(ci_split_lines1, 1)
+
+#define CHARR_BASE_ONLY_BACKEND_METHODS(X) \
+    X(ci_encode, 4)
+
+#define CHARR_ALTREP_ONLY_BACKEND_METHODS(X) \
+    X(ci_encode_string, 4) \
+    X(ci_encode_raw, 4)
 
 #define CHARR_BACKEND_FORMALS_1 SEXP a1
 #define CHARR_BACKEND_FORMALS_2 SEXP a1, SEXP a2
@@ -98,6 +104,9 @@
 #define CHARR_BACKEND_FORMALS_12 \
     SEXP a1, SEXP a2, SEXP a3, SEXP a4, SEXP a5, SEXP a6, SEXP a7, SEXP a8, \
     SEXP a9, SEXP a10, SEXP a11, SEXP a12
+#define CHARR_BACKEND_FORMALS_13 \
+    SEXP a1, SEXP a2, SEXP a3, SEXP a4, SEXP a5, SEXP a6, SEXP a7, SEXP a8, \
+    SEXP a9, SEXP a10, SEXP a11, SEXP a12, SEXP a13
 
 #define CHARR_BACKEND_ARGS_1 a1
 #define CHARR_BACKEND_ARGS_2 a1, a2
@@ -112,5 +121,7 @@
 #define CHARR_BACKEND_ARGS_11 a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11
 #define CHARR_BACKEND_ARGS_12 \
     a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12
+#define CHARR_BACKEND_ARGS_13 \
+    a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13
 
 #endif

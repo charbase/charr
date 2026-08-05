@@ -157,7 +157,9 @@ ci_cmp_equiv <- function(e1, e2, ..., opts_collator = NULL)
 {
     if (!missing(...))
         opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-    .Call(C_ci_cmp_equiv, e1, e2, opts_collator)
+    .Call(
+        C_ci_cmp_equiv, e1, e2, opts_collator
+    )
 }
 
 

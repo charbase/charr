@@ -13,7 +13,8 @@ namespace entrypoints {
     { \
         return charr::altrep_backend::name(CHARR_BACKEND_ARGS_##arity); \
     }
-CHARR_BACKEND_METHODS(CHARR_ALTREP_DEFINE)
+CHARR_SHARED_BACKEND_METHODS(CHARR_ALTREP_DEFINE)
+CHARR_ALTREP_ONLY_BACKEND_METHODS(CHARR_ALTREP_DEFINE)
 #undef CHARR_ALTREP_DEFINE
 
 } // namespace entrypoints

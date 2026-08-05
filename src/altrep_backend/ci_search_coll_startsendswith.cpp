@@ -39,6 +39,7 @@
 #include "../shared/collator.h"
 #include "../shared/entrypoint.h"
 #include "../shared/native_to_utf8.h"
+#include "ci_parallel.h"
 #include "../shared/protect.h"
 #include "../shared/slice_arena.h"
 #include "../shared/unwind.h"
@@ -130,12 +131,14 @@ CHARR_CXX_HELPER int count_empty_patterns(
 }
 
 
-CHARR_CXX_HELPER void match_inputs(
+CHARR_CXX_HELPER void match_sequence(
     const charport::StrViews& subjects,
-    const shared::CollationInputs& patterns,
+    const shared::CollationInput& pattern,
     const int* positions,
     R_len_t position_length,
-    R_len_t vectorize_length,
+    R_len_t first,
+    R_len_t limit,
+    R_len_t step,
     UCollator* collator,
     bool starts,
     bool negate,
@@ -145,61 +148,132 @@ CHARR_CXX_HELPER void match_inputs(
 )
 {
     const R_len_t subject_length = static_cast<R_len_t>(subjects.size());
-    const R_len_t pattern_length = static_cast<R_len_t>(patterns.size());
-
-    for (R_len_t lane = 0; lane < pattern_length; ++lane) {
-        const shared::CollationInput pattern = patterns.get(
-            static_cast<std::size_t>(lane)
+    R_len_t i = first;
+    while (i < limit) {
+        const R_len_t raw_subject = i % subject_length;
+        const shared::StringView source = io::as_shared_view(
+            subjects[raw_subject]
         );
-        R_len_t i = lane;
-        for (;;) {
-            const R_len_t raw_subject = i % subject_length;
-            const shared::StringView source = io::as_shared_view(
-                subjects[raw_subject]
-            );
 
-            if (source.is_na() || pattern.missing || pattern.length <= 0) {
+        if (source.is_na() || pattern.missing || pattern.length <= 0) {
+            output[i] = NA_LOGICAL;
+        }
+        else if (source.len <= 0) {
+            output[i] = negate;
+        }
+        else {
+            const shared::CollationInput subject = subject_cursor.get(
+                static_cast<const void*>(subjects.ptrs() + raw_subject),
+                source
+            );
+            const int position = positions[i % position_length];
+            if (position == NA_INTEGER) {
                 output[i] = NA_LOGICAL;
             }
-            else if (source.len <= 0) {
-                output[i] = negate;
-            }
             else {
-                const shared::CollationInput subject = subject_cursor.get(
-                    static_cast<const void*>(subjects.ptrs() + raw_subject),
-                    source
-                );
-                const int position = positions[i % position_length];
-                if (position == NA_INTEGER) {
-                    output[i] = NA_LOGICAL;
+                const int offset = starts
+                    ? shared::utf16_start_offset(subject, position)
+                    : shared::utf16_end_offset(subject, position);
+                bool matched = false;
+                if ((starts && offset < subject.length) ||
+                        (!starts && offset > 0)) {
+                    UErrorCode status = U_ZERO_ERROR;
+                    matched = starts
+                        ? matcher.starts_with(
+                            collator, subject, pattern, offset, status
+                        )
+                        : matcher.ends_with(
+                            collator, subject, pattern, offset, status
+                        );
+                    require_icu_success(status);
                 }
-                else {
-                    const int offset = starts
-                        ? shared::utf16_start_offset(subject, position)
-                        : shared::utf16_end_offset(subject, position);
-                    bool matched = false;
-                    if ((starts && offset < subject.length) ||
-                            (!starts && offset > 0)) {
-                        UErrorCode status = U_ZERO_ERROR;
-                        matched = starts
-                            ? matcher.starts_with(
-                                collator, subject, pattern, offset, status
-                            )
-                            : matcher.ends_with(
-                                collator, subject, pattern, offset, status
-                            );
-                        require_icu_success(status);
-                    }
-                    output[i] = static_cast<int>(matched != negate);
-                }
+                output[i] = static_cast<int>(matched != negate);
             }
-
-            if (pattern_length >= vectorize_length-i)
-                break;
-            i += pattern_length;
         }
+
+        if (step >= limit-i)
+            break;
+        i += step;
     }
 }
+
+
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const charport::StrViews& subjects,
+        const shared::CollationInputs& patterns,
+        const int* positions,
+        R_len_t position_length,
+        R_len_t vectorize_length,
+        const shared::CollatorOptions& options,
+        bool starts,
+        bool negate,
+        int* output,
+        bool& root_fallback_warning
+    ) noexcept
+        : subjects_(subjects), patterns_(patterns), positions_(positions),
+          position_length_(position_length),
+          vectorize_length_(vectorize_length), options_(options),
+          starts_(starts), negate_(negate), output_(output),
+          root_fallback_warning_(root_fallback_warning)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        shared::Collator collator;
+        const shared::CollatorOpenResult opened = collator.reset(options_);
+        if (context.worker == 0)
+            root_fallback_warning_ = opened.root_fallback;
+        require_icu_success(opened.status);
+
+        shared::CollationCursor subject_cursor;
+        shared::CollationMatcher matcher;
+        const R_len_t pattern_length = static_cast<R_len_t>(patterns_.size());
+        if (pattern_length == 1) {
+            while (context.next_chunk()) {
+                match_sequence(
+                    subjects_, patterns_.get(0), positions_,
+                    position_length_,
+                    static_cast<R_len_t>(context.begin),
+                    static_cast<R_len_t>(context.end), 1,
+                    collator.get(), starts_, negate_,
+                    subject_cursor, matcher, output_
+                );
+            }
+            return;
+        }
+
+        while (context.next_chunk()) {
+            const R_len_t lane_end = static_cast<R_len_t>(context.end);
+            for (R_len_t lane = static_cast<R_len_t>(context.begin);
+                    lane < lane_end; ++lane) {
+                match_sequence(
+                    subjects_, patterns_.get(static_cast<std::size_t>(lane)),
+                    positions_, position_length_,
+                    lane, vectorize_length_, pattern_length,
+                    collator.get(), starts_, negate_,
+                    subject_cursor, matcher, output_
+                );
+            }
+        }
+    }
+
+private:
+    const charport::StrViews& subjects_;
+    const shared::CollationInputs& patterns_;
+    const int* positions_;
+    R_len_t position_length_;
+    R_len_t vectorize_length_;
+    const shared::CollatorOptions& options_;
+    bool starts_;
+    bool negate_;
+    int* output_;
+    bool& root_fallback_warning_;
+};
 
 
 CHARR_R_HELPER void emit_warnings(
@@ -269,7 +343,6 @@ CHARR_ENTRYPOINT SEXP ci_startswith_coll(
     int empty_pattern_warnings = 0;
 
     try {
-        shared::Collator collator_owner;
         charport::Reader subject_reader;
         charport::Reader pattern_reader;
         charport::StrViews subject_views;
@@ -279,8 +352,6 @@ CHARR_ENTRYPOINT SEXP ci_startswith_coll(
         shared::SliceArena subject_storage;
         shared::SliceArena pattern_storage;
         shared::CollationInputs patterns;
-        shared::CollationCursor subject_cursor;
-        shared::CollationMatcher matcher;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -300,10 +371,6 @@ CHARR_ENTRYPOINT SEXP ci_startswith_coll(
                     pending_recycling_warning
                 );
 
-                const shared::CollatorOpenResult opened =
-                    collator_owner.reset(options);
-                root_fallback_warning = opened.root_fallback;
-                require_icu_success(opened.status);
                 recycling_warning = pending_recycling_warning;
 
                 if (vectorize_length > 0) {
@@ -346,14 +413,20 @@ CHARR_ENTRYPOINT SEXP ci_startswith_coll(
                     Rf_allocVector(LGLSXP, vectorize_length), result_index
                 );
                 int* output = LOGICAL(result);
-                if (vectorize_length > 0) {
-                    match_inputs(
-                        subject_views, patterns, INTEGER_RO(from),
-                        position_length, vectorize_length,
-                        collator_owner.get(), true, negate_1,
-                        subject_cursor, matcher, output
-                    );
-                }
+                const R_xlen_t tasks = vectorize_length <= 0
+                    ? 0
+                    : pattern_length == 1
+                        ? vectorize_length
+                        : pattern_length;
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, tasks
+                );
+                Body body(
+                    subject_views, patterns, INTEGER_RO(from),
+                    position_length, vectorize_length, options,
+                    true, negate_1, output, root_fallback_warning
+                );
+                shared::run_parallel(plan, tasks, body);
 
                 CHARR_UNWIND_RETURN();
             }
@@ -414,7 +487,6 @@ CHARR_ENTRYPOINT SEXP ci_endswith_coll(
     int empty_pattern_warnings = 0;
 
     try {
-        shared::Collator collator_owner;
         charport::Reader subject_reader;
         charport::Reader pattern_reader;
         charport::StrViews subject_views;
@@ -424,8 +496,6 @@ CHARR_ENTRYPOINT SEXP ci_endswith_coll(
         shared::SliceArena subject_storage;
         shared::SliceArena pattern_storage;
         shared::CollationInputs patterns;
-        shared::CollationCursor subject_cursor;
-        shared::CollationMatcher matcher;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -445,10 +515,6 @@ CHARR_ENTRYPOINT SEXP ci_endswith_coll(
                     pending_recycling_warning
                 );
 
-                const shared::CollatorOpenResult opened =
-                    collator_owner.reset(options);
-                root_fallback_warning = opened.root_fallback;
-                require_icu_success(opened.status);
                 recycling_warning = pending_recycling_warning;
 
                 if (vectorize_length > 0) {
@@ -491,14 +557,20 @@ CHARR_ENTRYPOINT SEXP ci_endswith_coll(
                     Rf_allocVector(LGLSXP, vectorize_length), result_index
                 );
                 int* output = LOGICAL(result);
-                if (vectorize_length > 0) {
-                    match_inputs(
-                        subject_views, patterns, INTEGER_RO(to),
-                        position_length, vectorize_length,
-                        collator_owner.get(), false, negate_1,
-                        subject_cursor, matcher, output
-                    );
-                }
+                const R_xlen_t tasks = vectorize_length <= 0
+                    ? 0
+                    : pattern_length == 1
+                        ? vectorize_length
+                        : pattern_length;
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, tasks
+                );
+                Body body(
+                    subject_views, patterns, INTEGER_RO(to),
+                    position_length, vectorize_length, options,
+                    false, negate_1, output, root_fallback_warning
+                );
+                shared::run_parallel(plan, tasks, body);
 
                 CHARR_UNWIND_RETURN();
             }

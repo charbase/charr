@@ -157,7 +157,8 @@ ci_sub <- function(
             warning("argument `to` is ignored in the current context")
             to <- NULL
         }
-        .Call(C_ci_sub, str, from, to, NULL, use_matrix, ignore_negative_length)
+        .Call(C_ci_sub, str, from, to, NULL, use_matrix,
+            ignore_negative_length)
     } else {
         if (!missing(to))
             warning("argument `to` is ignored in the current context")
@@ -165,7 +166,8 @@ ci_sub <- function(
             warning("argument `length` is ignored in the current context")
             length <- NULL
         }
-        .Call(C_ci_sub, str, from, NULL, length, use_matrix, ignore_negative_length)
+        .Call(C_ci_sub, str, from, NULL, length, use_matrix,
+            ignore_negative_length)
     }
 }
 
@@ -181,7 +183,8 @@ ci_sub <- function(
             warning("argument `to` is ignored in this context")
             to <- NULL
         }
-        .Call(C_ci_sub_replacement, str, from, to, NULL, omit_na, value, use_matrix)
+        .Call(C_ci_sub_replacement, str, from, to, NULL, omit_na,
+            value, use_matrix)
     } else {
         if (!missing(to))
             warning("argument `to` is ignored in this context")
@@ -189,7 +192,8 @@ ci_sub <- function(
             warning("argument `length` is ignored in this context")
             length <- NULL
         }
-        .Call(C_ci_sub_replacement, str, from, NULL, length, omit_na, value, use_matrix)
+        .Call(C_ci_sub_replacement, str, from, NULL, length, omit_na,
+            value, use_matrix)
     }
 }
 
@@ -306,7 +310,10 @@ ci_sub_all <- function(
             to <- list(to)
         }
 
-        .Call(C_ci_sub_all, str, from, to, NULL, use_matrix, ignore_negative_length)
+        .Call(
+            C_ci_sub_all, str, from, to, NULL, use_matrix,
+            ignore_negative_length
+        )
     } else {
         if (!missing(to))
             warning("argument `to` is ignored in this context")
@@ -315,7 +322,10 @@ ci_sub_all <- function(
             length <- list(length)
         }
 
-        .Call(C_ci_sub_all, str, from, NULL, length, use_matrix, ignore_negative_length)
+        .Call(
+            C_ci_sub_all, str, from, NULL, length, use_matrix,
+            ignore_negative_length
+        )
     }
 }
 
@@ -336,7 +346,10 @@ ci_sub_all <- function(
             to <- list(to)
         }
 
-        .Call(C_ci_sub_replacement_all, str, from, to, NULL, omit_na, value, use_matrix)
+        .Call(
+            C_ci_sub_replacement_all, str, from, to, NULL, omit_na,
+            value, use_matrix
+        )
     } else {
         if (!missing(to))
             warning("argument `to` is ignored in this context")
@@ -345,7 +358,10 @@ ci_sub_all <- function(
             length <- list(length)
         }
 
-        .Call(C_ci_sub_replacement_all, str, from, NULL, length, omit_na, value, use_matrix)
+        .Call(
+            C_ci_sub_replacement_all, str, from, NULL, length, omit_na,
+            value, use_matrix
+        )
     }
 }
 

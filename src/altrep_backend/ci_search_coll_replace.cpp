@@ -32,6 +32,7 @@
 
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "collator/options.h"
 #include "io/string_view.h"
@@ -262,6 +263,284 @@ CHARR_CXX_HELPER void replace_one(
 }
 
 
+CHARR_CXX_HELPER void set_utf16_output_parallel(
+    const shared::CollationInput& value, unsigned worker,
+    R_len_t output_index, std::vector<char>& utf8_buffer,
+    io::ParallelOutputBuilder& output
+)
+{
+    UErrorCode status = U_ZERO_ERROR;
+    const shared::CollationUtf8Slice utf8 = shared::collation_utf8_slice(
+        value, shared::CollationRange{0, value.length}, utf8_buffer, status
+    );
+    require_icu_success(status);
+    output.set(
+        worker, output_index, utf8.data,
+        static_cast<std::size_t>(utf8.length),
+        utf8.ascii ? CETYPE_EXT_ASCII : CETYPE_EXT_UTF8
+    );
+}
+
+
+CHARR_CXX_HELPER void replace_one_parallel(
+    const shared::StringView& source, const void* source_identity,
+    const shared::CollationInput& pattern,
+    const shared::CollationInput& replacement,
+    UCollator* collator, bool replace_all, R_len_t output_index,
+    shared::CollationCursor& subject_cursor,
+    shared::CollationMatcher& matcher,
+    std::vector<shared::CollationRange>& ranges,
+    icu::UnicodeString& replacement_scratch,
+    std::vector<char>& utf8_buffer,
+    io::ParallelOutputBuilder& output, unsigned worker
+)
+{
+    if (source.is_na() || pattern.missing || pattern.length <= 0) {
+        output.set_na(worker, output_index);
+        return;
+    }
+    if (source.len <= 0) {
+        output.set(worker, output_index, io::as_charport_view(source));
+        return;
+    }
+    const shared::CollationInput subject = subject_cursor.get(
+        source_identity, source
+    );
+    UErrorCode status = U_ZERO_ERROR;
+    ranges.clear();
+    if (replace_all) {
+        matcher.find_all(collator, subject, pattern, ranges, status);
+    }
+    else {
+        shared::CollationRange first{0, 0};
+        if (matcher.find_first(collator, subject, pattern, first, status))
+            ranges.push_back(first);
+    }
+    require_icu_success(status);
+    if (ranges.empty()) {
+        if (unchanged_utf8_is_lossless(source))
+            output.set(worker, output_index, io::as_charport_view(source));
+        else
+            set_utf16_output_parallel(
+                subject, worker, output_index, utf8_buffer, output
+            );
+        return;
+    }
+    if (replacement.missing) {
+        output.set_na(worker, output_index);
+        return;
+    }
+    shared::write_collation_replacement(
+        subject, replacement, ranges, replacement_scratch
+    );
+    const shared::CollationInput replaced{
+        &replacement_scratch, replacement_scratch.getBuffer(),
+        replacement_scratch.length(), false
+    };
+    set_utf16_output_parallel(
+        replaced, worker, output_index, utf8_buffer, output
+    );
+}
+
+
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const charport::StrViews& subjects,
+        const shared::CollationInputs& patterns,
+        const shared::CollationInputs& replacements,
+        R_len_t output_length, const shared::CollatorOptions& options,
+        bool replace_all, bool sequential,
+        std::vector<unsigned char>& fallback_slots,
+        std::vector<int>& warning_slots,
+        io::ParallelOutputBuilder& output
+    ) noexcept
+        : subjects_(subjects), patterns_(patterns),
+          replacements_(replacements), output_length_(output_length),
+          options_(options), replace_all_(replace_all),
+          sequential_(sequential), fallback_slots_(fallback_slots),
+          warning_slots_(warning_slots), output_(output)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        shared::Collator collator;
+        const shared::CollatorOpenResult opened = collator.reset(options_);
+        fallback_slots_[context.worker] =
+            static_cast<unsigned char>(opened.root_fallback);
+        require_icu_success(opened.status);
+        if (sequential_) {
+            run_sequential(context, collator.get());
+            return;
+        }
+
+        shared::CollationCursor subject_cursor;
+        shared::CollationMatcher matcher;
+        std::vector<shared::CollationRange> ranges;
+        icu::UnicodeString replacement_scratch;
+        std::vector<char> utf8_buffer;
+        const R_len_t subject_length =
+            static_cast<R_len_t>(subjects_.size());
+        const R_len_t pattern_length =
+            static_cast<R_len_t>(patterns_.size());
+        const R_len_t replacement_length =
+            static_cast<R_len_t>(replacements_.size());
+        if (pattern_length == 1) {
+            const shared::CollationInput pattern = patterns_.get(0);
+            while (context.next_chunk()) {
+                for (R_xlen_t task = context.begin;
+                        task < context.end; ++task) {
+                    const R_len_t i = static_cast<R_len_t>(task);
+                    const R_len_t subject_index = i % subject_length;
+                    replace_one_parallel(
+                        io::as_shared_view(subjects_[subject_index]),
+                        static_cast<const void*>(
+                            subjects_.ptrs()+subject_index
+                        ),
+                        pattern, replacements_.get(static_cast<std::size_t>(
+                            i % replacement_length
+                        )), collator.get(), replace_all_, i, subject_cursor,
+                        matcher, ranges, replacement_scratch, utf8_buffer,
+                        output_, context.worker
+                    );
+                }
+            }
+            return;
+        }
+
+        while (context.next_chunk()) {
+            for (R_xlen_t task = context.begin;
+                    task < context.end; ++task) {
+                const R_len_t lane = static_cast<R_len_t>(task);
+                const shared::CollationInput pattern = patterns_.get(
+                    static_cast<std::size_t>(lane)
+                );
+                R_len_t i = lane;
+                for (;;) {
+                    const R_len_t subject_index = i % subject_length;
+                    replace_one_parallel(
+                        io::as_shared_view(subjects_[subject_index]),
+                        static_cast<const void*>(
+                            subjects_.ptrs()+subject_index
+                        ),
+                        pattern, replacements_.get(static_cast<std::size_t>(
+                            i % replacement_length
+                        )), collator.get(), replace_all_, i, subject_cursor,
+                        matcher, ranges, replacement_scratch, utf8_buffer,
+                        output_, context.worker
+                    );
+                    if (pattern_length >= output_length_-i)
+                        break;
+                    i += pattern_length;
+                }
+            }
+        }
+    }
+
+private:
+    CHARR_CXX_HELPER void run_sequential(
+        shared::WorkerContext& context, UCollator* collator
+    )
+    {
+        // Per-worker owners. The staged subjects are refilled for each chunk
+        // but keep their UTF-16 buffers, and the matcher, the range vector,
+        // and both scratch buffers are the same resources the vectorized
+        // path above builds once.
+        shared::CollationInputs subjects;
+        shared::CollationMatcher matcher;
+        std::vector<shared::CollationRange> ranges;
+        icu::UnicodeString replacement_scratch;
+        std::vector<char> utf8_buffer;
+        // Every chunk scans the same patterns and so reaches the same count.
+        // The worker reports the largest, which is what the caller reduces
+        // across workers.
+        int worker_warnings = 0;
+
+        while (context.next_chunk()) {
+            const std::size_t size = static_cast<std::size_t>(
+                context.end-context.begin
+            );
+            subjects.resize(size);
+            for (R_xlen_t i = context.begin; i < context.end; ++i) {
+                subjects.set(
+                    static_cast<std::size_t>(i-context.begin),
+                    io::as_shared_view(subjects_[i])
+                );
+            }
+            bool all_missing = false;
+            int warnings = 0;
+            for (std::size_t pattern_index = 0;
+                    pattern_index < patterns_.size(); ++pattern_index) {
+                const shared::CollationInput pattern =
+                    patterns_.get(pattern_index);
+                if (pattern.missing) {
+                    all_missing = true;
+                    break;
+                }
+                if (pattern.length <= 0) {
+                    ++warnings;
+                    all_missing = true;
+                    break;
+                }
+                const shared::CollationInput replacement =
+                    replacements_.get(
+                        pattern_index % replacements_.size()
+                    );
+                for (std::size_t i = 0; i < size; ++i) {
+                    const shared::CollationInput subject = subjects.get(i);
+                    if (subject.missing || subject.length <= 0)
+                        continue;
+                    UErrorCode status = U_ZERO_ERROR;
+                    matcher.find_all(
+                        collator, subject, pattern, ranges, status
+                    );
+                    require_icu_success(status);
+                    if (ranges.empty())
+                        continue;
+                    if (replacement.missing) {
+                        subjects.set_missing(i);
+                        continue;
+                    }
+                    shared::write_collation_replacement(
+                        subject, replacement, ranges, replacement_scratch
+                    );
+                    subjects.swap_value(i, replacement_scratch);
+                }
+            }
+            if (worker_warnings < warnings)
+                worker_warnings = warnings;
+            warning_slots_[context.worker] = worker_warnings;
+
+            for (R_xlen_t i = context.begin; i < context.end; ++i) {
+                const shared::CollationInput subject = subjects.get(
+                    static_cast<std::size_t>(i-context.begin)
+                );
+                if (all_missing || subject.missing)
+                    output_.set_na(context.worker, i);
+                else
+                    set_utf16_output_parallel(
+                        subject, context.worker, i, utf8_buffer, output_
+                    );
+            }
+        }
+    }
+
+    const charport::StrViews& subjects_;
+    const shared::CollationInputs& patterns_;
+    const shared::CollationInputs& replacements_;
+    R_len_t output_length_;
+    shared::CollatorOptions options_;
+    bool replace_all_;
+    bool sequential_;
+    std::vector<unsigned char>& fallback_slots_;
+    std::vector<int>& warning_slots_;
+    io::ParallelOutputBuilder& output_;
+};
+
+
 CHARR_CXX_HELPER void replace_vectorized(
     const charport::StrViews& subjects,
     const shared::CollationInputs& patterns,
@@ -442,6 +721,7 @@ CHARR_ENTRYPOINT SEXP ci_replace_first_coll(
 {
     CHARR_ENTRYPOINT_BEGIN();
 
+
     str = entry_protections.protect_one(
         ci__prepare_arg_string_r(str, "str")
     );
@@ -464,6 +744,10 @@ CHARR_ENTRYPOINT SEXP ci_replace_first_coll(
         subject_length, pattern_length, replacement_length,
         recycling_needed
     );
+    const R_len_t tasks = output_length == 0
+        ? 0 : pattern_length == 1
+            ? output_length : pattern_length;
+    const shared::ParallelPlan plan = shared::parallel_plan(true, tasks);
 
 
     bool root_fallback_warning = false;
@@ -492,6 +776,9 @@ CHARR_ENTRYPOINT SEXP ci_replace_first_coll(
         icu::UnicodeString replacement_scratch;
         std::vector<char> utf8_buffer;
         io::OutputBuilder output(0);
+        io::ParallelOutputBuilder parallel_output;
+        std::vector<unsigned char> fallback_slots;
+        std::vector<int> warning_slots;
 
         ranges.reserve(4);
 
@@ -504,7 +791,8 @@ CHARR_ENTRYPOINT SEXP ci_replace_first_coll(
                 require_icu_success(opened.status);
                 recycling_warning = recycling_needed;
 
-                output.reset(output_length);
+                if (plan.workers == 1)
+                    output.reset(output_length);
                 if (output_length > 0) {
                     subject_reader.reset(str);
                     if (subject_reader.size() != subject_length) {
@@ -559,17 +847,42 @@ CHARR_ENTRYPOINT SEXP ci_replace_first_coll(
                     );
                     stage_utf16(replacement_views, replacements);
 
-                    replace_vectorized(
-                        subject_views, patterns, replacements,
-                        output_length, collator_owner.get(), false,
-                        subject_cursor, matcher, ranges,
-                        replacement_scratch, utf8_buffer, output
-                    );
+                    if (plan.workers > 1) {
+                        fallback_slots.assign(plan.workers, 0);
+                        warning_slots.assign(plan.workers, 0);
+                        parallel_output.reset(
+                            output_length, plan.workers
+                        );
+                        Body body(
+                            subject_views, patterns, replacements,
+                            output_length, options, false, false,
+                            fallback_slots, warning_slots, parallel_output
+                        );
+                        shared::run_parallel(plan, tasks, body);
+                        for (unsigned worker = 0;
+                                worker < plan.workers; ++worker) {
+                            root_fallback_warning = root_fallback_warning ||
+                                fallback_slots[worker] != 0;
+                        }
+                        result = entry_protections.reprotect_one(
+                            parallel_output.to_sexp(), result_index
+                        );
+                    }
+                    else {
+                        replace_vectorized(
+                            subject_views, patterns, replacements,
+                            output_length, collator_owner.get(), false,
+                            subject_cursor, matcher, ranges,
+                            replacement_scratch, utf8_buffer, output
+                        );
+                    }
                 }
 
-                result = entry_protections.reprotect_one(
-                    output.to_sexp(), result_index
-                );
+                if (plan.workers == 1) {
+                    result = entry_protections.reprotect_one(
+                        output.to_sexp(), result_index
+                    );
+                }
                 CHARR_UNWIND_RETURN();
             }
         );
@@ -613,6 +926,7 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_coll(
 ) noexcept
 {
     CHARR_ENTRYPOINT_BEGIN();
+
 
     const bool vectorize = ci__prepare_arg_logical_1_notNA_r(
         vectorize_all, "vectorize_all"
@@ -680,6 +994,11 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_coll(
         options = collator::prepare_options(opts_collator);
     }
     const bool vectorized_core = vectorize || pattern_length == 1;
+    const bool sequential = !vectorized_core;
+    const R_len_t tasks = output_length == 0
+        ? 0 : sequential || pattern_length == 1
+            ? output_length : pattern_length;
+    const shared::ParallelPlan plan = shared::parallel_plan(true, tasks);
 
 
     bool root_fallback_warning = false;
@@ -709,6 +1028,9 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_coll(
         icu::UnicodeString replacement_scratch;
         std::vector<char> utf8_buffer;
         io::OutputBuilder output(0);
+        io::ParallelOutputBuilder parallel_output;
+        std::vector<unsigned char> fallback_slots;
+        std::vector<int> warning_slots;
 
         ranges.reserve(4);
 
@@ -722,7 +1044,8 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_coll(
                     require_icu_success(opened.status);
                     recycling_warning = vectorize && recycling_needed;
                 }
-                output.reset(output_length);
+                if (plan.workers == 1)
+                    output.reset(output_length);
 
                 if (!empty_sequential && output_length > 0) {
                     subject_reader.reset(str);
@@ -740,7 +1063,7 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_coll(
                     normalize_views(
                         subject_views, subject_converter, subject_storage
                     );
-                    if (!vectorized_core)
+                    if (!vectorized_core && plan.workers == 1)
                         stage_utf16(subject_views, subjects);
 
                     pattern_reader.reset(pattern);
@@ -780,7 +1103,37 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_coll(
                     );
                     stage_utf16(replacement_views, replacements);
 
-                    if (vectorized_core) {
+                    if (plan.workers > 1) {
+                        fallback_slots.assign(plan.workers, 0);
+                        warning_slots.assign(plan.workers, 0);
+                        parallel_output.reset(
+                            output_length, plan.workers
+                        );
+                        Body body(
+                            subject_views, patterns, replacements,
+                            output_length, options, true, sequential,
+                            fallback_slots, warning_slots, parallel_output
+                        );
+                        shared::run_parallel(plan, tasks, body);
+                        int additional_empty_warnings = 0;
+                        for (unsigned worker = 0;
+                                worker < plan.workers; ++worker) {
+                            root_fallback_warning = root_fallback_warning ||
+                                fallback_slots[worker] != 0;
+                            if (warning_slots[worker] >
+                                    additional_empty_warnings) {
+                                additional_empty_warnings =
+                                    warning_slots[worker];
+                            }
+                        }
+                        empty_pattern_warnings +=
+                            additional_empty_warnings;
+                        result = entry_protections.reprotect_one(
+                            parallel_output.to_sexp(), result_index
+                        );
+                    }
+
+                    if (plan.workers == 1 && vectorized_core) {
                         replace_vectorized(
                             subject_views, patterns, replacements,
                             output_length, collator_owner.get(), true,
@@ -788,7 +1141,7 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_coll(
                             replacement_scratch, utf8_buffer, output
                         );
                     }
-                    else {
+                    else if (plan.workers == 1) {
                         int additional_empty_warnings = 0;
                         replace_sequential(
                             subjects, patterns, replacements,
@@ -801,9 +1154,11 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_coll(
                     }
                 }
 
-                result = entry_protections.reprotect_one(
-                    output.to_sexp(), result_index
-                );
+                if (plan.workers == 1) {
+                    result = entry_protections.reprotect_one(
+                        output.to_sexp(), result_index
+                    );
+                }
                 CHARR_UNWIND_RETURN();
             }
         );

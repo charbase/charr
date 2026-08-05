@@ -90,7 +90,9 @@
 # @rdname ci_split_lines
 # @aliases ci_split_lines ci_split_lines1
 ci_split_lines <- function(str, omit_empty = FALSE) {
-    .Call(C_ci_split_lines, str, omit_empty)
+    .Call(
+        C_ci_split_lines, str, omit_empty
+    )
 }
 
 
@@ -172,5 +174,7 @@ ci_split_boundaries <- function(str, n = -1L,
 {
     if (!missing(...))
         opts_brkiter <- do.call(ci_opts_brkiter, as.list(c(opts_brkiter, ...)))
-    .Call(C_ci_split_boundaries, str, n, tokens_only, simplify, opts_brkiter)
+    .Call(
+        C_ci_split_boundaries, str, n, tokens_only, simplify, opts_brkiter
+    )
 }

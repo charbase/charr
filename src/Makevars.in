@@ -13,7 +13,11 @@ CXX_STD = CXX17
 
 # Keep R's short remapping macros from colliding with C++ member names.
 PKG_CPPFLAGS = -DR_NO_REMAP -I. -Ialtrep_backend @ICU_CPPFLAGS@
-PKG_LIBS = @ICU_LIBS@
+# The ALTREP backend runs data-parallel kernels on std::thread workers.
+# SHLIB_PTHREAD_FLAGS is what R knows this platform needs; it is empty where
+# the C++ runtime needs nothing.
+PKG_CXXFLAGS = $(SHLIB_PTHREAD_FLAGS)
+PKG_LIBS = @ICU_LIBS@ $(SHLIB_PTHREAD_FLAGS)
 
 RUNTIME_SOURCES = \
   runtime/icu.cpp \
@@ -35,6 +39,7 @@ SHARED_SOURCES = \
   shared/line_split.cpp \
   shared/native_to_utf8.cpp \
   shared/nfc_normalizer.cpp \
+  shared/parallel.cpp \
   shared/r_matrix.cpp \
   shared/read_lines.cpp \
   shared/regex_search.cpp \

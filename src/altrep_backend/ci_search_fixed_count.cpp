@@ -32,6 +32,7 @@
 
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "fixed/options.h"
 #include "io/string_view.h"
@@ -92,14 +93,16 @@ CHARR_NEUTRAL_HELPER R_len_t recycling_length(
 }
 
 
-CHARR_NEUTRAL_HELPER bool count_ascii_scalar_direct(
-    const charport::StrViews& subjects,
-    const charport::StrViews& patterns,
-    R_len_t pattern_length,
-    R_len_t vectorize_length,
-    shared::FixedSearchOptions options,
-    int* result,
-    R_len_t& general_start
+/*
+ * A scalar pattern of one ASCII byte, the only shape the direct kernel
+ * counts. Requiring pattern_length == 1 is also what keeps a task index and
+ * a subject index the same thing: recycling_length() returns the larger of
+ * the two lengths, so vectorize_length == subject_length here and a task
+ * index is always in bounds of the subject views.
+ */
+CHARR_NEUTRAL_HELPER bool direct_ascii_pattern(
+    const charport::StrViews& patterns, R_len_t pattern_length,
+    shared::FixedSearchOptions options, unsigned char& pattern_byte
 ) noexcept
 {
     if (options.case_insensitive || options.overlap || pattern_length != 1)
@@ -111,29 +114,133 @@ CHARR_NEUTRAL_HELPER bool count_ascii_scalar_direct(
             static_cast<unsigned char>(pattern.ptr[0]) > 0x7f) {
         return false;
     }
+    pattern_byte = static_cast<unsigned char>(pattern.ptr[0]);
+    return true;
+}
 
-    const unsigned char pattern_byte =
-        static_cast<unsigned char>(pattern.ptr[0]);
+
+/*
+ * One element of the direct kernel, written once and used by both the
+ * serial scan and the worker body so the two cannot drift.
+ *
+ * Returns false when the record needs the general path, leaving result[i]
+ * unwritten. Classifying a record costs nothing here because the kernel
+ * already loads its pointer, length, and encoding to count it.
+ */
+CHARR_NEUTRAL_HELPER bool count_ascii_element(
+    const charport::StrViews& subjects, R_len_t i,
+    unsigned char pattern_byte, int* result
+) noexcept
+{
+    const shared::StringView value = io::as_shared_view(subjects[i]);
+    if (value.is_na()) {
+        result[i] = NA_INTEGER;
+        return true;
+    }
+    if (!direct_ascii_encoding(value.enc) || value.len < 0 ||
+            (value.ptr == nullptr && value.len > 0)) {
+        return false;
+    }
+    result[i] = value.len == 0
+        ? 0
+        : count_ascii_byte(value.ptr, value.len, pattern_byte);
+    return true;
+}
+
+
+CHARR_NEUTRAL_HELPER bool count_ascii_scalar_direct(
+    const charport::StrViews& subjects,
+    const charport::StrViews& patterns,
+    R_len_t pattern_length,
+    R_len_t vectorize_length,
+    shared::FixedSearchOptions options,
+    int* result,
+    R_len_t& general_start
+) noexcept
+{
+    unsigned char pattern_byte = 0;
+    if (!direct_ascii_pattern(
+            patterns, pattern_length, options, pattern_byte)) {
+        return false;
+    }
 
     for (R_len_t i = 0; i < vectorize_length; ++i) {
-        const shared::StringView value = io::as_shared_view(subjects[i]);
-        if (value.is_na()) {
-            result[i] = NA_INTEGER;
-            continue;
-        }
-        if (!direct_ascii_encoding(value.enc) || value.len < 0 ||
-                (value.ptr == nullptr && value.len > 0)) {
+        if (!count_ascii_element(subjects, i, pattern_byte, result)) {
             general_start = i;
             return false;
         }
-        if (value.len == 0) {
-            result[i] = 0;
-            continue;
-        }
-        result[i] = count_ascii_byte(value.ptr, value.len, pattern_byte);
     }
 
     return true;
+}
+
+
+/*
+ * The direct kernel on workers. Each worker classifies its own records as
+ * it counts them, so the operation does not pay a serial eligibility pass
+ * over every subject before the parallel region.
+ *
+ * A worker that meets a record the kernel cannot count parks that index in
+ * its own slot of first_ineligible and stops, leaving the rest of its chunk
+ * unwritten for the general path.
+ */
+class DirectAsciiBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER DirectAsciiBody(
+        const charport::StrViews& subjects, unsigned char pattern,
+        int* result, std::vector<R_len_t>& first_ineligible
+    ) noexcept
+        : subjects_(subjects), pattern_(pattern), result_(result),
+          first_ineligible_(first_ineligible)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        while (context.next_chunk()) {
+            const R_len_t begin = static_cast<R_len_t>(context.begin);
+            const R_len_t end = static_cast<R_len_t>(context.end);
+            for (R_len_t i = begin; i < end; ++i) {
+                if (!count_ascii_element(subjects_, i, pattern_, result_)) {
+                    first_ineligible_[context.worker] = i;
+                    context.stop_early();
+                    return;
+                }
+            }
+        }
+    }
+
+private:
+    const charport::StrViews& subjects_;
+    unsigned char pattern_;
+    int* result_;
+    std::vector<R_len_t>& first_ineligible_;
+};
+
+
+/*
+ * Where the general path resumes after the direct kernel, or `fallback`
+ * when no worker rejected a record.
+ *
+ * Chunks are contiguous and ordered, so the lowest index any worker
+ * rejected is the index the serial scan would have stopped at. Below it
+ * every record was counted by the direct kernel: a worker only stops at a
+ * rejected index, and there is none lower. At or above it every record is
+ * either unwritten or overwritten, because Body::run() resumes at
+ * max(chunk begin, general_start) and writes to the end of its chunk.
+ */
+CHARR_NEUTRAL_HELPER R_len_t lowest_ineligible(
+    const std::vector<R_len_t>& first_ineligible, R_len_t fallback
+) noexcept
+{
+    R_len_t result = fallback;
+    for (std::size_t i = 0; i < first_ineligible.size(); ++i) {
+        if (first_ineligible[i] < result)
+            result = first_ineligible[i];
+    }
+    return result;
 }
 
 
@@ -168,51 +275,105 @@ CHARR_NEUTRAL_HELPER int count_empty_patterns(
 }
 
 
-CHARR_CXX_HELPER void count_general(
-    const std::vector<shared::StringView>& subjects,
-    const std::vector<shared::StringView>& patterns,
-    R_len_t vectorize_length,
-    R_len_t general_start,
-    shared::FixedSearchOptions options,
-    shared::FixedMatcher& matcher,
-    int* result
-)
-{
-    const R_len_t subject_length = static_cast<R_len_t>(subjects.size());
-    const R_len_t pattern_length = static_cast<R_len_t>(patterns.size());
-    if (general_start > 0 && pattern_length != 1) {
-        throw std::logic_error(
-            "fixed-count direct prefix requires a scalar pattern"
-        );
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const std::vector<shared::StringView>& subjects,
+        const std::vector<shared::StringView>& patterns,
+        R_len_t vectorize_length,
+        R_len_t general_start,
+        shared::FixedSearchOptions options,
+        int* result
+    ) noexcept
+        : subjects_(subjects), patterns_(patterns),
+          vectorize_length_(vectorize_length), general_start_(general_start),
+          options_(options), result_(result)
+    {
     }
 
-    for (R_len_t lane = 0; lane < pattern_length; ++lane) {
-        const shared::StringView& pattern =
-            patterns[static_cast<std::size_t>(lane)];
-        const R_len_t first = general_start > 0 ? general_start : lane;
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        const R_len_t subject_length =
+            static_cast<R_len_t>(subjects_.size());
+        const R_len_t pattern_length =
+            static_cast<R_len_t>(patterns_.size());
+        if (general_start_ > 0 && pattern_length != 1) {
+            throw std::logic_error(
+                "fixed-count direct prefix requires a scalar pattern"
+            );
+        }
 
-        R_len_t i = first;
-        for (;;) {
-            const shared::StringView& subject = subjects[
-                static_cast<std::size_t>(i % subject_length)
-            ];
+        shared::FixedMatcher matcher;
+        if (pattern_length == 1) {
+            const shared::StringView& pattern = patterns_[0];
+            while (context.next_chunk()) {
+                R_len_t begin = static_cast<R_len_t>(context.begin);
+                if (begin < general_start_)
+                    begin = general_start_;
+                const R_len_t end = static_cast<R_len_t>(context.end);
+                for (R_len_t i = begin; i < end; ++i) {
+                    count_one(
+                        i, subject_length, pattern, options_, matcher, result_
+                    );
+                }
+            }
+            return;
+        }
 
-            if (subject.is_na() || pattern.is_na() || pattern.len <= 0) {
-                result[i] = NA_INTEGER;
+        while (context.next_chunk()) {
+            const R_len_t begin = static_cast<R_len_t>(context.begin);
+            const R_len_t end = static_cast<R_len_t>(context.end);
+            for (R_len_t lane = begin; lane < end; ++lane) {
+                const shared::StringView& pattern = patterns_[
+                    static_cast<std::size_t>(lane)
+                ];
+                R_len_t i = lane;
+                for (;;) {
+                    count_one(
+                        i, subject_length, pattern, options_, matcher, result_
+                    );
+                    if (pattern_length >= vectorize_length_-i)
+                        break;
+                    i += pattern_length;
+                }
             }
-            else if (subject.len <= 0) {
-                result[i] = 0;
-            }
-            else {
-                result[i] = matcher.count(subject, pattern, options);
-            }
-
-            if (pattern_length >= vectorize_length-i)
-                break;
-            i += pattern_length;
         }
     }
-}
+
+private:
+    CHARR_CXX_HELPER void count_one(
+        R_len_t i,
+        R_len_t subject_length,
+        const shared::StringView& pattern,
+        shared::FixedSearchOptions options,
+        shared::FixedMatcher& matcher,
+        int* result
+    ) const
+    {
+        const shared::StringView& subject = subjects_[
+            static_cast<std::size_t>(i % subject_length)
+        ];
+
+        if (subject.is_na() || pattern.is_na() || pattern.len <= 0) {
+            result[i] = NA_INTEGER;
+        }
+        else if (subject.len <= 0) {
+            result[i] = 0;
+        }
+        else {
+            result[i] = matcher.count(subject, pattern, options);
+        }
+    }
+
+    const std::vector<shared::StringView>& subjects_;
+    const std::vector<shared::StringView>& patterns_;
+    R_len_t vectorize_length_;
+    R_len_t general_start_;
+    shared::FixedSearchOptions options_;
+    int* result_;
+};
 
 
 CHARR_R_HELPER void emit_warnings(
@@ -291,7 +452,7 @@ CHARR_ENTRYPOINT SEXP ci_count_fixed(
         shared::SliceArena pattern_storage;
         std::vector<shared::StringView> subjects;
         std::vector<shared::StringView> patterns;
-        shared::FixedMatcher matcher;
+        std::vector<R_len_t> first_ineligible;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -339,10 +500,45 @@ CHARR_ENTRYPOINT SEXP ci_count_fixed(
                         pattern_views.encodings()
                     );
 
-                    if (!count_ascii_scalar_direct(
+                    const R_len_t tasks = pattern_length == 1
+                        ? vectorize_length
+                        : pattern_length;
+                    const shared::ParallelPlan plan = shared::parallel_plan(
+                        true, tasks
+                    );
+                    // A serial plan classifies and counts in one scan; a
+                    // threaded plan hands both to the workers and reduces
+                    // their verdicts afterwards.
+                    bool direct = plan.workers == 1 &&
+                        count_ascii_scalar_direct(
                             subject_views, pattern_views, pattern_length,
                             vectorize_length, options, output, general_start
-                    )) {
+                        );
+                    if (plan.workers > 1) {
+                        unsigned char pattern_byte = 0;
+                        if (direct_ascii_pattern(
+                                pattern_views, pattern_length,
+                                options, pattern_byte)) {
+                            first_ineligible.assign(
+                                static_cast<std::size_t>(plan.workers),
+                                vectorize_length
+                            );
+                            DirectAsciiBody body(
+                                subject_views, pattern_byte, output,
+                                first_ineligible
+                            );
+                            shared::run_parallel(
+                                plan, vectorize_length, body
+                            );
+                            const R_len_t resume = lowest_ineligible(
+                                first_ineligible, vectorize_length
+                            );
+                            direct = resume == vectorize_length;
+                            if (!direct)
+                                general_start = resume;
+                        }
+                    }
+                    if (!direct) {
                         normalize_views(
                             subject_views, subject_length,
                             subject_converter, subject_storage, subjects
@@ -352,10 +548,11 @@ CHARR_ENTRYPOINT SEXP ci_count_fixed(
                             pattern_converter, pattern_storage, patterns
                         );
                         empty_pattern_warnings = count_empty_patterns(patterns);
-                        count_general(
+                        Body body(
                             subjects, patterns, vectorize_length,
-                            general_start, options, matcher, output
+                            general_start, options, output
                         );
+                        shared::run_parallel(plan, tasks, body);
                     }
                 }
 

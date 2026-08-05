@@ -1,5 +1,6 @@
 #include "utf8_output.h"
 
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -147,6 +148,82 @@ OutputStore scalar_store(
     return scalar_store(output_record(value, encoding));
 }
 
+OutputStore concat_stores(std::vector<OutputStore>& stores)
+{
+    std::size_t total = 0;
+    for (std::size_t i = 0; i < stores.size(); ++i) {
+        const std::size_t current = stores[i].size();
+        if (current > std::numeric_limits<std::size_t>::max()-total)
+            throw std::length_error("character output is too long");
+        total += current;
+    }
+
+    OutputStore output(total, 0);
+    std::size_t position = 0;
+    for (std::size_t i = 0; i < stores.size(); ++i) {
+        OutputStore& current = stores[i];
+        for (std::size_t j = 0; j < current.size(); ++j) {
+            const OutputRecord value = current.view(j);
+            output.records.set(
+                position++, value.ptr, value.len, value.enc
+            );
+        }
+        output.slices.prepend(current.slices);
+    }
+    return output;
+}
+
+ChunkStores::ChunkStores()
+    : rows_()
+{
+}
+
+void ChunkStores::reset(unsigned workers)
+{
+    rows_.clear();
+    rows_.resize(static_cast<std::size_t>(workers));
+}
+
+void ChunkStores::open(unsigned worker, R_xlen_t begin)
+{
+    std::vector<Entry>& row = rows_.at(static_cast<std::size_t>(worker));
+    row.push_back(Entry());
+    row.back().begin = begin;
+}
+
+OutputStore& ChunkStores::current(unsigned worker)
+{
+    std::vector<Entry>& row = rows_.at(static_cast<std::size_t>(worker));
+    if (row.empty())
+        throw std::logic_error("chunk output used before its chunk opened");
+    return row.back().store;
+}
+
+OutputStore ChunkStores::concatenate()
+{
+    // Merge the per-worker rows on their chunk key. Each row is already
+    // ascending, so this walks every row once and never sorts.
+    std::vector<std::size_t> cursors(rows_.size(), 0);
+    std::vector<OutputStore> ordered;
+    for (;;) {
+        std::size_t chosen = rows_.size();
+        for (std::size_t row = 0; row < rows_.size(); ++row) {
+            const std::size_t at = cursors[row];
+            if (at >= rows_[row].size())
+                continue;
+            if (chosen == rows_.size() ||
+                    rows_[row][at].begin < rows_[chosen][cursors[chosen]].begin) {
+                chosen = row;
+            }
+        }
+        if (chosen == rows_.size())
+            break;
+        ordered.push_back(std::move(rows_[chosen][cursors[chosen]].store));
+        ++cursors[chosen];
+    }
+    return concat_stores(ordered);
+}
+
 OutputBuilder::OutputBuilder(R_xlen_t size)
     : size_(size), builder_(size)
 {
@@ -194,6 +271,62 @@ char* OutputBuilder::reserve(
 }
 
 SEXP OutputBuilder::to_sexp() noexcept
+{
+    size_ = 0;
+    return builder_.to_sexp();
+}
+
+ParallelOutputBuilder::ParallelOutputBuilder()
+    : size_(0), builder_(0, 1)
+{
+}
+
+R_xlen_t ParallelOutputBuilder::size() const noexcept
+{
+    return size_;
+}
+
+void ParallelOutputBuilder::set(
+    unsigned worker, R_xlen_t index, const OutputRecord& value
+)
+{
+    const OutputRecord normalized = output_record(value);
+    if (normalized.is_na()) {
+        builder_.set_na(worker, index);
+        return;
+    }
+    builder_.set(worker, index, normalized);
+}
+
+void ParallelOutputBuilder::set(
+    unsigned worker, R_xlen_t index, const char* data,
+    std::size_t length, cetype_ext_t encoding
+)
+{
+    set_validated(worker, index, output_record(data, length, encoding));
+}
+
+void ParallelOutputBuilder::set(
+    unsigned worker, R_xlen_t index, std::string_view value,
+    cetype_ext_t encoding
+)
+{
+    set_validated(worker, index, output_record(value, encoding));
+}
+
+char* ParallelOutputBuilder::reserve(
+    unsigned worker, R_xlen_t index, std::size_t length,
+    cetype_ext_t encoding
+)
+{
+    const cetype_ext_t checked_encoding = reserve_encoding(encoding);
+    if (checked_encoding == CETYPE_EXT_NA)
+        return builder_.reserve(worker, index, 0, checked_encoding);
+    (void)checked_length(length);
+    return builder_.reserve(worker, index, length, checked_encoding);
+}
+
+SEXP ParallelOutputBuilder::to_sexp() noexcept
 {
     size_ = 0;
     return builder_.to_sexp();

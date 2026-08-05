@@ -37,9 +37,19 @@ regex_frame_call <- function(
 
   symbol <- regex_frame_symbol(backend, operation)
   if (identical(operation, "count")) {
+    if (identical(backend, "altrep")) {
+      return(.Call(
+        symbol, subject, pattern, opts_regex
+      ))
+    }
     return(.Call(symbol, subject, pattern, opts_regex))
   }
   if (identical(operation, "detect")) {
+    if (identical(backend, "altrep")) {
+      return(.Call(
+        symbol, subject, pattern, negate, max_count, opts_regex
+      ))
+    }
     return(.Call(
       symbol, subject, pattern, negate, max_count, opts_regex
     ))

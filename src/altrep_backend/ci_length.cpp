@@ -30,17 +30,23 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "ci_parallel.h"
 #include "ci_stringi.h"
 #include "io/reader_utils.h"
+#include "io/string_view.h"
 #include "../shared/entrypoint.h"
 #include "../shared/native_to_utf8.h"
+#include "../shared/parallel.h"
 #include "../shared/protect.h"
+#include "../shared/slice_arena.h"
 #include "../shared/unwind.h"
+#include "../shared/utf8.h"
 
 #include <clocale>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 namespace charr { namespace altrep_backend {
 
@@ -91,6 +97,170 @@ CHARR_NEUTRAL_HELPER int ci__ascii_string_width(
 using namespace length;
 
 
+namespace length_parallel {
+
+CHARR_NEUTRAL_HELPER std::size_t no_slot() noexcept
+{
+    return static_cast<std::size_t>(-1);
+}
+
+
+CHARR_CXX_HELPER shared::StringView stable_copy(
+    const shared::ByteView& value, shared::SliceArena& storage
+)
+{
+    if (value.len <= 0)
+        return shared::StringView{
+            "", 0, shared::StringEncoding::utf8
+        };
+    char* output = storage.allocate(static_cast<std::size_t>(value.len));
+    std::memcpy(output, value.ptr, static_cast<std::size_t>(value.len));
+    return shared::StringView{
+        output, value.len, shared::StringEncoding::utf8
+    };
+}
+
+
+/*
+ * Prepare the records a worker may not prepare for itself. R's converter
+ * stays on this thread, so a native record is converted here and copied
+ * into storage that outlives the region.
+ *
+ * A record needs nothing else. The worker validates UTF-8 itself while it
+ * counts code points, so measuring a record here would run the whole pass
+ * twice, once serially. The encoding tags are still classified: that is one
+ * comparison per record and it keeps a rejected encoding raising from the
+ * thread a serial run raises it from.
+ */
+CHARR_CXX_HELPER void preflight_inputs(
+    const charport::StrViews& views,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage,
+    std::vector<std::size_t>& converted_slots,
+    std::vector<shared::StringView>& converted_values
+)
+{
+    const R_xlen_t size = views.size();
+    for (R_xlen_t i = 0; i < size; ++i) {
+        const charport::StrView value = views[i];
+        switch (value.enc.value) {
+        case CETYPE_EXT_NA.value:
+        case CETYPE_EXT_ASCII.value:
+        case CETYPE_EXT_LATIN1.value:
+        case CETYPE_EXT_UTF8.value:
+        case CETYPE_EXT_ASCII_OR_UTF8.value:
+            break;
+        case CETYPE_EXT_BYTES.value:
+            throw StriException(MSG__BYTESENC);
+        case CETYPE_EXT_NATIVE.value:
+            // A native record is already UTF-8 when the native encoding is,
+            // and the worker reads it in place without a converted slot.
+            if (converter.native_is_utf8())
+                break;
+            if (converted_slots.empty()) {
+                converted_slots.assign(
+                    static_cast<std::size_t>(size), no_slot()
+                );
+            }
+            converted_slots[static_cast<std::size_t>(i)] =
+                converted_values.size();
+            converted_values.push_back(stable_copy(
+                converter.native(value.ptr, value.len), storage
+            ));
+            break;
+        default:
+            throw StriException("unknown charport string encoding");
+        }
+    }
+}
+
+
+CHARR_NEUTRAL_HELPER const shared::StringView* converted_input_at(
+    const std::vector<std::size_t>& converted_slots,
+    const std::vector<shared::StringView>& converted_values,
+    R_len_t index
+) noexcept
+{
+    if (converted_slots.empty())
+        return nullptr;
+    const std::size_t slot = converted_slots[
+        static_cast<std::size_t>(index)
+    ];
+    return slot == no_slot() ? nullptr : &converted_values[slot];
+}
+
+
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const charport::StrViews& views,
+        const std::vector<std::size_t>& converted_slots,
+        const std::vector<shared::StringView>& converted_values,
+        int* output
+    ) noexcept
+        : views_(views), converted_slots_(converted_slots),
+          converted_values_(converted_values), output_(output)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        const char* const* ptrs = views_.ptrs();
+        const int* lengths = views_.lengths();
+        const cetype_ext_t* encodings = views_.encodings();
+
+        while (context.next_chunk()) {
+            const R_len_t begin = static_cast<R_len_t>(context.begin);
+            const R_len_t end = static_cast<R_len_t>(context.end);
+            for (R_len_t i = begin; i < end; ++i) {
+                const cetype_ext_t encoding = encodings[i];
+                if (encoding == CETYPE_EXT_NA) {
+                    output_[i] = NA_INTEGER;
+                    continue;
+                }
+
+                const char* data = ptrs[i];
+                int length = lengths[i];
+                if (encoding == CETYPE_EXT_ASCII ||
+                        encoding == CETYPE_EXT_LATIN1) {
+                    output_[i] = length;
+                    continue;
+                }
+                if (encoding == CETYPE_EXT_BYTES)
+                    throw StriException(MSG__BYTESENC);
+
+                if (encoding == CETYPE_EXT_NATIVE) {
+                    const shared::StringView* converted = converted_input_at(
+                        converted_slots_, converted_values_, i
+                    );
+                    if (converted != nullptr) {
+                        data = converted->ptr;
+                        length = converted->len;
+                    }
+                }
+                else if (encoding != CETYPE_EXT_UTF8 &&
+                        encoding != CETYPE_EXT_ASCII_OR_UTF8) {
+                    throw StriException("unknown charport string encoding");
+                }
+
+                if (!ci__length_utf8_fast(data, length, output_[i]))
+                    throw StriException(MSG__INVALID_UTF8);
+            }
+        }
+    }
+
+private:
+    const charport::StrViews& views_;
+    const std::vector<std::size_t>& converted_slots_;
+    const std::vector<shared::StringView>& converted_values_;
+    int* output_;
+};
+
+} // namespace length_parallel
+
+
 /**
  * Count the number of characters/code points in a string
  *
@@ -129,6 +299,9 @@ CHARR_ENTRYPOINT SEXP ci_length(SEXP str) noexcept
         charport::Reader reader;
         charport::StrViews views;
         shared::NativeToUtf8 native_to_utf8;
+        shared::SliceArena storage;
+        std::vector<std::size_t> converted_slots;
+        std::vector<shared::StringView> converted_values;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -152,8 +325,23 @@ CHARR_ENTRYPOINT SEXP ci_length(SEXP str) noexcept
                     const char* const* ptrs = views.ptrs();
                     const int* lengths = views.lengths();
                     const cetype_ext_t* encodings = views.encodings();
+                    const shared::ParallelPlan plan = shared::parallel_plan(
+                        true, str_n
+                    );
 
-                    for (R_len_t k = 0; k < str_n; ++k) {
+                    if (plan.workers > 1) {
+                        if (!native_to_utf8.native_is_utf8()) {
+                            length_parallel::preflight_inputs(
+                                views, native_to_utf8, storage,
+                                converted_slots, converted_values
+                            );
+                        }
+                        length_parallel::Body body(
+                            views, converted_slots, converted_values, retint
+                        );
+                        shared::run_parallel(plan, str_n, body);
+                    }
+                    else for (R_len_t k = 0; k < str_n; ++k) {
                         const cetype_ext_t encoding = encodings[k];
                         if (encoding == CETYPE_EXT_NA) {
                             retint[k] = NA_INTEGER;
@@ -490,6 +678,148 @@ CHARR_CXX_HELPER int ci__width_string(
 }
 
 
+namespace width {
+
+CHARR_NEUTRAL_HELPER std::size_t no_slot() noexcept
+{
+    return static_cast<std::size_t>(-1);
+}
+
+
+CHARR_CXX_HELPER void preflight_inputs(
+    const charport::StrViews& views,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage,
+    std::vector<std::size_t>& converted_slots,
+    std::vector<shared::StringView>& converted_values
+)
+{
+    const R_xlen_t size = views.size();
+    for (R_xlen_t i = 0; i < size; ++i) {
+        const charport::StrView value = views[i];
+        if (value.is_na())
+            continue;
+
+        switch (value.enc.value) {
+        case CETYPE_EXT_ASCII.value:
+        case CETYPE_EXT_UTF8.value:
+        case CETYPE_EXT_ASCII_OR_UTF8.value:
+            break;
+        case CETYPE_EXT_LATIN1.value:
+        case CETYPE_EXT_NATIVE.value:
+            if (converted_slots.empty()) {
+                converted_slots.assign(
+                    static_cast<std::size_t>(size), no_slot()
+                );
+            }
+            converted_slots[static_cast<std::size_t>(i)] =
+                converted_values.size();
+            converted_values.push_back(shared::normalize_utf8(
+                io::as_shared_view(value), converter, storage
+            ));
+            break;
+        case CETYPE_EXT_BYTES.value:
+            throw StriException(MSG__BYTESENC);
+        case CETYPE_EXT_NA.value:
+        default:
+            throw StriException("unknown charport string encoding");
+        }
+    }
+}
+
+
+CHARR_NEUTRAL_HELPER shared::StringView input_at(
+    const charport::StrViews& views,
+    const std::vector<std::size_t>& converted_slots,
+    const std::vector<shared::StringView>& converted_values,
+    R_len_t index
+) noexcept
+{
+    if (!converted_slots.empty()) {
+        const std::size_t slot =
+            converted_slots[static_cast<std::size_t>(index)];
+        if (slot != no_slot())
+            return converted_values[slot];
+    }
+    return io::as_shared_view(views[index]);
+}
+
+/*
+ * The threaded path converts Latin-1 and native records on the main thread
+ * before this body runs. The one-thread path keeps the original inline loop.
+ */
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const charport::StrViews& views,
+        const std::vector<std::size_t>& converted_slots,
+        const std::vector<shared::StringView>& converted_values,
+        int* output
+    ) noexcept
+        : views_(views), converted_slots_(converted_slots),
+          converted_values_(converted_values), output_(output)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        const char* const* ptrs = views_.ptrs();
+        const int* lengths = views_.lengths();
+        const cetype_ext_t* encodings = views_.encodings();
+
+        while (context.next_chunk()) {
+            const R_len_t begin = static_cast<R_len_t>(context.begin);
+            const R_len_t end = static_cast<R_len_t>(context.end);
+            for (R_len_t i = begin; i < end; ++i) {
+                const cetype_ext_t encoding = encodings[i];
+                if (encoding == CETYPE_EXT_NA) {
+                    output_[i] = NA_INTEGER;
+                    continue;
+                }
+
+                const char* data = ptrs[i];
+                const int length = lengths[i];
+                if (encoding == CETYPE_EXT_ASCII) {
+                    output_[i] = ci__ascii_string_width(data, length);
+                    continue;
+                }
+                if (encoding == CETYPE_EXT_BYTES)
+                    throw StriException(MSG__BYTESENC);
+
+                if (encoding == CETYPE_EXT_UTF8 ||
+                        encoding == CETYPE_EXT_ASCII_OR_UTF8) {
+                    output_[i] = ci__width_string(data, length);
+                    continue;
+                }
+
+                if (encoding != CETYPE_EXT_LATIN1 &&
+                        encoding != CETYPE_EXT_NATIVE) {
+                    throw StriException(
+                        "unknown charport string encoding"
+                    );
+                }
+                const shared::StringView converted = input_at(
+                    views_, converted_slots_, converted_values_, i
+                );
+                output_[i] = ci__width_string(
+                    converted.ptr, converted.len
+                );
+            }
+        }
+    }
+
+private:
+    const charport::StrViews& views_;
+    const std::vector<std::size_t>& converted_slots_;
+    const std::vector<shared::StringView>& converted_values_;
+    int* output_;
+};
+
+} // namespace width
+
+
 /**
   * Determine the width of strings
   *
@@ -509,7 +839,10 @@ CHARR_ENTRYPOINT SEXP ci_width(SEXP str) noexcept
     try {
         charport::Reader reader;
         charport::StrViews views;
-        shared::NativeToUtf8 native_to_utf8;
+        shared::NativeToUtf8 converter;
+        shared::SliceArena storage;
+        std::vector<std::size_t> converted_slots;
+        std::vector<shared::StringView> converted_values;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -530,46 +863,64 @@ CHARR_ENTRYPOINT SEXP ci_width(SEXP str) noexcept
                         0, str_n,
                         views.ptrs(), views.lengths(), views.encodings()
                     );
-                    const char* const* ptrs = views.ptrs();
-                    const int* lengths = views.lengths();
-                    const cetype_ext_t* encodings = views.encodings();
+                    const shared::ParallelPlan plan = shared::parallel_plan(
+                        true, str_n
+                    );
 
-                    for (R_len_t i = 0; i < str_n; ++i) {
-                        const cetype_ext_t encoding = encodings[i];
-                        if (encoding == CETYPE_EXT_NA) {
-                            retint[i] = NA_INTEGER;
-                            continue;
-                        }
+                    if (plan.workers > 1) {
+                        width::preflight_inputs(
+                            views, converter, storage,
+                            converted_slots, converted_values
+                        );
+                        width::Body body(
+                            views, converted_slots, converted_values, retint
+                        );
+                        shared::run_parallel(plan, str_n, body);
+                    }
+                    else {
+                        const char* const* ptrs = views.ptrs();
+                        const int* lengths = views.lengths();
+                        const cetype_ext_t* encodings = views.encodings();
 
-                        const char* data = ptrs[i];
-                        const int length = lengths[i];
-                        if (encoding == CETYPE_EXT_ASCII) {
-                            retint[i] = ci__ascii_string_width(data, length);
-                            continue;
-                        }
-                        if (encoding == CETYPE_EXT_BYTES)
-                            throw StriException(MSG__BYTESENC);
+                        for (R_len_t i = 0; i < str_n; ++i) {
+                            const cetype_ext_t encoding = encodings[i];
+                            if (encoding == CETYPE_EXT_NA) {
+                                retint[i] = NA_INTEGER;
+                                continue;
+                            }
 
-                        if (encoding == CETYPE_EXT_UTF8 ||
-                                encoding ==
-                                    CETYPE_EXT_ASCII_OR_UTF8) {
-                            retint[i] = ci__width_string(data, length);
-                            continue;
-                        }
+                            const char* data = ptrs[i];
+                            const int length = lengths[i];
+                            if (encoding == CETYPE_EXT_ASCII) {
+                                retint[i] = ci__ascii_string_width(
+                                    data, length
+                                );
+                                continue;
+                            }
+                            if (encoding == CETYPE_EXT_BYTES)
+                                throw StriException(MSG__BYTESENC);
 
-                        if (encoding != CETYPE_EXT_LATIN1 &&
-                                encoding != CETYPE_EXT_NATIVE) {
-                            throw StriException(
-                                "unknown charport string encoding"
+                            if (encoding == CETYPE_EXT_UTF8 ||
+                                    encoding ==
+                                        CETYPE_EXT_ASCII_OR_UTF8) {
+                                retint[i] = ci__width_string(data, length);
+                                continue;
+                            }
+
+                            if (encoding != CETYPE_EXT_LATIN1 &&
+                                    encoding != CETYPE_EXT_NATIVE) {
+                                throw StriException(
+                                    "unknown charport string encoding"
+                                );
+                            }
+                            const shared::ByteView converted =
+                                encoding == CETYPE_EXT_LATIN1
+                                    ? converter.latin1(data, length)
+                                    : converter.native(data, length);
+                            retint[i] = ci__width_string(
+                                converted.ptr, converted.len
                             );
                         }
-                        const shared::ByteView converted =
-                            encoding == CETYPE_EXT_LATIN1
-                                ? native_to_utf8.latin1(data, length)
-                                : native_to_utf8.native(data, length);
-                        retint[i] = ci__width_string(
-                            converted.ptr, converted.len
-                        );
                     }
                 }
 

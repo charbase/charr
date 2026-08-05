@@ -35,8 +35,19 @@ replace_coll_frame_call <- function(
 
   symbol <- replace_coll_frame_symbol(backend, operation)
   if (identical(operation, "first")) {
+    if (identical(backend, "altrep")) {
+      return(.Call(
+        symbol, subject, pattern, replacement, opts_collator
+      ))
+    }
     return(.Call(
       symbol, subject, pattern, replacement, opts_collator
+    ))
+  }
+  if (identical(backend, "altrep")) {
+    return(.Call(
+      symbol, subject, pattern, replacement,
+      vectorize_all, opts_collator
     ))
   }
   .Call(

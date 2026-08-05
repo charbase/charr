@@ -31,6 +31,7 @@
  */
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "boundary/options_r.h"
 #include "io/string_view.h"
@@ -93,6 +94,83 @@ CHARR_CXX_HELPER void require_icu_success(UErrorCode status)
 }
 
 
+CHARR_NEUTRAL_HELPER shared::StringView direct_value_at(
+    const charport::StrViews& values, R_len_t index
+) noexcept
+{
+    shared::StringView value = io::as_shared_view(values[index]);
+    if (!value.is_na() &&
+            (value.enc == shared::StringEncoding::utf8 ||
+             value.enc == shared::StringEncoding::ascii_or_utf8) &&
+            value.len >= 3 &&
+            static_cast<unsigned char>(value.ptr[0]) == 0xefU &&
+            static_cast<unsigned char>(value.ptr[1]) == 0xbbU &&
+            static_cast<unsigned char>(value.ptr[2]) == 0xbfU) {
+        value.ptr += 3;
+        value.len -= 3;
+        value.enc = shared::StringEncoding::utf8;
+    }
+    return value;
+}
+
+
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const charport::StrViews& source,
+        const std::vector<shared::StringView>& normalized,
+        bool direct, bool has_nonmissing,
+        const shared::BoundaryOptions& options,
+        int* output, bool& root_fallback
+    ) noexcept
+        : source_(source), normalized_(normalized), direct_(direct),
+          has_nonmissing_(has_nonmissing), options_(options),
+          output_(output), root_fallback_(root_fallback)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        shared::BoundaryIterator counter;
+        if (has_nonmissing_) {
+            const shared::BoundaryOpenResult opened = counter.reset(options_);
+            if (context.worker == 0)
+                root_fallback_ = opened.root_fallback;
+            require_icu_success(opened.status);
+        }
+
+        while (context.next_chunk()) {
+            const R_len_t begin = static_cast<R_len_t>(context.begin);
+            const R_len_t end = static_cast<R_len_t>(context.end);
+            for (R_len_t i = begin; i < end; ++i) {
+                const shared::StringView value = direct_
+                    ? direct_value_at(source_, i)
+                    : normalized_[static_cast<std::size_t>(i)];
+                if (value.is_na()) {
+                    output_[i] = NA_INTEGER;
+                    continue;
+                }
+
+                UErrorCode status = U_ZERO_ERROR;
+                output_[i] = counter.count(value, status);
+                require_icu_success(status);
+            }
+        }
+    }
+
+private:
+    const charport::StrViews& source_;
+    const std::vector<shared::StringView>& normalized_;
+    bool direct_;
+    bool has_nonmissing_;
+    const shared::BoundaryOptions& options_;
+    int* output_;
+    bool& root_fallback_;
+};
+
+
 CHARR_R_HELPER void emit_fallback_warning_r() noexcept
 {
     Rf_warning(
@@ -139,8 +217,6 @@ CHARR_ENTRYPOINT SEXP ci_count_boundaries(
         shared::NativeToUtf8 converter;
         shared::SliceArena storage;
         std::vector<shared::StringView> normalized;
-        shared::BoundaryIterator counter;
-
         result = shared::unwind_protect(
             unwind_token,
             [&]() -> SEXP {
@@ -168,34 +244,10 @@ CHARR_ENTRYPOINT SEXP ci_count_boundaries(
                 }
 
                 const InputScan scan = scan_direct_input(source_views);
-                if (scan.direct) {
-                    if (scan.has_nonmissing) {
-                        const shared::BoundaryOpenResult opened =
-                            counter.reset(options);
-                        root_fallback_warning = opened.root_fallback;
-                        require_icu_success(opened.status);
-                    }
-
-                    for (R_len_t i = 0; i < length; ++i) {
-                        const shared::StringView source =
-                            io::as_shared_view(source_views[i]);
-                        if (source.is_na()) {
-                            output[i] = NA_INTEGER;
-                            continue;
-                        }
-
-                        const shared::StringView value =
-                            shared::normalize_utf8(
-                                source, converter, storage
-                            );
-                        UErrorCode status = U_ZERO_ERROR;
-                        output[i] = counter.count(value, status);
-                        require_icu_success(status);
-                    }
-                }
-                else {
+                bool has_nonmissing = scan.has_nonmissing;
+                if (!scan.direct) {
                     normalized.resize(static_cast<std::size_t>(length));
-                    bool has_nonmissing = false;
+                    has_nonmissing = false;
                     for (R_len_t i = 0; i < length; ++i) {
                         const shared::StringView source =
                             io::as_shared_view(source_views[i]);
@@ -207,27 +259,16 @@ CHARR_ENTRYPOINT SEXP ci_count_boundaries(
                             );
                         has_nonmissing = has_nonmissing || !source.is_na();
                     }
-
-                    if (has_nonmissing) {
-                        const shared::BoundaryOpenResult opened =
-                            counter.reset(options);
-                        root_fallback_warning = opened.root_fallback;
-                        require_icu_success(opened.status);
-                    }
-
-                    for (R_len_t i = 0; i < length; ++i) {
-                        const shared::StringView& value = normalized[
-                            static_cast<std::size_t>(i)
-                        ];
-                        if (value.is_na()) {
-                            output[i] = NA_INTEGER;
-                            continue;
-                        }
-                        UErrorCode status = U_ZERO_ERROR;
-                        output[i] = counter.count(value, status);
-                        require_icu_success(status);
-                    }
                 }
+
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, length
+                );
+                Body body(
+                    source_views, normalized, scan.direct, has_nonmissing,
+                    options, output, root_fallback_warning
+                );
+                shared::run_parallel(plan, length, body);
 
                 CHARR_UNWIND_RETURN();
             }

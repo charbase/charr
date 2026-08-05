@@ -119,7 +119,9 @@ ci_startswith_fixed <- function(str, pattern, from = 1L,
 {
     if (!missing(...))
         opts_fixed <- do.call(ci_opts_fixed, as.list(c(opts_fixed, ...)))
-    .Call(C_ci_startswith_fixed, str, pattern, from, negate, opts_fixed)
+    .Call(
+        C_ci_startswith_fixed, str, pattern, from, negate, opts_fixed
+    )
 }
 
 
@@ -130,7 +132,9 @@ ci_endswith_fixed <- function(str, pattern, to = -1L,
 {
     if (!missing(...))
         opts_fixed <- do.call(ci_opts_fixed, as.list(c(opts_fixed, ...)))
-    .Call(C_ci_endswith_fixed, str, pattern, to, negate, opts_fixed)
+    .Call(
+        C_ci_endswith_fixed, str, pattern, to, negate, opts_fixed
+    )
 }
 
 
@@ -149,7 +153,9 @@ ci_startswith_coll <- function(str, pattern, from = 1L,
 {
     if (!missing(...))
         opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-    .Call(C_ci_startswith_coll, str, pattern, from, negate, opts_collator)
+    .Call(
+        C_ci_startswith_coll, str, pattern, from, negate, opts_collator
+    )
 }
 
 
@@ -160,5 +166,7 @@ ci_endswith_coll <- function(str, pattern, to = -1L,
 {
     if (!missing(...))
         opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-    .Call(C_ci_endswith_coll, str, pattern, to, negate, opts_collator)
+    .Call(
+        C_ci_endswith_coll, str, pattern, to, negate, opts_collator
+    )
 }

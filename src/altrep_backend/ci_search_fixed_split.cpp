@@ -32,6 +32,7 @@
 
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "fixed/options.h"
 #include "io/string_view.h"
@@ -207,6 +208,156 @@ CHARR_CXX_HELPER CHARR_ALWAYS_INLINE void build_store(
 }
 
 
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const std::vector<shared::StringView>& subjects,
+        const std::vector<shared::StringView>& patterns,
+        const int* n_values, const int* omit_empty_values,
+        R_len_t subject_length, R_len_t pattern_length,
+        R_len_t n_length, R_len_t omit_empty_length,
+        R_len_t vectorize_length,
+        shared::FixedSearchOptions options,
+        bool tokens_only, bool simplifying,
+        std::vector<io::OutputStore>& stores,
+        std::vector<R_len_t>& max_columns
+    ) noexcept
+        : subjects_(subjects), patterns_(patterns), n_values_(n_values),
+          omit_empty_values_(omit_empty_values),
+          subject_length_(subject_length), pattern_length_(pattern_length),
+          n_length_(n_length), omit_empty_length_(omit_empty_length),
+          vectorize_length_(vectorize_length), options_(options),
+          tokens_only_(tokens_only), simplifying_(simplifying),
+          stores_(stores), max_columns_(max_columns)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        shared::FixedMatcher matcher;
+        std::vector<shared::FixedRange> fields;
+        io::OutputBuilder child_builder(0);
+        fields.reserve(16);
+        // Runs over every chunk this worker draws, so the slot it reports
+        // still holds the widest row the worker saw.
+        R_len_t local_max_columns = 0;
+
+        if (pattern_length_ == 1) {
+            const shared::StringView prepared_pattern = patterns_[0];
+            while (context.next_chunk()) {
+                const R_len_t begin = static_cast<R_len_t>(context.begin);
+                const R_len_t end = static_cast<R_len_t>(context.end);
+                for (R_len_t i = begin; i < end; ++i) {
+                    split_one(
+                        i, prepared_pattern, matcher, fields, child_builder,
+                        local_max_columns
+                    );
+                }
+            }
+        }
+        else {
+            while (context.next_chunk()) {
+                const R_len_t begin = static_cast<R_len_t>(context.begin);
+                const R_len_t end = static_cast<R_len_t>(context.end);
+                for (R_len_t lane = begin; lane < end; ++lane) {
+                    const shared::StringView prepared_pattern = patterns_[
+                        static_cast<std::size_t>(lane)
+                    ];
+                    R_len_t i = lane;
+                    for (;;) {
+                        split_one(
+                            i, prepared_pattern, matcher, fields,
+                            child_builder, local_max_columns
+                        );
+                        if (pattern_length_ >= vectorize_length_-i)
+                            break;
+                        i += pattern_length_;
+                    }
+                }
+            }
+        }
+
+        if (simplifying_)
+            max_columns_[context.worker] = local_max_columns;
+    }
+
+private:
+    CHARR_CXX_HELPER void split_one(
+        R_len_t i,
+        const shared::StringView& prepared_pattern,
+        shared::FixedMatcher& matcher,
+        std::vector<shared::FixedRange>& fields,
+        io::OutputBuilder& child_builder,
+        R_len_t& max_columns
+    )
+    {
+        io::OutputStore& output = stores_[static_cast<std::size_t>(i)];
+        const int raw_n = n_values_[i % n_length_];
+        const int raw_omit = omit_empty_values_[i % omit_empty_length_];
+        const bool omit_missing = raw_omit == NA_LOGICAL;
+        const bool omit = !omit_missing && raw_omit != 0;
+        const shared::StringView subject = subjects_[
+            static_cast<std::size_t>(i % subject_length_)
+        ];
+
+        if (raw_n == NA_INTEGER || subject.is_na() ||
+                prepared_pattern.is_na() || prepared_pattern.len <= 0) {
+            set_scalar_missing(output);
+        }
+        else if (subject.len <= 0) {
+            if (omit_missing) {
+                set_scalar_missing(output);
+            }
+            else if (!(omit || raw_n == 0)) {
+                set_scalar_empty(output);
+            }
+        }
+        else {
+            const shared::FixedSplitResult split =
+                shared::split_fixed_fields(
+                    matcher,
+                    subject, prepared_pattern, options_,
+                    raw_n, omit, tokens_only_, fields
+                );
+            if (split == shared::FixedSplitResult::limit_too_large) {
+                throw StriException(
+                    MSG__INCORRECT_NAMED_ARG "; "
+                    MSG__EXPECTED_SMALLER,
+                    "n"
+                );
+            }
+            build_store(
+                subject, fields, omit_missing, child_builder, output
+            );
+        }
+
+        if (simplifying_) {
+            const R_len_t current_size =
+                static_cast<R_len_t>(output.size());
+            if (max_columns < current_size)
+                max_columns = current_size;
+        }
+    }
+
+    const std::vector<shared::StringView>& subjects_;
+    const std::vector<shared::StringView>& patterns_;
+    const int* n_values_;
+    const int* omit_empty_values_;
+    R_len_t subject_length_;
+    R_len_t pattern_length_;
+    R_len_t n_length_;
+    R_len_t omit_empty_length_;
+    R_len_t vectorize_length_;
+    shared::FixedSearchOptions options_;
+    bool tokens_only_;
+    bool simplifying_;
+    std::vector<io::OutputStore>& stores_;
+    std::vector<R_len_t>& max_columns_;
+};
+
+
 CHARR_R_HELPER void emit_warnings_r(
     bool recycling_warning,
     R_len_t empty_pattern_warnings
@@ -289,6 +440,7 @@ CHARR_ENTRYPOINT SEXP ci_split_fixed(
         std::vector<io::OutputStore> stores;
         io::OutputBuilder child_builder(0);
         io::OutputBuilder matrix_builder(0);
+        std::vector<R_len_t> worker_max_columns;
 
         fields.reserve(16);
 
@@ -366,73 +518,101 @@ CHARR_ENTRYPOINT SEXP ci_split_fixed(
                     );
                 }
 
-                for (R_len_t lane = 0;
-                        lane < (vectorize_length > 0
-                            ? pattern_length : 0);
-                        ++lane) {
-                    const shared::StringView prepared_pattern =
-                        patterns[static_cast<std::size_t>(lane)];
-                    R_len_t i = lane;
-                    for (;;) {
-                        io::OutputStore& output = stores[
-                            static_cast<std::size_t>(i)
-                        ];
-                        const int raw_n = n_values[i % n_length];
-                        const int raw_omit = omit_empty_values[
-                            i % omit_empty_length
-                        ];
-                        const bool omit_missing =
-                            raw_omit == NA_LOGICAL;
-                        const bool omit =
-                            !omit_missing && raw_omit != 0;
-                        const shared::StringView subject = subjects[
-                            static_cast<std::size_t>(i % subject_length)
-                        ];
+                const R_len_t tasks = vectorize_length == 0
+                    ? 0 : pattern_length == 1
+                        ? vectorize_length : pattern_length;
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, tasks
+                );
+                if (plan.workers == 1) {
+                    for (R_len_t lane = 0;
+                            lane < (vectorize_length > 0
+                                ? pattern_length : 0);
+                            ++lane) {
+                        const shared::StringView prepared_pattern =
+                            patterns[static_cast<std::size_t>(lane)];
+                        R_len_t i = lane;
+                        for (;;) {
+                            io::OutputStore& output = stores[
+                                static_cast<std::size_t>(i)
+                            ];
+                            const int raw_n = n_values[i % n_length];
+                            const int raw_omit = omit_empty_values[
+                                i % omit_empty_length
+                            ];
+                            const bool omit_missing =
+                                raw_omit == NA_LOGICAL;
+                            const bool omit =
+                                !omit_missing && raw_omit != 0;
+                            const shared::StringView subject = subjects[
+                                static_cast<std::size_t>(i % subject_length)
+                            ];
 
-                        if (raw_n == NA_INTEGER || subject.is_na() ||
-                                prepared_pattern.is_na() ||
-                                prepared_pattern.len <= 0) {
-                            set_scalar_missing(output);
-                        }
-                        else if (subject.len <= 0) {
-                            if (omit_missing) {
+                            if (raw_n == NA_INTEGER || subject.is_na() ||
+                                    prepared_pattern.is_na() ||
+                                    prepared_pattern.len <= 0) {
                                 set_scalar_missing(output);
                             }
-                            else if (!(omit || raw_n == 0)) {
-                                set_scalar_empty(output);
+                            else if (subject.len <= 0) {
+                                if (omit_missing) {
+                                    set_scalar_missing(output);
+                                }
+                                else if (!(omit || raw_n == 0)) {
+                                    set_scalar_empty(output);
+                                }
                             }
-                        }
-                        else {
-                            const shared::FixedSplitResult split =
-                                shared::split_fixed_fields(
-                                    matcher,
-                                    subject, prepared_pattern, options,
-                                    raw_n, omit, tokens_only_value, fields
-                                );
-                            if (split == shared::FixedSplitResult::
-                                    limit_too_large) {
-                                throw StriException(
-                                    MSG__INCORRECT_NAMED_ARG "; "
-                                    MSG__EXPECTED_SMALLER,
-                                    "n"
+                            else {
+                                const shared::FixedSplitResult split =
+                                    shared::split_fixed_fields(
+                                        matcher,
+                                        subject, prepared_pattern, options,
+                                        raw_n, omit, tokens_only_value, fields
+                                    );
+                                if (split == shared::FixedSplitResult::
+                                        limit_too_large) {
+                                    throw StriException(
+                                        MSG__INCORRECT_NAMED_ARG "; "
+                                        MSG__EXPECTED_SMALLER,
+                                        "n"
+                                    );
+                                }
+                                build_store(
+                                    subject, fields, omit_missing,
+                                    child_builder, output
                                 );
                             }
-                            build_store(
-                                subject, fields, omit_missing,
-                                child_builder, output
-                            );
-                        }
 
-                        if (simplifying) {
-                            const R_len_t current_size =
-                                static_cast<R_len_t>(output.size());
-                            if (max_columns < current_size)
-                                max_columns = current_size;
-                        }
+                            if (simplifying) {
+                                const R_len_t current_size =
+                                    static_cast<R_len_t>(output.size());
+                                if (max_columns < current_size)
+                                    max_columns = current_size;
+                            }
 
-                        if (pattern_length >= vectorize_length-i)
-                            break;
-                        i += pattern_length;
+                            if (pattern_length >= vectorize_length-i)
+                                break;
+                            i += pattern_length;
+                        }
+                    }
+                }
+                else {
+                    worker_max_columns.assign(
+                        static_cast<std::size_t>(plan.workers), 0
+                    );
+                    Body body(
+                        subjects, patterns, n_values, omit_empty_values,
+                        subject_length, pattern_length,
+                        n_length, omit_empty_length, vectorize_length,
+                        options, tokens_only_value, simplifying,
+                        stores, worker_max_columns
+                    );
+                    shared::run_parallel(plan, tasks, body);
+                    if (simplifying) {
+                        for (std::size_t i = 0;
+                                i < worker_max_columns.size(); ++i) {
+                            if (max_columns < worker_max_columns[i])
+                                max_columns = worker_max_columns[i];
+                        }
                     }
                 }
 

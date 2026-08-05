@@ -32,15 +32,19 @@
 
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "../shared/entrypoint.h"
 #include "../shared/native_to_utf8.h"
 #include "../shared/protect.h"
+#include "../shared/slice_arena.h"
 #include "../shared/unwind.h"
 #include "altrep_backend/io/utf8_output.h"
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
+#include <vector>
 
 namespace charr { namespace altrep_backend {
 
@@ -159,6 +163,163 @@ CHARR_CXX_HELPER void reverse_input(
     }
 }
 
+
+CHARR_NEUTRAL_HELPER std::size_t no_slot() noexcept
+{
+    return static_cast<std::size_t>(-1);
+}
+
+
+CHARR_CXX_HELPER ReverseInput stable_copy(
+    const ReverseInput& input, shared::SliceArena& storage
+)
+{
+    if (input.len <= 0)
+        return ReverseInput{"", 0, input.ascii};
+    char* stable = storage.allocate(static_cast<std::size_t>(input.len));
+    std::memcpy(stable, input.ptr, static_cast<std::size_t>(input.len));
+    return ReverseInput{stable, input.len, input.ascii};
+}
+
+
+CHARR_CXX_HELPER ReverseInput direct_input(
+    const charport::StrView& value
+)
+{
+    if (value.enc == CETYPE_EXT_ASCII)
+        return ReverseInput{value.ptr, value.len, true};
+    if (value.enc == CETYPE_EXT_BYTES)
+        throw StriException(MSG__BYTESENC);
+    if (value.enc != CETYPE_EXT_UTF8 &&
+            value.enc != CETYPE_EXT_ASCII_OR_UTF8) {
+        throw StriException("unknown charport string encoding");
+    }
+
+    const bool ambiguous = value.enc == CETYPE_EXT_ASCII_OR_UTF8;
+    const bool strip_bom = has_utf8_bom(value.ptr, value.len);
+    const char* ptr = strip_bom ? value.ptr+3 : value.ptr;
+    const int len = strip_bom ? value.len-3 : value.len;
+    return ReverseInput{
+        ptr, len,
+        (ambiguous || strip_bom) &&
+            io::is_ascii(ptr, static_cast<std::size_t>(len))
+    };
+}
+
+
+/**
+ * Prepare the records a worker may not prepare for itself. R's converter
+ * stays on this thread, so a latin1 or native record is converted here and
+ * copied into storage that outlives the region.
+ *
+ * A record needs nothing else. `reverse_utf8()` walks the payload with
+ * `U8_PREV` and raises on a negative code point, so it validates the same
+ * bytes the worker is about to read; validating here as well would run the
+ * whole pass twice, once serially. The encoding tags are still classified:
+ * that is one comparison per record and it keeps a rejected encoding raising
+ * from the pass a serial run raises it from.
+ */
+CHARR_CXX_HELPER void preflight_inputs(
+    const charport::StrViews& values,
+    shared::NativeToUtf8& converter,
+    shared::SliceArena& storage,
+    std::vector<std::size_t>& converted_slots,
+    std::vector<ReverseInput>& converted_values
+)
+{
+    const R_xlen_t size = values.size();
+    for (R_xlen_t i = 0; i < size; ++i) {
+        const charport::StrView source = values[i];
+        if (source.is_na())
+            continue;
+
+        switch (source.enc.value) {
+        case CETYPE_EXT_ASCII.value:
+        case CETYPE_EXT_UTF8.value:
+        case CETYPE_EXT_ASCII_OR_UTF8.value:
+            break;
+        case CETYPE_EXT_BYTES.value:
+            throw StriException(MSG__BYTESENC);
+        case CETYPE_EXT_LATIN1.value:
+        case CETYPE_EXT_NATIVE.value:
+            if (converted_slots.empty()) {
+                converted_slots.assign(
+                    static_cast<std::size_t>(size), no_slot()
+                );
+            }
+            converted_slots[static_cast<std::size_t>(i)] =
+                converted_values.size();
+            converted_values.push_back(
+                stable_copy(normalize_input(source, converter), storage)
+            );
+            break;
+        default:
+            throw StriException("unknown charport string encoding");
+        }
+    }
+}
+
+
+CHARR_CXX_HELPER ReverseInput input_at(
+    const charport::StrViews& values,
+    const std::vector<std::size_t>& converted_slots,
+    const std::vector<ReverseInput>& converted_values,
+    R_xlen_t index
+)
+{
+    if (!converted_slots.empty()) {
+        const std::size_t slot = converted_slots[
+            static_cast<std::size_t>(index)
+        ];
+        if (slot != no_slot())
+            return converted_values[slot];
+    }
+    return direct_input(values[index]);
+}
+
+
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const charport::StrViews& values,
+        const std::vector<std::size_t>& converted_slots,
+        const std::vector<ReverseInput>& converted_values,
+        io::ParallelOutputBuilder& builder
+    ) noexcept
+        : values_(values), converted_slots_(converted_slots),
+          converted_values_(converted_values), builder_(builder)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        while (context.next_chunk()) {
+            for (R_xlen_t i = context.begin; i < context.end; ++i) {
+                if (values_[i].is_na()) {
+                    builder_.set_na(context.worker, i);
+                    continue;
+                }
+                const ReverseInput value = input_at(
+                    values_, converted_slots_, converted_values_, i
+                );
+                char* output = builder_.reserve(
+                    context.worker, i, static_cast<std::size_t>(value.len),
+                    value.ascii ? CETYPE_EXT_ASCII : CETYPE_EXT_UTF8
+                );
+                reverse_input(value, output);
+            }
+        }
+    }
+
+private:
+    const charport::StrViews& values_;
+    const std::vector<std::size_t>& converted_slots_;
+    const std::vector<ReverseInput>& converted_values_;
+    io::ParallelOutputBuilder& builder_;
+};
+
 } // namespace reverse
 
 using namespace reverse;
@@ -185,21 +346,32 @@ CHARR_ENTRYPOINT SEXP ci_reverse(SEXP str) noexcept
 {
     CHARR_ENTRYPOINT_BEGIN();
 
+
     str = entry_protections.protect_one(
         ci__prepare_arg_string_r(str, "str")
     );
+    const R_xlen_t str_len = XLENGTH(str);
+    const shared::ParallelPlan plan = shared::parallel_plan(true, str_len);
 
     try {
         charport::Reader reader;
         charport::StrViews values;
         io::OutputBuilder builder(0);
+        io::ParallelOutputBuilder parallel_builder;
         shared::NativeToUtf8 converter;
+        shared::SliceArena storage;
+        std::vector<std::size_t> converted_slots;
+        std::vector<ReverseInput> converted_values;
 
         result = shared::unwind_protect(
             unwind_token,
             [&]() -> SEXP {
                 reader.reset(str);
-                const R_xlen_t str_len = reader.size();
+                if (reader.size() != str_len) {
+                    throw std::runtime_error(
+                        "Reader length changed during string reversal"
+                    );
+                }
                 values.resize(str_len);
                 if (str_len > 0) {
                     reader.views(
@@ -207,30 +379,47 @@ CHARR_ENTRYPOINT SEXP ci_reverse(SEXP str) noexcept
                         values.ptrs(), values.lengths(), values.encodings()
                     );
                 }
-                builder.reset(str_len);
+                if (plan.workers > 1) {
+                    preflight_inputs(
+                        values, converter, storage,
+                        converted_slots, converted_values
+                    );
+                    parallel_builder.reset(str_len, plan.workers);
+                    Body body(
+                        values, converted_slots, converted_values,
+                        parallel_builder
+                    );
+                    shared::run_parallel(plan, str_len, body);
+                    result = entry_protections.reprotect_one(
+                        parallel_builder.to_sexp(), result_index
+                    );
+                }
+                else {
+                    builder.reset(str_len);
 
-                for (R_xlen_t i = 0; i < str_len; ++i) {
-                    const charport::StrView source = values[i];
-                    if (source.is_na()) {
-                        builder.set_na(i);
-                        continue;
+                    for (R_xlen_t i = 0; i < str_len; ++i) {
+                        const charport::StrView source = values[i];
+                        if (source.is_na()) {
+                            builder.set_na(i);
+                            continue;
+                        }
+
+                        const ReverseInput value = normalize_input(
+                            source, converter
+                        );
+                        char* output = builder.reserve(
+                            i, static_cast<std::size_t>(value.len),
+                            value.ascii
+                                ? CETYPE_EXT_ASCII
+                                : CETYPE_EXT_UTF8
+                        );
+                        reverse_input(value, output);
                     }
 
-                    const ReverseInput value = normalize_input(
-                        source, converter
+                    result = entry_protections.reprotect_one(
+                        builder.to_sexp(), result_index
                     );
-                    char* output = builder.reserve(
-                        i, static_cast<std::size_t>(value.len),
-                        value.ascii
-                            ? CETYPE_EXT_ASCII
-                            : CETYPE_EXT_UTF8
-                    );
-                    reverse_input(value, output);
                 }
-
-                result = entry_protections.reprotect_one(
-                    builder.to_sexp(), result_index
-                );
                 CHARR_UNWIND_RETURN();
             }
         );

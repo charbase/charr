@@ -174,7 +174,10 @@ ci_extract_all_coll <- function(str, pattern, simplify = FALSE,
 {
     if (!missing(...))
         opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-    .Call(C_ci_extract_all_coll, str, pattern, simplify, omit_no_match, opts_collator)
+    .Call(
+        C_ci_extract_all_coll, str, pattern, simplify, omit_no_match,
+        opts_collator
+    )
 }
 
 
@@ -199,7 +202,10 @@ ci_extract_all_regex <- function(str, pattern, simplify = FALSE,
 {
     if (!missing(...))
         opts_regex <- do.call(ci_opts_regex, as.list(c(opts_regex, ...)))
-    .Call(C_ci_extract_all_regex, str, pattern, simplify, omit_no_match, opts_regex)
+    .Call(
+        C_ci_extract_all_regex, str, pattern, simplify, omit_no_match,
+        opts_regex
+    )
 }
 
 
@@ -224,7 +230,10 @@ ci_extract_all_fixed <- function(str, pattern, simplify = FALSE,
 {
     if (!missing(...))
         opts_fixed <- do.call(ci_opts_fixed, as.list(c(opts_fixed, ...)))
-    .Call(C_ci_extract_all_fixed, str, pattern, simplify, omit_no_match, opts_fixed)
+    .Call(
+        C_ci_extract_all_fixed, str, pattern, simplify, omit_no_match,
+        opts_fixed
+    )
 }
 
 

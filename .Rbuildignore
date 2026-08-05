@@ -12,7 +12,6 @@
 ^charr\.Rcheck($|/)
 ^Makefile$
 ^compile_commands\.json$
-^inst/extra($|/)
 ^scratch($|/)
 ^tools($|/)
 ^tests/testthat/_problems($|/)

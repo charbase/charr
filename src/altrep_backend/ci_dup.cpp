@@ -32,6 +32,7 @@
 
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "io/string_view.h"
 #include "io/utf8_output.h"
@@ -199,6 +200,74 @@ CHARR_NEUTRAL_HELPER cetype_ext_t output_encoding(
 }
 
 
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const charport::StrViews& values,
+        const std::vector<std::size_t>& converted_slots,
+        const std::vector<shared::StringView>& converted_values,
+        R_len_t str_length, const int* repetitions,
+        R_len_t times_length, io::ParallelOutputBuilder& builder
+    ) noexcept
+        : values_(values), converted_slots_(converted_slots),
+          converted_values_(converted_values), str_length_(str_length),
+          repetitions_(repetitions), times_length_(times_length),
+          builder_(builder)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        while (context.next_chunk()) {
+            for (R_xlen_t i = context.begin; i < context.end; ++i) {
+                const R_len_t index = static_cast<R_len_t>(i);
+                const shared::StringView value = input_at(
+                    values_, converted_slots_, converted_values_,
+                    index % str_length_
+                );
+                const int current = repetitions_[index % times_length_];
+                if (value.is_na() || current == NA_INTEGER || current < 0) {
+                    builder_.set_na(context.worker, index);
+                    continue;
+                }
+
+                const std::size_t length =
+                    static_cast<std::size_t>(value.len);
+                if (current == 0 || length == 0) {
+                    builder_.set(
+                        context.worker, index, "", 0, CETYPE_EXT_ASCII
+                    );
+                    continue;
+                }
+
+                std::size_t total;
+                if (!shared::checked_repeat_size(
+                        length, current,
+                        static_cast<std::size_t>(POW_2_31_M_1), total
+                    )) {
+                    throw StriException(MSG__CHARSXP_2147483647);
+                }
+                char* destination = builder_.reserve(
+                    context.worker, index, total, output_encoding(value.enc)
+                );
+                shared::repeat_bytes(destination, value.ptr, length, total);
+            }
+        }
+    }
+
+private:
+    const charport::StrViews& values_;
+    const std::vector<std::size_t>& converted_slots_;
+    const std::vector<shared::StringView>& converted_values_;
+    R_len_t str_length_;
+    const int* repetitions_;
+    R_len_t times_length_;
+    io::ParallelOutputBuilder& builder_;
+};
+
+
 } // namespace dup
 
 using namespace dup;
@@ -211,9 +280,12 @@ using namespace dup;
  * @param times integer vector
  * @return character vector
  */
-CHARR_ENTRYPOINT SEXP ci_dup(SEXP str, SEXP times) noexcept
+CHARR_ENTRYPOINT SEXP ci_dup(
+    SEXP str, SEXP times
+) noexcept
 {
     CHARR_ENTRYPOINT_BEGIN();
+
 
     str = entry_protections.protect_one(
         ci__prepare_arg_string_r(str, "str")
@@ -230,6 +302,9 @@ CHARR_ENTRYPOINT SEXP ci_dup(SEXP str, SEXP times) noexcept
     );
     if (recycling_warning)
         Rf_warning(MSG__WARN_RECYCLING_RULE);
+    const shared::ParallelPlan plan = shared::parallel_plan(
+        true, vectorize_length
+    );
 
     try {
         charport::Reader reader;
@@ -241,6 +316,7 @@ CHARR_ENTRYPOINT SEXP ci_dup(SEXP str, SEXP times) noexcept
         std::vector<std::size_t> converted_slots;
         std::vector<shared::StringView> converted_values;
         io::OutputBuilder builder(0);
+        io::ParallelOutputBuilder parallel_builder;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -263,52 +339,69 @@ CHARR_ENTRYPOINT SEXP ci_dup(SEXP str, SEXP times) noexcept
                     );
 
                     const int* repetitions = INTEGER_RO(times);
-                    builder.reset(vectorize_length);
 
-                    for (R_len_t i = 0; i < vectorize_length; ++i) {
-                        const shared::StringView value = input_at(
+                    if (plan.workers > 1) {
+                        parallel_builder.reset(vectorize_length, plan.workers);
+                        Body body(
                             values, converted_slots, converted_values,
-                            i % str_length
+                            str_length, repetitions, times_length,
+                            parallel_builder
                         );
-                        const int current = repetitions[i % times_length];
-                        if (value.is_na() || current == NA_INTEGER ||
-                                current < 0) {
-                            builder.set_na(i);
-                            continue;
-                        }
-
-                        const std::size_t length =
-                            static_cast<std::size_t>(value.len);
-                        if (current == 0 || length == 0) {
-                            builder.set(
-                                i, "", 0, CETYPE_EXT_ASCII
+                        shared::run_parallel(plan, vectorize_length, body);
+                    }
+                    else {
+                        builder.reset(vectorize_length);
+                        for (R_len_t i = 0; i < vectorize_length; ++i) {
+                            const shared::StringView value = input_at(
+                                values, converted_slots, converted_values,
+                                i % str_length
                             );
-                            continue;
-                        }
+                            const int current = repetitions[i % times_length];
+                            if (value.is_na() || current == NA_INTEGER ||
+                                    current < 0) {
+                                builder.set_na(i);
+                                continue;
+                            }
 
-                        std::size_t total;
-                        if (!shared::checked_repeat_size(
-                                length, current,
-                                static_cast<std::size_t>(POW_2_31_M_1),
-                                total
-                            )) {
-                            throw StriException(MSG__CHARSXP_2147483647);
-                        }
+                            const std::size_t length =
+                                static_cast<std::size_t>(value.len);
+                            if (current == 0 || length == 0) {
+                                builder.set(
+                                    i, "", 0, CETYPE_EXT_ASCII
+                                );
+                                continue;
+                            }
 
-                        char* destination = builder.reserve(
-                            i, total, output_encoding(value.enc)
-                        );
-                        shared::repeat_bytes(
-                            destination, value.ptr, length, total
-                        );
+                            std::size_t total;
+                            if (!shared::checked_repeat_size(
+                                    length, current,
+                                    static_cast<std::size_t>(POW_2_31_M_1),
+                                    total
+                                )) {
+                                throw StriException(MSG__CHARSXP_2147483647);
+                            }
+
+                            char* destination = builder.reserve(
+                                i, total, output_encoding(value.enc)
+                            );
+                            shared::repeat_bytes(
+                                destination, value.ptr, length, total
+                            );
+                        }
                     }
                 }
                 else {
-                    builder.reset(0);
+                    if (plan.workers > 1)
+                        parallel_builder.reset(0, 1);
+                    else
+                        builder.reset(0);
                 }
 
                 result = entry_protections.reprotect_one(
-                    builder.to_sexp(), result_index
+                    plan.workers > 1
+                        ? parallel_builder.to_sexp()
+                        : builder.to_sexp(),
+                    result_index
                 );
                 CHARR_UNWIND_RETURN();
             }

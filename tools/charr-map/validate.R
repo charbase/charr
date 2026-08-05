@@ -1,14 +1,27 @@
 args <- commandArgs(trailingOnly = TRUE)
-if (length(args) != 3L) {
+if (length(args) != 4L) {
     stop(
-        "usage: validate.R OUTPUT_DIR EXPECTED_UNITS EXPECTED_BACKEND_METHODS",
+        paste0(
+            "usage: validate.R OUTPUT_DIR EXPECTED_UNITS ",
+            "EXPECTED_BASE_METHODS EXPECTED_ALTREP_METHODS"
+        ),
         call. = FALSE
     )
 }
 
 output_dir <- args[[1L]]
 expected_units <- as.integer(args[[2L]])
-expected_methods <- as.integer(args[[3L]])
+expected_backend_methods <- c(
+    base = as.integer(args[[3L]]),
+    altrep = as.integer(args[[4L]])
+)
+expected_methods <- sum(expected_backend_methods)
+
+# Registrations that are not a backend method: the four ICU probes and the
+# three threading accessors. Both counts below are the backend methods plus
+# these, so the number moves whenever `registration.cpp` gains or loses an
+# entry outside CHARR_SHARED_BACKEND_METHODS.
+expected_standalone_registrations <- 7L
 
 read_table <- function(name) {
     path <- file.path(output_dir, name)
@@ -72,41 +85,34 @@ expect(
 
 entrypoints <- entities[entities$lint_tag == "entrypoint", , drop = FALSE]
 abi_shims <- entities[entities$lint_tag == "abi_shim", , drop = FALSE]
-expect_count(nrow(entrypoints), 2L * expected_methods, "semantic entrypoints")
-expect_count(nrow(abi_shims), 2L * expected_methods, "ABI shims")
+expect_count(nrow(entrypoints), expected_methods, "semantic entrypoints")
+expect_count(nrow(abi_shims), expected_methods, "ABI shims")
 
-for (backend in c("base", "altrep")) {
+for (backend in names(expected_backend_methods)) {
+    expected <- expected_backend_methods[[backend]]
     expect_count(
         sum(entrypoints$module == backend),
-        expected_methods,
+        expected,
         paste(backend, "semantic entrypoints")
     )
     expect_count(
         sum(abi_shims$module == backend),
-        expected_methods,
+        expected,
         paste(backend, "ABI shims")
     )
+    expect_count(
+        length(unique(entrypoints$name[entrypoints$module == backend])),
+        expected,
+        paste(backend, "operation names")
+    )
 }
-
-expect(
-    setequal(
-        entrypoints$name[entrypoints$module == "base"],
-        entrypoints$name[entrypoints$module == "altrep"]
-    ),
-    "base and ALTREP entrypoint names are not paired"
-)
-expect_count(
-    length(unique(entrypoints$name[entrypoints$module == "base"])),
-    expected_methods,
-    "paired backend operation names"
-)
 
 forwards <- relationships[
     relationships$relationship == "forwards_to",
     ,
     drop = FALSE
 ]
-expect_count(nrow(forwards), 2L * expected_methods, "shim forwarding edges")
+expect_count(nrow(forwards), expected_methods, "shim forwarding edges")
 expect(
     all(forwards$source_id %in% abi_shims$id),
     "a forwarding edge starts outside an ABI shim"
@@ -125,12 +131,12 @@ registration_refs <- relationships[
 ]
 expect_count(
     nrow(registration_refs),
-    2L * expected_methods + 4L,
+    expected_methods + expected_standalone_registrations,
     "registration function references"
 )
 expect_count(
     length(unique(registration_refs$target_id)),
-    2L * expected_methods + 4L,
+    expected_methods + expected_standalone_registrations,
     "distinct registered functions"
 )
 

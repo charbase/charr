@@ -32,6 +32,7 @@
 
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "../shared/entrypoint.h"
 #include "../shared/native_to_utf8.h"
@@ -258,6 +259,127 @@ CHARR_NEUTRAL_HELPER char* ci__pad_repeat(
     return output+total;
 }
 
+
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const std::vector<PadInput>& str_inputs,
+        const std::vector<PadInput>& pad_inputs,
+        R_len_t str_length, R_len_t pad_length,
+        const int* width_values, R_len_t width_length,
+        bool use_length, int side, io::ParallelOutputBuilder& builder
+    ) noexcept
+        : str_inputs_(str_inputs), pad_inputs_(pad_inputs),
+          str_length_(str_length), pad_length_(pad_length),
+          width_values_(width_values), width_length_(width_length),
+          use_length_(use_length), side_(side), builder_(builder)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        // The scalar pad is validated once per worker, not once per chunk,
+        // so the memo stays outside the chunk loop.
+        const bool scalar_pad = pad_length_ == 1;
+        bool scalar_pad_validated = false;
+        while (context.next_chunk()) {
+            for (R_xlen_t task = context.begin; task < context.end; ++task) {
+                const R_len_t i = static_cast<R_len_t>(task);
+                const PadInput& str_current = str_inputs_[
+                    static_cast<std::size_t>(i % str_length_)
+                ];
+                const PadInput& pad_current = pad_inputs_[
+                    static_cast<std::size_t>(i % pad_length_)
+                ];
+                const int width_value = width_values_[i % width_length_];
+                if (str_current.missing || pad_current.missing ||
+                        width_value == NA_INTEGER) {
+                    builder_.set_na(context.worker, i);
+                    continue;
+                }
+
+                if (!scalar_pad || !scalar_pad_validated) {
+                    validate_pad(pad_current, use_length_);
+                    if (scalar_pad)
+                        scalar_pad_validated = true;
+                }
+
+                const R_len_t str_width = use_length_
+                    ? count_code_points(str_current)
+                    : ci__pad_width_string(str_current.ptr, str_current.len);
+                if (str_width >= width_value) {
+                    builder_.set(
+                        context.worker, i, str_current.ptr,
+                        static_cast<std::size_t>(str_current.len),
+                        str_current.ascii
+                            ? CETYPE_EXT_ASCII : CETYPE_EXT_UTF8
+                    );
+                    continue;
+                }
+
+                const R_len_t pad_count = width_value-str_width;
+                const std::size_t pad_bytes =
+                    static_cast<std::size_t>(pad_current.len);
+                if (pad_bytes > 0 && static_cast<std::size_t>(pad_count) >
+                        (static_cast<std::size_t>(R_LEN_T_MAX)-
+                            static_cast<std::size_t>(str_current.len))/
+                        pad_bytes) {
+                    throw std::length_error(
+                        "padded string exceeds R's string length limit"
+                    );
+                }
+                const std::size_t output_length =
+                    static_cast<std::size_t>(str_current.len)+
+                    static_cast<std::size_t>(pad_count)*pad_bytes;
+                char* output = builder_.reserve(
+                    context.worker, i, output_length,
+                    str_current.ascii && pad_current.ascii
+                        ? CETYPE_EXT_ASCII : CETYPE_EXT_UTF8
+                );
+
+                R_len_t left_count = 0;
+                switch (side_) {
+                case 0:
+                    left_count = pad_count;
+                    break;
+                case 1:
+                    break;
+                case 2:
+                    left_count = pad_count/2;
+                    break;
+                }
+                output = ci__pad_repeat(
+                    output, pad_current.ptr, pad_bytes, left_count
+                );
+                if (str_current.len > 0) {
+                    std::memcpy(
+                        output, str_current.ptr,
+                        static_cast<std::size_t>(str_current.len)
+                    );
+                    output += str_current.len;
+                }
+                (void)ci__pad_repeat(
+                    output, pad_current.ptr, pad_bytes,
+                    pad_count-left_count
+                );
+            }
+        }
+    }
+
+private:
+    const std::vector<PadInput>& str_inputs_;
+    const std::vector<PadInput>& pad_inputs_;
+    R_len_t str_length_;
+    R_len_t pad_length_;
+    const int* width_values_;
+    R_len_t width_length_;
+    bool use_length_;
+    int side_;
+    io::ParallelOutputBuilder& builder_;
+};
+
 } // namespace pad
 
 using namespace pad;
@@ -294,6 +416,7 @@ CHARR_ENTRYPOINT SEXP ci_pad(
 {
     CHARR_ENTRYPOINT_BEGIN();
 
+
     // this is an internal arg, check manually, error() allowed here
     if (!Rf_isInteger(side) || LENGTH(side) != 1)
         Rf_error(MSG__INCORRECT_INTERNAL_ARG);
@@ -323,6 +446,7 @@ CHARR_ENTRYPOINT SEXP ci_pad(
         charport::StrViews str_views;
         charport::StrViews pad_views;
         io::OutputBuilder builder(0);
+        io::ParallelOutputBuilder parallel_builder;
         shared::NativeToUtf8 str_converter;
         shared::NativeToUtf8 pad_converter;
         shared::SliceArena str_storage;
@@ -346,7 +470,11 @@ CHARR_ENTRYPOINT SEXP ci_pad(
                     str_length, width_length, pad_length,
                     recycling_warning
                 );
-                builder.reset(vectorize_length);
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, vectorize_length
+                );
+                if (plan.workers == 1)
+                    builder.reset(vectorize_length);
 
                 const int* width_values = vectorize_length > 0
                     ? INTEGER(width)
@@ -400,96 +528,110 @@ CHARR_ENTRYPOINT SEXP ci_pad(
                 const bool scalar_pad = pad_length == 1;
                 bool scalar_pad_validated = false;
 
-                for (R_len_t i = 0; i < vectorize_length; ++i) {
-                    const PadInput& str_current = str_inputs[
-                        static_cast<std::size_t>(i % str_length)
-                    ];
-                    const PadInput& pad_current = pad_inputs[
-                        static_cast<std::size_t>(i % pad_length)
-                    ];
-                    const int width_value = width_values[i % width_length];
-                    if (str_current.missing || pad_current.missing ||
-                            width_value == NA_INTEGER) {
-                        builder.set_na(i);
-                        continue;
-                    }
+                if (plan.workers > 1) {
+                    parallel_builder.reset(vectorize_length, plan.workers);
+                    Body body(
+                        str_inputs, pad_inputs, str_length, pad_length,
+                        width_values, width_length, use_length_val, _side,
+                        parallel_builder
+                    );
+                    shared::run_parallel(plan, vectorize_length, body);
+                    result = entry_protections.reprotect_one(
+                        parallel_builder.to_sexp(), result_index
+                    );
+                }
+                else {
+                    for (R_len_t i = 0; i < vectorize_length; ++i) {
+                        const PadInput& str_current = str_inputs[
+                            static_cast<std::size_t>(i % str_length)
+                        ];
+                        const PadInput& pad_current = pad_inputs[
+                            static_cast<std::size_t>(i % pad_length)
+                        ];
+                        const int width_value = width_values[i % width_length];
+                        if (str_current.missing || pad_current.missing ||
+                                width_value == NA_INTEGER) {
+                            builder.set_na(i);
+                            continue;
+                        }
 
-                    if (!scalar_pad || !scalar_pad_validated) {
-                        validate_pad(pad_current, use_length_val);
-                        if (scalar_pad)
-                            scalar_pad_validated = true;
-                    }
+                        if (!scalar_pad || !scalar_pad_validated) {
+                            validate_pad(pad_current, use_length_val);
+                            if (scalar_pad)
+                                scalar_pad_validated = true;
+                        }
 
-                    const R_len_t str_width = use_length_val
-                        ? count_code_points(str_current)
-                        : ci__pad_width_string(
-                            str_current.ptr, str_current.len
-                        );
-                    if (str_width >= width_value) {
-                        builder.set(
-                            i, str_current.ptr,
-                            static_cast<std::size_t>(str_current.len),
-                            str_current.ascii
+                        const R_len_t str_width = use_length_val
+                            ? count_code_points(str_current)
+                            : ci__pad_width_string(
+                                str_current.ptr, str_current.len
+                            );
+                        if (str_width >= width_value) {
+                            builder.set(
+                                i, str_current.ptr,
+                                static_cast<std::size_t>(str_current.len),
+                                str_current.ascii
+                                    ? CETYPE_EXT_ASCII
+                                    : CETYPE_EXT_UTF8
+                            );
+                            continue;
+                        }
+
+                        const R_len_t pad_count = width_value - str_width;
+                        const std::size_t pad_bytes =
+                            static_cast<std::size_t>(pad_current.len);
+                        if (pad_bytes > 0 &&
+                                static_cast<std::size_t>(pad_count) >
+                                (static_cast<std::size_t>(R_LEN_T_MAX) -
+                                    static_cast<std::size_t>(str_current.len)) /
+                                    pad_bytes) {
+                            throw std::length_error(
+                                "padded string exceeds R's string length limit"
+                            );
+                        }
+                        const std::size_t output_length =
+                            static_cast<std::size_t>(str_current.len) +
+                            static_cast<std::size_t>(pad_count) * pad_bytes;
+                        char* output = builder.reserve(
+                            i, output_length,
+                            str_current.ascii && pad_current.ascii
                                 ? CETYPE_EXT_ASCII
                                 : CETYPE_EXT_UTF8
                         );
-                        continue;
-                    }
 
-                    const R_len_t pad_count = width_value - str_width;
-                    const std::size_t pad_bytes =
-                        static_cast<std::size_t>(pad_current.len);
-                    if (pad_bytes > 0 &&
-                            static_cast<std::size_t>(pad_count) >
-                            (static_cast<std::size_t>(R_LEN_T_MAX) -
-                                static_cast<std::size_t>(str_current.len)) /
-                                pad_bytes) {
-                        throw std::length_error(
-                            "padded string exceeds R's string length limit"
+                        R_len_t left_count = 0;
+                        switch (_side) {
+                        case 0: // left
+                            left_count = pad_count;
+                            break;
+                        case 1: // right
+                            break;
+                        case 2: // both
+                            left_count = pad_count / 2;
+                            break;
+                        }
+
+                        output = ci__pad_repeat(
+                            output, pad_current.ptr, pad_bytes,
+                            left_count
+                        );
+                        if (str_current.len > 0) {
+                            std::memcpy(
+                                output, str_current.ptr,
+                                static_cast<std::size_t>(str_current.len)
+                            );
+                            output += str_current.len;
+                        }
+                        ci__pad_repeat(
+                            output, pad_current.ptr, pad_bytes,
+                            pad_count - left_count
                         );
                     }
-                    const std::size_t output_length =
-                        static_cast<std::size_t>(str_current.len) +
-                        static_cast<std::size_t>(pad_count) * pad_bytes;
-                    char* output = builder.reserve(
-                        i, output_length,
-                        str_current.ascii && pad_current.ascii
-                            ? CETYPE_EXT_ASCII
-                            : CETYPE_EXT_UTF8
-                    );
 
-                    R_len_t left_count = 0;
-                    switch (_side) {
-                    case 0: // left
-                        left_count = pad_count;
-                        break;
-                    case 1: // right
-                        break;
-                    case 2: // both
-                        left_count = pad_count / 2;
-                        break;
-                    }
-
-                    output = ci__pad_repeat(
-                        output, pad_current.ptr, pad_bytes,
-                        left_count
-                    );
-                    if (str_current.len > 0) {
-                        std::memcpy(
-                            output, str_current.ptr,
-                            static_cast<std::size_t>(str_current.len)
-                        );
-                        output += str_current.len;
-                    }
-                    ci__pad_repeat(
-                        output, pad_current.ptr, pad_bytes,
-                        pad_count - left_count
+                    result = entry_protections.reprotect_one(
+                        builder.to_sexp(), result_index
                     );
                 }
-
-                result = entry_protections.reprotect_one(
-                    builder.to_sexp(), result_index
-                );
                 CHARR_UNWIND_RETURN();
             }
         );

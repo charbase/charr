@@ -78,7 +78,8 @@
   "C_ci_pad",
   "C_ci_width",
   "C_ci_escape_unicode",
-  "C_ci_encode",
+  "C_ci_encode_string",
+  "C_ci_encode_raw",
   "C_ci_read_lines",
   "C_ci_split_lines",
   "C_ci_replace_all_charclass",
@@ -94,6 +95,9 @@
   ),
   .charr_base_native_aliases
 )
+.charr_base_native_aliases[c(
+  "C_ci_encode_string", "C_ci_encode_raw"
+)] <- "C_charr_base_ci_encode"
 
 .charr_base_wrapper_roots <- unique(unname(.charr_leaf_map))
 .charr_base_wrapper_graph <- c(

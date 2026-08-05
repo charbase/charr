@@ -31,6 +31,7 @@
  */
 
 #include "io/reader_utils.h"
+#include "ci_parallel.h"
 #include "ci_stringi.h"
 #include "io/string_view.h"
 #include "io/utf8_output.h"
@@ -341,6 +342,274 @@ CHARR_CXX_HELPER void set_match_cell(
 }
 
 
+CHARR_CXX_HELPER void set_match_cell_parallel(
+    io::ParallelOutputBuilder& output, unsigned worker, R_xlen_t index,
+    const shared::StringView& subject, const shared::RegexRange& range,
+    const charport::StrView& capture_missing
+)
+{
+    if (range.start == NA_INTEGER || range.end == NA_INTEGER) {
+        output.set_na(worker, index);
+        return;
+    }
+    if (range.start < 0 || range.end < 0) {
+        output.set_validated(worker, index, capture_missing);
+        return;
+    }
+    output.set_validated(worker, index, matched_view(subject, range));
+}
+
+
+class ScalarFirstBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER ScalarFirstBody(
+        const std::vector<shared::StringView>& subjects,
+        const shared::RegexPatterns& patterns,
+        const shared::RegexOptions& options, R_len_t rows,
+        R_len_t columns, const charport::StrView& capture_missing,
+        io::ParallelOutputBuilder& output
+    ) noexcept
+        : subjects_(subjects), patterns_(patterns), options_(options),
+          rows_(rows), columns_(columns), capture_missing_(capture_missing),
+          output_(output)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        const shared::RegexInput pattern = patterns_.get(0);
+        const bool usable = !pattern.missing && pattern.length > 0;
+        shared::RegexMatcher matcher(options_);
+        if (usable)
+            bind_pattern(matcher, pattern, patterns_, 0);
+        shared::RegexRange match{0, 0};
+        std::vector<shared::RegexRange> captures;
+        while (context.next_chunk()) {
+            for (R_xlen_t task = context.begin; task < context.end; ++task) {
+                const R_len_t row = static_cast<R_len_t>(task);
+                for (R_len_t column = 0; column < columns_; ++column) {
+                    output_.set_na(
+                        context.worker,
+                        row+static_cast<R_xlen_t>(column)*rows_
+                    );
+                }
+                const shared::StringView& subject = subjects_[
+                    static_cast<std::size_t>(row)
+                ];
+                if (!usable || subject.is_na())
+                    continue;
+                const bool found = find_first(
+                    matcher, subject, &subject, patterns_, 0, match, captures
+                );
+                if (!found) {
+                    const shared::RegexRange absent{-1, -1};
+                    for (R_len_t column = 0; column < columns_; ++column) {
+                        set_match_cell_parallel(
+                            output_, context.worker,
+                            row+static_cast<R_xlen_t>(column)*rows_,
+                            subject, absent, capture_missing_
+                        );
+                    }
+                    continue;
+                }
+                set_match_cell_parallel(
+                    output_, context.worker, row, subject,
+                    match, capture_missing_
+                );
+                for (R_len_t column = 1; column < columns_; ++column) {
+                    set_match_cell_parallel(
+                        output_, context.worker,
+                        row+static_cast<R_xlen_t>(column)*rows_, subject,
+                        captures[static_cast<std::size_t>(column-1)],
+                        capture_missing_
+                    );
+                }
+            }
+        }
+    }
+
+private:
+    const std::vector<shared::StringView>& subjects_;
+    const shared::RegexPatterns& patterns_;
+    shared::RegexOptions options_;
+    R_len_t rows_;
+    R_len_t columns_;
+    charport::StrView capture_missing_;
+    io::ParallelOutputBuilder& output_;
+};
+
+
+class StageFirstBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER StageFirstBody(
+        const std::vector<shared::StringView>& subjects,
+        const shared::RegexPatterns& patterns,
+        const shared::RegexOptions& options, R_len_t rows,
+        std::vector<shared::RegexRange>& matches,
+        std::vector<std::vector<shared::RegexRange> >& captures,
+        std::vector<int>& warning_slots,
+        std::vector<int>& failures
+    ) noexcept
+        : subjects_(subjects), patterns_(patterns), options_(options),
+          rows_(rows), matches_(matches), captures_(captures),
+          warning_slots_(warning_slots), failures_(failures)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        try {
+            run_unchecked(context);
+        }
+        catch (...) {
+            failures_[context.worker] = 1;
+            throw;
+        }
+    }
+
+private:
+    CHARR_CXX_HELPER void run_unchecked(
+        shared::WorkerContext& context
+    )
+    {
+        const R_len_t subject_length =
+            static_cast<R_len_t>(subjects_.size());
+        const R_len_t pattern_length =
+            static_cast<R_len_t>(patterns_.size());
+        shared::RegexMatcher matcher(options_);
+        shared::RegexRange match{0, 0};
+        std::vector<shared::RegexRange> current_captures;
+        while (context.next_chunk()) {
+            for (R_xlen_t task = context.begin; task < context.end; ++task) {
+                const R_len_t lane = static_cast<R_len_t>(task);
+                const std::size_t pattern_index =
+                    static_cast<std::size_t>(lane);
+                const shared::RegexInput pattern =
+                    patterns_.get(pattern_index);
+                if (pattern.missing)
+                    continue;
+                if (pattern.length <= 0) {
+                    for (R_len_t i = lane; i < rows_; i += pattern_length)
+                        ++warning_slots_[context.worker];
+                    continue;
+                }
+                bind_pattern(matcher, pattern, patterns_, pattern_index);
+                const std::size_t group_count = static_cast<std::size_t>(
+                    matcher.group_count()
+                );
+                for (R_len_t i = lane; i < rows_; i += pattern_length) {
+                    std::vector<shared::RegexRange>& row_captures = captures_[
+                        static_cast<std::size_t>(i)
+                    ];
+                    row_captures.assign(
+                        group_count,
+                        shared::RegexRange{NA_INTEGER, NA_INTEGER}
+                    );
+                    const std::size_t subject_index =
+                        static_cast<std::size_t>(i % subject_length);
+                    const shared::StringView& subject =
+                        subjects_[subject_index];
+                    if (subject.is_na())
+                        continue;
+                    const bool found = find_first(
+                        matcher, subject, &subjects_[subject_index],
+                        patterns_, pattern_index, match, current_captures
+                    );
+                    if (!found) {
+                        matches_[static_cast<std::size_t>(i)] =
+                            shared::RegexRange{-1, -1};
+                        for (std::size_t column = 0;
+                                column < group_count; ++column) {
+                            row_captures[column] =
+                                shared::RegexRange{-1, -1};
+                        }
+                    }
+                    else {
+                        matches_[static_cast<std::size_t>(i)] = match;
+                        row_captures = current_captures;
+                    }
+                }
+            }
+        }
+    }
+
+    const std::vector<shared::StringView>& subjects_;
+    const shared::RegexPatterns& patterns_;
+    shared::RegexOptions options_;
+    R_len_t rows_;
+    std::vector<shared::RegexRange>& matches_;
+    std::vector<std::vector<shared::RegexRange> >& captures_;
+    std::vector<int>& warning_slots_;
+    std::vector<int>& failures_;
+};
+
+
+class FillFirstBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER FillFirstBody(
+        const std::vector<shared::StringView>& subjects,
+        R_len_t subject_length, R_len_t rows, R_len_t columns,
+        const std::vector<shared::RegexRange>& matches,
+        const std::vector<std::vector<shared::RegexRange> >& captures,
+        const charport::StrView& capture_missing,
+        io::ParallelOutputBuilder& output
+    ) noexcept
+        : subjects_(subjects), subject_length_(subject_length),
+          rows_(rows), columns_(columns), matches_(matches),
+          captures_(captures), capture_missing_(capture_missing),
+          output_(output)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        while (context.next_chunk()) {
+            for (R_xlen_t task = context.begin; task < context.end; ++task) {
+                const R_len_t row = static_cast<R_len_t>(task);
+                const shared::StringView& subject = subjects_[
+                    static_cast<std::size_t>(row % subject_length_)
+                ];
+                set_match_cell_parallel(
+                    output_, context.worker, row, subject,
+                    matches_[static_cast<std::size_t>(row)], capture_missing_
+                );
+                const std::vector<shared::RegexRange>& row_captures =
+                    captures_[static_cast<std::size_t>(row)];
+                for (R_len_t column = 1; column < columns_; ++column) {
+                    const std::size_t capture =
+                        static_cast<std::size_t>(column-1);
+                    const shared::RegexRange range =
+                        capture < row_captures.size()
+                            ? row_captures[capture]
+                            : shared::RegexRange{NA_INTEGER, NA_INTEGER};
+                    set_match_cell_parallel(
+                        output_, context.worker,
+                        row+static_cast<R_xlen_t>(column)*rows_,
+                        subject, range, capture_missing_
+                    );
+                }
+            }
+        }
+    }
+
+private:
+    const std::vector<shared::StringView>& subjects_;
+    R_len_t subject_length_;
+    R_len_t rows_;
+    R_len_t columns_;
+    const std::vector<shared::RegexRange>& matches_;
+    const std::vector<std::vector<shared::RegexRange> >& captures_;
+    charport::StrView capture_missing_;
+    io::ParallelOutputBuilder& output_;
+};
+
+
 CHARR_CXX_HELPER void fill_staged_first(
     io::OutputBuilder& output,
     R_len_t rows,
@@ -408,6 +677,239 @@ CHARR_CXX_HELPER void build_all_matches(
 }
 
 
+class CHARR_OWNER_TYPE AllCaptureNames {
+public:
+    CHARR_CXX_HELPER AllCaptureNames() noexcept
+        : rows_(nullptr) {}
+
+    CHARR_CXX_HELPER ~AllCaptureNames() noexcept
+    {
+        delete[] rows_;
+    }
+
+    AllCaptureNames(const AllCaptureNames&) = delete;
+    AllCaptureNames& operator=(const AllCaptureNames&) = delete;
+    AllCaptureNames(AllCaptureNames&&) = delete;
+    AllCaptureNames& operator=(AllCaptureNames&&) = delete;
+
+    CHARR_CXX_HELPER void reset(std::size_t size)
+    {
+        std::vector<std::string>* replacement = size == 0
+            ? nullptr : new std::vector<std::string>[size];
+        delete[] rows_;
+        rows_ = replacement;
+    }
+
+    CHARR_NEUTRAL_HELPER std::vector<std::string>& at(
+        std::size_t index
+    ) noexcept
+    {
+        return rows_[index];
+    }
+
+    CHARR_NEUTRAL_HELPER const std::vector<std::string>& at(
+        std::size_t index
+    ) const noexcept
+    {
+        return rows_[index];
+    }
+
+private:
+    std::vector<std::string>* rows_;
+};
+
+
+class AllMatchBody final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER AllMatchBody(
+        const std::vector<shared::StringView>& subjects,
+        const shared::RegexPatterns& patterns,
+        const shared::RegexOptions& options,
+        R_len_t subject_length,
+        R_len_t pattern_length,
+        R_len_t vectorize_length,
+        bool omit,
+        const charport::StrView& capture_missing,
+        std::vector<io::OutputStore>& stores,
+        std::vector<int>& row_counts,
+        std::vector<int>& column_counts,
+        AllCaptureNames& capture_names,
+        std::vector<int>& warning_slots,
+        std::vector<int>& failures
+    ) noexcept
+        : subjects_(subjects), patterns_(patterns), options_(options),
+          subject_length_(subject_length), pattern_length_(pattern_length),
+          vectorize_length_(vectorize_length), omit_(omit),
+          capture_missing_(capture_missing), stores_(stores),
+          row_counts_(row_counts), column_counts_(column_counts),
+          capture_names_(capture_names), warning_slots_(warning_slots),
+          failures_(failures)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        try {
+            run_unchecked(context);
+        }
+        catch (...) {
+            failures_[context.worker] = 1;
+            throw;
+        }
+    }
+
+private:
+    // What binding one pattern into the matcher established. Held across the
+    // elements that pattern covers so the bind is not repeated.
+    struct BoundPattern {
+        bool unusable;
+        bool empty;
+        int group_count;
+    };
+
+    CHARR_CXX_HELPER void run_unchecked(
+        shared::WorkerContext& context
+    )
+    {
+        shared::RegexMatcher matcher(options_);
+        std::vector<shared::RegexRange> matches;
+        std::vector<std::vector<shared::RegexRange> > captures;
+        io::OutputBuilder builder(0);
+        matches.reserve(8);
+
+        // One pattern for the whole vector: compile it once for this worker,
+        // then let the worker draw element chunks against the bound matcher.
+        if (pattern_length_ == 1) {
+            const BoundPattern bound =
+                bind_for_pattern(0, context.worker, matcher);
+            while (context.next_chunk()) {
+                const R_len_t begin = static_cast<R_len_t>(context.begin);
+                const R_len_t end = static_cast<R_len_t>(context.end);
+                for (R_len_t i = begin; i < end; ++i) {
+                    stage_one(
+                        i, bound.unusable, bound.empty,
+                        bound.group_count, 0, context.worker,
+                        matcher, matches, captures, builder
+                    );
+                }
+            }
+            return;
+        }
+
+        // A task is a recycling lane, so the chunk cuts the lanes and each
+        // lane still strides the whole vector. The bind belongs to the lane,
+        // not to the chunk.
+        while (context.next_chunk()) {
+            const R_len_t begin = static_cast<R_len_t>(context.begin);
+            const R_len_t end = static_cast<R_len_t>(context.end);
+            for (R_len_t lane = begin; lane < end; ++lane) {
+                const std::size_t pattern_index =
+                    static_cast<std::size_t>(lane);
+                const BoundPattern bound = bind_for_pattern(
+                    pattern_index, static_cast<unsigned>(lane), matcher
+                );
+                for (R_len_t i = lane; i < vectorize_length_;
+                        i += pattern_length_) {
+                    stage_one(
+                        i, bound.unusable, bound.empty,
+                        bound.group_count, pattern_index, context.worker,
+                        matcher, matches, captures, builder
+                    );
+                }
+            }
+        }
+    }
+
+    CHARR_CXX_HELPER BoundPattern bind_for_pattern(
+        std::size_t pattern_index,
+        unsigned metadata_index,
+        shared::RegexMatcher& matcher
+    )
+    {
+        const shared::RegexInput pattern = patterns_.get(pattern_index);
+        BoundPattern bound;
+        bound.empty = !pattern.missing && pattern.length <= 0;
+        bound.unusable = pattern.missing || bound.empty;
+        bound.group_count = 0;
+
+        if (!bound.unusable) {
+            bind_pattern(matcher, pattern, patterns_, pattern_index);
+            bound.group_count = matcher.group_count();
+            read_capture_names(
+                matcher, patterns_, pattern_index,
+                capture_names_.at(metadata_index)
+            );
+        }
+        return bound;
+    }
+
+    CHARR_CXX_HELPER void stage_one(
+        R_len_t i,
+        bool pattern_unusable,
+        bool pattern_empty,
+        int group_count,
+        std::size_t pattern_index,
+        unsigned warning_index,
+        shared::RegexMatcher& matcher,
+        std::vector<shared::RegexRange>& matches,
+        std::vector<std::vector<shared::RegexRange> >& captures,
+        io::OutputBuilder& builder
+    )
+    {
+        R_len_t rows = 1;
+        R_len_t columns = 1;
+        if (pattern_unusable) {
+            if (pattern_empty)
+                ++warning_slots_[warning_index];
+            builder.reset(1);
+            builder.set_na(0);
+        }
+        else {
+            columns = group_count+1;
+            const std::size_t subject_index =
+                static_cast<std::size_t>(i % subject_length_);
+            const shared::StringView& subject = subjects_[subject_index];
+            if (subject.is_na()) {
+                const R_xlen_t size = matrix_size(1, columns);
+                builder.reset(size);
+                fill_na(builder, size);
+            }
+            else {
+                find_all(
+                    matcher, subject, &subjects_[subject_index],
+                    patterns_, pattern_index, matches, captures
+                );
+                build_all_matches(
+                    builder, subject, matches, captures,
+                    omit_, capture_missing_, rows, columns
+                );
+            }
+        }
+
+        stores_[static_cast<std::size_t>(i)] = builder.release_store();
+        row_counts_[static_cast<std::size_t>(i)] = rows;
+        column_counts_[static_cast<std::size_t>(i)] = columns;
+    }
+
+    const std::vector<shared::StringView>& subjects_;
+    const shared::RegexPatterns& patterns_;
+    shared::RegexOptions options_;
+    R_len_t subject_length_;
+    R_len_t pattern_length_;
+    R_len_t vectorize_length_;
+    bool omit_;
+    charport::StrView capture_missing_;
+    std::vector<io::OutputStore>& stores_;
+    std::vector<int>& row_counts_;
+    std::vector<int>& column_counts_;
+    AllCaptureNames& capture_names_;
+    std::vector<int>& warning_slots_;
+    std::vector<int>& failures_;
+};
+
+
 CHARR_R_HELPER SEXP capture_dimnames_r(
     const std::vector<std::string>& names
 ) noexcept
@@ -470,6 +972,7 @@ CHARR_ENTRYPOINT SEXP ci_match_first_regex(
 {
     CHARR_ENTRYPOINT_BEGIN();
 
+
     str = entry_protections.protect_one(
         ci__prepare_arg_string_r(str, "str")
     );
@@ -495,10 +998,15 @@ CHARR_ENTRYPOINT SEXP ci_match_first_regex(
     if (recycling_warning)
         Rf_warning(MSG__WARN_RECYCLING_RULE);
     const shared::RegexOptions options = regex::prepare_options(opts_regex);
+    const R_len_t tasks = vectorize_length == 0
+        ? 0 : pattern_length == 1
+            ? vectorize_length : pattern_length;
+    const shared::ParallelPlan plan = shared::parallel_plan(true, tasks);
 
 
     int empty_pattern_warnings = 0;
     R_len_t result_columns = 1;
+    bool parallel_result = false;
 
     try {
         charport::Reader subject_reader;
@@ -520,8 +1028,12 @@ CHARR_ENTRYPOINT SEXP ci_match_first_regex(
         std::vector<shared::RegexRange> current_captures;
         std::vector<shared::RegexRange> staged_matches;
         std::vector<std::vector<shared::RegexRange> > staged_captures;
+        std::vector<std::vector<shared::RegexRange> > row_captures;
         std::vector<std::string> capture_names;
+        std::vector<int> worker_empty_pattern_warnings;
+        std::vector<int> worker_failures;
         io::OutputBuilder output(0);
+        io::ParallelOutputBuilder parallel_output;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -613,9 +1125,24 @@ CHARR_ENTRYPOINT SEXP ci_match_first_regex(
                     const R_xlen_t size = matrix_size(
                         vectorize_length, result_columns
                     );
-                    output.reset(size);
-                    fill_na(output, size);
-                    if (!current_pattern.missing && !pattern_empty) {
+                    if (plan.workers > 1) {
+                        parallel_output.reset(size, plan.workers);
+                        ScalarFirstBody body(
+                            subjects, patterns, options,
+                            vectorize_length, result_columns,
+                            capture_missing, parallel_output
+                        );
+                        shared::run_parallel(
+                            plan, vectorize_length, body
+                        );
+                        parallel_result = true;
+                    }
+                    else {
+                        output.reset(size);
+                        fill_na(output, size);
+                    }
+                    if (plan.workers == 1 &&
+                            !current_pattern.missing && !pattern_empty) {
                         for (R_len_t i = 0; i < vectorize_length; ++i) {
                             const shared::StringView& subject = subjects[
                                 static_cast<std::size_t>(i)
@@ -669,7 +1196,47 @@ CHARR_ENTRYPOINT SEXP ci_match_first_regex(
                         shared::RegexRange{NA_INTEGER, NA_INTEGER}
                     );
 
-                    for (R_len_t lane = 0; lane < pattern_length; ++lane) {
+                    if (plan.workers > 1) {
+                        row_captures.resize(
+                            static_cast<std::size_t>(vectorize_length)
+                        );
+                        worker_empty_pattern_warnings.assign(
+                            plan.workers, 0
+                        );
+                        worker_failures.assign(plan.workers, 0);
+                        StageFirstBody body(
+                            subjects, patterns, options, vectorize_length,
+                            staged_matches, row_captures,
+                            worker_empty_pattern_warnings, worker_failures
+                        );
+                        try {
+                            shared::run_parallel(plan, pattern_length, body);
+                        }
+                        catch (...) {
+                            std::size_t limit = 0;
+                            while (limit < worker_failures.size() &&
+                                    worker_failures[limit] == 0) {
+                                ++limit;
+                            }
+                            if (limit < worker_failures.size())
+                                ++limit;
+                            for (std::size_t worker = 0;
+                                    worker < limit; ++worker) {
+                                empty_pattern_warnings +=
+                                    worker_empty_pattern_warnings[worker];
+                            }
+                            throw;
+                        }
+                        for (std::size_t worker = 0;
+                                worker < worker_empty_pattern_warnings.size();
+                                ++worker) {
+                            empty_pattern_warnings +=
+                                worker_empty_pattern_warnings[worker];
+                        }
+                    }
+
+                    if (plan.workers == 1) for (R_len_t lane = 0;
+                            lane < pattern_length; ++lane) {
                         const std::size_t pattern_index =
                             static_cast<std::size_t>(lane);
                         const shared::RegexInput current_pattern =
@@ -741,23 +1308,55 @@ CHARR_ENTRYPOINT SEXP ci_match_first_regex(
                         }
                     }
 
-                    result_columns = static_cast<R_len_t>(
-                        staged_captures.size()+1
-                    );
+                    if (plan.workers > 1) {
+                        std::size_t maximum_captures = 0;
+                        for (std::size_t i = 0;
+                                i < row_captures.size(); ++i) {
+                            if (row_captures[i].size() > maximum_captures)
+                                maximum_captures = row_captures[i].size();
+                        }
+                        result_columns = static_cast<R_len_t>(
+                            maximum_captures+1
+                        );
+                    }
+                    else {
+                        result_columns = static_cast<R_len_t>(
+                            staged_captures.size()+1
+                        );
+                    }
                     const R_xlen_t size = matrix_size(
                         vectorize_length, result_columns
                     );
-                    output.reset(size);
-                    fill_na(output, size);
-                    fill_staged_first(
-                        output, vectorize_length, subject_length,
-                        subjects, staged_matches, staged_captures,
-                        capture_missing
-                    );
+                    if (plan.workers > 1) {
+                        const shared::ParallelPlan fill_plan =
+                            shared::parallel_plan(true, vectorize_length);
+                        parallel_output.reset(size, fill_plan.workers);
+                        FillFirstBody body(
+                            subjects, subject_length, vectorize_length,
+                            result_columns, staged_matches, row_captures,
+                            capture_missing, parallel_output
+                        );
+                        shared::run_parallel(
+                            fill_plan, vectorize_length, body
+                        );
+                        parallel_result = true;
+                    }
+                    else {
+                        output.reset(size);
+                        fill_na(output, size);
+                        fill_staged_first(
+                            output, vectorize_length, subject_length,
+                            subjects, staged_matches, staged_captures,
+                            capture_missing
+                        );
+                    }
                 }
 
                 result = entry_protections.reprotect_one(
-                    output.to_sexp(), result_index
+                    parallel_result
+                        ? parallel_output.to_sexp()
+                        : output.to_sexp(),
+                    result_index
                 );
                 SEXP dimnames = R_NilValue;
                 PROTECT_INDEX dimnames_index;
@@ -845,6 +1444,12 @@ CHARR_ENTRYPOINT SEXP ci_match_all_regex(
         std::vector<std::vector<shared::RegexRange> > captures;
         std::vector<std::string> capture_names;
         io::OutputBuilder output(0);
+        std::vector<io::OutputStore> stores;
+        std::vector<int> row_counts;
+        std::vector<int> column_counts;
+        AllCaptureNames staged_capture_names;
+        std::vector<int> worker_empty_pattern_warnings;
+        std::vector<int> worker_failures;
 
         matches.reserve(8);
 
@@ -918,6 +1523,12 @@ CHARR_ENTRYPOINT SEXP ci_match_all_regex(
                         dimnames, &dimnames_index
                     );
 
+                    const R_len_t tasks = pattern_length == 1
+                        ? vectorize_length
+                        : pattern_length;
+                    const shared::ParallelPlan parallel_plan =
+                        shared::parallel_plan(true, tasks);
+                    if (parallel_plan.workers == 1) {
                     for (R_len_t lane = 0; lane < pattern_length; ++lane) {
                         const std::size_t pattern_index =
                             static_cast<std::size_t>(lane);
@@ -998,6 +1609,110 @@ CHARR_ENTRYPOINT SEXP ci_match_all_regex(
                                 current, rows, columns, dimnames
                             );
                             SET_VECTOR_ELT(result, i, current);
+                        }
+                    }
+                    }
+                    else {
+                        stores.reserve(
+                            static_cast<std::size_t>(vectorize_length)
+                        );
+                        for (R_len_t i = 0;
+                                i < vectorize_length; ++i) {
+                            stores.emplace_back(0, 0);
+                        }
+                        row_counts.resize(
+                            static_cast<std::size_t>(vectorize_length)
+                        );
+                        column_counts.resize(
+                            static_cast<std::size_t>(vectorize_length)
+                        );
+                        const std::size_t metadata_count =
+                            pattern_length == 1
+                                ? static_cast<std::size_t>(
+                                    parallel_plan.workers
+                                )
+                                : static_cast<std::size_t>(pattern_length);
+                        staged_capture_names.reset(metadata_count);
+                        worker_empty_pattern_warnings.assign(
+                            static_cast<std::size_t>(
+                                parallel_plan.workers
+                            ),
+                            0
+                        );
+                        worker_failures.assign(
+                            static_cast<std::size_t>(
+                                parallel_plan.workers
+                            ),
+                            0
+                        );
+                        AllMatchBody body(
+                            subjects, patterns, options,
+                            subject_length, pattern_length,
+                            vectorize_length, omit, capture_missing,
+                            stores, row_counts, column_counts,
+                            staged_capture_names,
+                            worker_empty_pattern_warnings,
+                            worker_failures
+                        );
+                        try {
+                            shared::run_parallel(
+                                parallel_plan, tasks, body
+                            );
+                        }
+                        catch (...) {
+                            std::size_t limit = 0;
+                            while (limit < worker_failures.size() &&
+                                    worker_failures[limit] == 0) {
+                                ++limit;
+                            }
+                            if (limit < worker_failures.size())
+                                ++limit;
+                            for (std::size_t i = 0; i < limit; ++i) {
+                                empty_pattern_warnings +=
+                                    worker_empty_pattern_warnings[i];
+                            }
+                            throw;
+                        }
+                        for (std::size_t i = 0;
+                                i < worker_empty_pattern_warnings.size();
+                                ++i) {
+                            empty_pattern_warnings +=
+                                worker_empty_pattern_warnings[i];
+                        }
+
+                        for (R_len_t lane = 0;
+                                lane < pattern_length; ++lane) {
+                            const std::size_t metadata_index =
+                                pattern_length == 1
+                                    ? 0
+                                    : static_cast<std::size_t>(lane);
+                            dimnames = callback_protections.reprotect_slot(
+                                capture_dimnames_r(
+                                    staged_capture_names.at(metadata_index)
+                                ),
+                                dimnames_index
+                            );
+                            for (R_len_t i = lane;
+                                    i < vectorize_length;
+                                    i += pattern_length) {
+                                current = callback_protections.reprotect_slot(
+                                    io::finalize(std::move(stores[
+                                        static_cast<std::size_t>(i)
+                                    ])),
+                                    current_index
+                                );
+                                set_matrix_attributes_r(
+                                    current,
+                                    row_counts[
+                                        static_cast<std::size_t>(i)
+                                    ],
+                                    column_counts[
+                                        static_cast<std::size_t>(i)
+                                    ],
+                                    dimnames
+                                );
+                                SET_VECTOR_ELT(result, i, current);
+                            }
                         }
                     }
                 }

@@ -32,6 +32,7 @@
 
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "fixed/options.h"
 #include "io/string_view.h"
@@ -206,6 +207,279 @@ CHARR_CXX_HELPER void set_matched_store(
 }
 
 
+class CHARR_OWNER_TYPE FixedExtractPlans {
+public:
+    CHARR_CXX_HELPER FixedExtractPlans() noexcept
+        : plans_(nullptr) {}
+
+    CHARR_CXX_HELPER ~FixedExtractPlans() noexcept
+    {
+        delete[] plans_;
+    }
+
+    FixedExtractPlans(const FixedExtractPlans&) = delete;
+    FixedExtractPlans& operator=(const FixedExtractPlans&) = delete;
+    FixedExtractPlans(FixedExtractPlans&&) = delete;
+    FixedExtractPlans& operator=(FixedExtractPlans&&) = delete;
+
+    CHARR_CXX_HELPER void reset(std::size_t size)
+    {
+        shared::FixedExtractPlan* replacement = size == 0
+            ? nullptr
+            : new shared::FixedExtractPlan[size];
+        delete[] plans_;
+        plans_ = replacement;
+    }
+
+    CHARR_NEUTRAL_HELPER shared::FixedExtractPlan* data() noexcept
+    {
+        return plans_;
+    }
+
+private:
+    shared::FixedExtractPlan* plans_;
+};
+
+
+/*
+ * One run of output rows a worker planned from a single claimed chunk. A
+ * worker draws chunks from a shared cursor rather than holding one contiguous
+ * slice, so the runs it accumulates are ascending but not adjacent, and each
+ * has to carry the output index its rows belong at.
+ */
+struct PlanSegment {
+    R_len_t begin;
+    int count;
+};
+
+
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const std::vector<shared::StringView>& subjects,
+        const std::vector<shared::StringView>& patterns,
+        shared::FixedSearchOptions options,
+        bool omit_no_match,
+        shared::FixedExtractPlan* plans,
+        std::vector<std::vector<PlanSegment> >& segments
+    ) noexcept
+        : subjects_(subjects), patterns_(patterns), options_(options),
+          omit_no_match_(omit_no_match), plans_(plans),
+          segments_(segments)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        // The matcher, the range scratch, and the chunk plan the planner
+        // refills on every claim are all built once per worker. The worker's
+        // own plan accumulates the chunks it draws, because
+        // plan_fixed_extract clears the plan it writes into.
+        shared::FixedMatcher matcher;
+        std::vector<shared::FixedRange> scratch;
+        scratch.reserve(16);
+        shared::FixedExtractPlan chunk;
+        shared::FixedExtractPlan& plan = plans_[context.worker];
+        std::vector<PlanSegment>& segments = segments_[context.worker];
+
+        while (context.next_chunk()) {
+            shared::plan_fixed_extract(
+                subjects_, patterns_,
+                static_cast<int>(context.begin),
+                static_cast<int>(context.end),
+                options_, omit_no_match_, matcher, scratch, chunk
+            );
+            append_chunk(chunk, plan);
+            segments.push_back(PlanSegment{
+                static_cast<R_len_t>(context.begin),
+                static_cast<int>(context.end-context.begin)
+            });
+        }
+    }
+
+private:
+    /*
+     * Copy one chunk's rows onto the end of the worker's plan. A row's match
+     * index is relative to the plan it was written into, so it shifts by what
+     * the worker has already accumulated -- the same arithmetic merge_plans
+     * applies once more when it concatenates the workers.
+     */
+    CHARR_CXX_HELPER static void append_chunk(
+        const shared::FixedExtractPlan& chunk,
+        shared::FixedExtractPlan& plan
+    )
+    {
+        // Both appends grow the plan geometrically. Reserving the exact size
+        // a chunk needs would reallocate on every claim, and a worker claims
+        // many.
+        const std::size_t match_offset = plan.matches.size();
+        if (!chunk.matches_are_patterns) {
+            if (chunk.matches.size() >
+                    std::numeric_limits<std::size_t>::max()-match_offset) {
+                throw std::length_error(
+                    "fixed extraction result is too large"
+                );
+            }
+            plan.matches.insert(
+                plan.matches.end(),
+                chunk.matches.begin(), chunk.matches.end()
+            );
+        }
+
+        for (std::size_t i = 0; i < chunk.rows.size(); ++i) {
+            shared::FixedExtractRow row = chunk.rows[i];
+            if (!chunk.matches_are_patterns)
+                row.begin += match_offset;
+            plan.rows.push_back(row);
+        }
+
+        if (plan.max_columns < chunk.max_columns)
+            plan.max_columns = chunk.max_columns;
+        plan.matches_are_patterns = chunk.matches_are_patterns;
+    }
+
+    const std::vector<shared::StringView>& subjects_;
+    const std::vector<shared::StringView>& patterns_;
+    shared::FixedSearchOptions options_;
+    bool omit_no_match_;
+    shared::FixedExtractPlan* plans_;
+    std::vector<std::vector<PlanSegment> >& segments_;
+};
+
+
+CHARR_CXX_HELPER void merge_plans(
+    shared::FixedExtractPlan* sources,
+    unsigned source_count,
+    const std::vector<std::vector<PlanSegment> >& segments,
+    std::size_t pattern_count,
+    R_len_t output_length,
+    bool matches_are_patterns,
+    shared::FixedExtractPlan& output
+)
+{
+    output.rows.clear();
+    output.matches.clear();
+    output.max_columns = 0;
+    output.matches_are_patterns = matches_are_patterns;
+    output.rows.resize(static_cast<std::size_t>(output_length));
+
+    const std::size_t expected_rows =
+        static_cast<std::size_t>(output_length);
+    std::size_t merged_rows = 0;
+    for (unsigned source_index = 0;
+            source_index < source_count; ++source_index) {
+        shared::FixedExtractPlan& source = sources[source_index];
+        const std::vector<PlanSegment>& runs = segments[source_index];
+        // A worker that never drew a chunk holds a plan nothing wrote to,
+        // down to the mode flag, so there is nothing to check or copy.
+        if (runs.empty())
+            continue;
+        if (source.matches_are_patterns != matches_are_patterns) {
+            throw std::logic_error(
+                "inconsistent fixed extraction plan mode"
+            );
+        }
+
+        const std::size_t match_offset = output.matches.size();
+        if (!matches_are_patterns) {
+            if (source.matches.size() >
+                    std::numeric_limits<std::size_t>::max()-match_offset) {
+                throw std::length_error(
+                    "fixed extraction result is too large"
+                );
+            }
+            output.matches.reserve(
+                match_offset+source.matches.size()
+            );
+            for (std::size_t i = 0;
+                    i < source.matches.size(); ++i) {
+                output.matches.push_back(source.matches[i]);
+            }
+        }
+
+        // The worker's rows are its runs concatenated in claim order, so
+        // walking the runs in that order consumes them exactly once and
+        // lands each one at the output index it was planned for.
+        std::size_t consumed = 0;
+        for (std::size_t run = 0; run < runs.size(); ++run) {
+            const PlanSegment& segment = runs[run];
+            if (segment.begin < 0 || segment.count < 0) {
+                throw std::logic_error(
+                    "invalid fixed extraction chunk size"
+                );
+            }
+            const std::size_t row_offset =
+                static_cast<std::size_t>(segment.begin);
+            const std::size_t row_count =
+                static_cast<std::size_t>(segment.count);
+            if (row_offset > expected_rows ||
+                    row_count > expected_rows-row_offset) {
+                throw std::length_error(
+                    "fixed extraction row merge is too large"
+                );
+            }
+            if (row_count > source.rows.size()-consumed) {
+                throw std::logic_error(
+                    "incomplete fixed extraction row merge"
+                );
+            }
+
+            for (std::size_t i = 0; i < row_count; ++i) {
+                shared::FixedExtractRow row = source.rows[consumed+i];
+                if (row.count < 0) {
+                    throw std::logic_error(
+                        "invalid fixed extraction row count"
+                    );
+                }
+                if (matches_are_patterns) {
+                    if (row.begin >= pattern_count) {
+                        throw std::logic_error(
+                            "invalid fixed extraction pattern row"
+                        );
+                    }
+                }
+                else {
+                    const std::size_t count =
+                        static_cast<std::size_t>(row.count);
+                    if (row.begin > source.matches.size() ||
+                            count > source.matches.size()-row.begin) {
+                        throw std::logic_error(
+                            "invalid fixed extraction match row"
+                        );
+                    }
+                    if (row.begin >
+                            std::numeric_limits<std::size_t>::max()-
+                                match_offset) {
+                        throw std::length_error(
+                            "fixed extraction result is too large"
+                        );
+                    }
+                    row.begin += match_offset;
+                }
+                output.rows[row_offset+i] = row;
+            }
+            consumed += row_count;
+            merged_rows += row_count;
+        }
+        if (consumed != source.rows.size()) {
+            throw std::logic_error(
+                "incomplete fixed extraction row merge"
+            );
+        }
+        if (output.max_columns < source.max_columns)
+            output.max_columns = source.max_columns;
+    }
+
+    if (merged_rows != expected_rows) {
+        throw std::logic_error(
+            "incomplete fixed extraction row merge"
+        );
+    }
+}
+
+
 CHARR_R_HELPER void emit_warnings_r(
     bool recycling_warning,
     R_len_t empty_pattern_warnings
@@ -276,6 +550,8 @@ CHARR_ENTRYPOINT SEXP ci_extract_all_fixed(
         shared::FixedMatcher matcher;
         std::vector<shared::FixedRange> scratch;
         shared::FixedExtractPlan plan;
+        FixedExtractPlans worker_plans;
+        std::vector<std::vector<PlanSegment> > worker_segments;
         io::OutputBuilder child_builder(0);
         io::OutputBuilder matrix_builder(0);
         io::OutputStore child_store(0, 0);
@@ -342,11 +618,37 @@ CHARR_ENTRYPOINT SEXP ci_extract_all_fixed(
                         count_empty_patterns(patterns);
                 }
 
-                shared::plan_fixed_extract(
-                    subjects, patterns, vectorize_length,
-                    options, omit_no_match_value,
-                    matcher, scratch, plan
-                );
+                const shared::ParallelPlan parallel_plan =
+                    shared::parallel_plan(true, vectorize_length);
+                if (parallel_plan.workers == 1) {
+                    shared::plan_fixed_extract(
+                        subjects, patterns, vectorize_length,
+                        options, omit_no_match_value,
+                        matcher, scratch, plan
+                    );
+                }
+                else {
+                    worker_plans.reset(
+                        static_cast<std::size_t>(parallel_plan.workers)
+                    );
+                    worker_segments.resize(
+                        static_cast<std::size_t>(parallel_plan.workers)
+                    );
+                    Body body(
+                        subjects, patterns, options,
+                        omit_no_match_value, worker_plans.data(),
+                        worker_segments
+                    );
+                    shared::run_parallel(
+                        parallel_plan, vectorize_length, body
+                    );
+                    merge_plans(
+                        worker_plans.data(), parallel_plan.workers,
+                        worker_segments,
+                        patterns.size(), vectorize_length,
+                        !options.case_insensitive, plan
+                    );
+                }
 
                 callback_protections.protect_with_index(
                     temporary, &temporary_index

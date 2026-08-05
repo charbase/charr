@@ -32,6 +32,7 @@
 
 
 #include "ci_stringi.h"
+#include "ci_parallel.h"
 #include "io/reader_utils.h"
 #include "../shared/entrypoint.h"
 #include "../shared/native_to_utf8.h"
@@ -40,12 +41,14 @@
 #include "../shared/unwind.h"
 #include "../shared/utf8.h"
 #include "altrep_backend/io/string_view.h"
+#include "altrep_backend/io/utf8_output.h"
 
 #include <charport.h>
 
 #include <cstddef>
 #include <exception>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace charr { namespace altrep_backend {
@@ -88,6 +91,131 @@ CHARR_NEUTRAL_HELPER shared::StringView resolve_output_encoding(
     return value;
 }
 
+
+/*
+ * One finished chunk. A worker draws several chunks and they are not adjacent
+ * to each other, so a part carries the task index it starts at and the main
+ * thread joins the parts in task order rather than in worker order.
+ */
+struct ChunkOutput {
+    R_xlen_t begin;
+    io::OutputStore store;
+};
+
+
+/*
+ * Order the parts by task index. Every worker's own parts are already
+ * ascending, because a worker claims chunks in the order the cursor hands
+ * them out, so the merge only has to take the lowest remaining head. The
+ * parts are moved out, which leaves `parts` holding empty stores.
+ */
+CHARR_CXX_HELPER void order_chunk_outputs(
+    std::vector<std::vector<ChunkOutput> >& parts,
+    std::vector<io::OutputStore>& ordered
+)
+{
+    const std::size_t workers = parts.size();
+    std::vector<std::size_t> taken(workers, 0);
+    std::size_t total = 0;
+    for (std::size_t worker = 0; worker < workers; ++worker)
+        total += parts[worker].size();
+
+    ordered.clear();
+    ordered.reserve(total);
+    for (std::size_t done = 0; done < total; ++done) {
+        std::size_t next = workers;
+        for (std::size_t worker = 0; worker < workers; ++worker) {
+            if (taken[worker] >= parts[worker].size())
+                continue;
+            if (next == workers ||
+                    parts[worker][taken[worker]].begin <
+                        parts[next][taken[next]].begin) {
+                next = worker;
+            }
+        }
+        ordered.push_back(std::move(parts[next][taken[next]].store));
+        ++taken[next];
+    }
+}
+
+
+/*
+ * Each worker fills a Store of its own chunk and the main thread joins them,
+ * rather than sharing one io::ParallelOutputBuilder. The sharded builder
+ * keeps each shard's payload cursor in a vector of 24-byte shards, so two or
+ * three shards share a cache line, and every record read-modify-writes its
+ * shard's cursor. This kernel is one record copy, the cheapest per-record
+ * work in the package, so that contended line is the whole cost. Driving
+ * charport's own headers over 1,000,000 one-byte records, the packed
+ * spacing costs 4.2 ms at one worker and 8.3 ms at four, while the same
+ * loop with nothing changed but the shards spaced 64 bytes apart costs
+ * 4.2 ms and 1.6 ms. A worker-local Builder gets that isolation without
+ * reaching into charport.
+ */
+template<bool Direct>
+class Body final : public ParallelBody {
+public:
+    CHARR_CXX_HELPER Body(
+        const charport::StrViews& source_views,
+        const std::vector<shared::StringView>& source_inputs,
+        const charport::StrView& replacement,
+        std::vector<std::vector<ChunkOutput> >& outputs
+    ) noexcept
+        : source_views_(source_views), source_inputs_(source_inputs),
+          replacement_(replacement), outputs_(outputs)
+    {
+    }
+
+    CHARR_CXX_HELPER void run(
+        shared::WorkerContext& context
+    ) override
+    {
+        // Only this worker appends to its own list, so the parts it hands
+        // back need no synchronisation.
+        std::vector<ChunkOutput>& parts = outputs_[
+            static_cast<std::size_t>(context.worker)
+        ];
+        while (context.next_chunk()) {
+            // The builder and the payload slices it allocates must not be
+            // shared between workers, so they are locals of run(). One
+            // builder covers one chunk because its size is the chunk's and
+            // its Store is released at the end of it; only that finished
+            // Store outlives the chunk.
+            charport::charvec::Builder builder(context.end - context.begin);
+            for (R_xlen_t i = context.begin; i < context.end; ++i) {
+                const R_xlen_t output_index = i - context.begin;
+                if constexpr (Direct) {
+                    const charport::StrView source = source_views_[i];
+                    builder.set(
+                        output_index,
+                        source.is_na() ? replacement_ : source
+                    );
+                }
+                else {
+                    const shared::StringView& source = source_inputs_[
+                        static_cast<std::size_t>(i)
+                    ];
+                    builder.set(
+                        output_index,
+                        source.is_na()
+                            ? replacement_
+                            : io::as_charport_view(source)
+                    );
+                }
+            }
+            parts.push_back(
+                ChunkOutput{context.begin, builder.release_store()}
+            );
+        }
+    }
+
+private:
+    const charport::StrViews& source_views_;
+    const std::vector<shared::StringView>& source_inputs_;
+    charport::StrView replacement_;
+    std::vector<std::vector<ChunkOutput> >& outputs_;
+};
+
 } // namespace replace_na
 
 using namespace replace_na;
@@ -112,6 +240,7 @@ CHARR_ENTRYPOINT SEXP ci_replace_na(
 {
     CHARR_ENTRYPOINT_BEGIN();
 
+
     str = entry_protections.protect_one(
         ci__prepare_arg_string_r(str, "str")
     );
@@ -120,9 +249,8 @@ CHARR_ENTRYPOINT SEXP ci_replace_na(
             replacement, "replacement"
         )
     );
-    const bool source_is_result_shaped = NO_ATTRIB(str) != 0;
-
     try {
+        const bool source_is_result_shaped = NO_ATTRIB(str) != 0;
         charport::Reader source_reader;
         charport::Reader replacement_reader;
         charport::StrViews source_views;
@@ -133,6 +261,9 @@ CHARR_ENTRYPOINT SEXP ci_replace_na(
         shared::SliceArena replacement_storage;
         std::vector<shared::StringView> source_inputs;
         charport::charvec::Builder builder(0);
+        std::vector<std::vector<ChunkOutput> > parallel_outputs;
+        std::vector<io::OutputStore> ordered_outputs;
+        io::OutputStore output;
         charport::StrView replacement_input{
             nullptr, NA_INTEGER, CETYPE_EXT_NA
         };
@@ -143,7 +274,9 @@ CHARR_ENTRYPOINT SEXP ci_replace_na(
                 const R_len_t source_length = io::checked_r_len(
                     XLENGTH(str), "character vectors"
                 );
-
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, source_length
+                );
                 source_reader.reset(str);
                 if (source_reader.size() != source_length) {
                     throw std::runtime_error(
@@ -211,11 +344,50 @@ CHARR_ENTRYPOINT SEXP ci_replace_na(
                     ))
                 );
 
+                // Nothing to replace and nothing to reshape, so the result
+                // is the input. This stays independent of the worker count:
+                // asking for threads must not turn an O(1) answer into an
+                // O(n) copy.
                 if (direct && !has_na && source_is_result_shaped) {
                     result = entry_protections.reprotect_one(str, result_index);
                 }
+                else if (plan.workers > 1) {
+                    parallel_outputs.clear();
+                    parallel_outputs.resize(plan.workers);
+                    if (direct) {
+                        Body<true> body(
+                            source_views, source_inputs,
+                            replacement_input, parallel_outputs
+                        );
+                        shared::run_parallel(plan, source_length, body);
+                    }
+                    else {
+                        Body<false> body(
+                            source_views, source_inputs,
+                            replacement_input, parallel_outputs
+                        );
+                        shared::run_parallel(plan, source_length, body);
+                    }
+                    // Chunks are contiguous and cover the range exactly, but
+                    // a worker draws several of them and they interleave
+                    // with the other workers', so the parts are joined in
+                    // task order rather than in worker order. That
+                    // reproduces the serial record sequence. The joined
+                    // Store takes every payload slice, so the record
+                    // pointers copied out of the parts stay valid.
+                    order_chunk_outputs(parallel_outputs, ordered_outputs);
+                    output = io::concat_stores(ordered_outputs);
+                    result = entry_protections.reprotect_one(
+                        io::finalize(std::move(output)), result_index
+                    );
+                }
                 else {
                     builder.reset(source_length);
+                    // This is charport's Builder, not io::OutputBuilder, so
+                    // set() copies the record as the loops above resolved it
+                    // and never re-runs output_record(). The worker body
+                    // builds through the same call on its own Builder, so
+                    // the two loops stay the same kernel.
                     for (R_len_t i = 0; i < source_length; ++i) {
                         if (direct) {
                             const charport::StrView source = source_views[i];

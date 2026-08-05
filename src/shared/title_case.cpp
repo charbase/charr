@@ -240,6 +240,22 @@ TitleCaseInput TitleCaseMapper::prepare(
     const StringView& source
 )
 {
+    return prepare_impl(source, &converter_);
+}
+
+
+TitleCaseInput TitleCaseMapper::prepare_utf8(
+    const StringView& source
+)
+{
+    return prepare_impl(source, nullptr);
+}
+
+
+TitleCaseInput TitleCaseMapper::prepare_impl(
+    const StringView& source, NativeToUtf8* converter
+)
+{
     if (source.is_na())
         throw std::invalid_argument("cannot titlecase a missing string");
     if (source.len < 0 || (source.ptr == nullptr && source.len != 0))
@@ -264,14 +280,24 @@ TitleCaseInput TitleCaseMapper::prepare(
         strip_bom = has_bom(data, length);
         break;
     case StringEncoding::latin1: {
-        const ByteView converted = converter_.latin1(data, length);
+        if (converter == nullptr) {
+            throw std::invalid_argument(
+                "titlecase input was not prepared as UTF-8"
+            );
+        }
+        const ByteView converted = converter->latin1(data, length);
         data = converted.ptr;
         length = converted.len;
         break;
     }
     case StringEncoding::native: {
+        if (converter == nullptr) {
+            throw std::invalid_argument(
+                "titlecase input was not prepared as UTF-8"
+            );
+        }
         const bool native_bom = has_bom(data, length);
-        const ByteView converted = converter_.native(data, length);
+        const ByteView converted = converter->native(data, length);
         data = converted.ptr;
         length = converted.len;
         strip_bom = native_bom && has_bom(data, length);

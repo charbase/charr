@@ -106,7 +106,9 @@ ci_count_coll <- function(str, pattern, ..., opts_collator = NULL)
 {
     if (!missing(...))
         opts_collator <- do.call(ci_opts_collator, as.list(c(opts_collator, ...)))
-    .Call(C_ci_count_coll, str, pattern, opts_collator)
+    .Call(
+        C_ci_count_coll, str, pattern, opts_collator
+    )
 }
 
 
@@ -116,7 +118,9 @@ ci_count_fixed <- function(str, pattern, ..., opts_fixed = NULL)
 {
     if (!missing(...))
         opts_fixed <- do.call(ci_opts_fixed, as.list(c(opts_fixed, ...)))
-    .Call(C_ci_count_fixed, str, pattern, opts_fixed)
+    .Call(
+        C_ci_count_fixed, str, pattern, opts_fixed
+    )
 }
 
 
@@ -126,5 +130,7 @@ ci_count_regex <- function(str, pattern, ..., opts_regex = NULL)
 {
     if (!missing(...))
         opts_regex <- do.call(ci_opts_regex, as.list(c(opts_regex, ...)))
-    .Call(C_ci_count_regex, str, pattern, opts_regex)
+    .Call(
+        C_ci_count_regex, str, pattern, opts_regex
+    )
 }

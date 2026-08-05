@@ -71,9 +71,32 @@ select_startup_locales <- function() {
   runs
 }
 
-backends <- c("stringi", "base", "altrep")
+thread_values <- strsplit(
+  Sys.getenv("CHARR_TEST_ALTREP_THREADS", unset = "1"),
+  ",",
+  fixed = TRUE
+)[[1L]]
+altrep_threads <- suppressWarnings(as.integer(thread_values))
+if (!length(thread_values) ||
+    any(!grepl("^[1-9][0-9]*$", thread_values)) ||
+    anyNA(altrep_threads) ||
+    any(altrep_threads < 1L)) {
+  stop(
+    "CHARR_TEST_ALTREP_THREADS must be a comma-separated list of positive integers",
+    call. = FALSE
+  )
+}
+
+backend_runs <- data.frame(
+  backend = c("stringi", "base", rep("altrep", length(altrep_threads))),
+  threads = c(1L, 1L, altrep_threads),
+  label = c(
+    "stringi", "base", paste0("altrep/nthreads=", altrep_threads)
+  ),
+  stringsAsFactors = FALSE
+)
 startup_locales <- select_startup_locales()
-statuses <- integer(length(startup_locales) * length(backends))
+statuses <- integer(length(startup_locales) * nrow(backend_runs))
 names(statuses) <- character(length(statuses))
 
 index <- 0L
@@ -84,17 +107,29 @@ for (startup_locale in startup_locales) {
     startup_locale$locale
   }
 
-  for (backend in backends) {
+  for (run_index in seq_len(nrow(backend_runs))) {
+    backend <- backend_runs$backend[[run_index]]
+    threads <- backend_runs$threads[[run_index]]
     index <- index + 1L
-    label <- paste(startup_locale$label, backend, sep = "/")
+    label <- paste(
+      startup_locale$label,
+      backend_runs$label[[run_index]],
+      sep = "/"
+    )
     names(statuses)[[index]] <- label
     message(
       "== startup locale: ", startup_locale$label, " (", selected_locale,
-      "); charr backend: ", backend, " =="
+      "); charr backend: ", backend,
+      if (identical(backend, "altrep")) {
+        paste0("; nthreads: ", threads)
+      } else {
+        ""
+      },
+      " =="
     )
     statuses[[index]] <- system2(
       rscript,
-      c("--vanilla", shQuote(test_worker), backend),
+      c("--vanilla", shQuote(test_worker), backend, threads),
       env = startup_locale_environment(startup_locale$locale)
     )
   }
