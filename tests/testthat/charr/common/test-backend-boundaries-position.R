@@ -283,6 +283,11 @@ test_that("boundary iterator opening keeps copied option and error order", {
     actual
   )
 
+  expect_boundary_position_unmaterialized(subject)
+})
+
+test_that("boundary iterator opening keeps the locale-fallback warning", {
+  skip_if_stringi_lacks_locale_fallback_warning()
   fallback <- charport::as_charvec("abc")
   opts <- list(type = "word", locale = "zz_ZZ")
   expected <- boundary_position_events(
@@ -298,7 +303,6 @@ test_that("boundary iterator opening keeps copied option and error order", {
   expect_length(actual, 1L)
   expect_match(tolower(actual), "resource bundle")
 
-  expect_boundary_position_unmaterialized(subject)
   expect_boundary_position_unmaterialized(fallback)
 })
 

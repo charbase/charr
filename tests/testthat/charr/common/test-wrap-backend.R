@@ -119,6 +119,7 @@ test_that("wrap preserves NA, empty, prefix, and initial shapes", {
 
 
 test_that("wrap locale fallback warning fires once", {
+  skip_if_stringi_lacks_locale_fallback_warning()
   strings <- wrap_input(rep("one two three", 64L))
   expect_identical(charport::is_charvec(strings), charr_altrep())
 

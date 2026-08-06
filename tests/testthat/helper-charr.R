@@ -31,6 +31,83 @@ skip_if_selected_stringi_cannot_compare_native <- function() {
   }
 }
 
+# ICU carries no break-iterator resource for an unknown locale, so the lookup
+# falls back to the root bundle and ICU reports U_USING_DEFAULT_WARNING.
+# stringi only started surfacing that status in 1.8.1 (gagolews/stringi#476),
+# so an older oracle stays silent where charr's ICU warns, and the stringi
+# backend inherits that silence. Probe the behaviour rather than the version:
+# a build's ICU data decides it too.
+locale_fallback_warning_pattern <- "resource bundle lookup returned a result"
+
+warns_on_locale_fallback <- function(backend) {
+  input <- if (identical(backend, "altrep")) {
+    charport::as_charvec("abc")
+  } else {
+    "abc"
+  }
+
+  warned <- FALSE
+  withCallingHandlers(
+    charr_test_leaf("ci_count_boundaries", backend)(
+      input, opts_brkiter = list(type = "word", locale = "zz_ZZ")
+    ),
+    warning = function(condition) {
+      warned <<- warned || grepl(
+        locale_fallback_warning_pattern, conditionMessage(condition)
+      )
+      invokeRestart("muffleWarning")
+    }
+  )
+  warned
+}
+
+stringi_warns_on_locale_fallback <- local({
+  answer <- NULL
+  function() {
+    if (is.null(answer)) {
+      answer <<- warns_on_locale_fallback("stringi")
+    }
+    answer
+  }
+})
+
+selected_backend_warns_on_locale_fallback <- local({
+  answer <- NULL
+  function() {
+    if (is.null(answer)) {
+      answer <<- warns_on_locale_fallback(selected_test_backend)
+    }
+    answer
+  }
+})
+
+# For assertions that compare charr against the stringi oracle.
+skip_if_stringi_lacks_locale_fallback_warning <- function() {
+  skip_if_not(
+    stringi_warns_on_locale_fallback(),
+    "installed stringi does not report ICU's locale-fallback warning"
+  )
+}
+
+# For assertions about the selected backend's own warning behaviour.
+skip_if_backend_lacks_locale_fallback_warning <- function() {
+  skip_if_not(
+    selected_backend_warns_on_locale_fallback(),
+    "this backend does not report ICU's locale-fallback warning"
+  )
+}
+
+# A sweep that is not itself about the fallback warning still compares the rest
+# of its warning stream against an oracle that cannot raise it. Drop the
+# warning from both sides in that case instead of skipping the whole sweep.
+drop_unmatched_locale_fallback_warning <- function(messages) {
+  if (stringi_warns_on_locale_fallback()) {
+    return(messages)
+  }
+
+  messages[!grepl(locale_fallback_warning_pattern, messages)]
+}
+
 # The ci_* bindings in charr's namespace always target ALTREP. Tests use this
 # selector when the same semantic assertion must reach the active backend.
 charr_test_leaf <- function(name, backend = charr_backend()) {

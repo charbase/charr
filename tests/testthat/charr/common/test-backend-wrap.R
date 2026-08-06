@@ -209,6 +209,7 @@ test_that("wrap preserves missing, empty, bytes, and malformed behavior", {
 })
 
 test_that("wrap preserves locale-warning and argument-error order", {
+  skip_if_stringi_lacks_locale_fallback_warning()
   newline <- "alpha\nbeta"
   subject <- charport::as_charvec(newline)
   actual <- wrap_backend_events(
@@ -221,6 +222,11 @@ test_that("wrap preserves locale-warning and argument-error order", {
   expect_identical(wrap_backend_event_types(actual), c("warning", "error"))
   expect_identical(actual, expected)
   expect_wrap_backend_unmaterialized(subject)
+})
+
+test_that("wrap reports an option error before opening the iterator", {
+  newline <- "alpha\nbeta"
+  subject <- charport::as_charvec(newline)
 
   option_actual <- wrap_backend_events(
     TRUE, subject, indent = -1L, locale = "zz_ZZ"

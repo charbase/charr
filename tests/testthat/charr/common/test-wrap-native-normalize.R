@@ -20,8 +20,9 @@ wrap_stringi_joined <- function(...) {
 # ICU carries no line-break resource for th_TH, so the lookup falls back to the
 # root bundle and stringi reports it (gagolews/stringi#476, added in 1.8.1).
 # charr reproduces stringi rather than hiding the condition, so the warning is
-# part of what these tests check.
-root_fallback_warning <- "resource bundle lookup returned a result"
+# part of what these tests check. Older stringi releases do not report it; the
+# shared pattern is what drop_unmatched_locale_fallback_warning() matches on.
+root_fallback_warning <- locale_fallback_warning_pattern
 
 # Returns the value and every warning raised, so a comparison can cover both.
 # Muffling here also keeps the expected warnings out of the test summary, where
@@ -119,6 +120,7 @@ test_that("wrapping a locale without break data warns like stringi", {
   # two implementations without that comparison passing vacuously if ICU ever
   # stops falling back. A failure here means the expectation moved, not that
   # charr broke: check whether stringi still warns before changing anything.
+  skip_if_stringi_lacks_locale_fallback_warning()
   expect_warning(
     stringi::stri_wrap("ภาษาไทย", width = 8L, locale = "th_TH"),
     root_fallback_warning
@@ -153,7 +155,10 @@ test_that("native normalization feeds every wrap mode and option path", {
           stringi::stri_wrap, c(arguments, list(simplify = FALSE))
         ))
         expect_identical(actual_list$value, expected_list$value)
-        expect_identical(actual_list$warnings, expected_list$warnings)
+        expect_identical(
+          drop_unmatched_locale_fallback_warning(actual_list$warnings),
+          drop_unmatched_locale_fallback_warning(expected_list$warnings)
+        )
 
         actual_flat <- wrap_with_warnings(do.call(
           wrap_selected_leaf, c(arguments, list(simplify = TRUE))
@@ -162,7 +167,10 @@ test_that("native normalization feeds every wrap mode and option path", {
           stringi::stri_wrap, c(arguments, list(simplify = TRUE))
         ))
         expect_identical(actual_flat$value, expected_flat$value)
-        expect_identical(actual_flat$warnings, expected_flat$warnings)
+        expect_identical(
+          drop_unmatched_locale_fallback_warning(actual_flat$warnings),
+          drop_unmatched_locale_fallback_warning(expected_flat$warnings)
+        )
 
         if (!identical(charr_backend(), "stringi")) {
           actual_joined <- wrap_with_warnings(do.call(
@@ -174,7 +182,8 @@ test_that("native normalization feeds every wrap mode and option path", {
           )
           expect_identical(actual_joined$value, expected_joined$value)
           expect_identical(
-            actual_joined$warnings, expected_joined$warnings
+            drop_unmatched_locale_fallback_warning(actual_joined$warnings),
+            drop_unmatched_locale_fallback_warning(expected_joined$warnings)
           )
         }
       }

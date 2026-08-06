@@ -105,6 +105,7 @@ test_that("case mapping handles empty CHARVEC inputs", {
 
 test_that("titlecase emits one locale-fallback warning per call", {
   skip_if_not(charr:::charr_icu_bundled())
+  skip_if_backend_lacks_locale_fallback_warning()
   strings <- charr_test_leaf("ci_trim_both")(rep(" ijsland ", 16L))
   expect_identical(charport::is_charvec(strings), charr_altrep())
 

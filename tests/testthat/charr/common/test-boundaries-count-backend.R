@@ -70,6 +70,7 @@ test_that("boundary count is lenient for malformed declared UTF-8", {
 
 
 test_that("boundary locale fallback warns once per call", {
+  skip_if_backend_lacks_locale_fallback_warning()
   strings <- boundary_count_input(rep("abc", 64L))
   expect_identical(charport::is_charvec(strings), charr_altrep())
   warnings <- character()

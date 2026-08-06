@@ -188,6 +188,7 @@ test_that("mapped transformation entry points return lazy empty vectors", {
 
 test_that("titlecase releases fallback state before warning and input error", {
   skip_if_not(charr:::charr_icu_bundled())
+  skip_if_backend_lacks_locale_fallback_warning()
   bytes <- transformation_marked(c(0x61, 0xff), "bytes")
   subject <- charport::as_charvec(bytes)
   opts <- stringi::stri_opts_brkiter(type = "word", locale = "nl")

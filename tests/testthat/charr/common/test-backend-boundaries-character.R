@@ -365,7 +365,23 @@ test_that("boundary character output can be consumed without materializing", {
   expect_boundary_char_unmaterialized(subject)
 })
 
+expect_boundary_char_split_events <- function(str, n, opts) {
+  actual <- boundary_char_condition_events(
+    with_test_backend(
+      TRUE,
+      charr_test_leaf("ci_split_boundaries")(
+        charport::as_charvec(str), n = n, opts_brkiter = opts
+      )
+    )
+  )
+  expected <- boundary_char_condition_events(
+    stringi::stri_split_boundaries(str, n = n, opts_brkiter = opts)
+  )
+  expect_identical(actual, expected)
+}
+
 test_that("boundary iterators preserve lazy-open warning and error order", {
+  skip_if_stringi_lacks_locale_fallback_warning()
   fallback <- list(type = "word", locale = "xx_YY")
   subject <- charport::as_charvec(c("abc", "def"))
 
@@ -411,6 +427,14 @@ test_that("boundary iterators preserve lazy-open warning and error order", {
     expect_match(actual$events, "^warning:")
   }
 
+  expect_boundary_char_split_events(
+    c("abc", "def"), c(1L, .Machine$integer.max), fallback
+  )
+
+  expect_boundary_char_unmaterialized(subject)
+})
+
+test_that("boundary iterators preserve invalid-rule error order", {
   bad_rules <- list(type = "[")
   inactive <- charport::as_charvec(c("", NA_character_))
   expect_identical(
@@ -445,40 +469,15 @@ test_that("boundary iterators preserve lazy-open warning and error order", {
   )
 
   split_cases <- list(
-    list(str = "", n = 0L, opts = bad_rules),
-    list(str = "abc", n = .Machine$integer.max, opts = bad_rules),
-    list(
-      str = c("abc", "def"),
-      n = c(1L, .Machine$integer.max), opts = bad_rules
-    ),
-    list(
-      str = c("abc", "def"),
-      n = c(1L, .Machine$integer.max), opts = fallback
-    ),
-    list(
-      str = c("abc", "def", "ghi"),
-      n = c(1L, 2L), opts = bad_rules
-    )
+    list(str = "", n = 0L),
+    list(str = "abc", n = .Machine$integer.max),
+    list(str = c("abc", "def"), n = c(1L, .Machine$integer.max)),
+    list(str = c("abc", "def", "ghi"), n = c(1L, 2L))
   )
   for (case in split_cases) {
-    actual <- boundary_char_condition_events(
-      with_test_backend(
-        TRUE,
-        charr_test_leaf("ci_split_boundaries")(
-          charport::as_charvec(case$str), n = case$n,
-          opts_brkiter = case$opts
-        )
-      )
-    )
-    expected <- boundary_char_condition_events(
-      stringi::stri_split_boundaries(
-        case$str, n = case$n, opts_brkiter = case$opts
-      )
-    )
-    expect_identical(actual, expected)
+    expect_boundary_char_split_events(case$str, case$n, bad_rules)
   }
 
-  expect_boundary_char_unmaterialized(subject)
   expect_boundary_char_unmaterialized(inactive)
 })
 
