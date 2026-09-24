@@ -7593,8 +7593,17 @@ static Int decGetInt(const decNumber *dn) {
       }
     if (count==0) got=0;                /* [a multiple of DECDPUN]  */
      else {                             /* [not multiple of DECDPUN]  */
+#if DECDPUN<=1
+      /* Each unit is one digit, so the loop above leaves a partial unit
+         only when count went negative. Indexing powers[] or multies[]
+         with that value is the -Warray-bounds report (subscript
+         -2147483648). A negative count is not a fraction length. */
+      return BADINT;
+#else
       Int rem;                          /* work  */
       /* slice off fraction digits and check for non-zero  */
+      /* count is 1..DECDPUN-1 here for a defined exponent. */
+      if (count<1 || count>=DECDPUN) return BADINT;
       #if DECDPUN<=4
         theInt=QUOT10(*up, count);
         rem=*up-theInt*powers[count];
@@ -7606,6 +7615,7 @@ static Int decGetInt(const decNumber *dn) {
       /* it looks good  */
       got=DECDPUN-count;                /* number of digits so far  */
       up++;                             /* ready for next  */
+#endif
       }
     }
   /* now it's known there's no fractional part  */

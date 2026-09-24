@@ -576,7 +576,7 @@ int64_t RegexMatcher::end64(int32_t group, UErrorCode &err) const {
         int32_t groupOffset = fPattern->fGroupMap->elementAti(group-1);
         U_ASSERT(groupOffset < fPattern->fFrameSize);
         U_ASSERT(groupOffset >= 0);
-        e = fFrame->fExtra[groupOffset + 1];
+        e = *(fFrame->fExtra + (groupOffset + 1));
     }
 
         return e;
@@ -1191,8 +1191,8 @@ UText *RegexMatcher::group(int32_t groupNum, UText *dest, int64_t &group_len, UE
         int32_t groupOffset = fPattern->fGroupMap->elementAti(groupNum-1);
         U_ASSERT(groupOffset < fPattern->fFrameSize);
         U_ASSERT(groupOffset >= 0);
-        s = fFrame->fExtra[groupOffset];
-        e = fFrame->fExtra[groupOffset+1];
+        s = *(fFrame->fExtra + (groupOffset));
+        e = *(fFrame->fExtra + (groupOffset+1));
     }
 
     if (s < 0) {
@@ -1273,8 +1273,8 @@ int64_t RegexMatcher::appendGroup(int32_t groupNum, UText *dest, UErrorCode &sta
         int32_t groupOffset = fPattern->fGroupMap->elementAti(groupNum-1);
         U_ASSERT(groupOffset < fPattern->fFrameSize);
         U_ASSERT(groupOffset >= 0);
-        s = fFrame->fExtra[groupOffset];
-        e = fFrame->fExtra[groupOffset+1];
+        s = *(fFrame->fExtra + (groupOffset));
+        e = *(fFrame->fExtra + (groupOffset+1));
     }
 
     if (s < 0) {
@@ -2314,7 +2314,7 @@ int64_t RegexMatcher::start64(int32_t group, UErrorCode &status) const {
         int32_t groupOffset = fPattern->fGroupMap->elementAti(group-1);
         U_ASSERT(groupOffset < fPattern->fFrameSize);
         U_ASSERT(groupOffset >= 0);
-        s = fFrame->fExtra[groupOffset];
+        s = *(fFrame->fExtra + (groupOffset));
     }
 
     return s;
@@ -2523,7 +2523,7 @@ REStackFrame *RegexMatcher::resetStack() {
 
     int32_t i;
     for (i=0; i<fPattern->fFrameSize-RESTACKFRAME_HDRCOUNT; i++) {
-        iFrame->fExtra[i] = -1;
+        *(iFrame->fExtra + (i)) = -1;
     }
     return iFrame;
 }
@@ -2946,16 +2946,16 @@ void RegexMatcher::MatchAt(int64_t startIdx, UBool toEnd, UErrorCode &status) {
             //                          has not yet been reached (and might not ever be).
         case URX_START_CAPTURE:
             U_ASSERT(opValue >= 0 && opValue < fFrameSize-3);
-            fp->fExtra[opValue+2] = fp->fInputIdx;
+            *(fp->fExtra + (opValue+2)) = fp->fInputIdx;
             break;
 
 
         case URX_END_CAPTURE:
             U_ASSERT(opValue >= 0 && opValue < fFrameSize-3);
-            U_ASSERT(fp->fExtra[opValue+2] >= 0);            // Start pos for this group must be set.
-            fp->fExtra[opValue]   = fp->fExtra[opValue+2];   // Tentative start becomes real.
-            fp->fExtra[opValue+1] = fp->fInputIdx;           // End position
-            U_ASSERT(fp->fExtra[opValue] <= fp->fExtra[opValue+1]);
+            U_ASSERT(*(fp->fExtra + (opValue+2)) >= 0);            // Start pos for this group must be set.
+            *(fp->fExtra + (opValue))   = *(fp->fExtra + (opValue+2));   // Tentative start becomes real.
+            *(fp->fExtra + (opValue+1)) = fp->fInputIdx;           // End position
+            U_ASSERT(*(fp->fExtra + (opValue)) <= *(fp->fExtra + (opValue+1)));
             break;
 
 
@@ -3463,13 +3463,13 @@ void RegexMatcher::MatchAt(int64_t startIdx, UBool toEnd, UErrorCode &status) {
                 U_ASSERT(URX_TYPE(stoOp) == URX_STO_INP_LOC);
                 int32_t  frameLoc = URX_VAL(stoOp);
                 U_ASSERT(frameLoc >= 0 && frameLoc < fFrameSize);
-                int64_t prevInputIdx = fp->fExtra[frameLoc];
+                int64_t prevInputIdx = *(fp->fExtra + (frameLoc));
                 U_ASSERT(prevInputIdx <= fp->fInputIdx);
                 if (prevInputIdx < fp->fInputIdx) {
                     // The match did make progress.  Repeat the loop.
                     fp = StateSave(fp, fp->fPatIdx, status);  // State save to loc following current
                     fp->fPatIdx = opValue;
-                    fp->fExtra[frameLoc] = fp->fInputIdx;
+                    *(fp->fExtra + (frameLoc)) = fp->fInputIdx;
                 }
                 // If the input position did not advance, we do nothing here,
                 //   execution will fall out of the loop.
@@ -3479,7 +3479,7 @@ void RegexMatcher::MatchAt(int64_t startIdx, UBool toEnd, UErrorCode &status) {
         case URX_CTR_INIT:
             {
                 U_ASSERT(opValue >= 0 && opValue < fFrameSize-2);
-                fp->fExtra[opValue] = 0;                 //  Set the loop counter variable to zero
+                *(fp->fExtra + (opValue)) = 0;                 //  Set the loop counter variable to zero
 
                 // Pick up the three extra operands that CTR_INIT has, and
                 //    skip the pattern location counter past
@@ -3496,7 +3496,7 @@ void RegexMatcher::MatchAt(int64_t startIdx, UBool toEnd, UErrorCode &status) {
                     fp = StateSave(fp, loopLoc+1, status);
                 }
                 if (maxCount == -1) {
-                    fp->fExtra[opValue+1] = fp->fInputIdx;   //  For loop breaking.
+                    *(fp->fExtra + (opValue+1)) = fp->fInputIdx;   //  For loop breaking.
                 } else if (maxCount == 0) {
                     fp = reinterpret_cast<REStackFrame*>(fStack->popFrame(fFrameSize));
                 }
@@ -3508,7 +3508,7 @@ void RegexMatcher::MatchAt(int64_t startIdx, UBool toEnd, UErrorCode &status) {
                 U_ASSERT(opValue>0 && opValue < fp->fPatIdx-2);
                 int32_t initOp = static_cast<int32_t>(pat[opValue]);
                 U_ASSERT(URX_TYPE(initOp) == URX_CTR_INIT);
-                int64_t *pCounter = &fp->fExtra[URX_VAL(initOp)];
+                int64_t *pCounter = (fp->fExtra + (URX_VAL(initOp)));
                 int32_t minCount = static_cast<int32_t>(pat[opValue + 2]);
                 int32_t maxCount = static_cast<int32_t>(pat[opValue + 3]);
                 (*pCounter)++;
@@ -3520,7 +3520,7 @@ void RegexMatcher::MatchAt(int64_t startIdx, UBool toEnd, UErrorCode &status) {
                     if (maxCount == -1) {
                         // Loop has no hard upper bound.
                         // Check that it is progressing through the input, break if it is not.
-                        int64_t *pLastInputIdx =  &fp->fExtra[URX_VAL(initOp) + 1];
+                        int64_t *pLastInputIdx =  (fp->fExtra + (URX_VAL(initOp) + 1));
                         if (fp->fInputIdx == *pLastInputIdx) {
                             break;
                         } else {
@@ -3544,7 +3544,7 @@ void RegexMatcher::MatchAt(int64_t startIdx, UBool toEnd, UErrorCode &status) {
             {
                 // Initialize a non-greedy loop
                 U_ASSERT(opValue >= 0 && opValue < fFrameSize-2);
-                fp->fExtra[opValue] = 0;                 //  Set the loop counter variable to zero
+                *(fp->fExtra + (opValue)) = 0;                 //  Set the loop counter variable to zero
 
                 // Pick up the three extra operands that CTR_INIT_NG has, and
                 //    skip the pattern location counter past
@@ -3557,7 +3557,7 @@ void RegexMatcher::MatchAt(int64_t startIdx, UBool toEnd, UErrorCode &status) {
                 U_ASSERT(maxCount>=minCount || maxCount==-1);
                 U_ASSERT(loopLoc>fp->fPatIdx);
                 if (maxCount == -1) {
-                    fp->fExtra[opValue+1] = fp->fInputIdx;   //  Save initial input index for loop breaking.
+                    *(fp->fExtra + (opValue+1)) = fp->fInputIdx;   //  Save initial input index for loop breaking.
                 }
 
                 if (minCount == 0) {
@@ -3575,7 +3575,7 @@ void RegexMatcher::MatchAt(int64_t startIdx, UBool toEnd, UErrorCode &status) {
                 U_ASSERT(opValue>0 && opValue < fp->fPatIdx-2);
                 int32_t initOp = static_cast<int32_t>(pat[opValue]);
                 U_ASSERT(URX_TYPE(initOp) == URX_CTR_INIT_NG);
-                int64_t *pCounter = &fp->fExtra[URX_VAL(initOp)];
+                int64_t *pCounter = (fp->fExtra + (URX_VAL(initOp)));
                 int32_t minCount = static_cast<int32_t>(pat[opValue + 2]);
                 int32_t maxCount = static_cast<int32_t>(pat[opValue + 3]);
 
@@ -3603,7 +3603,7 @@ void RegexMatcher::MatchAt(int64_t startIdx, UBool toEnd, UErrorCode &status) {
                     // If there is no upper bound on the loop iterations, check that the input index
                     // is progressing, and stop the loop if it is not.
                     if (maxCount == -1) {
-                        int64_t *pLastInputIdx =  &fp->fExtra[URX_VAL(initOp) + 1];
+                        int64_t *pLastInputIdx =  (fp->fExtra + (URX_VAL(initOp) + 1));
                         if (fp->fInputIdx == *pLastInputIdx) {
                             break;
                         }
@@ -3645,8 +3645,8 @@ void RegexMatcher::MatchAt(int64_t startIdx, UBool toEnd, UErrorCode &status) {
         case URX_BACKREF:
             {
                 U_ASSERT(opValue < fFrameSize);
-                int64_t groupStartIdx = fp->fExtra[opValue];
-                int64_t groupEndIdx   = fp->fExtra[opValue+1];
+                int64_t groupStartIdx = *(fp->fExtra + (opValue));
+                int64_t groupEndIdx   = *(fp->fExtra + (opValue+1));
                 U_ASSERT(groupStartIdx <= groupEndIdx);
                 if (groupStartIdx < 0) {
                     // This capture group has not participated in the match thus far,
@@ -3692,8 +3692,8 @@ void RegexMatcher::MatchAt(int64_t startIdx, UBool toEnd, UErrorCode &status) {
         case URX_BACKREF_I:
             {
                 U_ASSERT(opValue < fFrameSize);
-                int64_t groupStartIdx = fp->fExtra[opValue];
-                int64_t groupEndIdx   = fp->fExtra[opValue+1];
+                int64_t groupStartIdx = *(fp->fExtra + (opValue));
+                int64_t groupEndIdx   = *(fp->fExtra + (opValue+1));
                 U_ASSERT(groupStartIdx <= groupEndIdx);
                 if (groupStartIdx < 0) {
                     // This capture group has not participated in the match thus far,
@@ -3747,7 +3747,7 @@ void RegexMatcher::MatchAt(int64_t startIdx, UBool toEnd, UErrorCode &status) {
         case URX_STO_INP_LOC:
             {
                 U_ASSERT(opValue >= 0 && opValue < fFrameSize);
-                fp->fExtra[opValue] = fp->fInputIdx;
+                *(fp->fExtra + (opValue)) = fp->fInputIdx;
             }
             break;
 
@@ -3757,7 +3757,7 @@ void RegexMatcher::MatchAt(int64_t startIdx, UBool toEnd, UErrorCode &status) {
                 fp->fPatIdx += 1;
                 int32_t dataLoc  = URX_VAL(pat[instrOperandLoc]);
                 U_ASSERT(dataLoc >= 0 && dataLoc < fFrameSize);
-                int64_t savedInputIdx = fp->fExtra[dataLoc];
+                int64_t savedInputIdx = *(fp->fExtra + (dataLoc));
                 U_ASSERT(savedInputIdx <= fp->fInputIdx);
                 if (savedInputIdx < fp->fInputIdx) {
                     fp->fPatIdx = opValue;                               // JMP
@@ -4131,7 +4131,7 @@ void RegexMatcher::MatchAt(int64_t startIdx, UBool toEnd, UErrorCode &status) {
                 U_ASSERT(URX_TYPE(loopcOp) == URX_LOOP_C);
                 int32_t stackLoc = URX_VAL(loopcOp);
                 U_ASSERT(stackLoc >= 0 && stackLoc < fFrameSize);
-                fp->fExtra[stackLoc] = fp->fInputIdx;
+                *(fp->fExtra + (stackLoc)) = fp->fInputIdx;
                 fp->fInputIdx = ix;
 
                 // Save State to the URX_LOOP_C op that follows this one,
@@ -4192,7 +4192,7 @@ void RegexMatcher::MatchAt(int64_t startIdx, UBool toEnd, UErrorCode &status) {
                 U_ASSERT(URX_TYPE(loopcOp) == URX_LOOP_C);
                 int32_t stackLoc = URX_VAL(loopcOp);
                 U_ASSERT(stackLoc >= 0 && stackLoc < fFrameSize);
-                fp->fExtra[stackLoc] = fp->fInputIdx;
+                *(fp->fExtra + (stackLoc)) = fp->fInputIdx;
                 fp->fInputIdx = ix;
 
                 // Save State to the URX_LOOP_C op that follows this one,
@@ -4207,7 +4207,7 @@ void RegexMatcher::MatchAt(int64_t startIdx, UBool toEnd, UErrorCode &status) {
         case URX_LOOP_C:
             {
                 U_ASSERT(opValue>=0 && opValue<fFrameSize);
-                backSearchIndex = fp->fExtra[opValue];
+                backSearchIndex = *(fp->fExtra + (opValue));
                 U_ASSERT(backSearchIndex <= fp->fInputIdx);
                 if (backSearchIndex == fp->fInputIdx) {
                     // We've backed up the input idx to the point that the loop started.
@@ -4460,16 +4460,16 @@ void RegexMatcher::MatchChunkAt(int32_t startIdx, UBool toEnd, UErrorCode &statu
             //                          has not yet been reached (and might not ever be).
         case URX_START_CAPTURE:
             U_ASSERT(opValue >= 0 && opValue < fFrameSize-3);
-            fp->fExtra[opValue+2] = fp->fInputIdx;
+            *(fp->fExtra + (opValue+2)) = fp->fInputIdx;
             break;
 
 
         case URX_END_CAPTURE:
             U_ASSERT(opValue >= 0 && opValue < fFrameSize-3);
-            U_ASSERT(fp->fExtra[opValue+2] >= 0);            // Start pos for this group must be set.
-            fp->fExtra[opValue]   = fp->fExtra[opValue+2];   // Tentative start becomes real.
-            fp->fExtra[opValue+1] = fp->fInputIdx;           // End position
-            U_ASSERT(fp->fExtra[opValue] <= fp->fExtra[opValue+1]);
+            U_ASSERT(*(fp->fExtra + (opValue+2)) >= 0);            // Start pos for this group must be set.
+            *(fp->fExtra + (opValue))   = *(fp->fExtra + (opValue+2));   // Tentative start becomes real.
+            *(fp->fExtra + (opValue+1)) = fp->fInputIdx;           // End position
+            U_ASSERT(*(fp->fExtra + (opValue)) <= *(fp->fExtra + (opValue+1)));
             break;
 
 
@@ -4957,13 +4957,13 @@ void RegexMatcher::MatchChunkAt(int32_t startIdx, UBool toEnd, UErrorCode &statu
                 U_ASSERT(URX_TYPE(stoOp) == URX_STO_INP_LOC);
                 int32_t  frameLoc = URX_VAL(stoOp);
                 U_ASSERT(frameLoc >= 0 && frameLoc < fFrameSize);
-                int32_t prevInputIdx = static_cast<int32_t>(fp->fExtra[frameLoc]);
+                int32_t prevInputIdx = static_cast<int32_t>(*(fp->fExtra + (frameLoc)));
                 U_ASSERT(prevInputIdx <= fp->fInputIdx);
                 if (prevInputIdx < fp->fInputIdx) {
                     // The match did make progress.  Repeat the loop.
                     fp = StateSave(fp, fp->fPatIdx, status);  // State save to loc following current
                     fp->fPatIdx = opValue;
-                    fp->fExtra[frameLoc] = fp->fInputIdx;
+                    *(fp->fExtra + (frameLoc)) = fp->fInputIdx;
                 }
                 // If the input position did not advance, we do nothing here,
                 //   execution will fall out of the loop.
@@ -4973,7 +4973,7 @@ void RegexMatcher::MatchChunkAt(int32_t startIdx, UBool toEnd, UErrorCode &statu
         case URX_CTR_INIT:
             {
                 U_ASSERT(opValue >= 0 && opValue < fFrameSize-2);
-                fp->fExtra[opValue] = 0;                 //  Set the loop counter variable to zero
+                *(fp->fExtra + (opValue)) = 0;                 //  Set the loop counter variable to zero
 
                 // Pick up the three extra operands that CTR_INIT has, and
                 //    skip the pattern location counter past
@@ -4990,7 +4990,7 @@ void RegexMatcher::MatchChunkAt(int32_t startIdx, UBool toEnd, UErrorCode &statu
                     fp = StateSave(fp, loopLoc+1, status);
                 }
                 if (maxCount == -1) {
-                    fp->fExtra[opValue+1] = fp->fInputIdx;   //  For loop breaking.
+                    *(fp->fExtra + (opValue+1)) = fp->fInputIdx;   //  For loop breaking.
                 } else if (maxCount == 0) {
                     fp = reinterpret_cast<REStackFrame*>(fStack->popFrame(fFrameSize));
                 }
@@ -5002,7 +5002,7 @@ void RegexMatcher::MatchChunkAt(int32_t startIdx, UBool toEnd, UErrorCode &statu
                 U_ASSERT(opValue>0 && opValue < fp->fPatIdx-2);
                 int32_t initOp = static_cast<int32_t>(pat[opValue]);
                 U_ASSERT(URX_TYPE(initOp) == URX_CTR_INIT);
-                int64_t *pCounter = &fp->fExtra[URX_VAL(initOp)];
+                int64_t *pCounter = (fp->fExtra + (URX_VAL(initOp)));
                 int32_t minCount = static_cast<int32_t>(pat[opValue + 2]);
                 int32_t maxCount = static_cast<int32_t>(pat[opValue + 3]);
                 (*pCounter)++;
@@ -5014,7 +5014,7 @@ void RegexMatcher::MatchChunkAt(int32_t startIdx, UBool toEnd, UErrorCode &statu
                     if (maxCount == -1) {
                         // Loop has no hard upper bound.
                         // Check that it is progressing through the input, break if it is not.
-                        int64_t *pLastInputIdx =  &fp->fExtra[URX_VAL(initOp) + 1];
+                        int64_t *pLastInputIdx =  (fp->fExtra + (URX_VAL(initOp) + 1));
                         if (fp->fInputIdx == *pLastInputIdx) {
                             break;
                         } else {
@@ -5037,7 +5037,7 @@ void RegexMatcher::MatchChunkAt(int32_t startIdx, UBool toEnd, UErrorCode &statu
             {
                 // Initialize a non-greedy loop
                 U_ASSERT(opValue >= 0 && opValue < fFrameSize-2);
-                fp->fExtra[opValue] = 0;                 //  Set the loop counter variable to zero
+                *(fp->fExtra + (opValue)) = 0;                 //  Set the loop counter variable to zero
 
                 // Pick up the three extra operands that CTR_INIT_NG has, and
                 //    skip the pattern location counter past
@@ -5050,7 +5050,7 @@ void RegexMatcher::MatchChunkAt(int32_t startIdx, UBool toEnd, UErrorCode &statu
                 U_ASSERT(maxCount>=minCount || maxCount==-1);
                 U_ASSERT(loopLoc>fp->fPatIdx);
                 if (maxCount == -1) {
-                    fp->fExtra[opValue+1] = fp->fInputIdx;   //  Save initial input index for loop breaking.
+                    *(fp->fExtra + (opValue+1)) = fp->fInputIdx;   //  Save initial input index for loop breaking.
                 }
 
                 if (minCount == 0) {
@@ -5068,7 +5068,7 @@ void RegexMatcher::MatchChunkAt(int32_t startIdx, UBool toEnd, UErrorCode &statu
                 U_ASSERT(opValue>0 && opValue < fp->fPatIdx-2);
                 int32_t initOp = static_cast<int32_t>(pat[opValue]);
                 U_ASSERT(URX_TYPE(initOp) == URX_CTR_INIT_NG);
-                int64_t *pCounter = &fp->fExtra[URX_VAL(initOp)];
+                int64_t *pCounter = (fp->fExtra + (URX_VAL(initOp)));
                 int32_t minCount = static_cast<int32_t>(pat[opValue + 2]);
                 int32_t maxCount = static_cast<int32_t>(pat[opValue + 3]);
 
@@ -5095,7 +5095,7 @@ void RegexMatcher::MatchChunkAt(int32_t startIdx, UBool toEnd, UErrorCode &statu
                     // If there is no upper bound on the loop iterations, check that the input index
                     // is progressing, and stop the loop if it is not.
                     if (maxCount == -1) {
-                        int64_t *pLastInputIdx =  &fp->fExtra[URX_VAL(initOp) + 1];
+                        int64_t *pLastInputIdx =  (fp->fExtra + (URX_VAL(initOp) + 1));
                         if (fp->fInputIdx == *pLastInputIdx) {
                             break;
                         }
@@ -5137,8 +5137,8 @@ void RegexMatcher::MatchChunkAt(int32_t startIdx, UBool toEnd, UErrorCode &statu
         case URX_BACKREF:
             {
                 U_ASSERT(opValue < fFrameSize);
-                int64_t groupStartIdx = fp->fExtra[opValue];
-                int64_t groupEndIdx   = fp->fExtra[opValue+1];
+                int64_t groupStartIdx = *(fp->fExtra + (opValue));
+                int64_t groupEndIdx   = *(fp->fExtra + (opValue+1));
                 U_ASSERT(groupStartIdx <= groupEndIdx);
                 int64_t inputIndex = fp->fInputIdx;
                 if (groupStartIdx < 0) {
@@ -5175,8 +5175,8 @@ void RegexMatcher::MatchChunkAt(int32_t startIdx, UBool toEnd, UErrorCode &statu
         case URX_BACKREF_I:
             {
                 U_ASSERT(opValue < fFrameSize);
-                int64_t groupStartIdx = fp->fExtra[opValue];
-                int64_t groupEndIdx   = fp->fExtra[opValue+1];
+                int64_t groupStartIdx = *(fp->fExtra + (opValue));
+                int64_t groupEndIdx   = *(fp->fExtra + (opValue+1));
                 U_ASSERT(groupStartIdx <= groupEndIdx);
                 if (groupStartIdx < 0) {
                     // This capture group has not participated in the match thus far,
@@ -5227,7 +5227,7 @@ void RegexMatcher::MatchChunkAt(int32_t startIdx, UBool toEnd, UErrorCode &statu
         case URX_STO_INP_LOC:
             {
                 U_ASSERT(opValue >= 0 && opValue < fFrameSize);
-                fp->fExtra[opValue] = fp->fInputIdx;
+                *(fp->fExtra + (opValue)) = fp->fInputIdx;
             }
             break;
 
@@ -5237,7 +5237,7 @@ void RegexMatcher::MatchChunkAt(int32_t startIdx, UBool toEnd, UErrorCode &statu
                 fp->fPatIdx += 1;
                 int32_t dataLoc  = URX_VAL(pat[instrOperandLoc]);
                 U_ASSERT(dataLoc >= 0 && dataLoc < fFrameSize);
-                int32_t savedInputIdx = static_cast<int32_t>(fp->fExtra[dataLoc]);
+                int32_t savedInputIdx = static_cast<int32_t>(*(fp->fExtra + (dataLoc)));
                 U_ASSERT(savedInputIdx <= fp->fInputIdx);
                 if (savedInputIdx < fp->fInputIdx) {
                     fp->fPatIdx = opValue;                               // JMP
@@ -5581,7 +5581,7 @@ void RegexMatcher::MatchChunkAt(int32_t startIdx, UBool toEnd, UErrorCode &statu
                 U_ASSERT(URX_TYPE(loopcOp) == URX_LOOP_C);
                 int32_t stackLoc = URX_VAL(loopcOp);
                 U_ASSERT(stackLoc >= 0 && stackLoc < fFrameSize);
-                fp->fExtra[stackLoc] = fp->fInputIdx;
+                *(fp->fExtra + (stackLoc)) = fp->fInputIdx;
                 fp->fInputIdx = ix;
 
                 // Save State to the URX_LOOP_C op that follows this one,
@@ -5643,7 +5643,7 @@ void RegexMatcher::MatchChunkAt(int32_t startIdx, UBool toEnd, UErrorCode &statu
                 U_ASSERT(URX_TYPE(loopcOp) == URX_LOOP_C);
                 int32_t stackLoc = URX_VAL(loopcOp);
                 U_ASSERT(stackLoc >= 0 && stackLoc < fFrameSize);
-                fp->fExtra[stackLoc] = fp->fInputIdx;
+                *(fp->fExtra + (stackLoc)) = fp->fInputIdx;
                 fp->fInputIdx = ix;
 
                 // Save State to the URX_LOOP_C op that follows this one,
@@ -5658,7 +5658,7 @@ void RegexMatcher::MatchChunkAt(int32_t startIdx, UBool toEnd, UErrorCode &statu
         case URX_LOOP_C:
             {
                 U_ASSERT(opValue>=0 && opValue<fFrameSize);
-                backSearchIndex = static_cast<int32_t>(fp->fExtra[opValue]);
+                backSearchIndex = static_cast<int32_t>(*(fp->fExtra + (opValue)));
                 U_ASSERT(backSearchIndex <= fp->fInputIdx);
                 if (backSearchIndex == fp->fInputIdx) {
                     // We've backed up the input idx to the point that the loop started.

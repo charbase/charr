@@ -20,7 +20,7 @@ LINT_EFFECT_ARGS := \
 
 .PHONY: doc build install install-dev check check-no-vignette rhub-platforms \
 	test test-locales test-system test-bundle \
-	test-san test-valgrind vignette figures pkgdown pkgdown-index \
+	test-san test-tsan test-valgrind vignette figures pkgdown pkgdown-index \
 	lint lint-tool lint-fixtures lint-db lint-frontier lint-converted lint-audit \
 	lint-effects-update lint-r-literals \
 	code-map code-map-current code-map-validate \
@@ -413,6 +413,36 @@ test-san:
 	  UBSAN_OPTIONS=print_stacktrace=1 \
 	  R_MAKEVARS_USER=$$tmp_lib/Makevars.san R_LIBS=$$tmp_lib:$(RLIBS) \
 	  Rscript testthat.R
+
+# ThreadSanitizer over the ALTREP suite, the only backend that runs worker
+# threads, at TSAN_THREADS threads with the finest chunking so short test
+# vectors still interleave chunks. Only the package (and the charport headers
+# it compiles) is instrumented; R and system ICU are not, so races inside them
+# are invisible, but R never runs on a worker.
+#
+# libtsan cannot be preloaded through R's shell launchers: /bin/sh itself
+# crashes with it injected. `R CMD env` supplies R's environment and starts
+# the R binary directly with the preload, and tools/tsan-tests.R clears
+# LD_PRELOAD before the suite spawns any subprocess. --no-test-load is
+# required for the same reason as in test-san. TSan exits with status 66 when
+# it reported a race, which fails the target like a test failure does.
+TSAN_THREADS ?= 4
+
+test-tsan:
+	@$(build_test_locales)
+	$(use_test_locales); \
+	tmp_lib=$$(mktemp -d /tmp/$(PACKAGE)-tsan-XXXXXX); \
+	trap 'rm -rf "$$tmp_lib"' EXIT; \
+	printf 'CXXFLAGS = -g -O1 -fno-omit-frame-pointer -fsanitize=thread\nCXX17FLAGS = -g -O1 -fno-omit-frame-pointer -fsanitize=thread\nSHLIB_CXXLDFLAGS = -fsanitize=thread -shared\nSHLIB_CXX17LDFLAGS = -fsanitize=thread -shared\n' > $$tmp_lib/Makevars.tsan; \
+	R_MAKEVARS_USER=$$tmp_lib/Makevars.tsan \
+	  R CMD INSTALL --preclean --no-test-load \
+	    --configure-args=--with-system-icu -l $$tmp_lib . && \
+	$(MAKE) clean-altrep && \
+	cd tests && R_LIBS=$$tmp_lib:$(RLIBS) \
+	  TSAN_OPTIONS="halt_on_error=0 exitcode=66 second_deadlock_stack=1" \
+	  R CMD env LD_PRELOAD=$$(gcc -print-file-name=libtsan.so) \
+	    "$$(R RHOME)/bin/exec/R" --vanilla --no-echo \
+	    -f ../tools/tsan-tests.R --args altrep $(TSAN_THREADS)
 
 # Full suite under valgrind memcheck, all three backends (no
 # instrumentation rebuild; slow). Requires valgrind.

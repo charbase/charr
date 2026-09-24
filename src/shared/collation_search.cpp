@@ -2,6 +2,7 @@
 // Copyright (c) 2013-2025, Marek Gagolewski. See inst/COPYRIGHTS.
 
 #include "collation_search.h"
+#include "utf8.h"
 
 #include <unicode/stringpiece.h>
 #include <unicode/ustring.h>
@@ -198,10 +199,10 @@ CollationRange CollationPositionCursor::to_r_range(
     const CollationRange& range, bool return_length
 ) noexcept
 {
-    const int start = at_utf16(range.start)+1;
+    const int first = at_utf16(range.start);
     const int end = at_utf16(range.end);
     return CollationRange{
-        start, return_length ? end-start+1 : end
+        one_based_position(first), return_length ? end-first : end
     };
 }
 

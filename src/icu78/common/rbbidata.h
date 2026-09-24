@@ -119,6 +119,9 @@ struct RBBIStateTableRowT {
                                    //    Array Size is actually fData->fHeader->fCatCount
                                    //    CAUTION:  see RBBITableBuilder::getTableSize()
                                    //              before changing anything here.
+                                   //    Read and write it as *(fNextState + i).
+                                   //    A subscript is checked against the
+                                   //    declared length by -fsanitize=bounds.
 };
 
 typedef RBBIStateTableRowT<uint8_t> RBBIStateTableRow8;

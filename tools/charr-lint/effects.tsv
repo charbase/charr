@@ -7,7 +7,7 @@ r	LENGTH	int (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api
 r	LOGICAL	int *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
 r	LOGICAL_RO	const int *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
 neutral	NO_REFERENCES	int (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	R inline accessor reads object metadata without allocating or signaling an R error.
-neutral	PRINTNAME	struct SEXPREC *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	R inline accessor reads a symbol field without allocating or signaling an R error.
+r	PRINTNAME	struct SEXPREC *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
 r	RAW	unsigned char *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
 r	REAL_RO	const double *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
 r	R_CHAR	const char *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
@@ -38,7 +38,7 @@ r	Rf_getAttrib	struct SEXPREC *(struct SEXPREC *, struct SEXPREC *)	r	rule:r-hea
 r	Rf_getCharCE	cetype_t (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
 r	Rf_install	struct SEXPREC *(const char *)	r	rule:r-header+rule:reviewed-c-api	
 r	Rf_isFactor	Rboolean (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
-neutral	Rf_isInteger	Rboolean (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	R type predicate does not allocate or signal an R error.
+r	Rf_isInteger	Rboolean (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
 neutral	Rf_isLogical	Rboolean (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	R type predicate does not allocate or signal an R error.
 r	Rf_isMatrix	Rboolean (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
 r	Rf_isNull	Rboolean (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
@@ -56,7 +56,7 @@ r	Rf_protect	struct SEXPREC *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-
 r	Rf_setAttrib	struct SEXPREC *(struct SEXPREC *, struct SEXPREC *, struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
 r	Rf_translateChar	const char *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
 r	Rf_translateCharUTF8	const char *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
-neutral	Rf_unprotect	void (int)	r	rule:r-header+rule:reviewed-c-api	With a valid count on R's main thread, this only decrements the protection stack.
+neutral	Rf_unprotect	void (int)	r	rule:r-header+rule:reviewed-c-api	Without PROTECT_PARANOID, R only decrements R_PPStackTop here and cannot signal. The raw protection rule confines this stack write to ProtHelper and to R helpers that balance their own pushes.
 r	Rf_warning	void (const char *, ...)	r	rule:r-header+rule:reviewed-c-api	
 neutral	Riconv	unsigned long (void *, const char **, unsigned long *, char **, unsigned long *)	r	rule:r-header+rule:reviewed-c-api	Riconv reports conversion failure through its return value.
 neutral+raw-release	Riconv_close	int (void *)	r	rule:r-header+rule:reviewed-c-api	Riconv_close releases a converter and reports failure through its return value.
@@ -85,8 +85,8 @@ owner	charport::Reader::Reader	void (void) noexcept	owner	clang:cleanup-construc
 neutral	charport::Reader::operator=	class charport::Reader &(class charport::Reader &&) noexcept	neutral	clang:no-cxx-propagation	
 r	charport::Reader::reset	void (struct SEXPREC *)	cxx	clang:not-noexcept	charport Reader initialization may raise an R error and does not propagate C++ exceptions.
 neutral	charport::Reader::size	long (void) const noexcept	neutral	clang:no-cxx-propagation	
-cxx	charport::Reader::view	struct charport_strview (long) const	cxx	clang:not-noexcept	
-cxx	charport::Reader::views	void (int, long, const char **, int *, struct cetype_ext_t *) const	cxx	clang:not-noexcept	
+r+cxx	charport::Reader::view	struct charport_strview (long) const	cxx	clang:not-noexcept	The resolved strviews callback may call CHAR and LENGTH, which signal R errors; check_access also throws on a failed status.
+r+cxx	charport::Reader::views	void (int, long, const char **, int *, struct cetype_ext_t *) const	cxx	clang:not-noexcept	The resolved strviews callback may call CHAR and LENGTH, which signal R errors; check_access also throws on a failed status.
 owner	charport::StrViews::StrViews	void (long)	owner	clang:cleanup-construction	
 neutral	charport::StrViews::encodings	const struct cetype_ext_t *(void) const noexcept	neutral	clang:no-cxx-propagation	
 neutral	charport::StrViews::encodings	struct cetype_ext_t *(void) noexcept	neutral	clang:no-cxx-propagation	
@@ -156,7 +156,7 @@ neutral	icu_78::Locale::createFromName	class icu_78::Locale (const char *)		lega
 cxx	icu_78::Normalizer2::getNFCInstance	const class icu_78::Normalizer2 *(enum UErrorCode &)	cxx	clang:not-noexcept	
 cxx	icu_78::Normalizer2::normalize	class icu_78::UnicodeString &(const class icu_78::UnicodeString &, class icu_78::UnicodeString &, enum UErrorCode &) const	cxx	clang:not-noexcept	
 cxx	icu_78::Normalizer2::normalizeUTF8	void (unsigned int, class icu_78::StringPiece, class icu_78::ByteSink &, class icu_78::Edits *, enum UErrorCode &) const	cxx	clang:not-noexcept	
-owner	icu_78::RegexMatcher::RegexMatcher	void (const class icu_78::UnicodeString &, unsigned int, enum UErrorCode &)	owner	clang:cleanup-construction	
+owner-nothrow	icu_78::RegexMatcher::RegexMatcher	void (const class icu_78::UnicodeString &, unsigned int, enum UErrorCode &)	owner	clang:cleanup-construction	ICU is built without C++ exceptions; pattern compilation allocates through uprv_malloc and reports syntax and allocation failures through UErrorCode. Ownership inference still applies.
 cxx	icu_78::RegexMatcher::appendReplacement	class icu_78::RegexMatcher &(class icu_78::UnicodeString &, const class icu_78::UnicodeString &, enum UErrorCode &)	cxx	clang:not-noexcept	
 cxx	icu_78::RegexMatcher::appendTail	class icu_78::UnicodeString &(class icu_78::UnicodeString &)	cxx	clang:not-noexcept	
 cxx	icu_78::RegexMatcher::end	int (enum UErrorCode &) const	cxx	clang:not-noexcept	
@@ -166,34 +166,34 @@ neutral	icu_78::RegexMatcher::groupCount	int (void) const	cxx	clang:not-noexcept
 cxx	icu_78::RegexMatcher::pattern	const class icu_78::RegexPattern &(void) const	cxx	clang:not-noexcept	
 owner	icu_78::RegexMatcher::replaceAll	class icu_78::UnicodeString (const class icu_78::UnicodeString &, enum UErrorCode &)	owner	clang:cleanup-return	
 cxx	icu_78::RegexMatcher::reset	class icu_78::RegexMatcher &(const class icu_78::UnicodeString &)	cxx	clang:not-noexcept	
-cxx	icu_78::RegexMatcher::setStackLimit	void (int, enum UErrorCode &)	cxx	clang:not-noexcept	
-cxx	icu_78::RegexMatcher::setTimeLimit	void (int, enum UErrorCode &)	cxx	clang:not-noexcept	
+neutral	icu_78::RegexMatcher::setStackLimit	void (int, enum UErrorCode &)	cxx	clang:not-noexcept	ICU is built without C++ exceptions; the setter resets the matcher, records a stack capacity limit, and reports failure through UErrorCode.
+neutral	icu_78::RegexMatcher::setTimeLimit	void (int, enum UErrorCode &)	cxx	clang:not-noexcept	ICU setter stores the time limit and reports an invalid value through UErrorCode without allocating.
 cxx	icu_78::RegexMatcher::start	int (enum UErrorCode &) const	cxx	clang:not-noexcept	
 cxx	icu_78::RegexMatcher::start	int (int, enum UErrorCode &) const	cxx	clang:not-noexcept	
 cxx	icu_78::RegexPattern::groupNumberFromName	int (const char *, int, enum UErrorCode &) const	cxx	clang:not-noexcept	
 cxx	icu_78::RegexPattern::patternText	struct UText *(enum UErrorCode &) const	cxx	clang:not-noexcept	
 owner	icu_78::StringByteSink<std::basic_string<char>>::StringByteSink	void (class std::basic_string<char> *)	owner	clang:cleanup-construction	
 cxx	icu_78::StringPiece::StringPiece	void (const char *)	cxx	clang:not-noexcept	
-cxx	icu_78::StringPiece::StringPiece	void (const char *, int)	cxx	clang:not-noexcept	
-owner	icu_78::UnicodeSet::UnicodeSet	void (void)	owner	clang:cleanup-construction	
+neutral	icu_78::StringPiece::StringPiece	void (const char *, int)	cxx	clang:not-noexcept	Inline ICU constructor stores a pointer and a length.
+owner-nothrow	icu_78::UnicodeSet::UnicodeSet	void (void)	owner	clang:cleanup-construction	ICU constructor initializes an empty set in its inline storage without allocating. Ownership inference still applies.
 cxx	icu_78::UnicodeSet::applyPattern	class icu_78::UnicodeSet &(const class icu_78::UnicodeString &, enum UErrorCode &)	cxx	clang:not-noexcept	
 cxx	icu_78::UnicodeSet::complement	class icu_78::UnicodeSet &(void)	cxx	clang:not-noexcept	
 neutral	icu_78::UnicodeSet::contains	signed char (int) const	cxx	clang:not-noexcept	ICU membership test does not allocate or propagate C++ exceptions.
 cxx	icu_78::UnicodeSet::freeze	class icu_78::UnicodeSet *(void)	cxx	clang:not-noexcept	
-cxx	icu_78::UnicodeSet::isBogus	signed char (void) const	cxx	clang:not-noexcept	
+neutral	icu_78::UnicodeSet::isBogus	signed char (void) const	cxx	clang:not-noexcept	Inline ICU accessor tests a stored flag without allocating.
 cxx	icu_78::UnicodeSet::setToBogus	void (void)	cxx	clang:not-noexcept	
 owner	icu_78::UnicodeString::UnicodeString	void (int, int, int)	owner	clang:cleanup-construction	
-owner	icu_78::UnicodeString::UnicodeString	void (void)	owner	clang:cleanup-construction	
+owner-nothrow	icu_78::UnicodeString::UnicodeString	void (void)	owner	clang:cleanup-construction	Inline ICU constructor initializes an empty short string without allocating. Ownership inference still applies.
 cxx	icu_78::UnicodeString::append	class icu_78::UnicodeString &(const char16_t *, int, int)	cxx	clang:not-noexcept	
-owner	icu_78::UnicodeString::fromUTF8	class icu_78::UnicodeString (class icu_78::StringPiece)	owner	clang:cleanup-return	
+owner-nothrow	icu_78::UnicodeString::fromUTF8	class icu_78::UnicodeString (class icu_78::StringPiece)	owner	clang:cleanup-return	ICU is built without C++ exceptions; UTF-8 conversion allocates through uprv_malloc and returns a bogus string on allocation failure. Ownership inference still applies.
 neutral	icu_78::UnicodeString::getBuffer	char16_t *(int)	cxx	clang:not-noexcept	ICU uses a non-throwing allocator and records allocation failure in the string state.
 neutral	icu_78::UnicodeString::getBuffer	const char16_t *(void) const	cxx	clang:not-noexcept	ICU accessor returns the existing string buffer without allocating.
-cxx	icu_78::UnicodeString::isBogus	signed char (void) const	cxx	clang:not-noexcept	
+neutral	icu_78::UnicodeString::isBogus	signed char (void) const	cxx	clang:not-noexcept	Inline ICU accessor tests a stored flag without allocating.
 neutral	icu_78::UnicodeString::length	int (void) const	cxx	clang:not-noexcept	ICU accessor reads the stored string length without allocating.
 neutral	icu_78::UnicodeString::operator=	class icu_78::UnicodeString &(class icu_78::UnicodeString &&) noexcept	neutral	clang:no-cxx-propagation	
 cxx	icu_78::UnicodeString::releaseBuffer	void (int)	cxx	clang:not-noexcept	
 cxx	icu_78::UnicodeString::remove	class icu_78::UnicodeString &(void)	cxx	clang:not-noexcept	
-cxx	icu_78::UnicodeString::setTo	class icu_78::UnicodeString &(const class icu_78::UnicodeString &)	cxx	clang:not-noexcept	
+neutral	icu_78::UnicodeString::setTo	class icu_78::UnicodeString &(const class icu_78::UnicodeString &)	cxx	clang:not-noexcept	ICU is built without C++ exceptions; the copy allocates through uprv_malloc and marks the destination bogus on allocation failure.
 cxx	icu_78::UnicodeString::setToBogus	void (void)	cxx	clang:not-noexcept	
 neutral	icu_78::UnicodeString::swap	void (class icu_78::UnicodeString &) noexcept	neutral	clang:no-cxx-propagation	
 cxx	icu_78::UnicodeString::toUTF8String	class std::basic_string<char> &(class std::basic_string<char> &) const	cxx	clang:not-noexcept	
@@ -264,6 +264,7 @@ owner	std::runtime_error::runtime_error	void (const class std::basic_string<char
 cxx	std::set<unsigned long, charr::shared::collation_ordering::IndexLess>::insert	struct std::pair<struct std::_Rb_tree_const_iterator<unsigned long>, _Bool> (const unsigned long &)	cxx	clang:not-noexcept	
 owner	std::set<unsigned long, charr::shared::collation_ordering::IndexLess>::set	void (const struct charr::shared::collation_ordering::IndexLess &, const class std::allocator<unsigned long> &)	owner	clang:cleanup-construction	
 cxx	std::stable_sort	void (class __gnu_cxx::__normal_iterator<int *, class std::vector<int> >, class __gnu_cxx::__normal_iterator<int *, class std::vector<int> >, struct charr::shared::collation_ordering::IndexLess)	cxx	clang:not-noexcept	
+neutral	std::terminate	void (void) __attribute__((noreturn)) noexcept	neutral	clang:no-cxx-propagation	
 cxx	std::thread::join	void (void)	cxx	clang:not-noexcept	
 neutral	std::thread::joinable	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
 neutral	std::unique_ptr<charr::shared::ByteSearchMatcher>::operator bool	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
@@ -546,8 +547,11 @@ cxx	std::vector<int>::resize	void (unsigned long)	cxx	clang:not-noexcept
 neutral	std::vector<int>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
 owner	std::vector<int>::vector	void (unsigned long, const int &, const class std::allocator<int> &)	owner	clang:cleanup-construction	
 owner	std::vector<int>::vector	void (void) noexcept	owner	clang:cleanup-construction	
+cxx	std::vector<long>::assign	void (unsigned long, const long &)	cxx	clang:not-noexcept	
+neutral	std::vector<long>::operator[]	const long &(unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
 neutral	std::vector<long>::operator[]	long &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
 cxx	std::vector<long>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+neutral	std::vector<long>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
 owner	std::vector<long>::vector	void (void) noexcept	owner	clang:cleanup-construction	
 cxx	std::vector<std::basic_string<char>>::assign	void (unsigned long, const class std::basic_string<char> &)	cxx	clang:not-noexcept	
 neutral	std::vector<std::basic_string<char>>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	

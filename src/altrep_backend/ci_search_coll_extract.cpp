@@ -336,25 +336,6 @@ CHARR_R_HELPER void emit_warnings(
 }
 
 
-CHARR_NEUTRAL_HELPER void reduce_fallback_prefix(
-    bool& warning,
-    const std::vector<unsigned char>& fallback,
-    const std::vector<unsigned char>& failures,
-    bool failed
-) noexcept
-{
-    std::size_t limit = fallback.size();
-    if (failed) {
-        limit = 0;
-        while (limit < failures.size() && failures[limit] == 0)
-            ++limit;
-        if (limit < failures.size())
-            ++limit;
-    }
-    for (std::size_t i = 0; i < limit; ++i)
-        warning = warning || fallback[i] != 0;
-}
-
 
 class FirstBody final : public ParallelBody {
 public:
@@ -362,7 +343,7 @@ public:
         const charport::StrViews& subjects,
         const shared::CollationInputs& patterns,
         R_len_t vectorize_length, const shared::CollatorOptions& options,
-        std::vector<unsigned char>& fallback,
+        shared::SerialWarnings& fallback,
         io::ParallelOutputBuilder& output
     ) noexcept
         : subjects_(subjects), patterns_(patterns),
@@ -377,8 +358,8 @@ public:
     {
         shared::Collator collator;
         const shared::CollatorOpenResult opened = collator.reset(options_);
-        fallback_[context.worker] =
-            static_cast<unsigned char>(opened.root_fallback);
+        if (opened.root_fallback)
+            fallback_.add(context);
         require_icu_success(opened.status);
         shared::CollationCursor subject_cursor;
         shared::CollationMatcher matcher;
@@ -467,7 +448,7 @@ private:
     const shared::CollationInputs& patterns_;
     R_len_t vectorize_length_;
     shared::CollatorOptions options_;
-    std::vector<unsigned char>& fallback_;
+    shared::SerialWarnings& fallback_;
     io::ParallelOutputBuilder& output_;
 };
 
@@ -482,13 +463,11 @@ public:
         bool omit,
         std::vector<io::OutputStore>& stores,
         std::vector<R_len_t>& maxima,
-        std::vector<unsigned char>& fallback,
-        std::vector<unsigned char>& failures
+        shared::SerialWarnings& fallback
     ) noexcept
         : subjects_(subjects), patterns_(patterns),
           vectorize_length_(vectorize_length), options_(options), omit_(omit),
-          stores_(stores), maxima_(maxima), fallback_(fallback),
-          failures_(failures)
+          stores_(stores), maxima_(maxima), fallback_(fallback)
     {
     }
 
@@ -496,13 +475,7 @@ public:
         shared::WorkerContext& context
     ) override
     {
-        try {
-            run_worker(context);
-        }
-        catch (...) {
-            failures_[context.worker] = 1;
-            throw;
-        }
+        run_worker(context);
     }
 
 private:
@@ -512,8 +485,8 @@ private:
     {
         shared::Collator collator;
         const shared::CollatorOpenResult opened = collator.reset(options_);
-        fallback_[context.worker] =
-            static_cast<unsigned char>(opened.root_fallback);
+        if (opened.root_fallback)
+            fallback_.add(context);
         require_icu_success(opened.status);
 
         shared::CollationCursor subject_cursor;
@@ -645,8 +618,7 @@ private:
     bool omit_;
     std::vector<io::OutputStore>& stores_;
     std::vector<R_len_t>& maxima_;
-    std::vector<unsigned char>& fallback_;
-    std::vector<unsigned char>& failures_;
+    shared::SerialWarnings& fallback_;
 };
 
 } // namespace search_coll_extract
@@ -692,7 +664,7 @@ CHARR_ENTRYPOINT SEXP ci_extract_first_coll(
         std::vector<char> utf8_buffer;
         io::OutputBuilder builder(0);
         io::ParallelOutputBuilder parallel_builder;
-        std::vector<unsigned char> fallback;
+        shared::SerialWarnings fallback;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -757,7 +729,6 @@ CHARR_ENTRYPOINT SEXP ci_extract_first_coll(
                         count_empty_patterns(patterns);
 
                     if (plan.workers > 1) {
-                        fallback.assign(plan.workers, 0);
                         parallel_builder.reset(
                             vectorize_length, plan.workers
                         );
@@ -765,12 +736,18 @@ CHARR_ENTRYPOINT SEXP ci_extract_first_coll(
                             subject_views, patterns, vectorize_length,
                             options, fallback, parallel_builder
                         );
-                        shared::run_parallel(plan, tasks, body);
-                        for (unsigned worker = 0;
-                                worker < plan.workers; ++worker) {
-                            root_fallback_warning =
-                                root_fallback_warning || fallback[worker] != 0;
+                        try {
+                            shared::run_parallel_with_warnings(
+                                plan, tasks, body, fallback
+                            );
                         }
+                        catch (...) {
+                            root_fallback_warning = root_fallback_warning ||
+                                fallback.count() > 0;
+                            throw;
+                        }
+                        root_fallback_warning = root_fallback_warning ||
+                            fallback.count() > 0;
                         result = entry_protections.reprotect_one(
                             parallel_builder.to_sexp(), result_index
                         );
@@ -859,8 +836,7 @@ CHARR_ENTRYPOINT SEXP ci_extract_all_coll(
         io::GrowableOutputBuilder child_builder;
         io::OutputBuilder matrix_builder(0);
         std::vector<R_len_t> maxima;
-        std::vector<unsigned char> fallback;
-        std::vector<unsigned char> failures;
+        shared::SerialWarnings fallback;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -934,27 +910,22 @@ CHARR_ENTRYPOINT SEXP ci_extract_all_coll(
                         for (R_len_t i = 0; i < vectorize_length; ++i)
                             stores.emplace_back(0, 0);
                         maxima.assign(plan.workers, 0);
-                        fallback.assign(plan.workers, 0);
-                        failures.assign(plan.workers, 0);
                         AllBody body(
                             subject_views, patterns, vectorize_length,
-                            options, omit, stores, maxima,
-                            fallback, failures
+                            options, omit, stores, maxima, fallback
                         );
                         try {
-                            shared::run_parallel(plan, tasks, body);
+                            shared::run_parallel_with_warnings(
+                                plan, tasks, body, fallback
+                            );
                         }
                         catch (...) {
-                            reduce_fallback_prefix(
-                                root_fallback_warning,
-                                fallback, failures, true
-                            );
+                            root_fallback_warning = root_fallback_warning ||
+                                fallback.count() > 0;
                             throw;
                         }
-                        reduce_fallback_prefix(
-                            root_fallback_warning,
-                            fallback, failures, false
-                        );
+                        root_fallback_warning = root_fallback_warning ||
+                            fallback.count() > 0;
                         for (unsigned worker = 0;
                                 worker < plan.workers; ++worker) {
                             if (max_columns < maxima[worker])

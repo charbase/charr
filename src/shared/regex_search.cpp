@@ -8,6 +8,7 @@
 #include <unicode/utext.h>
 #include <unicode/utf16.h>
 
+#include <climits>
 #include <new>
 #include <limits>
 #include <stdexcept>
@@ -27,11 +28,11 @@ void regex_range_to_positions(
         return;
 
     Utf8PositionCursor positions(subject);
-    const int start = positions.at_byte(range.start)+1;
+    const int first = positions.at_byte(range.start);
     const int end = positions.at_byte(range.end);
     range = RegexRange{
-        start,
-        return_length ? end-start+1 : end
+        one_based_position(first),
+        return_length ? end-first : end
     };
 }
 
@@ -42,16 +43,23 @@ void regex_ranges_to_positions(
     bool return_length
 ) noexcept
 {
-    Utf8PositionCursor positions(subject);
+    // Starts and ends get a cursor each. Whole matches are ordered, but a
+    // capture group column is not: a group inside a lookahead can end past
+    // its match, and the next match's group can then start before that end.
+    // Each of the two sequences stays nondecreasing in that case, so neither
+    // cursor has to restart; a sequence that does go backward (a lookbehind
+    // group of varying width) restarts its cursor and is still correct.
+    Utf8PositionCursor starts(subject);
+    Utf8PositionCursor ends(subject);
     for (std::size_t i = 0; i < ranges.size(); ++i) {
         RegexRange& range = ranges[i];
         if (range.start < 0 || range.end < 0)
             continue;
-        const int start = positions.at_byte(range.start)+1;
-        const int end = positions.at_byte(range.end);
+        const int first = starts.at_byte(range.start);
+        const int end = ends.at_byte(range.end);
         range = RegexRange{
-            start,
-            return_length ? end-start+1 : end
+            one_based_position(first),
+            return_length ? end-first : end
         };
     }
 }
@@ -407,6 +415,12 @@ int RegexMatcher::count(
     int result = 0;
     UBool found = matcher_->find(status);
     while (found != 0 && U_SUCCESS(status)) {
+        // An empty pattern match at every UTF-16 unit of a maximal string
+        // yields one match more than an R integer holds.
+        if (result == INT_MAX) {
+            status = U_INDEX_OUTOFBOUNDS_ERROR;
+            break;
+        }
         ++result;
         found = matcher_->find(status);
     }

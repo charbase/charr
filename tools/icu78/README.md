@@ -37,7 +37,7 @@ canaries, and the wider comparison produced no trimming-specific failure.
 ## Source-package adjustments
 
 The bundled runtime sources come from the official ICU4C 78.3 archive, with
-seven small changes for CRAN compiler diagnostics and platform compatibility:
+eleven small changes for CRAN compiler diagnostics and platform compatibility:
 
 - `common/locmap.cpp` uses an overlap-safe move when shortening the Windows
   language tags `quz` and `prs`. The upstream `strcat()` call had overlapping
@@ -45,7 +45,10 @@ seven small changes for CRAN compiler diagnostics and platform compatibility:
 - `common/unistr.cpp` marks the static destructor-instantiation helper
   `[[maybe_unused]]` instead of suppressing `-Wunused-function`.
 - `i18n/decNumber.cpp` leaves the compiler's `-Warray-bounds` diagnostics
-  enabled around three upstream decimal routines. Their logic is unchanged.
+  enabled around three upstream decimal routines. `decGetInt()` returns
+  `BADINT` when a partial unit's digit count is outside `1 .. DECDPUN-1`.
+  ICU defines `DECDPUN` as 1, so that branch is only reached when negating
+  the exponent overflows; defined exponents still take the whole-unit path.
 - `i18n/formattedvalue.cpp` omits the unused `ufmtval_getString()` definition,
   as stringi does. GCC reports a false `-Wreturn-local-addr` diagnostic for
   the upstream implementation.
@@ -59,6 +62,23 @@ seven small changes for CRAN compiler diagnostics and platform compatibility:
   `ResolveLocaleName()` lookup on 32-bit Windows. Rtools40 does not provide the
   symbol, and ICU already falls back to the Windows user locale when the lookup
   is unavailable. This follows the fix for stringi issue 501.
+- `common/putil.cpp` copies one byte fewer than the code-page buffer in
+  `getCodepageFromPOSIXID()` and still writes the terminating NUL. The
+  previous `strncpy` bound was the destination size, which GCC reports as
+  `-Wstringop-truncation`. A shorter source still zero-fills, and a longer
+  source still keeps the same prefix.
+- `common/udata.cpp` declares the linked-in data symbol with stubdata's
+  `ICU_Data_Header` type. The old `DataHeader` declaration was a different
+  type for the same object and tripped `-Wodr` under LTO. Call sites that
+  need a `DataHeader *` cast the address; the object bytes are unchanged.
+- `common/rbbidata.h`, `common/rbbi.cpp`, `common/rbbitblb.cpp`, and
+  `common/rbbidata.cpp` read and write `RBBIStateTableRowT::fNextState`
+  with pointer arithmetic on its first element. The array is a trailing
+  struct-hack member of declared length 1, allocated to the category count.
+  A subscript makes `-fsanitize=bounds` report that declared length.
+- `i18n/regeximp.h` and `i18n/rematch.cpp` use the same pointer arithmetic
+  for every `REStackFrame::fExtra` access, including addresses of elements.
+  The frame is allocated to `fFrameSize`; the declared length is 1.
 
 The platform-specific optimization and macro-state pragmas remain unchanged;
 they do not suppress compiler diagnostics.

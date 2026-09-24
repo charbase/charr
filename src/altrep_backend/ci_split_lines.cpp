@@ -78,8 +78,11 @@ CHARR_NEUTRAL_HELPER R_len_t vectorize_next(
 {
     if (index == output_length - 1 - (output_length % source_length))
         return output_length;
-    index += source_length;
-    return index >= output_length ? (index % source_length) + 1 : index;
+    // Compare before adding: index + source_length can pass INT_MAX. The
+    // wrapped index has the same residue, so the remainder is taken first.
+    if (source_length >= output_length - index)
+        return (index % source_length) + 1;
+    return index + source_length;
 }
 
 
@@ -191,9 +194,13 @@ public:
                 const shared::StringView& value = normalized_[
                     static_cast<std::size_t>(lane)
                 ];
-                for (R_len_t i = lane; i < vectorize_length_;
-                        i += source_length_) {
-                    split_one(i, value, scan, builder);
+                // Wide like base's loop: the last stride can pass INT_MAX.
+                for (R_xlen_t wide_index = lane;
+                        wide_index < vectorize_length_;
+                        wide_index += source_length_) {
+                    split_one(
+                        static_cast<R_len_t>(wide_index), value, scan, builder
+                    );
                 }
             }
         }

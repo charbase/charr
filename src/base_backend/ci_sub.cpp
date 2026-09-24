@@ -249,7 +249,11 @@ CHARR_R_HELPER void ci__sub_emit_replacement_warnings_r(
 }
 
 
+// Prepared bounds are protected in the caller's `protections` domain. The
+// return value is the number of protections added there, so a loop can
+// release one element's bounds before preparing the next.
 CHARR_R_HELPER R_len_t ci__sub_prepare_from_to_length_r(
+    shared::ProtHelper& protections,
     SEXP& from, SEXP& to, SEXP& length,
     R_len_t& from_len, R_len_t& to_len, R_len_t& length_len,
     int*& from_tab, int*& to_tab, int*& length_tab,
@@ -272,7 +276,9 @@ CHARR_R_HELPER R_len_t ci__sub_prepare_from_to_length_r(
         UNPROTECT(1);
     }
 
-    PROTECT(from = ci__prepare_arg_integer_r(from, "from"));
+    from = protections.protect_one(
+        ci__prepare_arg_integer_r(from, "from")
+    );
     ++protected_count;
 
     if (from_is_matrix) {
@@ -302,7 +308,9 @@ CHARR_R_HELPER R_len_t ci__sub_prepare_from_to_length_r(
         }
     }
     else if (Rf_isNull(length)) {
-        PROTECT(to = ci__prepare_arg_integer_r(to, "to"));
+        to = protections.protect_one(
+            ci__prepare_arg_integer_r(to, "to")
+        );
         ++protected_count;
         from_len = LENGTH(from);
         from_tab = INTEGER(from);
@@ -310,7 +318,9 @@ CHARR_R_HELPER R_len_t ci__sub_prepare_from_to_length_r(
         to_tab = INTEGER(to);
     }
     else {
-        PROTECT(length = ci__prepare_arg_integer_r(length, "length"));
+        length = protections.protect_one(
+            ci__prepare_arg_integer_r(length, "length")
+        );
         ++protected_count;
         from_len = LENGTH(from);
         from_tab = INTEGER(from);
@@ -396,13 +406,11 @@ CHARR_ENTRYPOINT SEXP ci_sub(
         result = shared::unwind_protect(
             unwind_token,
             [&]() -> SEXP {
-                const R_len_t bounds_protected =
-                    ci__sub_prepare_from_to_length_r(
-                        from, to, length,
-                        from_len, to_len, length_len,
-                        from_tab, to_tab, length_tab, use_matrix_1
-                    );
-                callback_protections.adopt(bounds_protected);
+                ci__sub_prepare_from_to_length_r(
+                    callback_protections, from, to, length,
+                    from_len, to_len, length_len,
+                    from_tab, to_tab, length_tab, use_matrix_1
+                );
                 const R_len_t endpoint_len = to_len > length_len
                     ? to_len : length_len;
                 vectorize_len = recycling_length_r(
@@ -627,13 +635,11 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement(
         result = shared::unwind_protect(
             unwind_token,
             [&]() -> SEXP {
-                const R_len_t bounds_protected =
-                    ci__sub_prepare_from_to_length_r(
-                        from, to, length,
-                        from_len, to_len, length_len,
-                        from_tab, to_tab, length_tab, use_matrix_1
-                    );
-                callback_protections.adopt(bounds_protected);
+                ci__sub_prepare_from_to_length_r(
+                    callback_protections, from, to, length,
+                    from_len, to_len, length_len,
+                    from_tab, to_tab, length_tab, use_matrix_1
+                );
                 const R_len_t endpoint_len = to_len > length_len
                     ? to_len : length_len;
                 vectorize_len = recycling_length_r(
@@ -943,13 +949,13 @@ CHARR_ENTRYPOINT SEXP ci_sub_all(
                         }
                         inner_protected =
                             ci__sub_prepare_from_to_length_r(
+                                callback_protections,
                                 inner_from, inner_to, inner_length,
                                 inner_from_len, inner_to_len,
                                 inner_length_len,
                                 inner_from_tab, inner_to_tab,
                                 inner_length_tab, use_matrix_1
                             );
-                        callback_protections.adopt(inner_protected);
                     }
 
                     const R_len_t inner_endpoint_len =
@@ -1412,13 +1418,13 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement_all(
                     }
                     const R_len_t inner_protected =
                         ci__sub_prepare_from_to_length_r(
+                            callback_protections,
                             inner_from, inner_to, inner_length,
                             inner_from_len, inner_to_len,
                             inner_length_len,
                             inner_from_tab, inner_to_tab,
                             inner_length_tab, use_matrix_1
                         );
-                    callback_protections.adopt(inner_protected);
                     const int inner_endpoint_len =
                         inner_to_len > inner_length_len
                             ? inner_to_len : inner_length_len;

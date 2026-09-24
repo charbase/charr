@@ -291,7 +291,11 @@ struct REStackFrame {
     int64_t            fExtra[1];        // Extra state, for capture group start/ends
                                          //   atomic parentheses, repeat counts, etc.
                                          //   Locations assigned at pattern compile time.
-                                         //   Variable-length array.
+                                         //   Variable-length array. The frame is
+                                         //   allocated with fFrameSize slots.
+                                         //   Read and write it as *(fExtra + i).
+                                         //   A subscript is checked against the
+                                         //   declared length by -fsanitize=bounds.
 };
 // number of UVector elements in the header
 #define RESTACKFRAME_HDRCOUNT 2

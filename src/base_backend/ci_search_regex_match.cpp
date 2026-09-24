@@ -573,7 +573,9 @@ CHARR_ENTRYPOINT SEXP ci_match_first_regex(
                             else {
                                 for (R_len_t i = lane;
                                         i < vectorize_length;
-                                        i += pattern_length) {
+                                        i = pattern_length < vectorize_length-i
+                                            ? i+pattern_length
+                                            : vectorize_length) {
                                     ++empty_pattern_warnings;
                                 }
                             }
@@ -597,7 +599,8 @@ CHARR_ENTRYPOINT SEXP ci_match_first_regex(
 
                         for (R_len_t i = lane;
                                 i < vectorize_length;
-                                i += pattern_length) {
+                                i = pattern_length < vectorize_length-i
+                                    ? i+pattern_length : vectorize_length) {
                             const std::size_t subject_index =
                                 static_cast<std::size_t>(
                                     i % subject_length
@@ -795,7 +798,8 @@ CHARR_ENTRYPOINT SEXP ci_match_all_regex(
 
                         for (R_len_t i = lane;
                                 i < vectorize_length;
-                                i += pattern_length) {
+                                i = pattern_length < vectorize_length-i
+                                    ? i+pattern_length : vectorize_length) {
                             if (current_pattern.missing || pattern_empty) {
                                 if (pattern_empty)
                                     ++empty_pattern_warnings;

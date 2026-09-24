@@ -78,6 +78,26 @@ CHARR_CXX_HELPER void ensure_iterator(
 }
 
 
+// The worker form: a serial run warns when its one iterator opens, at the
+// first element that needs it, so the warning is counted at that element.
+CHARR_CXX_HELPER void ensure_iterator(
+    shared::BoundaryIterator& iterator,
+    const shared::BoundaryOptions& options,
+    bool& opened,
+    shared::SerialWarnings& fallback,
+    const shared::WorkerContext& context
+)
+{
+    if (opened)
+        return;
+    const shared::BoundaryOpenResult result = iterator.reset(options);
+    if (result.root_fallback)
+        fallback.add(context);
+    require_icu_success(result.status);
+    opened = true;
+}
+
+
 CHARR_CXX_HELPER void normalize_input(
     const charport::StrViews& source,
     shared::NativeToUtf8& converter,
@@ -155,12 +175,13 @@ public:
             require_icu_success(opened.status);
         }
 
+        int* ends = output_+length_;
         while (context.next_chunk()) {
             const R_len_t begin = static_cast<R_len_t>(context.begin);
             const R_len_t end = static_cast<R_len_t>(context.end);
             for (R_len_t i = begin; i < end; ++i) {
                 output_[i] = NA_INTEGER;
-                output_[i+length_] = NA_INTEGER;
+                ends[i] = NA_INTEGER;
 
                 const shared::StringView& value = values_[
                     static_cast<std::size_t>(i)
@@ -170,7 +191,7 @@ public:
 
                 if (return_length_) {
                     output_[i] = -1;
-                    output_[i+length_] = -1;
+                    ends[i] = -1;
                 }
                 if (value.len == 0)
                     continue;
@@ -181,7 +202,7 @@ public:
                             value.ptr, value.len, ascii_word_end
                         )) {
                     output_[i] = 1;
-                    output_[i+length_] = ascii_word_end;
+                    ends[i] = ascii_word_end;
                     continue;
                 }
 
@@ -195,7 +216,7 @@ public:
                 const int start = cursor.at_byte(range.start) + 1;
                 const int finish = cursor.at_byte(range.end);
                 output_[i] = start;
-                output_[i+length_] = return_length_
+                ends[i] = return_length_
                     ? finish - start + 1
                     : finish;
             }
@@ -275,12 +296,11 @@ public:
         bool return_length,
         std::vector<int>& missing,
         AllBoundaryRows& rows,
-        std::vector<unsigned char>& fallback,
-        std::vector<int>& failures
+        shared::SerialWarnings& fallback
     ) noexcept
         : normalized_(normalized), options_(options),
           return_length_(return_length), missing_(missing), rows_(rows),
-          fallback_(fallback), failures_(failures)
+          fallback_(fallback)
     {
     }
 
@@ -291,48 +311,37 @@ public:
         shared::BoundaryIterator iterator;
         std::vector<shared::BoundaryRange> occurrences;
         bool opened = false;
-        bool root_fallback = false;
-        try {
-            while (context.next_chunk()) {
-                for (R_xlen_t task = context.begin;
-                        task < context.end; ++task) {
-                    const std::size_t index = static_cast<std::size_t>(task);
-                    const shared::StringView& value = normalized_[index];
-                    if (value.is_na()) {
-                        missing_[index] = 1;
-                        continue;
-                    }
-                    missing_[index] = 0;
-
-                    ensure_iterator(
-                        iterator, options_, opened, root_fallback
-                    );
-                    require_icu_success(iterator.set_text(value));
-                    iterator.first();
-                    occurrences.clear();
-                    shared::Utf8PositionCursor cursor(value);
-                    shared::BoundaryRange range{0, 0};
-                    while (iterator.next(range)) {
-                        const int start = cursor.at_byte(range.start)+1;
-                        const int end = cursor.at_byte(range.end);
-                        const shared::BoundaryRange occurrence{
-                            start,
-                            return_length_ ? end-start+1 : end
-                        };
-                        occurrences.push_back(occurrence);
-                    }
-                    rows_.copy_from(index, occurrences);
+        while (context.next_chunk()) {
+            for (R_xlen_t task = context.begin;
+                    task < context.end; ++task) {
+                const std::size_t index = static_cast<std::size_t>(task);
+                const shared::StringView& value = normalized_[index];
+                if (value.is_na()) {
+                    missing_[index] = 1;
+                    continue;
                 }
+                missing_[index] = 0;
+
+                ensure_iterator(
+                    iterator, options_, opened, fallback_, context
+                );
+                require_icu_success(iterator.set_text(value));
+                iterator.first();
+                occurrences.clear();
+                shared::Utf8PositionCursor cursor(value);
+                shared::BoundaryRange range{0, 0};
+                while (iterator.next(range)) {
+                    const int start = cursor.at_byte(range.start)+1;
+                    const int end = cursor.at_byte(range.end);
+                    const shared::BoundaryRange occurrence{
+                        start,
+                        return_length_ ? end-start+1 : end
+                    };
+                    occurrences.push_back(occurrence);
+                }
+                rows_.copy_from(index, occurrences);
             }
         }
-        catch (...) {
-            fallback_[context.worker] =
-                static_cast<unsigned char>(root_fallback);
-            failures_[context.worker] = 1;
-            throw;
-        }
-        fallback_[context.worker] =
-            static_cast<unsigned char>(root_fallback);
     }
 
 private:
@@ -341,8 +350,7 @@ private:
     bool return_length_;
     std::vector<int>& missing_;
     AllBoundaryRows& rows_;
-    std::vector<unsigned char>& fallback_;
-    std::vector<int>& failures_;
+    shared::SerialWarnings& fallback_;
 };
 
 
@@ -495,8 +503,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_boundaries(
         shared::BoundaryIterator iterator;
         std::vector<int> staged_missing;
         AllBoundaryRows staged_occurrences;
-        std::vector<unsigned char> fallback;
-        std::vector<int> failures;
+        shared::SerialWarnings fallback;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -582,7 +589,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_boundaries(
                         current_index
                     );
                     int* output = INTEGER(current);
-                    for (int j = 0; j < count; ++j) {
+                    for (R_xlen_t j = 0; j < count; ++j) {
                         const shared::BoundaryRange& occurrence =
                             occurrences[static_cast<std::size_t>(j)];
                         output[j] = occurrence.start;
@@ -598,38 +605,20 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_boundaries(
                     staged_occurrences.reset(
                         static_cast<std::size_t>(length)
                     );
-                    fallback.assign(parallel_plan.workers, 0);
-                    failures.assign(parallel_plan.workers, 0);
                     AllBody body(
                         normalized, options, return_length,
-                        staged_missing, staged_occurrences,
-                        fallback, failures
+                        staged_missing, staged_occurrences, fallback
                     );
                     try {
-                        shared::run_parallel(
-                            parallel_plan, length, body
+                        shared::run_parallel_with_warnings(
+                            parallel_plan, length, body, fallback
                         );
                     }
                     catch (...) {
-                        unsigned limit = 0;
-                        while (limit < parallel_plan.workers &&
-                                failures[limit] == 0) {
-                            ++limit;
-                        }
-                        if (limit < parallel_plan.workers)
-                            ++limit;
-                        for (unsigned worker = 0;
-                                worker < limit; ++worker) {
-                            root_fallback_warning = root_fallback_warning ||
-                                fallback[worker] != 0;
-                        }
+                        root_fallback_warning = fallback.count() > 0;
                         throw;
                     }
-                    for (unsigned worker = 0;
-                            worker < parallel_plan.workers; ++worker) {
-                        root_fallback_warning = root_fallback_warning ||
-                            fallback[worker] != 0;
-                    }
+                    root_fallback_warning = fallback.count() > 0;
 
                     for (R_len_t i = 0; i < length; ++i) {
                         const std::size_t index =
@@ -661,7 +650,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_boundaries(
                             current_index
                         );
                         int* output = INTEGER(current);
-                        for (int j = 0; j < count; ++j) {
+                        for (R_xlen_t j = 0; j < count; ++j) {
                             shared::BoundaryRange& occurrence =
                                 staged_occurrences.range(
                                     index, static_cast<std::size_t>(j)

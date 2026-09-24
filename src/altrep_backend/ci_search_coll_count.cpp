@@ -117,7 +117,7 @@ CHARR_CXX_HELPER void stage_utf16(
 
 CHARR_CXX_HELPER int count_empty_patterns(
     const shared::CollationInputs& patterns
-) noexcept
+)
 {
     int result = 0;
     for (std::size_t i = 0; i < patterns.size(); ++i) {

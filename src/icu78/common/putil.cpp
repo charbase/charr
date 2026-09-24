@@ -2101,7 +2101,10 @@ getCodepageFromPOSIXID(const char *localeName, char * buffer, int32_t buffCapaci
         size_t localeCapacity = uprv_min(sizeof(localeBuf), (name-localeName)+1);
         uprv_strncpy(localeBuf, localeName, localeCapacity);
         localeBuf[localeCapacity-1] = 0; /* ensure NUL termination */
-        name = uprv_strncpy(buffer, name+1, buffCapacity);
+        /* Leave the last byte for the explicit NUL. A bound equal to the
+           destination size trips -Wstringop-truncation, and the terminator
+           below already drops that byte. */
+        name = uprv_strncpy(buffer, name+1, static_cast<size_t>(buffCapacity) - 1);
         buffer[buffCapacity-1] = 0; /* ensure NUL termination */
         if ((variant = const_cast<char *>(uprv_strchr(name, '@'))) != nullptr) {
             *variant = 0;

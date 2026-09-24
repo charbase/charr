@@ -129,6 +129,9 @@ CHARR_ENTRYPOINT SEXP ci_locate_first_boundaries(
                     Rf_allocMatrix(INTSXP, length, 2), result_index
                 );
                 int* output = INTEGER(result);
+                // The second column through its own pointer: i+length is an
+                // int sum that overflows once length passes INT_MAX/2.
+                int* ends = output+length;
 
                 normalized.resize(static_cast<std::size_t>(length));
                 const SEXP* values = length > 0
@@ -147,7 +150,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_first_boundaries(
                     shared::boundary_ascii_word_first(options);
                 for (R_len_t i = 0; i < length; ++i) {
                     output[i] = NA_INTEGER;
-                    output[i+length] = NA_INTEGER;
+                    ends[i] = NA_INTEGER;
 
                     const shared::StringView& value = normalized[
                         static_cast<std::size_t>(i)
@@ -157,7 +160,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_first_boundaries(
 
                     if (return_length) {
                         output[i] = -1;
-                        output[i+length] = -1;
+                        ends[i] = -1;
                     }
                     if (value.len == 0)
                         continue;
@@ -168,7 +171,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_first_boundaries(
                                 value.ptr, value.len, ascii_word_end
                             )) {
                         output[i] = 1;
-                        output[i+length] = ascii_word_end;
+                        ends[i] = ascii_word_end;
                         continue;
                     }
 
@@ -186,7 +189,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_first_boundaries(
                     const int start = cursor.at_byte(range.start) + 1;
                     const int end = cursor.at_byte(range.end);
                     output[i] = start;
-                    output[i+length] = return_length
+                    ends[i] = return_length
                         ? end - start + 1
                         : end;
                 }
@@ -332,7 +335,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_boundaries(
                         current_index
                     );
                     int* output = INTEGER(current);
-                    for (int j = 0; j < count; ++j) {
+                    for (R_xlen_t j = 0; j < count; ++j) {
                         const shared::BoundaryRange& occurrence =
                             occurrences[static_cast<std::size_t>(j)];
                         output[j] = occurrence.start;

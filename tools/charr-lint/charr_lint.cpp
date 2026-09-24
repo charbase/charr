@@ -24,6 +24,8 @@
 #include <llvm/Support/raw_ostream.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <set>
 #include <fstream>
 #include <map>
@@ -112,8 +114,10 @@ std::string effect_name(const Effect& effect)
     std::vector<std::string> components;
     if (effect.fallible_r)
         components.push_back("r");
+    // 'owner' carries the C++ error effect. An ICU owner whose C++ effect a
+    // reviewed override removed keeps its ownership as 'owner-nothrow'.
     if (effect.returns_owner)
-        components.push_back("owner");
+        components.push_back(effect.cpp_throw ? "owner" : "owner-nothrow");
     else if (effect.cpp_throw)
         components.push_back("cxx");
     if (effect.raw_acquire)
@@ -122,7 +126,7 @@ std::string effect_name(const Effect& effect)
         components.push_back("raw-release");
     if (components.empty())
         return "neutral";
-    if (!effect.fallible_r && !effect.cpp_throw &&
+    if (!effect.fallible_r && !effect.cpp_throw && !effect.returns_owner &&
             (effect.raw_acquire || effect.raw_release)) {
         components.insert(components.begin(), "neutral");
     }
@@ -147,6 +151,7 @@ bool parse_effect(
 
     std::set<std::string> components;
     bool neutral = false;
+    bool owner_nothrow = false;
 
     while (!name.empty()) {
         const std::pair<llvm::StringRef, llvm::StringRef> split =
@@ -177,6 +182,10 @@ bool parse_effect(
             effect.cpp_throw = true;
             effect.returns_owner = true;
         }
+        else if (component == "owner-nothrow") {
+            owner_nothrow = true;
+            effect.returns_owner = true;
+        }
         else if (component == "raw-acquire") {
             effect.raw_acquire = true;
         }
@@ -193,8 +202,13 @@ bool parse_effect(
         error = "empty effect";
         return false;
     }
-    if (neutral && (effect.fallible_r || effect.cpp_throw)) {
+    if (neutral &&
+            (effect.fallible_r || effect.cpp_throw || effect.returns_owner)) {
         error = "'neutral' cannot be combined with 'r', 'cxx', or 'owner'";
+        return false;
+    }
+    if (owner_nothrow && effect.cpp_throw) {
+        error = "'owner-nothrow' cannot be combined with 'cxx' or 'owner'";
         return false;
     }
 
@@ -212,6 +226,11 @@ bool parse_effect_delta(
         return false;
     if (name.split('+').first == "neutral" || name.contains("+neutral")) {
         error = "'neutral' is not an override component";
+        return false;
+    }
+    if (name.contains("owner-nothrow")) {
+        error = "'owner-nothrow' is not an override component; "
+            "remove 'cxx' from an ICU owner instead";
         return false;
     }
     return true;
@@ -805,6 +824,45 @@ bool is_reviewed_c_api_declaration(
     return false;
 }
 
+// ICU is built without C++ exceptions: its allocation goes through
+// uprv_malloc and reports failure through UErrorCode or a bogus object. That
+// fact may remove the C++ effect from an ICU owner, so it is limited to the
+// vendored ICU public headers and a system ICU's unicode/ include directory.
+// Every file location of the declaration must be such a header.
+bool is_icu_header_location(
+    clang::SourceLocation location,
+    const clang::SourceManager& source_manager
+)
+{
+    std::string normalized = source_manager.getFilename(location).str();
+    std::replace(normalized.begin(), normalized.end(), '\\', '/');
+    const llvm::StringRef path(normalized);
+    if (path.contains("/src/icu78/unicode/") ||
+            path.starts_with("src/icu78/unicode/")) {
+        return true;
+    }
+    return source_manager.isInSystemHeader(location) &&
+        llvm::sys::path::filename(llvm::sys::path::parent_path(path)) ==
+            "unicode";
+}
+
+bool is_icu_header_declaration(
+    const clang::FunctionDecl& function,
+    const clang::SourceManager& source_manager
+)
+{
+    bool found = false;
+    for (const clang::SourceLocation location :
+            declaring_file_locations(function, source_manager)) {
+        if (source_manager.isWrittenInScratchSpace(location))
+            continue;
+        if (!is_icu_header_location(location, source_manager))
+            return false;
+        found = true;
+    }
+    return found;
+}
+
 ResolvedExternalEffect ExternalEffects::resolve(
     const clang::FunctionDecl& function,
     const clang::SourceManager& source_manager
@@ -865,10 +923,12 @@ ResolvedExternalEffect ExternalEffects::resolve(
                 "override removes an effect that was not inferred";
         }
         else if (result.inferred.returns_owner &&
-                override->second.remove.cpp_throw) {
+                override->second.remove.cpp_throw &&
+                !is_icu_header_declaration(function, source_manager)) {
             result.integrity_problem = true;
             result.manifest_problem =
-                "override cannot remove the C++ effect implied by ownership";
+                "override cannot remove the C++ effect implied by ownership "
+                "outside an ICU header";
         }
         else {
             add_effect(result.effective, override->second.add);
@@ -913,7 +973,7 @@ bool is_charr_owned_path(llvm::StringRef path)
 }
 
 bool is_charr_owned(
-    const clang::FunctionDecl& function,
+    const clang::Decl& function,
     const clang::SourceManager& source_manager
 )
 {
@@ -1132,6 +1192,10 @@ struct CallRecord {
     bool constructed_owner;
     bool external_call;
     ResolvedExternalEffect external_effect;
+    // The expression names a charr function without calling it, for example
+    // a callback passed to another function. The linter treats the reference
+    // as a call at the registration site.
+    bool reference = false;
 };
 
 const clang::FunctionDecl* resolve_direct_callee(
@@ -1315,6 +1379,47 @@ public:
             constructed_owner
         );
         return true;
+    }
+
+    // A charr function named outside callee position escapes as a function
+    // pointer or reference. Whoever receives it may call it, so the reference
+    // is classified as a call at the point where it escapes.
+    bool VisitDeclRefExpr(clang::DeclRefExpr* expression)
+    {
+        const auto* function =
+            llvm::dyn_cast<clang::FunctionDecl>(expression->getDecl());
+        if (function == nullptr || is_callee_reference(*expression) ||
+                !is_charr_owned(*function, context_.getSourceManager())) {
+            return true;
+        }
+        record_call(expression, function, false, false);
+        CallRecord& call = calls.back();
+        call.reference = true;
+        call.returns_owner = false;
+        return true;
+    }
+
+private:
+    bool is_callee_reference(const clang::DeclRefExpr& reference)
+    {
+        clang::DynTypedNode current = clang::DynTypedNode::create(reference);
+        const clang::Stmt* child = &reference;
+        for (;;) {
+            const auto parents = context_.getParents(current);
+            if (parents.empty())
+                return false;
+            const clang::Stmt* parent = parents[0].get<clang::Stmt>();
+            if (parent == nullptr)
+                return false;
+            if (const auto* call = llvm::dyn_cast<clang::CallExpr>(parent))
+                return call->getCallee() == child;
+            if (!llvm::isa<clang::ImplicitCastExpr>(parent) &&
+                    !llvm::isa<clang::ParenExpr>(parent)) {
+                return false;
+            }
+            child = parent;
+            current = parents[0];
+        }
     }
 };
 
@@ -1646,6 +1751,289 @@ const clang::CFGBlock* find_cfg_block(
     return nullptr;
 }
 
+bool is_raw_protection_name(llvm::StringRef name)
+{
+    return name == "Rf_protect" || name == "R_ProtectWithIndex" ||
+        name == "R_Reprotect" || name == "Rf_unprotect" ||
+        name == "Rf_unprotect_ptr" || name == "R_PreserveObject" ||
+        name == "R_ReleaseObject";
+}
+
+bool is_raw_protection_call(const CallRecord& call)
+{
+    return call.callee != nullptr && !call.reference &&
+        is_raw_protection_name(call.callee->getQualifiedNameAsString());
+}
+
+bool has_catch_all_handler(const clang::CXXTryStmt& statement)
+{
+    for (unsigned i = 0; i < statement.getNumHandlers(); ++i) {
+        if (statement.getHandler(i)->getExceptionDecl() == nullptr)
+            return true;
+    }
+    return false;
+}
+
+// True when an exception leaving the statement reaches a catch (...) in the
+// same function body. A lambda body is a separate function, so the search
+// stops there.
+bool caught_by_catch_all(
+    clang::ASTContext& context,
+    const clang::Stmt& statement
+) {
+    clang::DynTypedNode current = clang::DynTypedNode::create(statement);
+    for (;;) {
+        const auto parents = context.getParents(current);
+        if (parents.empty())
+            return false;
+        const clang::DynTypedNode& parent = parents[0];
+        if (const auto* declaration = parent.get<clang::Decl>()) {
+            if (!llvm::isa<clang::VarDecl>(declaration) ||
+                    llvm::isa<clang::ParmVarDecl>(declaration)) {
+                return false;
+            }
+            current = parent;
+            continue;
+        }
+        const clang::Stmt* parent_statement = parent.get<clang::Stmt>();
+        if (parent_statement == nullptr ||
+                llvm::isa<clang::LambdaExpr>(parent_statement)) {
+            return false;
+        }
+        if (const auto* try_statement =
+                llvm::dyn_cast<clang::CXXTryStmt>(parent_statement)) {
+            if (current.get<clang::Stmt>() == try_statement->getTryBlock() &&
+                    has_catch_all_handler(*try_statement)) {
+                return true;
+            }
+        }
+        current = parent;
+    }
+}
+
+bool contains_reader_type(
+    clang::QualType type,
+    llvm::SmallPtrSetImpl<const clang::RecordDecl*>& visited
+) {
+    for (;;) {
+        type = type.getCanonicalType();
+        if (type->isReferenceType())
+            type = type.getNonReferenceType();
+        else if (type->isPointerType())
+            type = type->getPointeeType();
+        else if (const clang::ArrayType* array =
+                type->getAsArrayTypeUnsafe())
+            type = array->getElementType();
+        else
+            break;
+    }
+
+    const clang::RecordType* record_type = type->getAs<clang::RecordType>();
+    if (record_type == nullptr)
+        return false;
+    const clang::RecordDecl* record = record_type->getDecl();
+    if (record->getQualifiedNameAsString() == "charport::Reader")
+        return true;
+    if (!visited.insert(record).second)
+        return false;
+
+    if (const auto* specialization =
+            llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(record)) {
+        for (const clang::TemplateArgument& argument :
+                specialization->getTemplateArgs().asArray()) {
+            if (argument.getKind() == clang::TemplateArgument::Type &&
+                    contains_reader_type(argument.getAsType(), visited)) {
+                return true;
+            }
+        }
+    }
+    if (const clang::RecordDecl* definition = record->getDefinition()) {
+        for (const clang::FieldDecl* field : definition->fields()) {
+            if (contains_reader_type(field->getType(), visited))
+                return true;
+        }
+    }
+    return false;
+}
+
+bool contains_reader_type(clang::QualType type)
+{
+    if (type.isNull() || type->isDependentType())
+        return false;
+    llvm::SmallPtrSet<const clang::RecordDecl*, 16> visited;
+    return contains_reader_type(type, visited);
+}
+
+// The only Reader holders the reset-dominance check understands.
+bool is_direct_reader_holder(clang::QualType type)
+{
+    return !type->isReferenceType() &&
+        (is_named_record(type, "charport::Reader") ||
+         is_vector_of_named_record(type, "charport::Reader"));
+}
+
+bool is_reader_method(const CallRecord& call)
+{
+    const auto* method = call.callee == nullptr
+        ? nullptr
+        : llvm::dyn_cast<clang::CXXMethodDecl>(call.callee);
+    return method != nullptr &&
+        !llvm::isa<clang::CXXConstructorDecl>(method) &&
+        !llvm::isa<clang::CXXDestructorDecl>(method) &&
+        method->getParent()->getQualifiedNameAsString() ==
+            "charport::Reader";
+}
+
+// `reader = charport::Reader()` drops a borrow without reading through it.
+// It is what the destructor does, so it is legal wherever the Reader lives.
+bool is_reader_release(const clang::Expr* expression)
+{
+    const auto* assignment =
+        llvm::dyn_cast_or_null<clang::CXXOperatorCallExpr>(expression);
+    if (assignment == nullptr ||
+            assignment->getOperator() != clang::OO_Equal ||
+            assignment->getNumArgs() != 2) {
+        return false;
+    }
+    const auto* method = llvm::dyn_cast_or_null<clang::CXXMethodDecl>(
+        assignment->getDirectCallee()
+    );
+    if (method == nullptr || !method->isMoveAssignmentOperator() ||
+            method->getParent()->getQualifiedNameAsString() !=
+                "charport::Reader") {
+        return false;
+    }
+    const auto* construction = llvm::dyn_cast<clang::CXXConstructExpr>(
+        assignment->getArg(1)->IgnoreImplicit()
+    );
+    return construction != nullptr && construction->getNumArgs() == 0 &&
+        is_named_record(construction->getType(), "charport::Reader");
+}
+
+class ReferenceCollector :
+    public clang::RecursiveASTVisitor<ReferenceCollector> {
+private:
+    const clang::ValueDecl* target_;
+
+public:
+    std::vector<const clang::DeclRefExpr*> references;
+
+    explicit ReferenceCollector(const clang::ValueDecl& target)
+        : target_(&target) {}
+
+    bool VisitDeclRefExpr(clang::DeclRefExpr* expression)
+    {
+        if (expression->getDecl() == target_)
+            references.push_back(expression);
+        return true;
+    }
+};
+
+// Follows a function reference or lambda through casts and temporaries to
+// the call or construction that receives it as an argument.
+const clang::Expr* receiving_expression(
+    clang::ASTContext& context,
+    const clang::Expr& argument
+) {
+    clang::DynTypedNode current = clang::DynTypedNode::create(argument);
+    const clang::Stmt* child = &argument;
+    for (;;) {
+        const auto parents = context.getParents(current);
+        if (parents.empty())
+            return nullptr;
+        const clang::Stmt* parent = parents[0].get<clang::Stmt>();
+        if (parent == nullptr)
+            return nullptr;
+        if (const auto* call = llvm::dyn_cast<clang::CallExpr>(parent)) {
+            return call->getCallee() == child ? nullptr : call;
+        }
+        if (llvm::isa<clang::CXXConstructExpr>(parent) &&
+                !llvm::isa<clang::CXXTemporaryObjectExpr>(parent)) {
+            const auto* construction =
+                llvm::cast<clang::CXXConstructExpr>(parent);
+            if (construction->getNumArgs() != 1 ||
+                    !construction->getConstructor()->isCopyOrMoveConstructor())
+                return construction;
+        }
+        else if (llvm::isa<clang::CXXTemporaryObjectExpr>(parent)) {
+            return llvm::cast<clang::Expr>(parent);
+        }
+        else if (!llvm::isa<clang::CastExpr>(parent) &&
+                !llvm::isa<clang::ParenExpr>(parent) &&
+                !llvm::isa<clang::MaterializeTemporaryExpr>(parent) &&
+                !llvm::isa<clang::CXXBindTemporaryExpr>(parent) &&
+                !(llvm::isa<clang::UnaryOperator>(parent) &&
+                  llvm::cast<clang::UnaryOperator>(parent)->getOpcode() ==
+                      clang::UO_AddrOf)) {
+            return nullptr;
+        }
+        child = parent;
+        current = parents[0];
+    }
+}
+
+const clang::FunctionDecl* receiving_function(const clang::Expr& receiver)
+{
+    if (const auto* call = llvm::dyn_cast<clang::CallExpr>(&receiver))
+        return resolve_direct_callee(*call);
+    if (const auto* construction =
+            llvm::dyn_cast<clang::CXXConstructExpr>(&receiver))
+        return construction->getConstructor();
+    return nullptr;
+}
+
+const clang::LambdaExpr* argument_lambda(const clang::Expr* expression)
+{
+    while (expression != nullptr) {
+        expression = expression->IgnoreParenImpCasts();
+        if (const auto* lambda = llvm::dyn_cast<clang::LambdaExpr>(expression))
+            return lambda;
+        if (const auto* temporary =
+                llvm::dyn_cast<clang::MaterializeTemporaryExpr>(expression)) {
+            expression = temporary->getSubExpr();
+        }
+        else if (const auto* bound =
+                llvm::dyn_cast<clang::CXXBindTemporaryExpr>(expression)) {
+            expression = bound->getSubExpr();
+        }
+        else if (const auto* cast = llvm::dyn_cast<clang::CastExpr>(expression)) {
+            expression = cast->getSubExpr();
+        }
+        else if (const auto* construction =
+                llvm::dyn_cast<clang::CXXConstructExpr>(expression)) {
+            if (construction->getNumArgs() != 1)
+                return nullptr;
+            expression = construction->getArg(0);
+        }
+        else if (const auto* conversion =
+                llvm::dyn_cast<clang::CXXMemberCallExpr>(expression)) {
+            if (!llvm::isa_and_nonnull<clang::CXXConversionDecl>(
+                    conversion->getMethodDecl())) {
+                return nullptr;
+            }
+            expression = conversion->getImplicitObjectArgument();
+        }
+        else {
+            return nullptr;
+        }
+    }
+    return nullptr;
+}
+
+bool evaluate_integer(
+    const clang::Expr* expression,
+    const clang::ASTContext& context,
+    long long& value
+) {
+    if (expression == nullptr || expression->isValueDependent())
+        return false;
+    clang::Expr::EvalResult result;
+    if (!expression->EvaluateAsInt(result, context))
+        return false;
+    value = result.Val.getInt().getExtValue();
+    return true;
+}
+
 class FunctionChecker {
 private:
     clang::ASTContext& context_;
@@ -1711,6 +2099,22 @@ private:
                 readers.push_back(variable);
             }
         }
+
+        for (const CallRecord& call : body.calls) {
+            const auto* member_call =
+                llvm::dyn_cast<clang::CXXMemberCallExpr>(call.expression);
+            if (member_call == nullptr || !is_reader_method(call))
+                continue;
+            const clang::VarDecl* object = direct_object_variable(*member_call);
+            if (object == nullptr)
+                object = indexed_object_variable(*member_call);
+            if (object == nullptr) {
+                report(
+                    member_call->getExprLoc(),
+                    "Reader methods must use a direct owner-region variable or its indexed Reader vector"
+                );
+            }
+        }
         if (readers.empty())
             return;
 
@@ -1764,15 +2168,6 @@ private:
                     direct_object_variable(*member_call);
                 if (object == nullptr)
                     object = indexed_object_variable(*member_call);
-                if (object == nullptr) {
-                    if (reader == readers.front()) {
-                        report(
-                            member_call->getExprLoc(),
-                            "Reader methods must use a direct owner-region variable or its indexed Reader vector"
-                        );
-                    }
-                    continue;
-                }
                 if (object != reader)
                     continue;
 
@@ -2083,20 +2478,6 @@ private:
                 );
             }
         }
-
-        const auto is_raw_protection_call = [](const CallRecord& call) {
-            if (call.callee == nullptr)
-                return false;
-            const std::string name =
-                call.callee->getQualifiedNameAsString();
-            return name == "Rf_protect" ||
-                name == "R_ProtectWithIndex" ||
-                name == "R_Reprotect" ||
-                name == "Rf_unprotect" ||
-                name == "Rf_unprotect_ptr" ||
-                name == "R_PreserveObject" ||
-                name == "R_ReleaseObject";
-        };
 
         const auto is_raw_stack_release = [](const CallRecord& call) {
             return call_named(call, "Rf_unprotect") ||
@@ -2970,12 +3351,759 @@ private:
         }
     }
 
+    std::string callee_name(const CallRecord& call) const
+    {
+        return call.callee == nullptr
+            ? std::string("<indirect>")
+            : call.callee->getQualifiedNameAsString();
+    }
+
+    // A noexcept specification is a claim about the body. A throw or a
+    // potentially throwing call that can leave a noexcept C++ helper would
+    // call std::terminate, so it must sit in a try with a catch (...).
+    void check_noexcept_body(
+        const clang::FunctionDecl& function,
+        const BodyVisitor& body
+    ) {
+        const std::string name = function.getQualifiedNameAsString();
+        for (const clang::CXXThrowExpr* expression : body.throws) {
+            if (caught_by_catch_all(context_, *expression))
+                continue;
+            report(
+                expression->getThrowLoc(),
+                llvm::Twine("noexcept C++ helper '") + name +
+                    "' contains a C++ throw outside a catch (...) try block"
+            );
+        }
+        for (const clang::CXXNewExpr* expression : body.allocations) {
+            const clang::FunctionDecl* allocator =
+                expression->getOperatorNew();
+            if ((allocator != nullptr && is_nothrow(*allocator)) ||
+                    caught_by_catch_all(context_, *expression)) {
+                continue;
+            }
+            report(
+                expression->getExprLoc(),
+                llvm::Twine("noexcept C++ helper '") + name +
+                    "' contains a throwing allocation outside a catch (...) try block"
+            );
+        }
+        for (const CallRecord& call : body.calls) {
+            // A noexcept external declaration cannot propagate an exception,
+            // even when ownership inference gives it the C++ effect.
+            if (!call.cpp_throw || call.reference ||
+                    (call.external_call && is_nothrow(*call.callee)) ||
+                    caught_by_catch_all(context_, *call.expression)) {
+                continue;
+            }
+            report(
+                call.expression->getExprLoc(),
+                llvm::Twine("noexcept C++ helper '") + name +
+                    "' calls potentially throwing operation '" +
+                    callee_name(call) + "' outside a catch (...) try block"
+            );
+        }
+    }
+
+    // A virtual call is classified by the static callee, so every override
+    // must honor the contract of each method it overrides.
+    void check_override_roles(
+        const clang::FunctionDecl& function,
+        Role role
+    ) {
+        const auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(&function);
+        if (method == nullptr || !method->isVirtual())
+            return;
+
+        std::vector<const clang::CXXMethodDecl*> pending(
+            method->overridden_methods().begin(),
+            method->overridden_methods().end()
+        );
+        std::set<const clang::CXXMethodDecl*> visited;
+        const bool may_throw = role == Role::cxx && !is_nothrow(function);
+        const bool may_enter_r = role == Role::r || role == Role::entrypoint;
+        while (!pending.empty()) {
+            const clang::CXXMethodDecl* base = pending.back();
+            pending.pop_back();
+            if (!visited.insert(base->getCanonicalDecl()).second)
+                continue;
+            pending.insert(
+                pending.end(), base->overridden_methods().begin(),
+                base->overridden_methods().end()
+            );
+
+            const Role base_role = annotation_role(*base);
+            const std::string base_name = base->getQualifiedNameAsString();
+            if (base_role == Role::none) {
+                if (is_charr_owned(*base, context_.getSourceManager())) {
+                    report(
+                        function.getLocation(),
+                        llvm::Twine(role_name(role)) + " '" +
+                            function.getQualifiedNameAsString() +
+                            "' overrides unclassified charr virtual '" +
+                            base_name + "'"
+                    );
+                    continue;
+                }
+                const ResolvedExternalEffect external = effects_.resolve(
+                    *base, context_.getSourceManager()
+                );
+                if ((may_enter_r && !external.effective.fallible_r) ||
+                        (may_throw && !external.effective.cpp_throw)) {
+                    report(
+                        function.getLocation(),
+                        llvm::Twine(role_name(role)) + " '" +
+                            function.getQualifiedNameAsString() +
+                            "' overrides external virtual '" + base_name +
+                            "' whose effect '" + external.effective_name +
+                            "' does not permit it"
+                    );
+                }
+                continue;
+            }
+
+            const bool compatible = role == base_role ||
+                (role == Role::neutral &&
+                 (base_role == Role::cxx || base_role == Role::r));
+            if (!compatible) {
+                report(
+                    function.getLocation(),
+                    llvm::Twine(role_name(role)) + " '" +
+                        function.getQualifiedNameAsString() +
+                        "' overrides " + role_name(base_role) +
+                        " virtual '" + base_name +
+                        "' with an incompatible role"
+                );
+            }
+        }
+    }
+
+    // A charr function that escapes as a callback runs inside whatever
+    // receives it. The receiving external function must permit the
+    // callback's effects; a callback that escapes anywhere else cannot be
+    // followed.
+    void check_callbacks(const BodyVisitor& body)
+    {
+        const clang::SourceManager& source_manager =
+            context_.getSourceManager();
+        for (const CallRecord& call : body.calls) {
+            if (!call.reference)
+                continue;
+            const clang::Expr* receiver =
+                receiving_expression(context_, *call.expression);
+            const clang::FunctionDecl* receiver_function = receiver == nullptr
+                ? nullptr
+                : receiving_function(*receiver);
+            if (receiver_function == nullptr) {
+                report(
+                    call.expression->getExprLoc(),
+                    llvm::Twine("charr function '") + callee_name(call) +
+                        "' escapes as a function pointer outside a direct call argument"
+                );
+                continue;
+            }
+            if (annotation_role(*receiver_function) != Role::none ||
+                    is_charr_owned(*receiver_function, source_manager)) {
+                continue;
+            }
+
+            const ResolvedExternalEffect external =
+                effects_.resolve(*receiver_function, source_manager);
+            const bool enters_r = call.fallible_r ||
+                call.role == Role::abi_shim ||
+                call.role == Role::trusted_unwind;
+            if ((enters_r && !external.effective.fallible_r) ||
+                    (call.cpp_throw && !external.effective.cpp_throw)) {
+                report(
+                    call.expression->getExprLoc(),
+                    llvm::Twine("passes ") + role_name(call.role) + " '" +
+                        callee_name(call) +
+                        "' as a callback to external function '" +
+                        receiver_function->getQualifiedNameAsString() +
+                        "' whose effect '" + external.effective_name +
+                        "' does not permit it"
+                );
+            }
+        }
+
+        for (const CallRecord& receiver : body.calls) {
+            if (!receiver.external_call || receiver.reference)
+                continue;
+            std::vector<const clang::Expr*> arguments;
+            if (const auto* call =
+                    llvm::dyn_cast<clang::CallExpr>(receiver.expression)) {
+                arguments.assign(call->arg_begin(), call->arg_end());
+            }
+            else if (const auto* construction =
+                    llvm::dyn_cast<clang::CXXConstructExpr>(
+                        receiver.expression)) {
+                arguments.assign(
+                    construction->arg_begin(), construction->arg_end()
+                );
+            }
+            for (const clang::Expr* argument : arguments) {
+                const clang::LambdaExpr* lambda = argument_lambda(argument);
+                if (lambda == nullptr)
+                    continue;
+                for (const CallRecord& call : body.calls) {
+                    if (!is_descendant_of(
+                            context_, *call.expression, *lambda->getBody())) {
+                        continue;
+                    }
+                    const Effect& allowed = receiver.external_effect.effective;
+                    if ((call.fallible_r && !allowed.fallible_r) ||
+                            (call.cpp_throw && !allowed.cpp_throw)) {
+                        report(
+                            call.expression->getExprLoc(),
+                            llvm::Twine("lambda passed to external function '") +
+                                receiver.callee->getQualifiedNameAsString() +
+                                "' calls '" + callee_name(call) +
+                                "', which its effect '" +
+                                receiver.external_effect.effective_name +
+                                "' does not permit"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    struct ProtectionState {
+        const clang::CFGBlock* block;
+        long long depth;
+        std::vector<long long> counters;
+        const clang::ReturnStmt* last_return;
+    };
+
+    // Raw protection in an R helper is invisible to the entry point's
+    // ProtHelper accounting, so every normal return must leave R's
+    // protection stack where the helper found it. Paths that end in a
+    // noreturn call are R errors, and R restores the stack for those.
+    void check_raw_protection_balance(
+        const clang::FunctionDecl& function,
+        const BodyVisitor& body
+    ) {
+        static constexpr long long unknown =
+            std::numeric_limits<long long>::min();
+        static constexpr long long depth_limit = 64;
+        static constexpr std::size_t state_limit = 100000;
+
+        std::vector<const clang::VarDecl*> counters;
+        bool any_stack_operation = false;
+        for (const CallRecord& call : body.calls) {
+            if (!is_raw_protection_call(call))
+                continue;
+            const std::string name = call.callee->getQualifiedNameAsString();
+            if (name == "R_PreserveObject" || name == "R_ReleaseObject")
+                continue;
+            any_stack_operation = true;
+            if (name != "Rf_unprotect")
+                continue;
+            const auto* expression =
+                llvm::dyn_cast<clang::CallExpr>(call.expression);
+            if (expression == nullptr || expression->getNumArgs() != 1)
+                continue;
+            const clang::VarDecl* counter =
+                direct_variable(expression->getArg(0));
+            if (counter != nullptr && counter->isLocalVarDecl() &&
+                    counter->getType()->isIntegerType() &&
+                    std::find(counters.begin(), counters.end(), counter) ==
+                        counters.end()) {
+                counters.push_back(counter);
+            }
+        }
+        if (!any_stack_operation || function.getBody() == nullptr)
+            return;
+
+        clang::CFG::BuildOptions options;
+        options.setAllAlwaysAdd();
+        std::unique_ptr<clang::CFG> cfg = clang::CFG::buildCFG(
+            &function, const_cast<clang::Stmt*>(function.getBody()),
+            &context_, options
+        );
+        if (!cfg) {
+            report(
+                function.getLocation(),
+                "cannot build a control-flow graph for raw protection validation"
+            );
+            return;
+        }
+
+        const auto counter_index = [&](const clang::Expr* expression) {
+            const clang::VarDecl* variable = direct_variable(expression);
+            for (std::size_t i = 0; i < counters.size(); ++i) {
+                if (counters[i] == variable)
+                    return static_cast<long long>(i);
+            }
+            return -1LL;
+        };
+        const auto bounded = [](long long value) {
+            return value > 4096 || value < -4096 ? unknown : value;
+        };
+
+        std::vector<ProtectionState> pending;
+        std::set<std::vector<long long>> visited;
+        pending.push_back({
+            &cfg->getEntry(), 0,
+            std::vector<long long>(counters.size(), unknown), nullptr
+        });
+        const std::string name = function.getQualifiedNameAsString();
+
+        while (!pending.empty()) {
+            ProtectionState state = pending.back();
+            pending.pop_back();
+
+            std::vector<long long> key;
+            key.push_back(state.block->getBlockID());
+            key.push_back(state.depth);
+            key.insert(key.end(), state.counters.begin(), state.counters.end());
+            key.push_back(reinterpret_cast<std::intptr_t>(state.last_return));
+            if (!visited.insert(key).second)
+                continue;
+            if (visited.size() > state_limit) {
+                report(
+                    function.getLocation(),
+                    llvm::Twine("R helper '") + name +
+                        "' has too many paths for raw protection validation"
+                );
+                return;
+            }
+
+            if (state.block == &cfg->getExit()) {
+                if (state.depth != 0) {
+                    const clang::SourceLocation location =
+                        state.last_return != nullptr
+                            ? state.last_return->getReturnLoc()
+                            : function.getBody()->getEndLoc();
+                    report(
+                        location,
+                        llvm::Twine("R helper '") + name +
+                            "' returns with unbalanced raw R protection; raw PROTECT and UNPROTECT must balance within the helper"
+                    );
+                }
+                continue;
+            }
+            if (state.block->hasNoReturnElement())
+                continue;
+
+            bool abandoned = false;
+            for (const clang::CFGElement& element : *state.block) {
+                const auto statement_element = element.getAs<clang::CFGStmt>();
+                if (!statement_element)
+                    continue;
+                const clang::Stmt* statement = statement_element->getStmt();
+
+                if (const auto* returned =
+                        llvm::dyn_cast<clang::ReturnStmt>(statement)) {
+                    state.last_return = returned;
+                }
+                else if (const auto* declaration =
+                        llvm::dyn_cast<clang::DeclStmt>(statement)) {
+                    for (const clang::Decl* item : declaration->decls()) {
+                        const auto* variable =
+                            llvm::dyn_cast<clang::VarDecl>(item);
+                        if (variable == nullptr)
+                            continue;
+                        for (std::size_t i = 0; i < counters.size(); ++i) {
+                            if (counters[i] != variable)
+                                continue;
+                            long long value = 0;
+                            state.counters[i] = evaluate_integer(
+                                    variable->getInit(), context_, value)
+                                ? value
+                                : unknown;
+                        }
+                    }
+                }
+                else if (const auto* unary =
+                        llvm::dyn_cast<clang::UnaryOperator>(statement)) {
+                    const long long index = counter_index(unary->getSubExpr());
+                    if (index >= 0 && unary->isIncrementDecrementOp()) {
+                        long long& value = state.counters[index];
+                        if (value != unknown)
+                            value = bounded(
+                                value + (unary->isIncrementOp() ? 1 : -1)
+                            );
+                    }
+                }
+                else if (const auto* binary =
+                        llvm::dyn_cast<clang::BinaryOperator>(statement)) {
+                    const long long index = binary->isAssignmentOp()
+                        ? counter_index(binary->getLHS())
+                        : -1;
+                    if (index >= 0) {
+                        long long& value = state.counters[index];
+                        long long operand = 0;
+                        const bool known = evaluate_integer(
+                            binary->getRHS(), context_, operand
+                        );
+                        if (binary->getOpcode() == clang::BO_Assign)
+                            value = known ? operand : unknown;
+                        else if (!known || value == unknown)
+                            value = unknown;
+                        else if (binary->getOpcode() == clang::BO_AddAssign)
+                            value = bounded(value + operand);
+                        else if (binary->getOpcode() == clang::BO_SubAssign)
+                            value = bounded(value - operand);
+                        else
+                            value = unknown;
+                    }
+                }
+                else if (const auto* call =
+                        llvm::dyn_cast<clang::CallExpr>(statement)) {
+                    const clang::FunctionDecl* callee =
+                        call->getDirectCallee();
+                    const std::string callee_name = callee == nullptr
+                        ? std::string()
+                        : callee->getQualifiedNameAsString();
+                    if (callee_name == "Rf_protect" ||
+                            callee_name == "R_ProtectWithIndex") {
+                        ++state.depth;
+                    }
+                    else if (callee_name == "Rf_unprotect_ptr") {
+                        --state.depth;
+                    }
+                    else if (callee_name == "Rf_unprotect") {
+                        long long count = unknown;
+                        if (call->getNumArgs() == 1 &&
+                                !evaluate_integer(
+                                    call->getArg(0), context_, count)) {
+                            const long long index =
+                                counter_index(call->getArg(0));
+                            count = index >= 0
+                                ? state.counters[index]
+                                : unknown;
+                        }
+                        if (count == unknown) {
+                            report(
+                                call->getExprLoc(),
+                                llvm::Twine("R helper '") + name +
+                                    "' uses a raw UNPROTECT count that is neither a constant nor a local counter with a known value"
+                            );
+                            abandoned = true;
+                            break;
+                        }
+                        state.depth -= count;
+                    }
+                    if (state.depth < 0) {
+                        report(
+                            call->getExprLoc(),
+                            llvm::Twine("R helper '") + name +
+                                "' releases raw R protections it did not push"
+                        );
+                        abandoned = true;
+                        break;
+                    }
+                    if (state.depth > depth_limit) {
+                        report(
+                            call->getExprLoc(),
+                            llvm::Twine("R helper '") + name +
+                                "' grows raw R protection without a bound"
+                        );
+                        abandoned = true;
+                        break;
+                    }
+                }
+            }
+            if (abandoned)
+                continue;
+
+            for (const clang::CFGBlock::AdjacentBlock& successor :
+                    state.block->succs()) {
+                const clang::CFGBlock* next = successor.getReachableBlock();
+                if (next == nullptr)
+                    continue;
+                ProtectionState next_state = state;
+                next_state.block = next;
+                pending.push_back(std::move(next_state));
+            }
+        }
+    }
+
+    // Raw protection belongs only to ProtHelper and to R helpers that
+    // balance it themselves. Entry points are checked by the protection
+    // shape.
+    void check_raw_protection(
+        const clang::FunctionDecl& function,
+        Role role,
+        const BodyVisitor& body
+    ) {
+        const auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(&function);
+        if (method != nullptr &&
+                method->getParent()->getQualifiedNameAsString() ==
+                    "charr::shared::ProtHelper") {
+            return;
+        }
+
+        if (role != Role::entrypoint) {
+            for (const clang::VarDecl* variable : body.locals) {
+                if (is_named_record(
+                        variable->getType(), "charr::shared::ProtHelper")) {
+                    report(
+                        variable->getLocation(),
+                        llvm::Twine(role_name(role)) +
+                            " declares a ProtHelper; protection domains belong to entry points"
+                    );
+                }
+            }
+        }
+        if (role == Role::entrypoint)
+            return;
+
+        bool unbalanced_context = false;
+        for (const CallRecord& call : body.calls) {
+            if (!is_raw_protection_call(call))
+                continue;
+            const std::string name = call.callee->getQualifiedNameAsString();
+            if (name == "R_PreserveObject" || name == "R_ReleaseObject") {
+                report(
+                    call.expression->getExprLoc(),
+                    llvm::Twine(role_name(role)) + " uses '" + name +
+                        "'; the precious list is outside every protection domain"
+                );
+                continue;
+            }
+            if (role != Role::r) {
+                report(
+                    call.expression->getExprLoc(),
+                    llvm::Twine(role_name(role)) +
+                        " uses raw R protection operation '" + name +
+                        "'; raw protection belongs in a balanced R helper"
+                );
+                continue;
+            }
+            if (within_lambda(*call.expression)) {
+                report(
+                    call.expression->getExprLoc(),
+                    "raw R protection inside a lambda cannot be balanced; use a named R helper"
+                );
+                unbalanced_context = true;
+            }
+        }
+        if (role == Role::r && !unbalanced_context)
+            check_raw_protection_balance(function, body);
+    }
+
+    bool within_lambda(const clang::Stmt& statement)
+    {
+        clang::DynTypedNode current = clang::DynTypedNode::create(statement);
+        for (;;) {
+            const auto parents = context_.getParents(current);
+            if (parents.empty())
+                return false;
+            if (const auto* parent = parents[0].get<clang::Stmt>()) {
+                if (llvm::isa<clang::LambdaExpr>(parent))
+                    return true;
+            }
+            else if (const auto* function =
+                    parents[0].get<clang::FunctionDecl>()) {
+                const auto* method =
+                    llvm::dyn_cast<clang::CXXMethodDecl>(function);
+                return method != nullptr && method->getParent()->isLambda();
+            }
+            current = parents[0];
+        }
+    }
+
+    // A helper may receive a Reader by non-const reference only to release
+    // the borrow through `reader = charport::Reader()`.
+    bool only_releases_reader(
+        const clang::FunctionDecl& function,
+        const clang::ParmVarDecl& parameter
+    ) {
+        const clang::QualType type = parameter.getType();
+        if (!type->isLValueReferenceType() ||
+                type.getNonReferenceType().isConstQualified() ||
+                !is_named_record(type, "charport::Reader") ||
+                function.getBody() == nullptr) {
+            return false;
+        }
+        ReferenceCollector collector(parameter);
+        collector.TraverseStmt(const_cast<clang::Stmt*>(function.getBody()));
+        for (const clang::DeclRefExpr* reference : collector.references) {
+            const auto parents = context_.getParents(*reference);
+            const clang::Expr* assignment = parents.empty()
+                ? nullptr
+                : parents[0].get<clang::Expr>();
+            if (!is_reader_release(assignment) ||
+                    llvm::cast<clang::CXXOperatorCallExpr>(assignment)
+                        ->getArg(0)->IgnoreParenImpCasts() != reference) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // A Reader is a borrow whose reset must dominate every access. The
+    // checker follows only direct entry-point locals and std::vector
+    // elements, so every other holder is rejected.
+    void check_reader_holders(
+        const clang::FunctionDecl& function,
+        Role role,
+        const BodyVisitor& body
+    ) {
+        for (const clang::VarDecl* variable : body.locals) {
+            if (!contains_reader_type(variable->getType()))
+                continue;
+            if (role == Role::entrypoint && !variable->isStaticLocal() &&
+                    is_direct_reader_holder(variable->getType())) {
+                continue;
+            }
+            report(
+                variable->getLocation(),
+                llvm::Twine("charport::Reader holder '") +
+                    variable->getName() +
+                    "' must be a direct entry-point local Reader or std::vector<charport::Reader>"
+            );
+        }
+        for (const clang::ParmVarDecl* parameter : function.parameters()) {
+            if (!contains_reader_type(parameter->getType()) ||
+                    only_releases_reader(function, *parameter)) {
+                continue;
+            }
+            report(
+                parameter->getLocation(),
+                llvm::Twine("parameter '") + parameter->getName() +
+                    "' passes a charport::Reader to a helper; Reader access must stay in the entry point"
+            );
+        }
+        if (contains_reader_type(function.getReturnType())) {
+            report(
+                function.getLocation(),
+                llvm::Twine("function '") +
+                    function.getQualifiedNameAsString() +
+                    "' returns a charport::Reader holder"
+            );
+        }
+        if (role == Role::entrypoint)
+            return;
+        for (const CallRecord& call : body.calls) {
+            if (!is_reader_method(call) || is_reader_release(call.expression))
+                continue;
+            report(
+                call.expression->getExprLoc(),
+                llvm::Twine("Reader method '") + callee_name(call) +
+                    "' is called outside an entry point's unwind region"
+            );
+        }
+    }
+
+    // Calls in a default argument run in every caller, and calls in a
+    // namespace-scope dynamic initializer run while the shared library
+    // loads. Neither context has a role, so their calls must be neutral.
+    void check_neutral_context(
+        const BodyVisitor& body,
+        const llvm::Twine& context_name
+    ) {
+        const std::string description = context_name.str();
+        for (const CallRecord& call : body.calls) {
+            if (call.callee == nullptr) {
+                report(
+                    call.expression->getExprLoc(),
+                    description + " contains an indirect or unresolved call"
+                );
+                continue;
+            }
+            if (call.role == Role::none &&
+                    is_charr_owned(*call.callee, context_.getSourceManager())) {
+                report(
+                    call.expression->getExprLoc(),
+                    description + " calls unclassified charr function '" +
+                        call.callee->getQualifiedNameAsString() + "'"
+                );
+            }
+            check_external_manifest(call);
+            if (call.fallible_r || call.role == Role::entrypoint) {
+                report(
+                    call.expression->getExprLoc(),
+                    description + " calls fallible R operation '" +
+                        call.callee->getQualifiedNameAsString() + "'"
+                );
+            }
+            if (call.cpp_throw || call.returns_owner) {
+                report(
+                    call.expression->getExprLoc(),
+                    description + " calls potentially throwing operation '" +
+                        call.callee->getQualifiedNameAsString() + "'"
+                );
+            }
+            if (call.raw_acquire || call.raw_release) {
+                report(
+                    call.expression->getExprLoc(),
+                    description + " calls raw resource operation '" +
+                        call.callee->getQualifiedNameAsString() + "'"
+                );
+            }
+        }
+    }
+
+    void check_default_arguments(const clang::FunctionDecl& function)
+    {
+        std::set<const clang::Expr*> seen;
+        for (const clang::FunctionDecl* redecl : function.redecls()) {
+            for (const clang::ParmVarDecl* parameter : redecl->parameters()) {
+                if (!parameter->hasDefaultArg() ||
+                        parameter->hasUnparsedDefaultArg() ||
+                        parameter->hasUninstantiatedDefaultArg()) {
+                    continue;
+                }
+                const clang::Expr* argument = parameter->getDefaultArg();
+                if (argument == nullptr || !seen.insert(argument).second)
+                    continue;
+                BodyVisitor body(context_, effects_);
+                body.TraverseStmt(const_cast<clang::Expr*>(argument));
+                check_neutral_context(
+                    body,
+                    llvm::Twine("default argument of parameter '") +
+                        parameter->getName() + "'"
+                );
+            }
+        }
+    }
+
 public:
     FunctionChecker(
         clang::ASTContext& context,
         Reporter& reporter,
         const ExternalEffects& effects
     ) : context_(context), reporter_(reporter), effects_(effects) {}
+
+    void check_global_variable(const clang::VarDecl& variable)
+    {
+        if (contains_reader_type(variable.getType())) {
+            report(
+                variable.getLocation(),
+                llvm::Twine("charport::Reader holder '") +
+                    variable.getName() +
+                    "' must be a direct entry-point local Reader or std::vector<charport::Reader>"
+            );
+        }
+
+        const clang::Expr* initializer = variable.getInit();
+        if (initializer == nullptr || variable.getType()->isDependentType() ||
+                initializer->isValueDependent() ||
+                variable.hasConstantInitialization()) {
+            return;
+        }
+        BodyVisitor body(context_, effects_);
+        body.TraverseStmt(const_cast<clang::Expr*>(initializer));
+        check_neutral_context(
+            body,
+            llvm::Twine("dynamic initializer of '") +
+                variable.getQualifiedNameAsString() + "'"
+        );
+    }
+
+    void check_field(const clang::FieldDecl& field)
+    {
+        if (!contains_reader_type(field.getType()))
+            return;
+        report(
+            field.getLocation(),
+            llvm::Twine("member '") + field.getName() +
+                "' stores a charport::Reader; Reader holders must be direct entry-point locals"
+        );
+    }
 
     void check(const clang::FunctionDecl& function)
     {
@@ -3017,6 +4145,15 @@ public:
                 check_external_manifest(call);
             return;
         }
+
+        check_default_arguments(function);
+        if (role != Role::none)
+            check_override_roles(function, role);
+        check_reader_holders(function, role, body);
+        check_raw_protection(function, role, body);
+        check_callbacks(body);
+        if (role == Role::cxx && is_nothrow(function))
+            check_noexcept_body(function, body);
 
         if ((role == Role::r || role == Role::neutral ||
                 role == Role::entrypoint) && !is_nothrow(function)) {
@@ -4529,6 +5666,47 @@ public:
 
         checker_.check(*function);
         return true;
+    }
+
+    bool VisitVarDecl(clang::VarDecl* variable)
+    {
+        if (!variable->hasGlobalStorage() || variable->isStaticLocal() ||
+                variable->getDeclContext()->isDependentContext() ||
+                !is_checked_declaration(*variable)) {
+            return true;
+        }
+        checker_.check_global_variable(*variable);
+        return true;
+    }
+
+    bool VisitFieldDecl(clang::FieldDecl* field)
+    {
+        if (field->getParent()->isDependentContext() ||
+                field->getParent()->isLambda() ||
+                !is_checked_declaration(*field)) {
+            return true;
+        }
+        checker_.check_field(*field);
+        return true;
+    }
+
+private:
+    bool is_checked_declaration(const clang::Decl& declaration) const
+    {
+        const clang::SourceManager& source_manager =
+            context_.getSourceManager();
+        const clang::SourceLocation location =
+            source_manager.getSpellingLoc(declaration.getLocation());
+        if (location.isInvalid() || source_manager.isInSystemHeader(location))
+            return false;
+        if (!is_charr_owned(declaration, source_manager))
+            return false;
+        const clang::SourceLocation expansion =
+            source_manager.getExpansionLoc(declaration.getLocation());
+        return !main_files_only ||
+            source_manager.isWrittenInMainFile(location) ||
+            (expansion.isValid() &&
+             source_manager.isWrittenInMainFile(expansion));
     }
 };
 

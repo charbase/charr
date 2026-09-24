@@ -1416,7 +1416,7 @@ void RBBITableBuilder::exportTable(void *where) {
             r8->fTagsIdx   = sd->fTagsIdx;
             for (col=0; col<catCount; col++) {
                 U_ASSERT (sd->fDtran->elementAti(col) <= kMaxStateFor8BitsTable);
-                r8->fNextState[col] = sd->fDtran->elementAti(col);
+                *(r8->fNextState + col) = sd->fDtran->elementAti(col);
             }
         } else {
             U_ASSERT (sd->fAccepting <= 0xffff);
@@ -1426,7 +1426,7 @@ void RBBITableBuilder::exportTable(void *where) {
             row->r16.fLookAhead = sd->fLookAhead;
             row->r16.fTagsIdx   = sd->fTagsIdx;
             for (col=0; col<catCount; col++) {
-                row->r16.fNextState[col] = sd->fDtran->elementAti(col);
+                *(row->r16.fNextState + col) = sd->fDtran->elementAti(col);
             }
         }
     }
@@ -1627,14 +1627,14 @@ void RBBITableBuilder::exportSafeTable(void *where) {
             r8->fTagsIdx    = 0;
             for (col=0; col<catCount; col++) {
                 U_ASSERT(rowString->charAt(col) <= kMaxStateFor8BitsTable);
-                r8->fNextState[col] = static_cast<uint8_t>(rowString->charAt(col));
+                *(r8->fNextState + col) = static_cast<uint8_t>(rowString->charAt(col));
             }
         } else {
             row->r16.fAccepting = 0;
             row->r16.fLookAhead = 0;
             row->r16.fTagsIdx    = 0;
             for (col=0; col<catCount; col++) {
-                row->r16.fNextState[col] = rowString->charAt(col);
+                *(row->r16.fNextState + col) = rowString->charAt(col);
             }
         }
     }

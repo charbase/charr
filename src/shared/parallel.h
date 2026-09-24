@@ -9,6 +9,7 @@
 #include "lint.h"
 
 #include <cstddef>
+#include <vector>
 
 namespace charr {
 namespace shared {
@@ -38,6 +39,11 @@ struct WorkerReport;
  * the lowest failing chunk was necessarily claimed before it, so its outcome
  * is recorded, and the lowest recorded failure is the one a serial run would
  * have reached first.
+ *
+ * The worker index carries no order. Which worker holds which chunk depends
+ * only on timing, so anything that must follow serial order -- the failure,
+ * and the warnings raised before it -- is keyed by the chunk, never by the
+ * worker. SerialWarnings below does that for warnings.
  */
 class WorkerContext {
 public:
@@ -59,19 +65,28 @@ public:
     // to loop.
     CHARR_CXX_HELPER void stop_early() noexcept;
 
+    // Where this worker is in serial order: the first task of the chunk it
+    // holds, or -1 before its first claim, when it is still setting up and a
+    // serial run would not yet have reached any task.
+    CHARR_NEUTRAL_HELPER R_xlen_t serial_position() const noexcept
+    {
+        return holding_ ? begin : -1;
+    }
+
     CHARR_NEUTRAL_HELPER WorkerContext(
         unsigned worker_index, unsigned worker_count,
         parallel_detail::ChunkQueue& queue,
         parallel_detail::WorkerReport& report
     ) noexcept
         : worker(worker_index), workers(worker_count), begin(0), end(0),
-          queue_(&queue), report_(&report)
+          queue_(&queue), report_(&report), holding_(false)
     {
     }
 
 private:
     parallel_detail::ChunkQueue* queue_;
     parallel_detail::WorkerReport* report_;
+    bool holding_;
 };
 
 /*
@@ -101,6 +116,10 @@ public:
     //     while (context.next_chunk()) {
     //         for (R_xlen_t i = context.begin; i < context.end; ++i) { ... }
     //     }
+    //
+    // A warning is not raised here, since that is an R call. run() counts it
+    // in a SerialWarnings the entry point owns, and the entry point raises
+    // what that reports once the region is over.
     CHARR_CXX_HELPER virtual void run(WorkerContext& context) = 0;
 
     // Called from inside the driver's worker handler while the failing
@@ -129,6 +148,64 @@ struct ParallelPlan {
     // Tasks per chunk. Decided once so the driver never recomputes it
     // against a worker count the plan already adjusted.
     R_xlen_t chunk;
+};
+
+
+/*
+ * Warnings of one kind that a body raises on workers, counted in the order a
+ * serial run would have raised them.
+ *
+ * On success every warning is raised, so the count is the total. On failure
+ * a serial run raises only the warnings of the tasks it reached, which are
+ * the tasks below the failing one plus whatever the failing task raised
+ * before it threw. A worker's index says nothing about which tasks those
+ * are, so each warning is counted against the chunk its worker held:
+ *
+ *   - a chunk below the lowest failing chunk was claimed before it and ran
+ *     to completion, so all of its warnings belong;
+ *   - the failing chunk ran in order on one worker up to the throw, so its
+ *     warnings are exactly those a serial run raised in that chunk;
+ *   - a chunk above it is past the failure and none of its warnings belong.
+ *
+ * A warning raised before the worker's first claim -- while it builds its
+ * matcher or iterator -- precedes every task and always belongs.
+ *
+ * The owner lives in the entry point's Frame. run_parallel_with_warnings()
+ * sizes it on the main thread and marks the failure point before it
+ * rethrows, so add() needs no allocation or synchronization: each chunk has
+ * one writer. count() is read on the main thread once the driver has
+ * returned or thrown.
+ */
+class CHARR_OWNER_TYPE SerialWarnings {
+public:
+    CHARR_CXX_HELPER SerialWarnings() noexcept;
+
+    SerialWarnings(const SerialWarnings&) = delete;
+    SerialWarnings& operator=(const SerialWarnings&) = delete;
+    SerialWarnings(SerialWarnings&&) = delete;
+    SerialWarnings& operator=(SerialWarnings&&) = delete;
+
+    // Worker side: count `number` warnings at the worker's serial position.
+    CHARR_NEUTRAL_HELPER void add(
+        const WorkerContext& context, R_xlen_t number = 1
+    ) noexcept;
+
+    // Main thread, after the region: how many warnings a serial run raised.
+    CHARR_NEUTRAL_HELPER R_xlen_t count() const noexcept;
+
+    // Driver side only. reset() runs before any worker starts; fail_at()
+    // takes the serial position of the lowest failure after the join.
+    CHARR_CXX_HELPER void reset(
+        unsigned workers, R_xlen_t tasks, R_xlen_t chunk
+    );
+    CHARR_NEUTRAL_HELPER void fail_at(R_xlen_t position) noexcept;
+
+private:
+    std::vector<R_xlen_t> setup_;
+    std::vector<R_xlen_t> chunks_;
+    R_xlen_t chunk_;
+    // Chunks that count: all of them, unless a threaded run failed.
+    R_xlen_t counted_;
 };
 
 
@@ -173,13 +250,23 @@ CHARR_NEUTRAL_HELPER ParallelPlan parallel_plan(
 
 /*
  * Run one body over [0, tasks). A serial plan calls run() on this thread with
- * the whole range and lets its exception propagate. A threaded plan runs
- * chunk 0 here and the rest on workers, joins unconditionally, and then
- * re-raises the failure belonging to the lowest task index as a
- * std::runtime_error carrying the original message.
+ * the whole range and lets its exception propagate. A threaded plan draws
+ * chunks here and on workers, joins unconditionally, and then re-raises the
+ * failure belonging to the lowest task index as a std::runtime_error carrying
+ * the original message.
+ *
+ * run_parallel_with_warnings() also prepares `warnings` for the body and,
+ * when a threaded run fails, limits it to what a serial run would have
+ * raised. After it returns or throws, warnings.count() is the serial count.
+ * It has its own name rather than overloading run_parallel(), so a call from
+ * a template with a dependent body still resolves to one function.
  */
 CHARR_CXX_HELPER void run_parallel(
     const ParallelPlan& plan, R_xlen_t tasks, ParallelBody& body
+);
+CHARR_CXX_HELPER void run_parallel_with_warnings(
+    const ParallelPlan& plan, R_xlen_t tasks, ParallelBody& body,
+    SerialWarnings& warnings
 );
 
 } // namespace shared

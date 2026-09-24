@@ -125,6 +125,8 @@ CHARR_CXX_HELPER void build_first_inputs(
     if (vectorize_length <= 0)
         return;
 
+    int* ends = output+vectorize_length;
+
     const R_len_t subject_length = static_cast<R_len_t>(subjects.size());
     const R_len_t pattern_length = static_cast<R_len_t>(patterns.size());
     for (R_len_t lane = 0; lane < pattern_length; ++lane) {
@@ -161,7 +163,7 @@ CHARR_CXX_HELPER void build_first_inputs(
                 }
             }
             output[i] = current.start;
-            output[i+vectorize_length] = current.end;
+            ends[i] = current.end;
 
             if (pattern_length >= vectorize_length-i)
                 break;
@@ -455,7 +457,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_coll(
                                     current_index
                                 );
                                 int* output = INTEGER(current);
-                                for (R_len_t j = 0;
+                                for (R_xlen_t j = 0;
                                         j < match_count; ++j) {
                                     const shared::CollationRange& match =
                                         matches[static_cast<std::size_t>(j)];

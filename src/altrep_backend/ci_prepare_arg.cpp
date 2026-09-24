@@ -174,14 +174,11 @@ CHARR_R_HELPER const char* prepare_locale_value_r(
     bool allowdefault
 ) noexcept
 {
-    if (STRING_ELT(loc, 0) == NA_STRING) {
-        UNPROTECT(1);
+    if (STRING_ELT(loc, 0) == NA_STRING)
         Rf_error(MSG__ARG_EXPECTED_NOT_NA, argname);
-    }
 
     const char* requested = CHAR(STRING_ELT(loc, 0));
     if (requested[0] == '\0') {
-        UNPROTECT(1);
         if (allowdefault)
             return default_locale;
         Rf_error(MSG__LOCALE_INCORRECT_ID);
@@ -192,7 +189,6 @@ CHARR_R_HELPER const char* prepare_locale_value_r(
     uloc_canonicalize(
         requested, canonical, ULOC_FULLNAME_CAPACITY, &status
     );
-    UNPROTECT(1);
     STRI__CHECKICUSTATUS_RFERROR(status, {;})
 
     R_len_t length = std::strlen(canonical);
@@ -608,9 +604,11 @@ CHARR_R_HELPER const char* ci__prepare_arg_locale_r(
     }
 
     PROTECT(loc = ci__prepare_arg_string_1_r(loc, argname));
-    return prepare_locale_value_r(
+    const char* result = prepare_locale_value_r(
         loc, argname, default_locale, allowdefault
     );
+    UNPROTECT(1);
+    return result;
 }
 
 

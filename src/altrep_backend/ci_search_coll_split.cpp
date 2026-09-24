@@ -276,25 +276,6 @@ CHARR_R_HELPER void emit_warnings(
 }
 
 
-CHARR_NEUTRAL_HELPER void reduce_fallback_prefix(
-    bool& warning,
-    const std::vector<unsigned char>& fallback,
-    const std::vector<unsigned char>& failures,
-    bool failed
-) noexcept
-{
-    std::size_t limit = fallback.size();
-    if (failed) {
-        limit = 0;
-        while (limit < failures.size() && failures[limit] == 0)
-            ++limit;
-        if (limit < failures.size())
-            ++limit;
-    }
-    for (std::size_t i = 0; i < limit; ++i)
-        warning = warning || fallback[i] != 0;
-}
-
 
 class SplitBody final : public ParallelBody {
 public:
@@ -308,15 +289,14 @@ public:
         const shared::CollatorOptions& options,
         std::vector<io::OutputStore>& stores,
         std::vector<R_len_t>& maxima,
-        std::vector<unsigned char>& fallback,
-        std::vector<unsigned char>& failures
+        shared::SerialWarnings& fallback
     ) noexcept
         : subjects_(subjects), patterns_(patterns),
           vectorize_length_(vectorize_length), n_(n), n_length_(n_length),
           omit_empty_(omit_empty), omit_empty_length_(omit_empty_length),
           tokens_only_(tokens_only), track_maximum_(track_maximum),
           options_(options), stores_(stores), maxima_(maxima),
-          fallback_(fallback), failures_(failures)
+          fallback_(fallback)
     {
     }
 
@@ -324,13 +304,7 @@ public:
         shared::WorkerContext& context
     ) override
     {
-        try {
-            run_worker(context);
-        }
-        catch (...) {
-            failures_[context.worker] = 1;
-            throw;
-        }
+        run_worker(context);
     }
 
 private:
@@ -340,8 +314,8 @@ private:
     {
         shared::Collator collator;
         const shared::CollatorOpenResult opened = collator.reset(options_);
-        fallback_[context.worker] =
-            static_cast<unsigned char>(opened.root_fallback);
+        if (opened.root_fallback)
+            fallback_.add(context);
         require_icu_success(opened.status);
 
         shared::CollationCursor subject_cursor;
@@ -481,8 +455,7 @@ private:
     shared::CollatorOptions options_;
     std::vector<io::OutputStore>& stores_;
     std::vector<R_len_t>& maxima_;
-    std::vector<unsigned char>& fallback_;
-    std::vector<unsigned char>& failures_;
+    shared::SerialWarnings& fallback_;
 };
 
 } // namespace search_coll_split
@@ -558,8 +531,7 @@ CHARR_ENTRYPOINT SEXP ci_split_coll(
         io::OutputBuilder child_builder(0);
         io::OutputBuilder matrix_builder(0);
         std::vector<R_len_t> maxima;
-        std::vector<unsigned char> fallback;
-        std::vector<unsigned char> failures;
+        shared::SerialWarnings fallback;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -651,30 +623,26 @@ CHARR_ENTRYPOINT SEXP ci_split_coll(
 
                 if (plan.workers > 1) {
                     maxima.assign(plan.workers, 0);
-                    fallback.assign(plan.workers, 0);
-                    failures.assign(plan.workers, 0);
                     SplitBody body(
                         subject_views, patterns, vectorize_length,
                         n_values, n_length,
                         omit_empty_values, omit_empty_length,
                         tokens_only_value,
                         simplify_value == NA_LOGICAL || simplify_value,
-                        options, stores, maxima, fallback, failures
+                        options, stores, maxima, fallback
                     );
                     try {
-                        shared::run_parallel(plan, tasks, body);
+                        shared::run_parallel_with_warnings(
+                            plan, tasks, body, fallback
+                        );
                     }
                     catch (...) {
-                        reduce_fallback_prefix(
-                            root_fallback_warning,
-                            fallback, failures, true
-                        );
+                        root_fallback_warning = root_fallback_warning ||
+                            fallback.count() > 0;
                         throw;
                     }
-                    reduce_fallback_prefix(
-                        root_fallback_warning,
-                        fallback, failures, false
-                    );
+                    root_fallback_warning = root_fallback_warning ||
+                        fallback.count() > 0;
                     for (unsigned worker = 0;
                             worker < plan.workers; ++worker) {
                         if (max_columns < maxima[worker])

@@ -288,7 +288,7 @@ CHARR_R_HELPER SEXP ranges_matrix_r(
 
     SEXP result = Rf_allocMatrix(INTSXP, count, 2);
     int* output = INTEGER(result);
-    for (R_len_t i = 0; i < count; ++i) {
+    for (R_xlen_t i = 0; i < count; ++i) {
         const shared::RegexRange& range = ranges[
             static_cast<std::size_t>(i)
         ];
@@ -313,7 +313,7 @@ CHARR_R_HELPER void fill_capture_matrix_r(
 {
     const R_len_t count = static_cast<R_len_t>(values.size());
     int* data = INTEGER(output);
-    for (R_len_t i = 0; i < count; ++i) {
+    for (R_xlen_t i = 0; i < count; ++i) {
         const shared::RegexRange& value = values[
             static_cast<std::size_t>(i)
         ];
@@ -331,7 +331,7 @@ CHARR_R_HELPER SEXP capture_names_r(
         return R_NilValue;
 
     const R_len_t count = static_cast<R_len_t>(names.size());
-    SEXP result = Rf_allocVector(STRSXP, count);
+    SEXP result = PROTECT(Rf_allocVector(STRSXP, count));
     for (R_len_t i = 0; i < count; ++i) {
         const std::string& name = names[static_cast<std::size_t>(i)];
         SET_STRING_ELT(
@@ -342,6 +342,7 @@ CHARR_R_HELPER SEXP capture_names_r(
             )
         );
     }
+    UNPROTECT(1);
     return result;
 }
 
@@ -444,9 +445,10 @@ CHARR_ENTRYPOINT SEXP ci_locate_first_regex(
                     result_index
                 );
                 int* output = INTEGER(result);
+                int* ends = output+vectorize_length;
                 for (R_len_t i = 0; i < vectorize_length; ++i) {
                     output[i] = NA_INTEGER;
-                    output[i+vectorize_length] = NA_INTEGER;
+                    ends[i] = NA_INTEGER;
                 }
 
                 for (R_len_t lane = 0;
@@ -486,7 +488,8 @@ CHARR_ENTRYPOINT SEXP ci_locate_first_regex(
                     }
 
                     for (R_len_t i = lane; i < vectorize_length;
-                            i += pattern_length) {
+                            i = pattern_length < vectorize_length-i
+                                ? i+pattern_length : vectorize_length) {
                         if (pattern_unusable) {
                             if (pattern_empty)
                                 ++empty_pattern_warnings;
@@ -512,7 +515,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_first_regex(
                         if (!found) {
                             if (return_length) {
                                 output[i] = -1;
-                                output[i+vectorize_length] = -1;
+                                ends[i] = -1;
                             }
                             if (capture) {
                                 set_no_match_captures(
@@ -525,7 +528,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_first_regex(
                         }
 
                         output[i] = match.start;
-                        output[i+vectorize_length] = match.end;
+                        ends[i] = match.end;
                         if (capture) {
                             store_captures(
                                 captures, capture_columns,
@@ -733,7 +736,8 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_regex(
                     }
 
                     for (R_len_t i = lane; i < vectorize_length;
-                            i += pattern_length) {
+                            i = pattern_length < vectorize_length-i
+                                ? i+pattern_length : vectorize_length) {
                         if (pattern_unusable) {
                             if (pattern_empty)
                                 ++empty_pattern_warnings;

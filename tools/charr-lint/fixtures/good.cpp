@@ -18,7 +18,7 @@ CHARR_CXX_HELPER std::string make_output()
     return output;
 }
 
-CHARR_CXX_HELPER void replace_output(std::string& output) noexcept
+CHARR_CXX_HELPER void replace_output(std::string& output)
 {
     output = "next";
 }

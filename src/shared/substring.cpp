@@ -377,10 +377,11 @@ int recycled_order_next(
         return output_length;
     if (index == output_length-1-(output_length % source_length))
         return output_length;
-    index += source_length;
-    return index >= output_length
-        ? (index % source_length)+1
-        : index;
+    // Compare before adding: index+source_length can pass INT_MAX. The
+    // wrapped index has the same residue, so the remainder is taken first.
+    if (source_length >= output_length-index)
+        return (index % source_length)+1;
+    return index+source_length;
 }
 
 int recycling_length(

@@ -293,7 +293,7 @@ CHARR_NEUTRAL_HELPER bool locate_first_direct_element(
         return false;
 
     int& start_result = result[i];
-    int& end_result = result[i+state.vectorize_length];
+    int& end_result = result[static_cast<R_xlen_t>(i)+state.vectorize_length];
     start_result = NA_INTEGER;
     end_result = NA_INTEGER;
     if (value.is_na)
@@ -1201,7 +1201,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_fixed(
                                             current_index
                                         );
                                         int* output = INTEGER(current);
-                                        for (R_len_t j = 0;
+                                        for (R_xlen_t j = 0;
                                                 j < match_count; ++j) {
                                             const shared::FixedRange& match =
                                                 matches[
@@ -1274,7 +1274,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_fixed(
                                             current_index
                                         );
                                         int* output = INTEGER(current);
-                                        for (R_len_t j = 0;
+                                        for (R_xlen_t j = 0;
                                                 j < match_count; ++j) {
                                             const shared::FixedRange& match =
                                                 row_matches.match(

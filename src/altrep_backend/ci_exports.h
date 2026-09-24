@@ -48,15 +48,15 @@ CHARR_ENTRYPOINT SEXP ci_cmp_equiv(
 
 // order_rank.cpp
 CHARR_ENTRYPOINT SEXP ci_rank(
-    SEXP str, SEXP opts_collator=R_NilValue
+    SEXP str, SEXP opts_collator
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_order(
-    SEXP str, SEXP decreasing=Rf_ScalarLogical(FALSE),
-    SEXP na_last=Rf_ScalarLogical(TRUE), SEXP opts_collator=R_NilValue
+    SEXP str, SEXP decreasing,
+    SEXP na_last, SEXP opts_collator
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_duplicated(
-    SEXP str, SEXP fromLast=Rf_ScalarLogical(FALSE),
-    SEXP opts_collator=R_NilValue
+    SEXP str, SEXP fromLast,
+    SEXP opts_collator
 ) noexcept;
 
 
@@ -65,9 +65,9 @@ CHARR_ENTRYPOINT SEXP ci_escape_unicode(SEXP str) noexcept;
 
 // join.cpp:
 CHARR_ENTRYPOINT SEXP ci_flatten(
-    SEXP str, SEXP collapse=Rf_mkString(""),
-    SEXP na_empty=Rf_ScalarLogical(FALSE),
-    SEXP omit_empty=Rf_ScalarLogical(FALSE)
+    SEXP str, SEXP collapse,
+    SEXP na_empty,
+    SEXP omit_empty
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_join(
     SEXP strlist, SEXP sep, SEXP collapse, SEXP ignore_null
@@ -100,7 +100,7 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement_all(
 ) noexcept;
 
 // encoding_management.cpp:
-CHARR_ENTRYPOINT SEXP ci_enc_info(SEXP enc=R_NilValue) noexcept;
+CHARR_ENTRYPOINT SEXP ci_enc_info(SEXP enc) noexcept;
 
 
 // trim.cpp:
@@ -131,13 +131,13 @@ CHARR_ENTRYPOINT SEXP ci_pad(
 
 
 // wrap.cpp
-CHARR_ENTRYPOINT SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent=Rf_ScalarInteger(2),
-    SEXP indent=Rf_ScalarInteger(0), SEXP exdent=Rf_ScalarInteger(0),
-    SEXP prefix=Rf_mkString(""), SEXP initial=Rf_mkString(""),
-    SEXP whitespace_only=Rf_ScalarLogical(FALSE),
-    SEXP use_length=Rf_ScalarLogical(FALSE), SEXP locale=R_NilValue,
-    SEXP normalize=Rf_ScalarLogical(TRUE),
-    SEXP output_mode=Rf_ScalarInteger(0)) noexcept;
+CHARR_ENTRYPOINT SEXP ci_wrap(SEXP str, SEXP width, SEXP cost_exponent,
+    SEXP indent, SEXP exdent,
+    SEXP prefix, SEXP initial,
+    SEXP whitespace_only,
+    SEXP use_length, SEXP locale,
+    SEXP normalize,
+    SEXP output_mode) noexcept;
 
 
 // trans_title.cpp:
@@ -298,24 +298,24 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_charclass(
 
 CHARR_ENTRYPOINT SEXP ci_extract_all_boundaries(
     SEXP str, SEXP simplify,
-    SEXP omit_no_match=Rf_ScalarLogical(FALSE),
-    SEXP opts_brkiter=R_NilValue
+    SEXP omit_no_match,
+    SEXP opts_brkiter
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_extract_first_boundaries(
     SEXP str, SEXP opts_brkiter
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_locate_all_boundaries(
-    SEXP str, SEXP omit_no_match=Rf_ScalarLogical(FALSE),
-    SEXP opts_brkiter=R_NilValue,
-    SEXP get_length=Rf_ScalarLogical(FALSE)
+    SEXP str, SEXP omit_no_match,
+    SEXP opts_brkiter,
+    SEXP get_length
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_locate_first_boundaries(
     SEXP str, SEXP opts_brkiter, SEXP get_length
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_split_boundaries(
-    SEXP str, SEXP n=Rf_ScalarInteger(-1),
-    SEXP tokens_only=Rf_ScalarLogical(FALSE),
-    SEXP simplify=Rf_ScalarLogical(FALSE), SEXP opts_brkiter=R_NilValue
+    SEXP str, SEXP n,
+    SEXP tokens_only,
+    SEXP simplify, SEXP opts_brkiter
 ) noexcept;
 CHARR_ENTRYPOINT SEXP ci_count_boundaries(
     SEXP str, SEXP opts_brkiter

@@ -359,25 +359,6 @@ private:
 };
 
 
-CHARR_NEUTRAL_HELPER void reduce_fallback_prefix(
-    bool& warning,
-    const std::vector<unsigned char>& fallback,
-    const std::vector<unsigned char>& failures,
-    bool failed
-) noexcept
-{
-    std::size_t limit = fallback.size();
-    if (failed) {
-        limit = 0;
-        while (limit < failures.size() && failures[limit] == 0)
-            ++limit;
-        if (limit < failures.size())
-            ++limit;
-    }
-    for (std::size_t i = 0; i < limit; ++i)
-        warning = warning || fallback[i] != 0;
-}
-
 
 class AllBody final : public ParallelBody {
 public:
@@ -389,13 +370,12 @@ public:
         bool return_length,
         std::vector<int>& missing,
         AllMatchesRows& matches,
-        std::vector<unsigned char>& fallback,
-        std::vector<unsigned char>& failures
+        shared::SerialWarnings& fallback
     ) noexcept
         : subjects_(subjects), patterns_(patterns),
           vectorize_length_(vectorize_length), options_(options),
           return_length_(return_length), missing_(missing), matches_(matches),
-          fallback_(fallback), failures_(failures)
+          fallback_(fallback)
     {
     }
 
@@ -403,13 +383,7 @@ public:
         shared::WorkerContext& context
     ) override
     {
-        try {
-            run_worker(context);
-        }
-        catch (...) {
-            failures_[context.worker] = 1;
-            throw;
-        }
+        run_worker(context);
     }
 
 private:
@@ -419,8 +393,8 @@ private:
     {
         shared::Collator collator;
         const shared::CollatorOpenResult opened = collator.reset(options_);
-        fallback_[context.worker] =
-            static_cast<unsigned char>(opened.root_fallback);
+        if (opened.root_fallback)
+            fallback_.add(context);
         require_icu_success(opened.status);
 
         shared::CollationCursor subject_cursor;
@@ -490,8 +464,7 @@ private:
     bool return_length_;
     std::vector<int>& missing_;
     AllMatchesRows& matches_;
-    std::vector<unsigned char>& fallback_;
-    std::vector<unsigned char>& failures_;
+    shared::SerialWarnings& fallback_;
 };
 
 
@@ -704,8 +677,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_coll(
         std::vector<shared::CollationRange> matches;
         std::vector<int> row_missing;
         AllMatchesRows row_matches;
-        std::vector<unsigned char> fallback;
-        std::vector<unsigned char> failures;
+        shared::SerialWarnings fallback;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -788,27 +760,23 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_coll(
                     row_matches.reset(
                         static_cast<std::size_t>(vectorize_length)
                     );
-                    fallback.assign(plan.workers, 0);
-                    failures.assign(plan.workers, 0);
                     AllBody body(
                         subject_views, patterns, vectorize_length,
                         options, return_length, row_missing, row_matches,
-                        fallback, failures
+                        fallback
                     );
                     try {
-                        shared::run_parallel(plan, tasks, body);
+                        shared::run_parallel_with_warnings(
+                            plan, tasks, body, fallback
+                        );
                     }
                     catch (...) {
-                        reduce_fallback_prefix(
-                            root_fallback_warning,
-                            fallback, failures, true
-                        );
+                        root_fallback_warning = root_fallback_warning ||
+                            fallback.count() > 0;
                         throw;
                     }
-                    reduce_fallback_prefix(
-                        root_fallback_warning,
-                        fallback, failures, false
-                    );
+                    root_fallback_warning = root_fallback_warning ||
+                        fallback.count() > 0;
 
                     for (R_len_t lane = 0; lane < pattern_length; ++lane) {
                         R_len_t i = lane;
@@ -840,7 +808,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_coll(
                                     current_index
                                 );
                                 int* output = INTEGER(current);
-                                for (R_len_t j = 0; j < match_count; ++j) {
+                                for (R_xlen_t j = 0; j < match_count; ++j) {
                                     const shared::CollationRange& match =
                                         row_matches.match(
                                             row_index,
@@ -897,7 +865,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_coll(
                                     current_index
                                 );
                                 int* output = INTEGER(current);
-                                for (R_len_t j = 0; j < match_count; ++j) {
+                                for (R_xlen_t j = 0; j < match_count; ++j) {
                                     const shared::CollationRange& match =
                                         matches[static_cast<std::size_t>(j)];
                                     output[j] = match.start;

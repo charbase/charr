@@ -2,6 +2,10 @@
 
 #include <exception>
 
+#if defined(BAD_HELPER_NAME)
+#define callback_protections callback_domain
+#endif
+
 CHARR_ENTRYPOINT SEXP bad_protection_branch(SEXP input) noexcept
 {
     charr::shared::ProtHelper entry_protections;
@@ -30,6 +34,9 @@ CHARR_ENTRYPOINT SEXP bad_protection_branch(SEXP input) noexcept
                 return result;
             }
         );
+#if defined(BAD_PRELUDE_UNPROTECT)
+        UNPROTECT(1);
+#endif
     }
     catch (const charr::shared::RUnwind&) {
         error_state.capture_r_error();
@@ -65,16 +72,26 @@ CHARR_ENTRYPOINT SEXP bad_protection_branch(SEXP input) noexcept
 #endif
 #if defined(BAD_CPP_DEPTH)
         UNPROTECT(1);
-#else
+#elif !defined(BAD_CPP_MISSING_ENTRY_RELEASE)
         entry_protections.release_all();
 #endif
         Rf_error("%s", error_state.message());
     }
 
+#if defined(BAD_EXTRA_RETURN)
+    if (input == R_NilValue) {
+        entry_protections.release_all();
+        return result;
+    }
+#endif
+
 #if defined(BAD_SUCCESS_DEPTH)
     UNPROTECT(1);
 #else
     entry_protections.release_all();
+#endif
+#if defined(BAD_POSTLUDE_AFTER_RELEASE)
+    (void)Rf_allocVector(INTSXP, 1);
 #endif
     return result;
 }

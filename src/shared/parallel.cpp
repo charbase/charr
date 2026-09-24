@@ -62,7 +62,8 @@ R_xlen_t minimum_chunk_setting = minimum_chunk_tasks;
  *
  * `failed_at` is the first task of the chunk the worker held when it threw,
  * which is what orders failures now that a worker's chunks are not one
- * contiguous slice.
+ * contiguous slice. It is -1 for a worker that threw before its first claim:
+ * a serial run fails in that setup before it reaches any task.
  */
 struct WorkerReport {
     bool failed;
@@ -192,7 +193,7 @@ CHARR_CXX_HELPER void run_guarded(
     }
     catch (...) {
         report.failed = true;
-        report.failed_at = context.begin;
+        report.failed_at = context.serial_position();
         body.describe_error(report.message, message_size);
     }
 }
@@ -243,14 +244,20 @@ CHARR_CXX_HELPER bool spawn_worker(
 
 
 // A failed join leaves a thread whose destructor terminates anyway, so there
-// is no recoverable state to return to.
+// is no recoverable state to return to. The terminate is explicit so the
+// noexcept claim does not rest on an escaping exception.
 CHARR_CXX_HELPER void join_all(
     std::vector<std::thread>& threads
 ) noexcept {
-    for (std::vector<std::thread>::iterator it = threads.begin();
-            it != threads.end(); ++it) {
-        if (it->joinable())
-            it->join();
+    try {
+        for (std::vector<std::thread>::iterator it = threads.begin();
+                it != threads.end(); ++it) {
+            if (it->joinable())
+                it->join();
+        }
+    }
+    catch (...) {
+        std::terminate();
     }
 }
 
@@ -306,7 +313,10 @@ CHARR_R_HELPER SEXP C_charr_min_chunk(SEXP value) noexcept
 
 CHARR_CXX_HELPER bool WorkerContext::next_chunk() noexcept
 {
-    return queue_->claim(begin, end);
+    if (!queue_->claim(begin, end))
+        return false;
+    holding_ = true;
+    return true;
 }
 
 
@@ -365,16 +375,74 @@ CHARR_NEUTRAL_HELPER ParallelPlan parallel_plan(
 }
 
 
-CHARR_CXX_HELPER void run_parallel(
-    const ParallelPlan& plan, R_xlen_t tasks, ParallelBody& body
+CHARR_CXX_HELPER SerialWarnings::SerialWarnings() noexcept
+    : chunk_(1), counted_(0)
+{
+}
+
+
+CHARR_CXX_HELPER void SerialWarnings::reset(
+    unsigned workers, R_xlen_t tasks, R_xlen_t chunk
+)
+{
+    const R_xlen_t chunks = tasks <= 0
+        ? 0 : tasks/chunk + (tasks % chunk != 0 ? 1 : 0);
+    setup_.assign(static_cast<std::size_t>(workers), 0);
+    chunks_.assign(static_cast<std::size_t>(chunks), 0);
+    chunk_ = chunk;
+    counted_ = chunks;
+}
+
+
+CHARR_NEUTRAL_HELPER void SerialWarnings::fail_at(
+    R_xlen_t position
+) noexcept
+{
+    // The failing chunk is the last one that counts; a failure before the
+    // first claim leaves only the setup warnings.
+    counted_ = position < 0 ? 0 : position/chunk_ + 1;
+}
+
+
+CHARR_NEUTRAL_HELPER void SerialWarnings::add(
+    const WorkerContext& context, R_xlen_t number
+) noexcept
+{
+    const R_xlen_t position = context.serial_position();
+    if (position < 0)
+        setup_[static_cast<std::size_t>(context.worker)] += number;
+    else
+        chunks_[static_cast<std::size_t>(position/chunk_)] += number;
+}
+
+
+CHARR_NEUTRAL_HELPER R_xlen_t SerialWarnings::count() const noexcept
+{
+    R_xlen_t total = 0;
+    for (std::size_t i = 0; i < setup_.size(); ++i)
+        total += setup_[i];
+    for (R_xlen_t i = 0; i < counted_; ++i)
+        total += chunks_[static_cast<std::size_t>(i)];
+    return total;
+}
+
+
+namespace parallel_detail {
+
+CHARR_CXX_HELPER void run_region(
+    const ParallelPlan& plan, R_xlen_t tasks, ParallelBody& body,
+    SerialWarnings* warnings
 ) {
     const unsigned workers = plan.workers < 2 || tasks < 2 ? 1 : plan.workers;
+    const R_xlen_t chunk = plan.chunk < 1 ? 1 : plan.chunk;
 
     // A serial plan takes the same path with one worker and one chunk, so a
     // body only ever sees the one loop shape.
     parallel_detail::ChunkQueue queue(
-        tasks, plan.chunk
+        tasks, chunk
     );
+    if (warnings != nullptr)
+        warnings->reset(workers, tasks, chunk);
     std::vector<parallel_detail::WorkerReport> reports(workers);
     std::vector<WorkerContext> contexts;
     contexts.reserve(static_cast<std::size_t>(workers));
@@ -423,8 +491,11 @@ CHARR_CXX_HELPER void run_parallel(
             first = &report;
         }
     }
-    if (first != nullptr)
+    if (first != nullptr) {
+        if (warnings != nullptr)
+            warnings->fail_at(first->failed_at);
         throw std::runtime_error(first->message);
+    }
 
     // Nothing failed and nothing abandoned its attempt, so every chunk must
     // have been claimed. A body that returned without looping would leave
@@ -434,6 +505,23 @@ CHARR_CXX_HELPER void run_parallel(
             "parallel body returned before its chunks were drained"
         );
     }
+}
+
+} // namespace parallel_detail
+
+
+CHARR_CXX_HELPER void run_parallel(
+    const ParallelPlan& plan, R_xlen_t tasks, ParallelBody& body
+) {
+    parallel_detail::run_region(plan, tasks, body, nullptr);
+}
+
+
+CHARR_CXX_HELPER void run_parallel_with_warnings(
+    const ParallelPlan& plan, R_xlen_t tasks, ParallelBody& body,
+    SerialWarnings& warnings
+) {
+    parallel_detail::run_region(plan, tasks, body, &warnings);
 }
 
 

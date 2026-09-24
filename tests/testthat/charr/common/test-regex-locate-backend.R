@@ -192,3 +192,47 @@ test_that("regex locate compiles before NA subjects and honors inline modes", {
     )
   )
 })
+
+test_that("regex locate all converts capture groups that move backward", {
+  # A group inside a lookahead can end past its match, and the next match's
+  # group then starts before that end. The byte offsets of one capture column
+  # are not ordered, so a forward-only position cursor overshoots them.
+  strings <- charr_test_leaf("ci_trim_both")(c(
+    " aa\u00e9 ", " \u00e9a\u00e9a\u00e9\u00e9 ", " a\U0001F642a "
+  ))
+  expect_identical(charport::is_charvec(strings), charr_altrep())
+
+  value <- locate_all_regex(strings, "a(?=(.*))", capture_groups = TRUE)
+  groups <- lapply(value, function(x) attr(x, "capture_groups")[[1L]])
+  expect_identical(
+    groups,
+    list(
+      cbind(start = c(2L, 3L), end = c(3L, 3L)),
+      cbind(start = c(3L, 5L), end = c(6L, 6L)),
+      cbind(start = c(2L, 4L), end = c(3L, 3L))
+    )
+  )
+  expect_identical(
+    lapply(value, function(x) {
+      attributes(x) <- list(dim = dim(x), dimnames = dimnames(x))
+      x
+    }),
+    list(
+      cbind(start = c(1L, 2L), end = c(1L, 2L)),
+      cbind(start = c(2L, 4L), end = c(2L, 4L)),
+      cbind(start = c(1L, 3L), end = c(1L, 3L))
+    )
+  )
+
+  lengths <- locate_all_regex(
+    strings, "a(?=(.*))", capture_groups = TRUE, get_length = TRUE
+  )
+  expect_identical(
+    lapply(lengths, function(x) attr(x, "capture_groups")[[1L]]),
+    list(
+      cbind(start = c(2L, 3L), length = c(2L, 1L)),
+      cbind(start = c(3L, 5L), length = c(4L, 2L)),
+      cbind(start = c(2L, 4L), length = c(2L, 0L))
+    )
+  )
+})

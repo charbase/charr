@@ -210,7 +210,7 @@ CHARR_R_HELPER SEXP matched_child_r(
     const shared::FixedExtractRow& row
 ) noexcept
 {
-    SEXP output = Rf_allocVector(STRSXP, row.count);
+    SEXP output = PROTECT(Rf_allocVector(STRSXP, row.count));
     for (R_len_t i = 0; i < row.count; ++i) {
         const shared::StringView& match = plan.matches[
             row.begin+static_cast<std::size_t>(i)
@@ -223,6 +223,7 @@ CHARR_R_HELPER SEXP matched_child_r(
             )
         );
     }
+    UNPROTECT(1);
     return output;
 }
 
@@ -550,11 +551,14 @@ CHARR_ENTRYPOINT SEXP ci_extract_all_fixed(
                         ),
                         result_index
                     );
+                    // Cell indexes are R_xlen_t: the matrix may be a long
+                    // vector even though both dimensions fit in an int.
+                    const R_xlen_t rows = vectorize_length;
                     for (R_len_t i = 0;
                             i < vectorize_length; ++i) {
                         const shared::FixedExtractRow& row =
                             plan.rows[static_cast<std::size_t>(i)];
-                        R_len_t j = 0;
+                        R_xlen_t j = 0;
                         if (row.forced_na) {
                             SET_STRING_ELT(result, i, NA_STRING);
                             j = 1;
@@ -566,14 +570,14 @@ CHARR_ENTRYPOINT SEXP ci_extract_all_fixed(
                                 for (; j < row.count; ++j) {
                                     SET_STRING_ELT(
                                         result,
-                                        i+j*vectorize_length,
+                                        i+j*rows,
                                         pattern_sexp
                                     );
                                 }
                                 for (; j < plan.max_columns; ++j) {
                                     SET_STRING_ELT(
                                         result,
-                                        i+j*vectorize_length,
+                                        i+j*rows,
                                         simplify_value == NA_LOGICAL
                                             ? NA_STRING : R_BlankString
                                     );
@@ -594,7 +598,7 @@ CHARR_ENTRYPOINT SEXP ci_extract_all_fixed(
                             for (; j < row.count; ++j) {
                                 SET_STRING_ELT(
                                     result,
-                                    i+j*vectorize_length,
+                                    i+j*rows,
                                     pattern_sexp
                                 );
                             }
@@ -608,7 +612,7 @@ CHARR_ENTRYPOINT SEXP ci_extract_all_fixed(
                                     ];
                                 SET_STRING_ELT(
                                     result,
-                                    i+j*vectorize_length,
+                                    i+j*rows,
                                     Rf_mkCharLenCE(
                                         match.len == 0
                                             ? "" : match.ptr,
@@ -620,7 +624,7 @@ CHARR_ENTRYPOINT SEXP ci_extract_all_fixed(
                         for (; j < plan.max_columns; ++j) {
                             SET_STRING_ELT(
                                 result,
-                                i+j*vectorize_length,
+                                i+j*rows,
                                 simplify_value == NA_LOGICAL
                                     ? NA_STRING : R_BlankString
                             );

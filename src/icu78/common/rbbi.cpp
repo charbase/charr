@@ -869,9 +869,9 @@ int32_t RuleBasedBreakIterator::handleNext() {
         // State Transition - move machine to its next state
         //
 
-        // fNextState is a variable-length array.
+        // fNextState is a variable-length array (declared length 1).
         U_ASSERT(category<fData->fHeader->fCatCount);
-        state = row->fNextState[category];  /*Not accessing beyond memory*/
+        state = *(row->fNextState + category);  /*Not accessing beyond memory*/
         row = (RowType *)
             // (statetable->fTableData + (statetable->fRowLen * state));
             (tableData + tableRowLen * state);
@@ -1013,9 +1013,9 @@ int32_t RuleBasedBreakIterator::handleSafePrevious(int32_t fromPosition) {
 
         // State Transition - move machine to its next state
         //
-        // fNextState is a variable-length array.
+        // fNextState is a variable-length array (declared length 1).
         U_ASSERT(category<fData->fHeader->fCatCount);
-        state = row->fNextState[category];  /*Not accessing beyond memory*/
+        state = *(row->fNextState + category);  /*Not accessing beyond memory*/
         row = (RowType *)
             (stateTable->fTableData + (stateTable->fRowLen * state));
 

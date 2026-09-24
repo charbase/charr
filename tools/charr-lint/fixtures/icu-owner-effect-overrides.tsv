@@ -1,0 +1,3 @@
+add_effects	remove_effects	qualified_name	canonical_type	reason
+	cxx	icu_fixture::IcuOwner::IcuOwner	void (void)	Fixture ICU owner reports allocation failure without throwing.
+	cxx	icu_fixture::IcuOwner::fromBytes	class icu_fixture::IcuOwner (const char *)	Fixture ICU owner reports allocation failure without throwing.

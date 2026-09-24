@@ -171,13 +171,15 @@ CHARR_R_HELPER bool locate_first_ascii_scalar_direct(
     if (options.case_insensitive || options.overlap)
         return false;
 
+    int* ends = output+vectorize_length;
+
     unsigned char pattern;
     if (!direct_fixed_pattern(patterns, pattern_length, pattern))
         return false;
 
     for (R_len_t i = 0; i < vectorize_length; ++i) {
         int& start_output = output[i];
-        int& end_output = output[i+vectorize_length];
+        int& end_output = ends[i];
         start_output = NA_INTEGER;
         end_output = NA_INTEGER;
 
@@ -328,6 +330,7 @@ CHARR_CXX_HELPER void locate_first_normalized(
     shared::FixedMatcher& matcher, int* output
 )
 {
+    int* ends = output+vectorize_length;
     const R_len_t subject_length = static_cast<R_len_t>(subjects.size());
     const R_len_t pattern_length = static_cast<R_len_t>(patterns.size());
     if (general_start > 0 && pattern_length != 1) {
@@ -371,7 +374,7 @@ CHARR_CXX_HELPER void locate_first_normalized(
                 }
             }
             output[i] = location.start;
-            output[i+vectorize_length] = location.end;
+            ends[i] = location.end;
 
             if (pattern_length >= vectorize_length-i)
                 break;
@@ -705,7 +708,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_fixed(
                                             current_index
                                         );
                                         int* output = INTEGER(current);
-                                        for (R_len_t j = 0;
+                                        for (R_xlen_t j = 0;
                                                 j < match_count; ++j) {
                                             const shared::FixedRange& match =
                                                 matches[

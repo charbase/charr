@@ -79,6 +79,26 @@ CHARR_CXX_HELPER void ensure_iterator(
 }
 
 
+// The worker form: a serial run warns when its one iterator opens, at the
+// first element that needs it, so the warning is counted at that element.
+CHARR_CXX_HELPER void ensure_iterator(
+    shared::BoundaryIterator& iterator,
+    const shared::BoundaryOptions& options,
+    bool& opened,
+    shared::SerialWarnings& fallback,
+    const shared::WorkerContext& context
+)
+{
+    if (opened)
+        return;
+    const shared::BoundaryOpenResult result = iterator.reset(options);
+    if (result.root_fallback)
+        fallback.add(context);
+    require_icu_success(result.status);
+    opened = true;
+}
+
+
 CHARR_CXX_HELPER void normalize_input(
     const charport::StrViews& source,
     shared::NativeToUtf8& converter,
@@ -123,12 +143,11 @@ public:
     CHARR_CXX_HELPER FirstBody(
         const std::vector<shared::StringView>& normalized,
         const shared::BoundaryOptions& options,
-        std::vector<unsigned char>& fallback,
-        std::vector<int>& failures,
+        shared::SerialWarnings& fallback,
         io::ParallelOutputBuilder& builder
     ) noexcept
         : normalized_(normalized), options_(options),
-          fallback_(fallback), failures_(failures), builder_(builder)
+          fallback_(fallback), builder_(builder)
     {
     }
 
@@ -138,62 +157,51 @@ public:
     {
         shared::BoundaryIterator iterator;
         bool opened = false;
-        bool root_fallback = false;
         const bool ascii_word_first =
             shared::boundary_ascii_word_first(options_);
-        try {
-            while (context.next_chunk()) {
-                for (R_xlen_t i = context.begin; i < context.end; ++i) {
-                    const shared::StringView& value = normalized_[
-                        static_cast<std::size_t>(i)
-                    ];
-                    if (value.is_na() || value.len == 0) {
-                        builder_.set_na(context.worker, i);
-                        continue;
-                    }
-
-                    int ascii_word_end = 0;
-                    if (ascii_word_first &&
-                            shared::boundary_ascii_initial_word(
-                                value.ptr, value.len, ascii_word_end
-                            )) {
-                        builder_.set(
-                            context.worker, i, value.ptr,
-                            static_cast<std::size_t>(ascii_word_end),
-                            CETYPE_EXT_ASCII
-                        );
-                        continue;
-                    }
-
-                    ensure_iterator(
-                        iterator, options_, opened, root_fallback
-                    );
-                    require_icu_success(iterator.set_text(value));
-                    iterator.first();
-                    shared::BoundaryRange range{0, 0};
-                    if (!iterator.next(range))
-                        builder_.set_na(context.worker, i);
-                    else
-                        builder_.set(
-                            context.worker, i, boundary_record(value, range)
-                        );
+        while (context.next_chunk()) {
+            for (R_xlen_t i = context.begin; i < context.end; ++i) {
+                const shared::StringView& value = normalized_[
+                    static_cast<std::size_t>(i)
+                ];
+                if (value.is_na() || value.len == 0) {
+                    builder_.set_na(context.worker, i);
+                    continue;
                 }
+
+                int ascii_word_end = 0;
+                if (ascii_word_first &&
+                        shared::boundary_ascii_initial_word(
+                            value.ptr, value.len, ascii_word_end
+                        )) {
+                    builder_.set(
+                        context.worker, i, value.ptr,
+                        static_cast<std::size_t>(ascii_word_end),
+                        CETYPE_EXT_ASCII
+                    );
+                    continue;
+                }
+
+                ensure_iterator(
+                    iterator, options_, opened, fallback_, context
+                );
+                require_icu_success(iterator.set_text(value));
+                iterator.first();
+                shared::BoundaryRange range{0, 0};
+                if (!iterator.next(range))
+                    builder_.set_na(context.worker, i);
+                else
+                    builder_.set(
+                        context.worker, i, boundary_record(value, range)
+                    );
             }
         }
-        catch (...) {
-            fallback_[context.worker] =
-                static_cast<unsigned char>(root_fallback);
-            failures_[context.worker] = 1;
-            throw;
-        }
-        fallback_[context.worker] = static_cast<unsigned char>(root_fallback);
     }
 
 private:
     const std::vector<shared::StringView>& normalized_;
     const shared::BoundaryOptions& options_;
-    std::vector<unsigned char>& fallback_;
-    std::vector<int>& failures_;
+    shared::SerialWarnings& fallback_;
     io::ParallelOutputBuilder& builder_;
 };
 
@@ -206,12 +214,11 @@ public:
         bool omit,
         std::vector<io::OutputStore>& stores,
         std::vector<R_len_t>& max_columns,
-        std::vector<unsigned char>& fallback,
-        std::vector<int>& failures
+        shared::SerialWarnings& fallback
     ) noexcept
         : normalized_(normalized), options_(options), omit_(omit),
           stores_(stores), max_columns_(max_columns),
-          fallback_(fallback), failures_(failures)
+          fallback_(fallback)
     {
     }
 
@@ -222,64 +229,53 @@ public:
         shared::BoundaryIterator iterator;
         io::GrowableOutputBuilder builder;
         bool opened = false;
-        bool root_fallback = false;
         // The column count is a maximum over every task this worker runs,
         // whichever chunks those came from, so it stays outside the chunk
         // loop and is published once at the end.
         R_len_t local_max_columns = 0;
-        try {
-            while (context.next_chunk()) {
-                for (R_xlen_t task = context.begin;
-                        task < context.end; ++task) {
-                    const std::size_t index =
-                        static_cast<std::size_t>(task);
-                    io::OutputStore& output = stores_[index];
-                    const shared::StringView& value = normalized_[index];
-                    if (value.is_na()) {
+        while (context.next_chunk()) {
+            for (R_xlen_t task = context.begin;
+                    task < context.end; ++task) {
+                const std::size_t index =
+                    static_cast<std::size_t>(task);
+                io::OutputStore& output = stores_[index];
+                const shared::StringView& value = normalized_[index];
+                if (value.is_na()) {
+                    output = io::scalar_store(
+                        io::missing_output_record()
+                    );
+                    if (local_max_columns < 1)
+                        local_max_columns = 1;
+                    continue;
+                }
+
+                ensure_iterator(
+                    iterator, options_, opened, fallback_, context
+                );
+                require_icu_success(iterator.set_text(value));
+                iterator.first();
+                builder.reset();
+                R_len_t range_count = 0;
+                shared::BoundaryRange range{0, 0};
+                while (iterator.next(range)) {
+                    builder.append(boundary_record(value, range));
+                    ++range_count;
+                }
+                if (range_count == 0) {
+                    if (!omit_) {
                         output = io::scalar_store(
                             io::missing_output_record()
                         );
                         if (local_max_columns < 1)
                             local_max_columns = 1;
-                        continue;
                     }
-
-                    ensure_iterator(
-                        iterator, options_, opened, root_fallback
-                    );
-                    require_icu_success(iterator.set_text(value));
-                    iterator.first();
-                    builder.reset();
-                    R_len_t range_count = 0;
-                    shared::BoundaryRange range{0, 0};
-                    while (iterator.next(range)) {
-                        builder.append(boundary_record(value, range));
-                        ++range_count;
-                    }
-                    if (range_count == 0) {
-                        if (!omit_) {
-                            output = io::scalar_store(
-                                io::missing_output_record()
-                            );
-                            if (local_max_columns < 1)
-                                local_max_columns = 1;
-                        }
-                        continue;
-                    }
-                    output = builder.release_store();
-                    if (local_max_columns < range_count)
-                        local_max_columns = range_count;
+                    continue;
                 }
+                output = builder.release_store();
+                if (local_max_columns < range_count)
+                    local_max_columns = range_count;
             }
         }
-        catch (...) {
-            fallback_[context.worker] =
-                static_cast<unsigned char>(root_fallback);
-            failures_[context.worker] = 1;
-            throw;
-        }
-        fallback_[context.worker] =
-            static_cast<unsigned char>(root_fallback);
         max_columns_[context.worker] = local_max_columns;
     }
 
@@ -289,8 +285,7 @@ private:
     bool omit_;
     std::vector<io::OutputStore>& stores_;
     std::vector<R_len_t>& max_columns_;
-    std::vector<unsigned char>& fallback_;
-    std::vector<int>& failures_;
+    shared::SerialWarnings& fallback_;
 };
 
 } // namespace search_boundaries_extract
@@ -332,8 +327,7 @@ CHARR_ENTRYPOINT SEXP ci_extract_first_boundaries(
         shared::BoundaryIterator iterator;
         io::OutputBuilder builder(0);
         io::ParallelOutputBuilder parallel_builder;
-        std::vector<unsigned char> fallback;
-        std::vector<int> failures;
+        shared::SerialWarnings fallback;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -363,33 +357,20 @@ CHARR_ENTRYPOINT SEXP ci_extract_first_boundaries(
                 );
 
                 if (plan.workers > 1) {
-                    fallback.assign(plan.workers, 0);
-                    failures.assign(plan.workers, 0);
                     parallel_builder.reset(length, plan.workers);
                     FirstBody body(
-                        normalized, options, fallback, failures,
-                        parallel_builder
+                        normalized, options, fallback, parallel_builder
                     );
                     try {
-                        shared::run_parallel(plan, length, body);
+                        shared::run_parallel_with_warnings(
+                            plan, length, body, fallback
+                        );
                     }
                     catch (...) {
-                        unsigned limit = 0;
-                        while (limit < plan.workers && failures[limit] == 0)
-                            ++limit;
-                        if (limit < plan.workers)
-                            ++limit;
-                        for (unsigned worker = 0; worker < limit; ++worker) {
-                            root_fallback_warning = root_fallback_warning ||
-                                fallback[worker] != 0;
-                        }
+                        root_fallback_warning = fallback.count() > 0;
                         throw;
                     }
-                    for (unsigned worker = 0;
-                            worker < plan.workers; ++worker) {
-                        root_fallback_warning = root_fallback_warning ||
-                            fallback[worker] != 0;
-                    }
+                    root_fallback_warning = fallback.count() > 0;
                     result = entry_protections.reprotect_one(
                         parallel_builder.to_sexp(), result_index
                     );
@@ -497,8 +478,7 @@ CHARR_ENTRYPOINT SEXP ci_extract_all_boundaries(
         io::GrowableOutputBuilder child_builder;
         io::OutputBuilder matrix_builder(0);
         std::vector<R_len_t> worker_max_columns;
-        std::vector<unsigned char> fallback;
-        std::vector<int> failures;
+        shared::SerialWarnings fallback;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -583,36 +563,22 @@ CHARR_ENTRYPOINT SEXP ci_extract_all_boundaries(
                     worker_max_columns.assign(
                         parallel_plan.workers, 0
                     );
-                    fallback.assign(parallel_plan.workers, 0);
-                    failures.assign(parallel_plan.workers, 0);
                     AllBody body(
                         normalized, options, omit, stores,
-                        worker_max_columns, fallback, failures
+                        worker_max_columns, fallback
                     );
                     try {
-                        shared::run_parallel(
-                            parallel_plan, length, body
+                        shared::run_parallel_with_warnings(
+                            parallel_plan, length, body, fallback
                         );
                     }
                     catch (...) {
-                        unsigned limit = 0;
-                        while (limit < parallel_plan.workers &&
-                                failures[limit] == 0) {
-                            ++limit;
-                        }
-                        if (limit < parallel_plan.workers)
-                            ++limit;
-                        for (unsigned worker = 0;
-                                worker < limit; ++worker) {
-                            root_fallback_warning = root_fallback_warning ||
-                                fallback[worker] != 0;
-                        }
+                        root_fallback_warning = fallback.count() > 0;
                         throw;
                     }
+                    root_fallback_warning = fallback.count() > 0;
                     for (unsigned worker = 0;
                             worker < parallel_plan.workers; ++worker) {
-                        root_fallback_warning = root_fallback_warning ||
-                            fallback[worker] != 0;
                         if (max_columns < worker_max_columns[worker])
                             max_columns = worker_max_columns[worker];
                     }

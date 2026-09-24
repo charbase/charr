@@ -2,18 +2,16 @@ add_effects	remove_effects	qualified_name	canonical_type	reason
 	r	ALTREP	int (struct SEXPREC *)	R inline accessor reads object metadata without allocating or signaling an R error.
 	r	ANY_ATTRIB	int (struct SEXPREC *)	R inline accessor reads object metadata without allocating or signaling an R error.
 	r	NO_REFERENCES	int (struct SEXPREC *)	R inline accessor reads object metadata without allocating or signaling an R error.
-	r	PRINTNAME	struct SEXPREC *(struct SEXPREC *)	R inline accessor reads a symbol field without allocating or signaling an R error.
 	r	R_IsNA	int (double)	R numeric predicate does not allocate or signal an R error.
 	r	R_forceSymbols	Rboolean (struct _DllInfo *, Rboolean)	R registration setter does not allocate or signal an R error.
 	r	R_useDynamicSymbols	Rboolean (struct _DllInfo *, Rboolean)	R registration setter does not allocate or signal an R error.
-	r	Rf_isInteger	Rboolean (struct SEXPREC *)	R type predicate does not allocate or signal an R error.
 	r	Rf_isLogical	Rboolean (struct SEXPREC *)	R type predicate does not allocate or signal an R error.
 	r	Rf_isObject	Rboolean (struct SEXPREC *)	R metadata predicate does not allocate or signal an R error.
 	r	Rf_isReal	Rboolean (struct SEXPREC *)	R type predicate does not allocate or signal an R error.
 	r	Rf_isString	Rboolean (struct SEXPREC *)	R type predicate does not allocate or signal an R error.
 	r	Rf_isSymbol	Rboolean (struct SEXPREC *)	R type predicate does not allocate or signal an R error.
 	r	Rf_isVectorAtomic	Rboolean (struct SEXPREC *)	R type predicate does not allocate or signal an R error.
-	r	Rf_unprotect	void (int)	With a valid count on R's main thread, this only decrements the protection stack.
+	r	Rf_unprotect	void (int)	Without PROTECT_PARANOID, R only decrements R_PPStackTop here and cannot signal. The raw protection rule confines this stack write to ProtHelper and to R helpers that balance their own pushes.
 	r	Riconv	unsigned long (void *, const char **, unsigned long *, char **, unsigned long *)	Riconv reports conversion failure through its return value.
 raw-release	r	Riconv_close	int (void *)	Riconv_close releases a converter and reports failure through its return value.
 raw-acquire	r	Riconv_open	void *(const char *, const char *)	Riconv_open returns an owned converter or a failure sentinel.
@@ -21,6 +19,8 @@ raw-acquire	r	Riconv_open	void *(const char *, const char *)	Riconv_open returns
 	cxx	U_FAILURE	signed char (enum UErrorCode)	Inline ICU error predicate performs one integer comparison.
 	cxx	U_SUCCESS	signed char (enum UErrorCode)	Inline ICU error predicate performs one integer comparison.
 r	cxx	charport::Reader::reset	void (struct SEXPREC *)	charport Reader initialization may raise an R error and does not propagate C++ exceptions.
+r		charport::Reader::view	struct charport_strview (long) const	The resolved strviews callback may call CHAR and LENGTH, which signal R errors; check_access also throws on a failed status.
+r		charport::Reader::views	void (int, long, const char **, int *, struct cetype_ext_t *) const	The resolved strviews callback may call CHAR and LENGTH, which signal R errors; check_access also throws on a failed status.
 r		charport::charvec::Builder::to_sexp	struct SEXPREC *(void) noexcept	charport permits R errors during ALTREP wrapping and does not propagate C++ exceptions.
 r		charport::charvec::GrowableBuilder::to_sexp	struct SEXPREC *(void) noexcept	charport permits R errors during ALTREP wrapping and does not propagate C++ exceptions.
 r		charport::charvec::ParallelBuilder::to_sexp	struct SEXPREC *(void) noexcept	charport permits R errors during ALTREP wrapping and does not propagate C++ exceptions.
@@ -30,11 +30,21 @@ raw-release		fclose	int (struct _IO_FILE *)	Closes and releases an owned FILE ha
 raw-acquire		fopen	struct _IO_FILE *(const char *, const char *)	Returns an owned FILE handle that fclose must release.
 raw-release		free	void (void *) noexcept	Releases memory returned by a C allocation function.
 raw-acquire	cxx	icu_78::BreakIterator::createLineInstance	class icu_78::BreakIterator *(const class icu_78::Locale &, enum UErrorCode &)	ICU returns an owned BreakIterator and reports failure through UErrorCode.
+	cxx	icu_78::RegexMatcher::RegexMatcher	void (const class icu_78::UnicodeString &, unsigned int, enum UErrorCode &)	ICU is built without C++ exceptions; pattern compilation allocates through uprv_malloc and reports syntax and allocation failures through UErrorCode. Ownership inference still applies.
 	cxx	icu_78::RegexMatcher::groupCount	int (void) const	ICU accessor reads compiled regular-expression metadata without allocating.
+	cxx	icu_78::RegexMatcher::setStackLimit	void (int, enum UErrorCode &)	ICU is built without C++ exceptions; the setter resets the matcher, records a stack capacity limit, and reports failure through UErrorCode.
+	cxx	icu_78::RegexMatcher::setTimeLimit	void (int, enum UErrorCode &)	ICU setter stores the time limit and reports an invalid value through UErrorCode without allocating.
+	cxx	icu_78::StringPiece::StringPiece	void (const char *, int)	Inline ICU constructor stores a pointer and a length.
+	cxx	icu_78::UnicodeSet::UnicodeSet	void (void)	ICU constructor initializes an empty set in its inline storage without allocating. Ownership inference still applies.
 	cxx	icu_78::UnicodeSet::contains	signed char (int) const	ICU membership test does not allocate or propagate C++ exceptions.
+	cxx	icu_78::UnicodeSet::isBogus	signed char (void) const	Inline ICU accessor tests a stored flag without allocating.
+	cxx	icu_78::UnicodeString::UnicodeString	void (void)	Inline ICU constructor initializes an empty short string without allocating. Ownership inference still applies.
+	cxx	icu_78::UnicodeString::fromUTF8	class icu_78::UnicodeString (class icu_78::StringPiece)	ICU is built without C++ exceptions; UTF-8 conversion allocates through uprv_malloc and returns a bogus string on allocation failure. Ownership inference still applies.
 	cxx	icu_78::UnicodeString::getBuffer	char16_t *(int)	ICU uses a non-throwing allocator and records allocation failure in the string state.
 	cxx	icu_78::UnicodeString::getBuffer	const char16_t *(void) const	ICU accessor returns the existing string buffer without allocating.
+	cxx	icu_78::UnicodeString::isBogus	signed char (void) const	Inline ICU accessor tests a stored flag without allocating.
 	cxx	icu_78::UnicodeString::length	int (void) const	ICU accessor reads the stored string length without allocating.
+	cxx	icu_78::UnicodeString::setTo	class icu_78::UnicodeString &(const class icu_78::UnicodeString &)	ICU is built without C++ exceptions; the copy allocates through uprv_malloc and marks the destination bogus on allocation failure.
 raw-acquire		malloc	void *(unsigned long) noexcept	Returns owned memory that free must release.
 raw-acquire+raw-release		realloc	void *(void *, unsigned long) noexcept	May replace and release the original allocation on success; preserves it on allocation failure.
 	cxx	std::min	const int &(const int &, const int &)	Integer comparison and reference selection cannot throw.

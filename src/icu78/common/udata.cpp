@@ -643,7 +643,10 @@ U_NAMESPACE_END
  *----------------------------------------------------------------------*/
 #if !defined(ICU_DATA_DIR_WINDOWS)
 // When using the Windows system data, we expect only a single data file.
-extern "C" const DataHeader U_DATA_API U_ICUDATA_ENTRY_POINT;
+// stubdata defines this symbol as ICU_Data_Header. Declaring it as
+// DataHeader is a different type for the same object and trips -Wodr
+// under LTO. The header prefix matches DataHeader; callers cast.
+#include "stubdata/stubdata.h"
 #endif
 
 /*
@@ -696,7 +699,8 @@ openCommonData(const char *path,          /*  Path from OpenChoice?          */
 // When using the Windows system data, we expect only a single data file.
             int32_t i;
             for(i = 0; i < commonDataIndex; ++i) {
-                if(gCommonICUDataArray[i]->pHeader == &U_ICUDATA_ENTRY_POINT) {
+                if(gCommonICUDataArray[i]->pHeader ==
+                        reinterpret_cast<const DataHeader *>(&U_ICUDATA_ENTRY_POINT)) {
                     /* The linked-in data is already in the list. */
                     return nullptr;
                 }

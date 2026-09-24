@@ -6,6 +6,7 @@
 
 #include <unicode/utf8.h>
 
+#include <climits>
 #include <cstdint>
 
 namespace charr {
@@ -17,7 +18,10 @@ class SliceArena;
 
 // ICU reports UTF-8 byte offsets, while R's string locations count Unicode
 // code points. This cursor converts a nondecreasing sequence of byte offsets
-// in one pass through the string.
+// in one pass through the string. A target below the previous one restarts
+// the walk from the beginning, so an unordered sequence is still converted
+// correctly, only without the single-pass bound. A target past the end of
+// the string is treated as the end.
 class Utf8PositionCursor {
 public:
     CHARR_NEUTRAL_HELPER explicit Utf8PositionCursor(
@@ -31,8 +35,16 @@ public:
 
     CHARR_NEUTRAL_HELPER int at_byte(int target) noexcept
     {
+        if (target > length_)
+            target = length_;
+        if (target < 0)
+            target = 0;
         if (ascii_)
             return target;
+        if (target < byte_) {
+            byte_ = 0;
+            position_ = 0;
+        }
         while (byte_ < target) {
             U8_FWD_1(data_, byte_, length_);
             ++position_;
@@ -47,6 +59,16 @@ private:
     int position_;
     bool ascii_;
 };
+
+
+// A 0-based code-point index as a 1-based R position. The only index with no
+// 1-based counterpart is the end of a string of INT_MAX code points, where an
+// empty match can start; R cannot represent the position after it, so that
+// one value saturates rather than overflowing.
+CHARR_NEUTRAL_HELPER inline int one_based_position(int index) noexcept
+{
+    return index < INT_MAX ? index+1 : INT_MAX;
+}
 
 CHARR_CXX_HELPER StringView normalize_utf8_slow(
     const StringView& source,
