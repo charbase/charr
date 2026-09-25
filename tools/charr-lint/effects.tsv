@@ -268,6 +268,7 @@ owner	std::runtime_error::runtime_error	void (const class std::basic_string<char
 cxx	std::set<unsigned long, charr::shared::collation_ordering::IndexLess>::insert	struct std::pair<struct std::_Rb_tree_const_iterator<unsigned long>, _Bool> (const unsigned long &)	cxx	clang:not-noexcept	
 owner	std::set<unsigned long, charr::shared::collation_ordering::IndexLess>::set	void (const struct charr::shared::collation_ordering::IndexLess &, const class std::allocator<unsigned long> &)	owner	clang:cleanup-construction	
 cxx	std::stable_sort	void (class __gnu_cxx::__normal_iterator<int *, class std::vector<int> >, class __gnu_cxx::__normal_iterator<int *, class std::vector<int> >, struct charr::shared::collation_ordering::IndexLess)	cxx	clang:not-noexcept	
+cxx	std::stable_sort	void (class __gnu_cxx::__normal_iterator<struct charr::shared::CollationPrefix *, class std::vector<struct charr::shared::CollationPrefix> >, class __gnu_cxx::__normal_iterator<struct charr::shared::CollationPrefix *, class std::vector<struct charr::shared::CollationPrefix> >, struct charr::shared::collation_ordering::EntryLess)	cxx	clang:not-noexcept	
 neutral	std::terminate	void (void) __attribute__((noreturn)) noexcept	neutral	clang:no-cxx-propagation	
 cxx	std::thread::join	void (void)	cxx	clang:not-noexcept	
 neutral	std::thread::joinable	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
@@ -404,6 +405,12 @@ neutral	std::vector<charr::shared::CharacterClassRange>::operator[]	struct charr
 cxx	std::vector<charr::shared::CharacterClassRange>::push_back	void (struct charr::shared::CharacterClassRange &&)		legacy-unobserved	
 neutral	std::vector<charr::shared::CharacterClassRange>::size	unsigned long (void) const noexcept		legacy-unobserved	
 neutral	std::vector<charr::shared::CharacterClassRange>::vector	void (void) noexcept		legacy-unobserved	
+neutral	std::vector<charr::shared::CollationPrefix>::begin	class __gnu_cxx::__normal_iterator<struct charr::shared::CollationPrefix *, class std::vector<struct charr::shared::CollationPrefix> > (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::CollationPrefix>::end	class __gnu_cxx::__normal_iterator<struct charr::shared::CollationPrefix *, class std::vector<struct charr::shared::CollationPrefix> > (void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::vector<charr::shared::CollationPrefix>::operator[]	struct charr::shared::CollationPrefix &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	
+cxx	std::vector<charr::shared::CollationPrefix>::resize	void (unsigned long)	cxx	clang:not-noexcept	
+neutral	std::vector<charr::shared::CollationPrefix>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
+owner	std::vector<charr::shared::CollationPrefix>::vector	void (void) noexcept	owner	clang:cleanup-construction	
 neutral	std::vector<charr::shared::CollationRange>::back	struct charr::shared::CollationRange &(void) noexcept	neutral	clang:no-cxx-propagation	
 neutral	std::vector<charr::shared::CollationRange>::clear	void (void) noexcept	neutral	clang:no-cxx-propagation	
 neutral	std::vector<charr::shared::CollationRange>::empty	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
@@ -689,13 +696,17 @@ neutral	ucnv_resetFromUnicode_78	void (struct UConverter *)	neutral	rule:reviewe
 neutral	ucnv_reset_78	void (struct UConverter *)	neutral	rule:reviewed-c-api	
 neutral	ucnv_setFromUCallBack_78	void (struct UConverter *, void (*)(const void *, UConverterFromUnicodeArgs *, const char16_t *, int, int, UConverterCallbackReason, enum UErrorCode *), const void *, void (**)(const void *, UConverterFromUnicodeArgs *, const char16_t *, int, int, UConverterCallbackReason, enum UErrorCode *), const void **, enum UErrorCode *)	neutral	rule:reviewed-c-api	
 neutral	ucnv_setToUCallBack_78	void (struct UConverter *, void (*)(const void *, UConverterToUnicodeArgs *, const char *, int, UConverterCallbackReason, enum UErrorCode *), const void *, void (**)(const void *, UConverterToUnicodeArgs *, const char *, int, UConverterCallbackReason, enum UErrorCode *), const void **, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral+raw-acquire	ucol_clone_78	struct UCollator *(const struct UCollator *, enum UErrorCode *)	neutral	rule:reviewed-c-api	Returns an owned ICU collator clone that ucol_close must release.
 neutral+raw-release	ucol_close_78	void (struct UCollator *)	neutral	rule:reviewed-c-api	Releases an ICU collator handle.
+neutral	ucol_getAttribute_78	UColAttributeValue (const struct UCollator *, UColAttribute, enum UErrorCode *)	neutral	rule:reviewed-c-api	
 neutral	ucol_getLocaleByType_78	const char *(const struct UCollator *, ULocDataLocaleType, enum UErrorCode *)	neutral	rule:reviewed-c-api	
+neutral	ucol_nextSortKeyPart_78	int (const struct UCollator *, struct UCharIterator *, unsigned int *, unsigned char *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
 neutral+raw-acquire	ucol_open_78	struct UCollator *(const char *, enum UErrorCode *)	neutral	rule:reviewed-c-api	Returns an owned ICU collator handle.
 neutral	ucol_setAttribute_78	void (struct UCollator *, UColAttribute, UColAttributeValue, enum UErrorCode *)	neutral	rule:reviewed-c-api	
 neutral	ucol_strcollUTF8_78	UCollationResult (const struct UCollator *, const char *, int, const char *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
 neutral	udata_setCommonData_78	void (const void *, enum UErrorCode *)		legacy-unobserved	
 neutral	udata_setCommonData_78_charr	void (const void *, enum UErrorCode *)		legacy-unobserved	
+neutral	uiter_setUTF8_78	void (struct UCharIterator *, const char *, int)	neutral	rule:reviewed-c-api	
 neutral	uloc_canonicalize_78	int (const char *, char *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
 neutral	uloc_getDefault_78	const char *(void)	neutral	rule:reviewed-c-api	
 neutral+raw-release	uregex_close_78	void (struct URegularExpression *)		legacy-unobserved	Releases an ICU regular-expression handle.

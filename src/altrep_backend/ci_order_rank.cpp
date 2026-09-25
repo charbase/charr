@@ -33,11 +33,13 @@
 #include "ci_stringi.h"
 #include "io/reader_utils.h"
 #include "collator/options.h"
+#include "collator/prefix_body.h"
 #include "io/string_view.h"
 #include "../shared/collation_ordering.h"
 #include "../shared/collator.h"
 #include "../shared/entrypoint.h"
 #include "../shared/native_to_utf8.h"
+#include "../shared/parallel.h"
 #include "../shared/protect.h"
 #include "../shared/slice_arena.h"
 #include "../shared/unwind.h"
@@ -114,6 +116,7 @@ CHARR_ENTRYPOINT SEXP ci_order(
         shared::NativeToUtf8 converter;
         shared::SliceArena storage;
         std::vector<shared::StringView> inputs;
+        std::vector<shared::CollationPrefix> keys;
         std::vector<int> order;
         std::vector<int> missing;
 
@@ -154,10 +157,22 @@ CHARR_ENTRYPOINT SEXP ci_order(
                     }
                 }
 
+                keys.resize(inputs.size());
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, static_cast<R_xlen_t>(inputs.size())
+                );
+                collator::PrefixBody body(
+                    inputs.size() == 0 ? nullptr : &inputs[0],
+                    collator_owner, keys.size() == 0 ? nullptr : &keys[0]
+                );
+                shared::run_parallel(
+                    plan, static_cast<R_xlen_t>(inputs.size()), body
+                );
+
                 require_icu_success(shared::build_collation_order(
                     inputs.size() == 0 ? nullptr : &inputs[0],
                     inputs.size(), decreasing_value, collator_owner.get(),
-                    order, missing
+                    keys, order, missing
                 ));
 
                 const std::size_t output_size = order.size() +
@@ -219,6 +234,7 @@ CHARR_ENTRYPOINT SEXP ci_rank(SEXP str, SEXP opts_collator) noexcept
         shared::NativeToUtf8 converter;
         shared::SliceArena storage;
         std::vector<shared::StringView> inputs;
+        std::vector<shared::CollationPrefix> keys;
         std::vector<int> order;
         std::vector<int> missing;
 
@@ -259,10 +275,22 @@ CHARR_ENTRYPOINT SEXP ci_rank(SEXP str, SEXP opts_collator) noexcept
                     }
                 }
 
+                keys.resize(inputs.size());
+                const shared::ParallelPlan plan = shared::parallel_plan(
+                    true, static_cast<R_xlen_t>(inputs.size())
+                );
+                collator::PrefixBody body(
+                    inputs.size() == 0 ? nullptr : &inputs[0],
+                    collator_owner, keys.size() == 0 ? nullptr : &keys[0]
+                );
+                shared::run_parallel(
+                    plan, static_cast<R_xlen_t>(inputs.size()), body
+                );
+
                 require_icu_success(shared::build_collation_order(
                     inputs.size() == 0 ? nullptr : &inputs[0],
                     inputs.size(), false, collator_owner.get(),
-                    order, missing
+                    keys, order, missing
                 ));
 
                 result = entry_protections.reprotect_one(
@@ -275,8 +303,8 @@ CHARR_ENTRYPOINT SEXP ci_rank(SEXP str, SEXP opts_collator) noexcept
                 require_icu_success(shared::assign_min_collation_ranks(
                     inputs.size() == 0 ? nullptr : &inputs[0],
                     collator_owner.get(),
-                    order.size() == 0 ? nullptr : &order[0],
-                    order.size(), output
+                    keys.size() == 0 ? nullptr : &keys[0],
+                    keys.size(), output
                 ));
 
                 CHARR_UNWIND_RETURN();

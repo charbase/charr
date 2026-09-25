@@ -99,6 +99,9 @@ rand_patterns <- function() {
 }
 
 one <- function(fn, ...) list(fn = fn, args = list(...))
+# Collation compares the first bytes of each sort key before the strings, so
+# add copies behind a long common prefix, where only the tails decide.
+shared_prefix <- function(x) c(x, paste0("https://example.com/a/long/path/", x))
 bool <- function() sample(c(TRUE, FALSE), 1L)
 # xx_YY has no ICU data, so ICU falls back to root and warns.
 locale <- function() sample(c("en", "tr", "de", "fr", "xx_YY"), 1L)
@@ -183,6 +186,15 @@ operations <- list(
                          na_last = na_last(), locale = locale(), numeric = bool()),
   rank = function(x) one("str_rank", x, locale = locale(), numeric = bool()),
   unique = function(x) one("str_unique", x, locale = locale(), ignore_case = bool()),
+  order_opts = function(x) one("str_order", shared_prefix(x),
+                               decreasing = bool(), na_last = na_last(),
+                               locale = locale(), strength = sample(1:4, 1L),
+                               case_level = bool(),
+                               uppercase_first = sample(c(NA, TRUE, FALSE), 1L)),
+  rank_opts = function(x) one("str_rank", shared_prefix(x), locale = locale(),
+                              strength = sample(1:3, 1L)),
+  unique_opts = function(x) one("str_unique", shared_prefix(x),
+                                locale = locale(), strength = sample(1:3, 1L)),
   equal = function(x) one("str_equal", x, rev(x), ignore_case = bool()),
   wrap = function(x) one("str_wrap", x, width = sample(c(1L, 5L, 20L), 1L)),
   conv = function(x) one("str_conv", x, "UTF-8"),

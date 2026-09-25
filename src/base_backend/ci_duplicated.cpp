@@ -100,6 +100,8 @@ CHARR_ENTRYPOINT SEXP ci_duplicated(
         shared::NativeToUtf8 converter;
         shared::SliceArena storage;
         std::vector<shared::StringView> inputs;
+        std::vector<shared::CollationPrefix> keys;
+        shared::IndexHashTable table;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -121,13 +123,20 @@ CHARR_ENTRYPOINT SEXP ci_duplicated(
                         shared::normalize_utf8(value, converter, storage);
                 }
 
+                keys.resize(inputs.size());
+                require_icu_success(shared::compute_collation_prefixes(
+                    inputs.size() == 0 ? nullptr : &inputs[0],
+                    0, inputs.size(), collator_owner.get(),
+                    keys.size() == 0 ? nullptr : &keys[0]
+                ));
+
                 result = entry_protections.reprotect_one(
                     Rf_allocVector(LGLSXP, size), result_index
                 );
                 require_icu_success(shared::mark_collation_duplicates(
                     inputs.size() == 0 ? nullptr : &inputs[0],
                     inputs.size(), from_last, collator_owner.get(),
-                    LOGICAL(result)
+                    keys, table, LOGICAL(result)
                 ));
 
                 CHARR_UNWIND_RETURN();

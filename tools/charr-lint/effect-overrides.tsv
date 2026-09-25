@@ -56,6 +56,7 @@ raw-release		ucasemap_close_78	void (struct UCaseMap *)	Releases an ICU CaseMap 
 raw-acquire		ucasemap_open_78	struct UCaseMap *(const char *, unsigned int, enum UErrorCode *)	Returns an owned ICU CaseMap handle.
 raw-release		ucnv_close_78	void (struct UConverter *)	Releases an ICU converter handle.
 raw-acquire		ucnv_open_78	struct UConverter *(const char *, enum UErrorCode *)	Returns an owned ICU converter handle.
+raw-acquire		ucol_clone_78	struct UCollator *(const struct UCollator *, enum UErrorCode *)	Returns an owned ICU collator clone that ucol_close must release.
 raw-release		ucol_close_78	void (struct UCollator *)	Releases an ICU collator handle.
 raw-acquire		ucol_open_78	struct UCollator *(const char *, enum UErrorCode *)	Returns an owned ICU collator handle.
 raw-release		uregex_close_78	void (struct URegularExpression *)	Releases an ICU regular-expression handle.

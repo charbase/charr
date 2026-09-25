@@ -95,6 +95,21 @@ CollatorOpenResult Collator::reset(
 }
 
 
+UErrorCode Collator::clone_from(const Collator& source) noexcept
+{
+    close();
+
+    UErrorCode status = U_ZERO_ERROR;
+    value_ = ucol_clone(source.value_, &status);
+    if (U_FAILURE(status) || value_ == nullptr) {
+        close();
+        if (U_SUCCESS(status))
+            status = U_MEMORY_ALLOCATION_ERROR;
+    }
+    return status;
+}
+
+
 UCollator* Collator::get() const noexcept
 {
     return value_;

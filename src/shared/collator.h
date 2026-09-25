@@ -46,6 +46,11 @@ public:
         const CollatorOptions& options
     ) noexcept;
 
+    // Replace the handle with a clone of `source`, which keeps its settings.
+    // ICU documents cloning as thread safe, so workers may clone one source
+    // concurrently.
+    CHARR_CXX_HELPER UErrorCode clone_from(const Collator& source) noexcept;
+
     CHARR_NEUTRAL_HELPER UCollator* get() const noexcept;
 
 private:
