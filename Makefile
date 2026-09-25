@@ -19,7 +19,7 @@ LINT_EFFECT_ARGS := \
 	--effect-overrides tools/charr-lint/effect-overrides.tsv
 
 .PHONY: doc build install install-dev check check-no-vignette rhub-platforms \
-	test test-locales test-system test-bundle \
+	test test-locales test-system test-bundle fuzz \
 	test-san test-tsan test-valgrind vignette figures pkgdown pkgdown-index \
 	lint lint-tool lint-fixtures lint-db lint-frontier lint-converted lint-audit \
 	lint-effects-update lint-r-literals \
@@ -46,6 +46,7 @@ LINT_CONVERTED := \
 	src/shared/parallel.cpp \
 	src/shared/r_matrix.cpp \
 	src/shared/read_lines.cpp \
+	src/shared/write_lines.cpp \
 	src/shared/regex_search.cpp \
 	src/shared/repeat.cpp \
 	src/shared/replacement.cpp \
@@ -77,6 +78,8 @@ LINT_CONVERTED := \
 	src/altrep_backend/ci_split_lines.cpp \
 	src/base_backend/ci_search_other_split.cpp \
 	src/altrep_backend/ci_search_other_split.cpp \
+	src/base_backend/ci_write_lines.cpp \
+	src/altrep_backend/ci_write_lines.cpp \
 	src/base_backend/ci_escape.cpp \
 	src/altrep_backend/ci_escape.cpp \
 	src/base_backend/ci_join.cpp \
@@ -211,6 +214,7 @@ lint-db: clean-altrep
 	trap 'rm -rf "$$lint_lib"' EXIT; \
 	bear --output compile_commands.json -- \
 	  R CMD INSTALL --preclean --libs-only --no-test-load \
+	    $(INSTALL_CONFIGURE_ARGS) \
 	    -l "$$lint_lib" .
 	test -s compile_commands.json
 	$(MAKE) clean-altrep
@@ -380,6 +384,74 @@ test: install-dev
 	cd tests && CHARR_TEST_ALTREP_THREADS="$(TEST_ALTREP_THREADS)" \
 	  Rscript testthat.R
 
+# Differential fuzzer (tools/fuzz): random stringr calls must agree across
+# base, serial ALTREP and threaded ALTREP. It installs into a temporary
+# library, runs FUZZ_SEEDS in the current locale and FUZZ_LATIN1_SEEDS under
+# the private ISO-8859-1 locale (skipped with a note when it cannot be built),
+# FUZZ_JOBS processes per pass, both passes at once. Each distinct mismatch is
+# saved under local/fuzz/ with a replay command; any mismatch or crash fails.
+# The install compiles with FUZZ_BUILD_JOBS parallel jobs.
+FUZZ_SEEDS ?= 17 29 43
+FUZZ_ITERS ?= 25
+FUZZ_JOBS ?= 3
+FUZZ_LATIN1_SEEDS ?= 53 71
+FUZZ_LATIN1_ITERS ?= $(FUZZ_ITERS)
+FUZZ_REPLAY ?=
+FUZZ_REPLAY_LOCALE ?=
+FUZZ_BUILD_JOBS ?= $(shell nproc 2>/dev/null || echo 1)
+
+fuzz:
+	@$(build_test_locales)
+	@set -uo pipefail; \
+	tmp_lib=$$(mktemp -d /tmp/$(PACKAGE)-fuzz-XXXXXX) || exit 1; \
+	trap '$(MAKE) clean-altrep >/dev/null; rm -rf "$$tmp_lib"' EXIT; \
+	MAKEFLAGS=-j$(FUZZ_BUILD_JOBS) R CMD INSTALL --preclean \
+	  --configure-args=--with-system-icu -l "$$tmp_lib" . \
+	  >"$$tmp_lib/install.log" 2>&1 || \
+	  { cat "$$tmp_lib/install.log"; exit 1; }; \
+	$(MAKE) clean-altrep >/dev/null; \
+	export R_LIBS="$$tmp_lib:$(RLIBS)"; \
+	latin1_ok=0; \
+	if [ -d "$(LOCALE_DIR)/en_US.ISO-8859-1" ] && \
+	   [ -d "$(LOCALE_DIR)/en_US.UTF-8" ]; then latin1_ok=1; fi; \
+	if [ -n "$(FUZZ_REPLAY)" ]; then \
+	  if [ "$(FUZZ_REPLAY_LOCALE)" = latin1 ]; then \
+	    [ $$latin1_ok = 1 ] || { echo 'fuzz: Latin-1 locale unavailable'; exit 1; }; \
+	    LOCPATH="$(LOCALE_DIR)" LC_ALL= LC_CTYPE=en_US.ISO-8859-1 \
+	      Rscript tools/fuzz/fuzz-backends.R --replay "$(FUZZ_REPLAY)"; \
+	  else \
+	    Rscript tools/fuzz/fuzz-backends.R --replay "$(FUZZ_REPLAY)"; \
+	  fi; \
+	  exit; \
+	fi; \
+	mkdir -p local/fuzz/default local/fuzz/latin1; \
+	start=$$(date +%s); \
+	printf '%s\n' $(FUZZ_SEEDS) | \
+	  xargs -r -P "$(FUZZ_JOBS)" -I '{}' Rscript tools/fuzz/fuzz-backends.R \
+	    --seed '{}' --iters "$(FUZZ_ITERS)" --output local/fuzz/default & \
+	default_pid=$$!; \
+	latin1_pid=; \
+	if [ -z "$(strip $(FUZZ_LATIN1_SEEDS))" ]; then :; \
+	elif [ $$latin1_ok = 1 ]; then \
+	  printf '%s\n' $(FUZZ_LATIN1_SEEDS) | \
+	    LOCPATH="$(LOCALE_DIR)" LC_ALL= LC_CTYPE=en_US.ISO-8859-1 \
+	    xargs -r -P "$(FUZZ_JOBS)" -I '{}' Rscript tools/fuzz/fuzz-backends.R \
+	      --seed '{}' --iters "$(FUZZ_LATIN1_ITERS)" --output local/fuzz/latin1 & \
+	  latin1_pid=$$!; \
+	else \
+	  echo 'note: skipping the Latin-1 fuzz pass; the private locale is unavailable'; \
+	fi; \
+	status=0; \
+	wait $$default_pid || status=1; \
+	if [ -n "$$latin1_pid" ]; then wait $$latin1_pid || status=1; fi; \
+	elapsed=$$(( $$(date +%s) - start )); \
+	if [ $$status -ne 0 ]; then \
+	  echo "fuzz: FAILED after $${elapsed}s (a seed found a mismatch or did not finish)"; \
+	else \
+	  echo "fuzz: all seeds agree ($${elapsed}s)"; \
+	fi; \
+	exit $$status
+
 # ICU-mode validation uses the same three-backend matrix with configure's
 # choice made explicit. The system target fails instead of falling back when
 # the installed ICU is not an allowlisted candidate.
@@ -494,10 +566,10 @@ clean-pkgdown:
 clean: clean-altrep clean-pkgdown clean-build-products
 
 clean-altrep:
-	find . -iname "*.a" -exec rm {} \;
-	find . -iname "*.o" -exec rm {} \;
-	find . -iname "*.so" -exec rm {} \;
-	find . -iname "*.dll" -exec rm {} \;
+	find src -iname "*.a" -exec rm {} \;
+	find src -iname "*.o" -exec rm {} \;
+	find src -iname "*.so" -exec rm {} \;
+	find src -iname "*.dll" -exec rm {} \;
 	rm -f src/symbols.rds
 
 clean-build-products:

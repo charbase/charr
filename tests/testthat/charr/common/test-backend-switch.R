@@ -41,8 +41,8 @@ test_that("the public backend registry is complete and exact-formal", {
   helpers <- charr:::.charr_backend_helpers
   templates <- charr:::.charr_backend_templates
 
-  expect_length(roots, 57L)
-  expect_length(unique(roots), 57L)
+  expect_length(roots, 58L)
+  expect_length(unique(roots), 58L)
   expect_length(helpers, 12L)
   expect_length(unique(helpers), 12L)
   expect_setequal(names(templates), c(roots, helpers))

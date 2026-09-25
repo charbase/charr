@@ -44,6 +44,7 @@ expect_parallel_warnings_match_serial <- function(fun, repeats = 100L) {
       mismatches <- mismatches + 1L
   }
   expect_identical(mismatches, 0L)
+  invisible(serial)
 }
 
 test_that("regex locate and match warn in serial order before an error", {
@@ -94,5 +95,34 @@ test_that("sequential regex replacement drops worker warnings on error", {
     expect_parallel_warnings_match_serial(function() {
       replace(values, c("a", ""), c("$1", "y"), vectorize_all = FALSE)
     })
+  }
+})
+
+test_that("titlecase warns for a fallback locale before rejecting input", {
+  skip_if_backend_lacks_locale_fallback_warning()
+  # From a fuzz case: threaded ALTREP converted its input before opening the
+  # break iterator, so it raised the input error without the warning that
+  # base and serial ALTREP raise first.
+  title <- charr_test_leaf("ci_trans_totitle")
+  bytes <- rawToChar(as.raw(c(0xc3, 0x28)))
+  Encoding(bytes) <- "bytes"
+  inputs <- list(rep(c("iI1-ab_ab", bytes, ""), 4L))
+  # Invalid native text fails conversion only in a UTF-8 locale, and the
+  # stringi oracle does not reject it there.
+  if (isTRUE(l10n_info()[["UTF-8"]]) &&
+      !identical(charr_backend(), "stringi")) {
+    invalid <- rawToChar(as.raw(c(0xc3, 0x28)))
+    inputs <- c(inputs, list(rep(c("iI1-ab_ab", invalid, ""), 4L)))
+  }
+
+  for (type in c("word", "sentence")) {
+    options <- list(type = type, locale = "xx_YY")
+    for (values in inputs) {
+      serial <- expect_parallel_warnings_match_serial(function() {
+        title(values, opts_brkiter = options)
+      })
+      expect_match(serial[[1L]], locale_fallback_warning_pattern)
+      expect_length(serial, 2L)
+    }
   }
 })

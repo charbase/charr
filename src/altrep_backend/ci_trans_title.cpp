@@ -465,12 +465,13 @@ CHARR_ENTRYPOINT SEXP ci_trans_totitle(
                     true, str_length
                 );
 
-                if (plan.workers == 1) {
-                    const shared::TitleCaseOpenResult open_result =
-                        mapper.reset(options);
-                    root_fallback_warning = open_result.root_fallback;
-                    require_icu_success(open_result.status);
-                }
+                // Threaded runs open the iterator here too, before input
+                // conversion, so a locale fallback warning precedes any
+                // conversion error exactly as in the serial path and base.
+                const shared::TitleCaseOpenResult open_result =
+                    mapper.reset(options);
+                root_fallback_warning = open_result.root_fallback;
+                require_icu_success(open_result.status);
 
                 reader.reset(str);
                 if (reader.size() != str_length) {

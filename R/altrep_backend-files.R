@@ -172,3 +172,47 @@ ci_read_lines <- function(con, encoding = NULL,
 #
 # @family files
 # @export
+#
+# Charr implementation, not copied from stringi: missing strings are an
+# error, and `sep` has no platform-dependent default. A single path with
+# UTF-8 output streams the records natively. Any other combination follows
+# stringi's join-then-encode order with this backend's ci_c() and ci_encode()
+# and writes the encoded records in chunks.
+ci_write_lines <- function(string, con, encoding = "UTF-8", sep = "\n")
+{
+    if (identical(encoding, ""))
+        encoding <- NULL
+
+    if (
+        is.character(con) &&
+        length(con) == 1L &&
+        !is.na(con) &&
+        !is.null(encoding) &&
+        tolower(encoding) %in% c("utf-8", "utf8")
+    ) {
+        .Call(C_ci_write_lines, string, con, sep)
+        return(invisible(string))
+    }
+
+    records <- ci_encode(ci_c(string, sep), to = encoding, to_raw = TRUE)
+    if (any(vapply(records, is.null, logical(1L))))
+        stop("missing strings are not supported")
+
+    # writeBin() would reopen, and so truncate, an unopened connection for
+    # every chunk.
+    if (is.character(con)) {
+        con <- file(con, "wb")
+        on.exit(close(con))
+    }
+    else if (!isOpen(con))
+        stop("`con` must be opened in binary mode")
+
+    chunk_size <- 65536L
+    n <- length(records)
+    for (chunk in seq_len(ceiling(n / chunk_size))) {
+        from <- (chunk - 1) * chunk_size + 1
+        index <- from:min(n, from + chunk_size - 1)
+        writeBin(unlist(records[index], use.names = FALSE), con)
+    }
+    invisible(string)
+}

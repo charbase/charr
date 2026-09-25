@@ -142,6 +142,53 @@ test_that("equivalence eagerly rejects bytes records", {
   expect_compare_unmaterialized(right)
 })
 
+test_that("equivalence fallback warnings precede bytes input errors", {
+  opts <- list(locale = "xx_YY")
+  probe <- compare_condition_events(
+    stringi::stri_cmp_equiv("a", "a", opts_collator = opts)
+  )
+  skip_if_not(
+    length(probe) == 1L && startsWith(probe, "warning:"),
+    "this ICU installation does not warn for the fallback locale"
+  )
+
+  # ALTREP once opened the collator only after rejecting a bytes input, so
+  # it raised the error without the fallback warning base raises first.
+  bytes <- compare_marked_string(c(0x61, 0xff), "bytes")
+  left_values <- rep(c("a", bytes, "b"), 4L)
+  right_values <- rep(c("a", "b"), 6L)
+  left <- charport::as_charvec(left_values)
+  right <- charport::as_charvec(right_values)
+
+  old_threads <- charr_threads(1)
+  old_chunks <- charr_chunks_per_worker(1000)
+  old_minimum <- charr_min_chunk(1)
+  on.exit({
+    charr_threads(old_threads)
+    charr_chunks_per_worker(old_chunks)
+    charr_min_chunk(old_minimum)
+  }, add = TRUE)
+
+  expected <- compare_condition_events(
+    stringi::stri_cmp_equiv(left_values, right_values, opts_collator = opts)
+  )
+  for (threads in c(1L, 4L)) {
+    charr_threads(threads)
+    expect_identical(
+      compare_condition_events(
+        with_test_backend(
+          TRUE,
+          charr_test_leaf("ci_cmp_equiv")(left, right, opts_collator = opts)
+        )
+      ),
+      expected,
+      info = paste("threads:", threads)
+    )
+  }
+  expect_compare_unmaterialized(left)
+  expect_compare_unmaterialized(right)
+})
+
 test_that("equivalence preserves recycling and collator option order", {
   left_values <- c("a", "b", "c")
   right_values <- c("a", "b")

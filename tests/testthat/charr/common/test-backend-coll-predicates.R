@@ -487,3 +487,83 @@ test_that("empty collation inputs preserve zero-length recycling", {
   expect_coll_pred_unmaterialized(subject)
   expect_coll_pred_unmaterialized(pattern)
 })
+
+test_that("collation fallback warnings precede bytes input errors", {
+  opts <- list(locale = "xx_YY")
+  probe <- coll_pred_condition_events(
+    stringi::stri_detect_coll("alpha", "a", opts_collator = opts)
+  )
+  skip_if_not(
+    length(probe) == 1L && startsWith(probe, "warning:"),
+    "this ICU installation does not warn for the fallback locale"
+  )
+
+  # ALTREP once opened the collator only after rejecting a bytes input, so
+  # it raised the error without the fallback warning base raises first.
+  bytes <- coll_pred_marked_string(c(0x61, 0xff), "bytes")
+  values <- rep(c("alpha", bytes, "beta"), 4L)
+  subject <- charport::as_charvec(values)
+  plain <- charport::as_charvec(rep(c("alpha", "beta"), 6L))
+  pattern <- charport::as_charvec(bytes)
+
+  cases <- list(
+    list(
+      actual = quote(charr_test_leaf("ci_detect_coll")(
+        subject, "a", opts_collator = opts
+      )),
+      expected = quote(stringi::stri_detect_coll(
+        values, "a", opts_collator = opts
+      ))
+    ),
+    list(
+      actual = quote(charr_test_leaf("ci_count_coll")(
+        plain, pattern, opts_collator = opts
+      )),
+      expected = quote(stringi::stri_count_coll(
+        rep(c("alpha", "beta"), 6L), bytes, opts_collator = opts
+      ))
+    ),
+    list(
+      actual = quote(charr_test_leaf("ci_startswith_coll")(
+        subject, "a", opts_collator = opts
+      )),
+      expected = quote(stringi::stri_startswith_coll(
+        values, "a", opts_collator = opts
+      ))
+    ),
+    list(
+      actual = quote(charr_test_leaf("ci_endswith_coll")(
+        plain, pattern, opts_collator = opts
+      )),
+      expected = quote(stringi::stri_endswith_coll(
+        rep(c("alpha", "beta"), 6L), bytes, opts_collator = opts
+      ))
+    )
+  )
+
+  old_threads <- charr_threads(1)
+  old_chunks <- charr_chunks_per_worker(1000)
+  old_minimum <- charr_min_chunk(1)
+  on.exit({
+    charr_threads(old_threads)
+    charr_chunks_per_worker(old_chunks)
+    charr_min_chunk(old_minimum)
+  }, add = TRUE)
+
+  for (threads in c(1L, 4L)) {
+    charr_threads(threads)
+    for (case in cases) {
+      expect_identical(
+        coll_pred_condition_events(
+          with_test_backend(TRUE, eval(case$actual))
+        ),
+        coll_pred_condition_events(eval(case$expected)),
+        info = paste("threads:", threads)
+      )
+    }
+  }
+
+  expect_coll_pred_unmaterialized(subject)
+  expect_coll_pred_unmaterialized(plain)
+  expect_coll_pred_unmaterialized(pattern)
+})

@@ -71,6 +71,7 @@
     X(ci_escape_unicode, 1) \
     X(ci_enc_info, 1) \
     X(ci_read_lines, 2) \
+    X(ci_write_lines, 3) \
     X(ci_split_lines, 2) \
     X(ci_split_lines1, 1)
 

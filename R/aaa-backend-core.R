@@ -247,7 +247,8 @@ charr_min_chunk <- function(value = NULL) {
   stri_width = "ci_width",
   stri_escape_unicode = "ci_escape_unicode",
   stri_conv = "ci_conv",
-  stri_read_lines = "ci_read_lines"
+  stri_read_lines = "ci_read_lines",
+  stri_write_lines = "ci_write_lines"
 )
 
 .charr_base_leaf_bindings <- new.env(parent = emptyenv())

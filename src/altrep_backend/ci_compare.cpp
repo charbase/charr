@@ -80,12 +80,12 @@ public:
         R_len_t second_length,
         const shared::CollatorOptions& options,
         int* output,
-        bool& root_fallback_warning
+        UCollator* serial_collator
     ) noexcept
         : first_(first), second_(second),
           first_length_(first_length), second_length_(second_length),
           options_(options), output_(output),
-          root_fallback_warning_(root_fallback_warning)
+          serial_collator_(serial_collator)
     {
     }
 
@@ -93,12 +93,17 @@ public:
         shared::WorkerContext& context
     ) override
     {
-        shared::Collator collator;
-        const shared::CollatorOpenResult opened = collator.reset(options_);
-        if (context.worker == 0)
-            root_fallback_warning_ = opened.root_fallback;
-        if (U_FAILURE(opened.status))
-            throw StriException(opened.status);
+        // A serial plan runs on the calling thread and reuses the collator
+        // opened there; each parallel worker opens its own.
+        shared::Collator worker_collator;
+        UCollator* collator = serial_collator_;
+        if (collator == nullptr) {
+            const shared::CollatorOpenResult opened =
+                worker_collator.reset(options_);
+            if (U_FAILURE(opened.status))
+                throw StriException(opened.status);
+            collator = worker_collator.get();
+        }
 
         while (context.next_chunk()) {
             const R_len_t end = static_cast<R_len_t>(context.end);
@@ -117,7 +122,7 @@ public:
 
                 UErrorCode status = U_ZERO_ERROR;
                 output_[i] = ucol_strcollUTF8(
-                    collator.get(), first.ptr, first.len,
+                    collator, first.ptr, first.len,
                     second.ptr, second.len, &status
                 ) == UCOL_EQUAL;
                 if (U_FAILURE(status))
@@ -133,7 +138,7 @@ private:
     R_len_t second_length_;
     const shared::CollatorOptions& options_;
     int* output_;
-    bool& root_fallback_warning_;
+    UCollator* serial_collator_;
 };
 
 } // namespace compare
@@ -169,6 +174,7 @@ CHARR_ENTRYPOINT SEXP ci_cmp_equiv(
     bool recycling_warning = false;
 
     try {
+        shared::Collator collator_owner;
         charport::Reader e1_reader;
         charport::Reader e2_reader;
         charport::StrViews e1_views;
@@ -192,6 +198,13 @@ CHARR_ENTRYPOINT SEXP ci_cmp_equiv(
                 const R_len_t vectorize_length = recycling_length(
                     e1_length, e2_length, recycling_warning
                 );
+                // Open before reading input, as base does, so a locale
+                // fallback warning precedes any input error.
+                const shared::CollatorOpenResult opened =
+                    collator_owner.reset(options);
+                root_fallback_warning = opened.root_fallback;
+                if (U_FAILURE(opened.status))
+                    throw StriException(opened.status);
 
                 if (vectorize_length > 0) {
                     e1_reader.reset(e1);
@@ -246,7 +259,8 @@ CHARR_ENTRYPOINT SEXP ci_cmp_equiv(
                 );
                 Body body(
                     e1_inputs, e2_inputs, e1_length, e2_length,
-                    options, output, root_fallback_warning
+                    options, output,
+                    plan.workers == 1 ? collator_owner.get() : nullptr
                 );
                 shared::run_parallel(plan, vectorize_length, body);
 

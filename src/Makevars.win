@@ -46,6 +46,7 @@ SHARED_SOURCES = \
   shared/parallel.cpp \
   shared/r_matrix.cpp \
   shared/read_lines.cpp \
+  shared/write_lines.cpp \
   shared/regex_search.cpp \
   shared/repeat.cpp \
   shared/replacement.cpp \
@@ -100,6 +101,7 @@ BASE_SOURCES = \
   base_backend/ci_search_fixed_split.cpp \
   base_backend/ci_search_fixed_startsendswith.cpp \
   base_backend/ci_search_other_split.cpp \
+  base_backend/ci_write_lines.cpp \
   base_backend/ci_search_regex_count.cpp \
   base_backend/ci_search_regex_detect.cpp \
   base_backend/ci_search_regex_extract.cpp \
@@ -167,6 +169,7 @@ ALTREP_OPERATION_SOURCES = \
   altrep_backend/ci_search_fixed_split.cpp \
   altrep_backend/ci_search_fixed_startsendswith.cpp \
   altrep_backend/ci_search_other_split.cpp \
+  altrep_backend/ci_write_lines.cpp \
   altrep_backend/ci_search_regex_count.cpp \
   altrep_backend/ci_search_regex_detect.cpp \
   altrep_backend/ci_search_regex_extract.cpp \

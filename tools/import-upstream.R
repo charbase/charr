@@ -32,8 +32,9 @@ UPSTREAM_DROPPED <- c(
 )
 
 # Every computational stringi function called by the pinned stringr sources,
-# plus charr's str_reverse() and str_read_lines() extensions. `replacement`
-# records the two functions also used in replacement position.
+# plus charr's str_reverse(), str_read_lines(), and str_write_lines()
+# extensions. `replacement` records the two functions also used in replacement
+# position.
 STRINGI_LEAVES <- local({
   b <- function(name, replacement = FALSE) {
     data.frame(stringi = name, replacement = replacement)
@@ -77,7 +78,7 @@ STRINGI_LEAVES <- local({
     b("stri_split_boundaries"), b("stri_wrap"),
     b("stri_pad_left"), b("stri_pad_right"), b("stri_pad_both"),
     b("stri_width"), b("stri_escape_unicode"), b("stri_conv"),
-    b("stri_read_lines")
+    b("stri_read_lines"), b("stri_write_lines")
   ))
 })
 

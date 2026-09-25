@@ -194,12 +194,12 @@ public:
         bool negate,
         int max_count,
         int* output,
-        bool& root_fallback_warning
+        UCollator* serial_collator
     ) noexcept
         : subjects_(subjects), patterns_(patterns),
           vectorize_length_(vectorize_length), options_(options),
           negate_(negate), max_count_(max_count), output_(output),
-          root_fallback_warning_(root_fallback_warning)
+          serial_collator_(serial_collator)
     {
     }
 
@@ -207,11 +207,16 @@ public:
         shared::WorkerContext& context
     ) override
     {
-        shared::Collator collator;
-        const shared::CollatorOpenResult opened = collator.reset(options_);
-        if (context.worker == 0)
-            root_fallback_warning_ = opened.root_fallback;
-        require_icu_success(opened.status);
+        // A serial plan runs on the calling thread and reuses the collator
+        // opened there; each parallel worker opens its own.
+        shared::Collator worker_collator;
+        UCollator* collator = serial_collator_;
+        if (collator == nullptr) {
+            const shared::CollatorOpenResult opened =
+                worker_collator.reset(options_);
+            require_icu_success(opened.status);
+            collator = worker_collator.get();
+        }
 
         shared::CollationCursor subject_cursor;
         shared::CollationMatcher matcher;
@@ -226,7 +231,7 @@ public:
             if (pattern_length == 1) {
                 detect_sequence(
                     subjects_, patterns_.get(0), begin, end, 1,
-                    collator.get(), negate_, max_count,
+                    collator, negate_, max_count,
                     subject_cursor, matcher, output_
                 );
                 continue;
@@ -236,7 +241,7 @@ public:
                 detect_sequence(
                     subjects_, patterns_.get(static_cast<std::size_t>(lane)),
                     lane, vectorize_length_, pattern_length,
-                    collator.get(), negate_, max_count,
+                    collator, negate_, max_count,
                     subject_cursor, matcher, output_
                 );
             }
@@ -251,7 +256,7 @@ private:
     bool negate_;
     int max_count_;
     int* output_;
-    bool& root_fallback_warning_;
+    UCollator* serial_collator_;
 };
 
 
@@ -336,6 +341,7 @@ CHARR_ENTRYPOINT SEXP ci_detect_coll(
     int empty_pattern_warnings = 0;
 
     try {
+        shared::Collator collator_owner;
         charport::Reader subject_reader;
         charport::Reader pattern_reader;
         charport::StrViews subject_views;
@@ -361,6 +367,12 @@ CHARR_ENTRYPOINT SEXP ci_detect_coll(
                     pending_recycling_warning
                 );
 
+                // Open before reading input, as base does, so a locale
+                // fallback warning precedes any input error.
+                const shared::CollatorOpenResult opened =
+                    collator_owner.reset(options);
+                root_fallback_warning = opened.root_fallback;
+                require_icu_success(opened.status);
                 recycling_warning = pending_recycling_warning;
 
                 if (vectorize_length > 0) {
@@ -416,7 +428,7 @@ CHARR_ENTRYPOINT SEXP ci_detect_coll(
                 Body body(
                     subject_views, patterns, vectorize_length,
                     options, negate_1, max_count_1, output,
-                    root_fallback_warning
+                    plan.workers == 1 ? collator_owner.get() : nullptr
                 );
                 shared::run_parallel(plan, tasks, body);
 

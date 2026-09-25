@@ -55,6 +55,7 @@
   "str_which",
   "str_width",
   "str_wrap",
+  "str_write_lines",
   "word"
 )
 

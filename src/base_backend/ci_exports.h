@@ -196,6 +196,9 @@ CHARR_ENTRYPOINT SEXP ci_trans_nfc(SEXP str) noexcept;
 CHARR_ENTRYPOINT SEXP ci_read_lines(
     SEXP path, SEXP encoding
 ) noexcept;
+CHARR_ENTRYPOINT SEXP ci_write_lines(
+    SEXP str, SEXP path, SEXP sep
+) noexcept;
 CHARR_ENTRYPOINT SEXP ci_split_lines(
     SEXP str, SEXP omit_empty
 ) noexcept;

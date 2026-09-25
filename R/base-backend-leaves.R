@@ -81,6 +81,7 @@
   "C_ci_encode_string",
   "C_ci_encode_raw",
   "C_ci_read_lines",
+  "C_ci_write_lines",
   "C_ci_split_lines",
   "C_ci_replace_all_charclass",
   "C_ci_trans_nfc",

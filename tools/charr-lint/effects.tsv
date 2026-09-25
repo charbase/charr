@@ -142,11 +142,13 @@ neutral	charport_strview::is_na	_Bool (void) const noexcept	neutral	clang:no-cxx
 owner	charr::altrep_backend::io::ChunkStores::Entry::Entry	void (void) noexcept	owner	clang:cleanup-construction	
 cxx	charr::shared::DeferredWarnings::operator=	class charr::shared::DeferredWarnings &(const class charr::shared::DeferredWarnings &)	cxx	clang:not-noexcept	
 neutral+raw-release	fclose	int (struct _IO_FILE *)	neutral	rule:reviewed-c-api	Closes and releases an owned FILE handle.
+neutral	ferror	int (struct _IO_FILE *) noexcept	neutral	clang:no-cxx-propagation	
 neutral+raw-acquire	fopen	struct _IO_FILE *(const char *, const char *)	neutral	rule:reviewed-c-api	Returns an owned FILE handle that fclose must release.
 neutral	fread	unsigned long (void *, unsigned long, unsigned long, struct _IO_FILE *)	neutral	rule:reviewed-c-api	
 neutral+raw-release	free	void (void *) noexcept		legacy-unobserved	Releases memory returned by a C allocation function.
 neutral	fseek	int (struct _IO_FILE *, long, int)	neutral	rule:reviewed-c-api	
 neutral	ftell	long (struct _IO_FILE *)	neutral	rule:reviewed-c-api	
+neutral	fwrite	unsigned long (const void *, unsigned long, unsigned long, struct _IO_FILE *)	neutral	rule:reviewed-c-api	
 neutral+raw-acquire	icu_78::BreakIterator::createLineInstance	class icu_78::BreakIterator *(const class icu_78::Locale &, enum UErrorCode &)		legacy-unobserved	ICU returns an owned BreakIterator and reports failure through UErrorCode.
 neutral	icu_78::BreakIterator::first	int (void)		legacy-unobserved	
 neutral	icu_78::BreakIterator::getLocaleID	const char *(ULocDataLocaleType, enum UErrorCode &) const		legacy-unobserved	
@@ -219,6 +221,8 @@ owner	std::__exception_ptr::exception_ptr::exception_ptr	void (const class std::
 owner	std::__exception_ptr::exception_ptr::exception_ptr	void (void) noexcept	owner	clang:cleanup-construction	
 neutral	std::__exception_ptr::exception_ptr::operator bool	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
 neutral	std::__exception_ptr::exception_ptr::operator=	class std::__exception_ptr::exception_ptr &(class std::__exception_ptr::exception_ptr &&) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::array<char, 65536>::data	char *(void) noexcept	neutral	clang:no-cxx-propagation	
+neutral	std::array<char, 65536>::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
 neutral	std::array<unsigned char, 128>::data	const unsigned char *(void) const noexcept	neutral	clang:no-cxx-propagation	
 neutral	std::array<unsigned char, 128>::data	unsigned char *(void) noexcept	neutral	clang:no-cxx-propagation	
 neutral	std::array<unsigned char, 128>::operator[]	unsigned char &(unsigned long) noexcept	neutral	clang:no-cxx-propagation	

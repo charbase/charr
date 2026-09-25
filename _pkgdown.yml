@@ -90,6 +90,7 @@ reference:
 - title: Read And Convert
   contents:
   - str_read_lines
+  - str_write_lines
   - str_conv
 - title: Patterns And Modifiers
   contents:
