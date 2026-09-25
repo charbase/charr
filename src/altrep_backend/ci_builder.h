@@ -19,86 +19,13 @@ namespace charr { namespace altrep_backend {
 namespace ci {
 
 
-inline cetype_ext_t output_encoding(
-    const char* data, size_t length, cetype_ext_t preferred
-)
-{
-    if (preferred == CETYPE_EXT_NA || data == NULL)
-        return CETYPE_EXT_NA;
-
-    // Deviation from stringi: reject an overlong lazy record before either
-    // scanning it or narrowing its size to R's character-string limit.
-    if (length > static_cast<size_t>(R_LEN_T_MAX))
-        throw std::length_error("character output exceeds R's string length limit");
-
-    // Deviation from stringi: CETYPE_EXT_ASCII_OR_UTF8 leaves the mark
-    // unresolved until the payload is exposed. Explicit marks are trusted.
-    if (preferred != CETYPE_EXT_ASCII_OR_UTF8)
-        return preferred;
-    return io::is_ascii(data, length)
-        ? CETYPE_EXT_ASCII
-        : CETYPE_EXT_UTF8;
-}
-
-
-inline charport::charvec::Store scalar_store(
-    const char* data, size_t length, cetype_ext_t preferred
-)
-{
-    // Deviation from stringi: C++11 permits data() to be null for empty
-    // strings and vectors, while Store::scalar reserves null for NA.
-    if (data == NULL && length == 0 && preferred != CETYPE_EXT_NA)
-        data = "";
-    return charport::charvec::Store::scalar(
-        data, length, output_encoding(data, length, preferred)
-    );
-}
-
-
-inline charport::charvec::Store scalar_store(
-    const std::string& value, cetype_ext_t preferred
-)
-{
-    return scalar_store(value.data(), value.size(), preferred);
-}
-
-
-inline void builder_set(
-    charport::charvec::Builder& builder, R_xlen_t i,
-    const char* data, size_t length, cetype_ext_t preferred
-)
-{
-    // Deviation from stringi: C++11 permits data() to be null for an empty
-    // vector. Builder reserves a null pointer for NA, so canonicalize only
-    // the empty, non-missing case at this common length-delimited boundary.
-    if (data == NULL && length == 0 && preferred != CETYPE_EXT_NA)
-        data = "";
-    builder.set(
-        i, data, length,
-        output_encoding(data, length, preferred)
-    );
-}
-
-
-inline void builder_set(
-    charport::charvec::Builder& builder, R_xlen_t i,
-    const std::string& value, cetype_ext_t preferred
-)
-{
-    // Deviation from stringi: C++11 permits data() to be null for an empty
-    // string, while Builder reserves a null pointer for NA.
-    const char* data = value.empty() ? "" : value.data();
-    builder_set(builder, i, data, value.size(), preferred);
-}
-
-
 // Resolves to CETYPE_EXT_ASCII or CETYPE_EXT_UTF8 without scanning:
 // u_strToUTF8 emits one byte per UTF-16 code unit only when every code point
 // is below 0x80.
 // Anything higher costs strictly more UTF-8 bytes than UTF-16 code units
 // (2 or 3 bytes for one unit, 4 bytes for a surrogate pair), so equal lengths
 // is precisely the ASCII case.
-inline cetype_ext_t utf8_mark_from_lengths(
+CHARR_NEUTRAL_HELPER inline cetype_ext_t utf8_mark_from_lengths(
     int32_t utf16_length, int32_t utf8_length
 ) noexcept
 {
@@ -145,92 +72,6 @@ CHARR_CXX_HELPER inline const char* unicode_to_utf8(
 
     utf8_mark = utf8_mark_from_lengths(utf16_length, utf8_length);
     return utf8_buffer.data();
-}
-
-
-inline charport::charvec::Store scalar_store(
-    const UnicodeString& value, std::vector<char>& utf8_buffer
-)
-{
-    if (value.isBogus())
-        return charport::charvec::Store::scalar(
-            NULL, 0, CETYPE_EXT_NA
-        );
-
-    int32_t utf8_length = 0;
-    cetype_ext_t utf8_mark = CETYPE_EXT_ASCII;
-    const char* utf8 = unicode_to_utf8(
-        value, utf8_buffer, utf8_length, utf8_mark
-    );
-    return scalar_store(
-        utf8, static_cast<size_t>(utf8_length), utf8_mark
-    );
-}
-
-
-inline void builder_set(
-    charport::charvec::Builder& builder, R_xlen_t i,
-    const UnicodeString& value, std::vector<char>& utf8_buffer
-)
-{
-    if (value.isBogus()) {
-        builder.set_na(i);
-        return;
-    }
-
-    // io::Utf16Output::toR used one reusable conversion buffer. Keep that
-    // behavior while sending the length-delimited UTF-8 result to Builder.
-    int32_t utf8_length = 0;
-    cetype_ext_t utf8_mark = CETYPE_EXT_ASCII;
-    const char* utf8 = unicode_to_utf8(
-        value, utf8_buffer, utf8_length, utf8_mark
-    );
-    builder_set(builder, i, utf8, utf8_length, utf8_mark);
-}
-
-
-inline void builder_append(
-    charport::charvec::GrowableBuilder& builder,
-    const char* data, size_t length, cetype_ext_t preferred
-)
-{
-    // See builder_set(): a null empty C++11 buffer is still an empty string.
-    if (data == NULL && length == 0 && preferred != CETYPE_EXT_NA)
-        data = "";
-    builder.append(
-        data, length,
-        output_encoding(data, length, preferred)
-    );
-}
-
-
-inline void builder_append(
-    charport::charvec::GrowableBuilder& builder,
-    const std::string& value, cetype_ext_t preferred
-)
-{
-    // Keep an empty record distinct from NA under C++11.
-    const char* data = value.empty() ? "" : value.data();
-    builder_append(builder, data, value.size(), preferred);
-}
-
-
-inline void builder_append(
-    charport::charvec::GrowableBuilder& builder,
-    const UnicodeString& value, std::vector<char>& utf8_buffer
-)
-{
-    if (value.isBogus()) {
-        builder.append(NULL, 0, CETYPE_EXT_NA);
-        return;
-    }
-
-    int32_t utf8_length = 0;
-    cetype_ext_t utf8_mark = CETYPE_EXT_ASCII;
-    const char* utf8 = unicode_to_utf8(
-        value, utf8_buffer, utf8_length, utf8_mark
-    );
-    builder_append(builder, utf8, utf8_length, utf8_mark);
 }
 
 

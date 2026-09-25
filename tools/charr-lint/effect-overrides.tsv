@@ -11,7 +11,7 @@ add_effects	remove_effects	qualified_name	canonical_type	reason
 	r	Rf_isString	Rboolean (struct SEXPREC *)	R type predicate does not allocate or signal an R error.
 	r	Rf_isSymbol	Rboolean (struct SEXPREC *)	R type predicate does not allocate or signal an R error.
 	r	Rf_isVectorAtomic	Rboolean (struct SEXPREC *)	R type predicate does not allocate or signal an R error.
-	r	Rf_unprotect	void (int)	Without PROTECT_PARANOID, R only decrements R_PPStackTop here and cannot signal. The raw protection rule confines this stack write to ProtHelper and to R helpers that balance their own pushes.
+	r	Rf_unprotect	void (int)	R's unprotect() signals only through R_signal_unprotect_error() when asked to pop more entries than are protected, which is a protection accounting bug. The raw protection rule confines this stack write to ProtHelper and to R helpers that balance their own pushes, and rchk checks the balance.
 	r	Riconv	unsigned long (void *, const char **, unsigned long *, char **, unsigned long *)	Riconv reports conversion failure through its return value.
 raw-release	r	Riconv_close	int (void *)	Riconv_close releases a converter and reports failure through its return value.
 raw-acquire	r	Riconv_open	void *(const char *, const char *)	Riconv_open returns an owned converter or a failure sentinel.

@@ -1,5 +1,7 @@
 #include "protection-support.h"
 
+#include <R_ext/Rdynload.h>
+
 CHARR_ENTRYPOINT SEXP abi_target(SEXP input) noexcept
 {
     CHARR_ENTRYPOINT_BEGIN();
@@ -11,6 +13,7 @@ CHARR_ENTRYPOINT SEXP abi_target(SEXP input) noexcept
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END();
 }
@@ -22,3 +25,17 @@ DECLARE_SHIM(abi_target)
 {
     return abi_target(input);
 }
+
+// Naming a shim or an R helper in the .Call registration table does not call
+// it. The cast to DL_FUNC makes this a dynamic initializer.
+CHARR_R_HELPER SEXP C_registered_r_helper(SEXP input) noexcept
+{
+    (void)input;
+    return Rf_allocVector(INTSXP, 1);
+}
+
+static const R_CallMethodDef call_methods[] = {
+    {"C_abi_target", (DL_FUNC) &C_abi_target, 1},
+    {"C_registered_r_helper", (DL_FUNC) &C_registered_r_helper, 1},
+    {NULL, NULL, 0}
+};

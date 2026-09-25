@@ -12,23 +12,68 @@ reviewed_c_api_effects="$fixture_dir/reviewed-c-api-effects.tsv"
 icu_owner_effects="$fixture_dir/icu-owner-effects.tsv"
 icu_owner_overrides="$fixture_dir/icu-owner-effect-overrides.tsv"
 
+# Entry-point fixtures use the real protection headers, whose R calls need the
+# project manifest and overrides. Resource fixtures add their raw resource
+# rows to those.
+resource_project_effects=$(mktemp)
+resource_project_overrides=$(mktemp)
+trap 'rm -f "$resource_project_effects" "$resource_project_overrides"' EXIT
+cat "$project_effects" >"$resource_project_effects"
+tail -n +2 "$resource_effects" >>"$resource_project_effects"
+cat "$project_overrides" >"$resource_project_overrides"
+tail -n +2 "$resource_overrides" >>"$resource_project_overrides"
+
+# charr-lint prints its own diagnostics as 'FILE:LINE:COL: error: MESSAGE',
+# the same shape as a Clang error, but they do not pass through Clang's
+# diagnostics engine. A Clang compile error is always followed by Clang's
+# 'N error(s) generated.' summary and the tool's 'Error while processing'
+# line, which charr-lint never prints. A fixture with either line lints a
+# translation unit that does not compile, so it fails whatever else it
+# reports.
+reject_compile_errors() {
+    if grep -E '^[0-9]+ errors? generated\.$|^Error while processing ' \
+            "$1" >/dev/null; then
+        printf 'fixture does not compile: %s\n' "$2" >&2
+        cat "$1" >&2
+        rm -f "$1"
+        exit 1
+    fi
+}
+
+# run_lint ARGS... runs a fixture that must lint cleanly.
+run_lint() {
+    local output
+    output=$(mktemp)
+    if ! "$lint" "$@" >"$output" 2>&1; then
+        printf 'fixture failed: %s\n' "$*" >&2
+        cat "$output" >&2
+        rm -f "$output"
+        exit 1
+    fi
+    reject_compile_errors "$output" "$*"
+    rm -f "$output"
+}
+
 clang++ -std=c++17 -fsyntax-only -I/usr/share/R/include \
     "$fixture_dir/shared-foundation.cpp"
 
-"$lint" "$fixture_dir/good.cpp" -- -std=c++17 -DCHARR_LINT=1
-"$lint" "$fixture_dir/good-dependent-template-call.cpp" -- \
+for entry_fixture in good.cpp good-reader.cpp good-reader-vector.cpp; do
+    run_lint --effects "$project_effects" \
+        --effect-overrides "$project_overrides" \
+        "$fixture_dir/$entry_fixture" -- \
+        -std=c++17 -DCHARR_LINT=1 -I/usr/share/R/include
+done
+run_lint "$fixture_dir/good-dependent-template-call.cpp" -- \
     -std=c++17 -DCHARR_LINT=1
-"$lint" "$fixture_dir/good-reader.cpp" -- -std=c++17 -DCHARR_LINT=1
-"$lint" "$fixture_dir/good-reader-vector.cpp" -- \
-    -std=c++17 -DCHARR_LINT=1
-"$lint" --effects "$resource_effects" \
-    --effect-overrides "$resource_overrides" \
-    "$fixture_dir/good-resource-owner.cpp" -- -std=c++17 -DCHARR_LINT=1
-"$lint" --effects "$inferred_effects" \
+run_lint --effects "$resource_project_effects" \
+    --effect-overrides "$resource_project_overrides" \
+    "$fixture_dir/good-resource-owner.cpp" -- \
+    -std=c++17 -DCHARR_LINT=1 -I/usr/share/R/include
+run_lint --effects "$inferred_effects" \
     "$fixture_dir/good-inferred-effects.cpp" -- \
     -std=c++17 -DCHARR_LINT=1
 generated_effects=$(mktemp)
-"$lint" --audit --effects "$inferred_effects" \
+run_lint --audit --effects "$inferred_effects" \
     --write-effects-manifest "$generated_effects" \
     "$fixture_dir/good-inferred-effects.cpp" -- \
     -std=c++17 -DCHARR_LINT=1
@@ -40,11 +85,11 @@ fi
 rm -f "$generated_effects"
 # A reviewed C API keeps its neutral contract even when the header renames the
 # entry point by token pasting, as ICU does.
-"$lint" --effects "$reviewed_c_api_effects" \
+run_lint --effects "$reviewed_c_api_effects" \
     "$fixture_dir/good-reviewed-c-api.cpp" -- \
     -std=c++17 -DCHARR_LINT=1 -isystem "$fixture_dir/sysapi"
 generated_effects=$(mktemp)
-"$lint" --audit --effects "$reviewed_c_api_effects" \
+run_lint --audit --effects "$reviewed_c_api_effects" \
     --write-effects-manifest "$generated_effects" \
     "$fixture_dir/good-reviewed-c-api.cpp" -- \
     -std=c++17 -DCHARR_LINT=1 -isystem "$fixture_dir/sysapi"
@@ -54,83 +99,30 @@ if ! cmp "$reviewed_c_api_effects" "$generated_effects"; then
     exit 1
 fi
 rm -f "$generated_effects"
-"$lint" --effects "$project_effects" \
+run_lint --effects "$project_effects" \
     --effect-overrides "$project_overrides" \
     "$fixture_dir/good-protection.cpp" -- \
     -std=c++17 -DCHARR_LINT=1 -I/usr/share/R/include
-"$lint" --effects "$project_effects" \
+run_lint --effects "$project_effects" \
     --effect-overrides "$project_overrides" \
     "$fixture_dir/good-reprotect-slot.cpp" -- \
     -std=c++17 -DCHARR_LINT=1 -I/usr/share/R/include
-"$lint" --effects "$project_effects" \
+run_lint --effects "$project_effects" \
     --effect-overrides "$project_overrides" \
     "$fixture_dir/good-abi-shim.cpp" -- \
     -std=c++17 -DCHARR_LINT=1 -I/usr/share/R/include
-"$lint" "$fixture_dir/good-contracts.cpp" -- \
+run_lint "$fixture_dir/good-contracts.cpp" -- \
     -std=c++17 -DCHARR_LINT=1 -I/usr/share/R/include
 # Variant fixtures must pass without a variant so that each failure below is
 # caused by the variant alone.
-"$lint" "$fixture_dir/bad-helper-contract.cpp" -- -std=c++17 -DCHARR_LINT=1
-"$lint" "$fixture_dir/bad-entry-unwind-region.cpp" -- \
-    -std=c++17 -DCHARR_LINT=1
 for variant_base in bad-abi-shim-contract.cpp bad-raw-protection.cpp \
-        bad-entry-protection-branch.cpp; do
-    "$lint" --effects "$project_effects" \
+        bad-entry-protection-branch.cpp bad-helper-contract.cpp \
+        bad-entry-unwind-region.cpp; do
+    run_lint --effects "$project_effects" \
         --effect-overrides "$project_overrides" \
         "$fixture_dir/$variant_base" -- \
         -std=c++17 -DCHARR_LINT=1 -I/usr/share/R/include
 done
-
-# Variant fixtures pass without a -D definition, so each failure below is
-# caused by the definition it names.
-"$lint" "$fixture_dir/good-contracts.cpp" -- \
-    -std=c++17 -DCHARR_LINT=1 -I/usr/share/R/include
-"$lint" "$fixture_dir/bad-helper-contract.cpp" -- -std=c++17 -DCHARR_LINT=1
-"$lint" "$fixture_dir/bad-entry-unwind-region.cpp" -- \
-    -std=c++17 -DCHARR_LINT=1
-for variant_base in bad-entry-protection-branch.cpp \
-        bad-abi-shim-contract.cpp bad-raw-protection.cpp; do
-    "$lint" --effects "$project_effects" \
-        --effect-overrides "$project_overrides" \
-        "$fixture_dir/$variant_base" -- \
-        -std=c++17 -DCHARR_LINT=1 -I/usr/share/R/include
-done
-
-# check_variant MODE FILE DEFINITION EXPECTED
-# MODE is 'plain' (inferred effects only) or 'project' (the reviewed project
-# manifest and overrides). DEFINITION 'none' compiles the file unchanged.
-check_variant() {
-    mode=$1
-    file=$2
-    definition=$3
-    expected=$4
-    output=$(mktemp)
-    args=()
-    if [[ $mode == project ]]; then
-        args+=(--effects "$project_effects")
-        args+=(--effect-overrides "$project_overrides")
-    fi
-    defines=()
-    if [[ $definition != none ]]; then
-        defines+=(-D"$definition")
-    fi
-    if "$lint" "${args[@]}" "$fixture_dir/$file" -- \
-            -std=c++17 -DCHARR_LINT=1 -I/usr/share/R/include \
-            "${defines[@]}" >"$output" 2>&1; then
-        printf 'fixture unexpectedly passed: %s %s\n' \
-            "$file" "$definition" >&2
-        rm -f "$output"
-        exit 1
-    fi
-    if ! grep -F "$expected" "$output" >/dev/null; then
-        printf 'fixture did not report expected diagnostic: %s %s\n' \
-            "$file" "$definition" >&2
-        cat "$output" >&2
-        rm -f "$output"
-        exit 1
-    fi
-    rm -f "$output"
-}
 
 check_failure() {
     file=$1
@@ -139,11 +131,13 @@ check_failure() {
     if "$lint" --effects "$project_effects" \
             --effect-overrides "$project_overrides" \
             "$fixture_dir/$file" -- \
-            -std=c++17 -DCHARR_LINT=1 >"$output" 2>&1; then
+            -std=c++17 -DCHARR_LINT=1 -I/usr/share/R/include \
+            >"$output" 2>&1; then
         printf 'fixture unexpectedly passed: %s\n' "$file" >&2
         rm -f "$output"
         exit 1
     fi
+    reject_compile_errors "$output" "$*"
     if ! grep -F "$expected" "$output" >/dev/null; then
         printf 'fixture did not report expected diagnostic: %s\n' "$file" >&2
         cat "$output" >&2
@@ -164,6 +158,7 @@ check_r_failure() {
         rm -f "$output"
         exit 1
     fi
+    reject_compile_errors "$output" "$*"
     if ! grep -F "$expected" "$output" >/dev/null; then
         printf 'fixture did not report expected diagnostic: %s\n' "$file" >&2
         cat "$output" >&2
@@ -177,14 +172,16 @@ check_resource_failure() {
     file=$1
     expected=$2
     output=$(mktemp)
-    if "$lint" --effects "$resource_effects" \
-            --effect-overrides "$resource_overrides" \
+    if "$lint" --effects "$resource_project_effects" \
+            --effect-overrides "$resource_project_overrides" \
             "$fixture_dir/$file" -- \
-            -std=c++17 -DCHARR_LINT=1 >"$output" 2>&1; then
+            -std=c++17 -DCHARR_LINT=1 -I/usr/share/R/include \
+            >"$output" 2>&1; then
         printf 'fixture unexpectedly passed: %s\n' "$file" >&2
         rm -f "$output"
         exit 1
     fi
+    reject_compile_errors "$output" "$*"
     if ! grep -F "$expected" "$output" >/dev/null; then
         printf 'fixture did not report expected diagnostic: %s\n' "$file" >&2
         cat "$output" >&2
@@ -208,6 +205,7 @@ check_r_variant() {
         rm -f "$output"
         exit 1
     fi
+    reject_compile_errors "$output" "$*"
     if ! grep -F "$expected" "$output" >/dev/null; then
         printf 'fixture variant did not report expected diagnostic: %s\n' \
             "$definition" >&2
@@ -244,6 +242,7 @@ check_variant() {
         rm -f "$output"
         exit 1
     fi
+    reject_compile_errors "$output" "$*"
     if ! grep -F "$expected" "$output" >/dev/null; then
         printf 'fixture did not report expected diagnostic: %s %s\n' \
             "$file" "$definition" >&2
@@ -259,6 +258,7 @@ check_unclassified_audit() {
     "$lint" --audit --dump-external-calls \
         "$fixture_dir/bad-unclassified-external.cpp" -- \
         -std=c++17 -DCHARR_LINT=1 >"$output" 2>&1
+    reject_compile_errors "$output" "$*"
     if ! grep -F \
             $'neutral\traw_open\tvoid *(void) noexcept\tneutral\tclang:no-cxx-propagation' \
             "$output" >/dev/null; then
@@ -288,6 +288,7 @@ check_inference_failure() {
         rm -f "$output"
         exit 1
     fi
+    reject_compile_errors "$output" "$*"
     if ! grep -F "$expected" "$output" >/dev/null; then
         printf 'effect fixture did not report expected diagnostic: %s\n' \
             "$manifest" >&2
@@ -311,6 +312,7 @@ check_integrity_failure() {
         rm -f "$output" "$generated_effects"
         exit 1
     fi
+    reject_compile_errors "$output" "$*"
     if ! grep -F "$expected" "$output" >/dev/null; then
         printf '%s\n' \
             'manifest-integrity fixture did not report expected diagnostic' \
@@ -342,6 +344,7 @@ check_override_integrity_failure() {
         rm -f "$output" "$generated_effects"
         exit 1
     fi
+    reject_compile_errors "$output" "$*"
     if ! grep -F "override redundantly adds an inferred effect" \
             "$output" >/dev/null; then
         printf '%s\n' 'invalid override did not report its integrity error' >&2
@@ -376,15 +379,15 @@ check_integrity_failure \
 
 # An override may remove the C++ effect from an ICU owner, from the vendored
 # headers or a system unicode/ directory, and the owner keeps its ownership.
-"$lint" --effects "$icu_owner_effects" \
+run_lint --effects "$icu_owner_effects" \
     --effect-overrides "$icu_owner_overrides" \
     "$fixture_dir/good-icu-owner-override.cpp" -- -std=c++17 -DCHARR_LINT=1
-"$lint" --effects "$icu_owner_effects" \
+run_lint --effects "$icu_owner_effects" \
     --effect-overrides "$icu_owner_overrides" \
     "$fixture_dir/good-icu-owner-override.cpp" -- -std=c++17 -DCHARR_LINT=1 \
     -DICU_OWNER_SYSTEM_HEADER -isystem "$fixture_dir/sysicu"
 generated_effects=$(mktemp)
-"$lint" --audit --effects "$icu_owner_effects" \
+run_lint --audit --effects "$icu_owner_effects" \
     --effect-overrides "$icu_owner_overrides" \
     --write-effects-manifest "$generated_effects" \
     "$fixture_dir/good-icu-owner-override.cpp" -- -std=c++17 -DCHARR_LINT=1
@@ -411,6 +414,7 @@ check_icu_owner_failure() {
         rm -f "$output"
         exit 1
     fi
+    reject_compile_errors "$output" "$*"
     if ! grep -F "$expected" "$output" >/dev/null; then
         printf 'ICU owner fixture did not report expected diagnostic: %s\n' \
             "$definition" >&2
@@ -444,12 +448,42 @@ if "$lint" --audit --effects "$icu_owner_effects" \
     rm -f "$output" "$generated_effects"
     exit 1
 fi
+reject_compile_errors "$output" 'non-ICU owner override audit'
 if [[ $(<"$generated_effects") != sentinel ]]; then
     printf '%s\n' 'non-ICU owner override replaced the reviewed manifest' >&2
     rm -f "$output" "$generated_effects"
     exit 1
 fi
 rm -f "$output" "$generated_effects"
+
+# A compilation database names sources relative to its directory, so a
+# header is reached as "sub/../shared/..."; it is still charr-owned and
+# reported under its real path.
+relative_db=$(mktemp -d)
+cat >"$relative_db/compile_commands.json" <<JSON
+[{"directory": "$fixture_dir/relative/src",
+  "file": "$fixture_dir/relative/src/sub/bad-relative-header.cpp",
+  "arguments": ["clang++", "-std=c++17", "-c",
+                "sub/bad-relative-header.cpp"]}]
+JSON
+output=$(mktemp)
+if "$lint" -p "$relative_db" \
+        "$fixture_dir/relative/src/sub/bad-relative-header.cpp" \
+        >"$output" 2>&1; then
+    printf '%s\n' 'relative-path header fixture unexpectedly passed' >&2
+    rm -rf "$output" "$relative_db"
+    exit 1
+fi
+reject_compile_errors "$output" 'relative-path header'
+if ! grep -F \
+        "$fixture_dir/relative/src/shared/bad-relative-header.h:17:12: error: C++ helper calls fallible R operation 'relative_r_value'" \
+        "$output" >/dev/null; then
+    printf '%s\n' 'relative-path header was not linted under its real path' >&2
+    cat "$output" >&2
+    rm -rf "$output" "$relative_db"
+    exit 1
+fi
+rm -rf "$output" "$relative_db"
 
 check_failure bad-cxx-calls-r.cpp \
     "C++ helper calls fallible R operation"
@@ -546,7 +580,11 @@ check_r_variant BAD_CALLBACK_CLEAR \
 check_r_variant BAD_R_ERROR_RELEASE \
     "R-error continuation branch must not release either protection domain"
 check_r_variant BAD_BEFORE_R_RELEASE \
-    "successful return must be dominated by one entry_protections.release_all()"
+    "pending R error must be continued before postlude R calls or protection cleanup"
+check_r_variant BAD_BEFORE_R_CALLBACK_RELEASE \
+    "pending R error must be continued before postlude R calls or protection cleanup"
+check_r_variant BAD_BEFORE_R_CALL \
+    "pending R error must be continued before postlude R calls or protection cleanup"
 check_r_variant BAD_R_ERROR_OTHER_R_CALL \
     "R-error continuation branch must not make another fallible R call"
 check_r_variant BAD_R_ERROR_TOKEN \
@@ -569,49 +607,65 @@ check_r_variant BAD_POSTLUDE_AFTER_RELEASE \
     "successful-path postlude R calls must precede entry protection cleanup"
 check_r_variant BAD_PRELUDE_UNPROTECT \
     "prelude protections must remain until the owner region has ended"
+check_r_variant BAD_KEEP_RESULT_MISSING \
+    "SEXP entry point must contain exactly one CHARR_UNWIND_KEEP_RESULT()"
+check_r_variant BAD_KEEP_RESULT_POSTLUDE \
+    "CHARR_UNWIND_KEEP_RESULT() must be the owner-try statement immediately after the result = unwind_protect(...) assignment"
+check_r_variant BAD_KEEP_RESULT_VARIABLE \
+    "CHARR_UNWIND_KEEP_RESULT() must re-protect the stable result variable with its PROTECT_INDEX"
 check_r_failure bad-entry-prothelper-destructor.cpp \
     "ProtHelper must remain trivially destructible"
 
 # Helper contracts.
-check_variant plain bad-helper-contract.cpp BAD_R_THROW \
+check_variant project bad-helper-contract.cpp BAD_R_THROW \
     "R helper contains a C++ throw expression"
-check_variant plain bad-helper-contract.cpp BAD_NEUTRAL_THROW \
+check_variant project bad-helper-contract.cpp BAD_NEUTRAL_THROW \
     "neutral helper contains a C++ throw expression"
-check_variant plain bad-helper-contract.cpp BAD_R_DELETE \
+check_variant project bad-helper-contract.cpp BAD_R_DELETE \
     "R helper contains a native deallocation expression"
-check_variant plain bad-helper-contract.cpp BAD_NEUTRAL_DELETE \
+check_variant project bad-helper-contract.cpp BAD_NEUTRAL_DELETE \
     "neutral helper contains a native deallocation expression"
-check_variant plain bad-helper-contract.cpp BAD_R_MAY_THROW \
+check_variant project bad-helper-contract.cpp BAD_R_MAY_THROW \
     "R helper 'r_may_throw' must be noexcept"
-check_variant plain bad-helper-contract.cpp BAD_NEUTRAL_MAY_THROW \
+check_variant project bad-helper-contract.cpp BAD_NEUTRAL_MAY_THROW \
     "neutral helper 'neutral_may_throw' must be noexcept"
-check_variant plain bad-helper-contract.cpp BAD_ENTRY_MAY_THROW \
+check_variant project bad-helper-contract.cpp BAD_ENTRY_MAY_THROW \
     "entry point 'entry_may_throw' must be noexcept"
-check_variant plain bad-helper-contract.cpp BAD_CONFLICTING_ROLES \
+check_variant project bad-helper-contract.cpp BAD_CONFLICTING_ROLES \
     "function 'conflicting' has conflicting lint roles"
-check_variant plain bad-helper-contract.cpp BAD_CXX_CALLS_ENTRY \
+check_variant project bad-helper-contract.cpp BAD_CXX_CALLS_ENTRY \
     "C++ helper calls entry point 'entry_target'"
-check_variant plain bad-helper-contract.cpp BAD_NEUTRAL_CALLS_ENTRY \
+check_variant project bad-helper-contract.cpp BAD_NEUTRAL_CALLS_ENTRY \
     "neutral helper calls entry point 'entry_target'"
-check_variant plain bad-helper-contract.cpp BAD_UNWIND_FROM_HELPER \
+check_variant project bad-helper-contract.cpp BAD_UNWIND_FROM_HELPER \
     "trusted unwind intrinsic may be called only by an entry point"
-check_variant plain bad-helper-contract.cpp BAD_ENTRY_NO_UNWIND \
+check_variant project bad-helper-contract.cpp BAD_ENTRY_NO_UNWIND \
     "entry point 'entry_no_unwind' must contain exactly one trusted unwind call"
-check_variant plain bad-helper-contract.cpp BAD_ENTRY_TWO_UNWINDS \
+check_variant project bad-helper-contract.cpp BAD_ENTRY_TWO_UNWINDS \
     "entry point 'entry_two_unwinds' must contain exactly one trusted unwind call"
+check_variant project bad-helper-contract.cpp BAD_ENTRY_NOT_SEXP \
+    "entry point 'entry_not_sexp' must return SEXP"
+check_variant project bad-helper-contract.cpp BAD_TRUSTED_OUTSIDE_UNWIND_H \
+    "trusted unwind intrinsic 'local_unwind' must be defined in src/shared/unwind.h"
+check_variant project bad-helper-contract.cpp BAD_NEUTRAL_LONGJMP \
+    "neutral helper calls 'longjmp'; only a trusted unwind intrinsic may use setjmp or longjmp"
+check_variant project bad-helper-contract.cpp BAD_CXX_SETJMP \
+    "C++ helper calls '_setjmp'; only a trusted unwind intrinsic may use setjmp or longjmp"
+check_variant project bad-helper-contract.cpp BAD_NONLOCAL_LAMBDA_CALL \
+    "C++ helper calls unclassified charr function '(anonymous class)::operator()'"
 
 # Entry-point owner and unwind regions.
-check_variant plain bad-entry-unwind-region.cpp BAD_TEMPORARY_BEFORE_TRY \
+check_variant project bad-entry-unwind-region.cpp BAD_TEMPORARY_BEFORE_TRY \
     "cleanup-bearing temporary is outside the entry point's owner region"
-check_variant plain bad-entry-unwind-region.cpp BAD_TEMPORARY_AFTER_UNWIND \
+check_variant project bad-entry-unwind-region.cpp BAD_TEMPORARY_AFTER_UNWIND \
     "cleanup-bearing temporary must precede the primary unwind boundary"
-check_variant plain bad-entry-unwind-region.cpp BAD_NEW_IN_UNWIND \
+check_variant project bad-entry-unwind-region.cpp BAD_NEW_IN_UNWIND \
     "unwind region contains a native allocation expression"
-check_variant plain bad-entry-unwind-region.cpp BAD_DELETE_IN_UNWIND \
+check_variant project bad-entry-unwind-region.cpp BAD_DELETE_IN_UNWIND \
     "unwind region contains a native deallocation expression"
-check_variant plain bad-entry-unwind-region.cpp BAD_READER_INDIRECT \
+check_variant project bad-entry-unwind-region.cpp BAD_READER_INDIRECT \
     "Reader methods must use a direct owner-region variable or its indexed Reader vector"
-check_variant plain bad-entry-unwind-region.cpp BAD_READER_OUTSIDE_UNWIND \
+check_variant project bad-entry-unwind-region.cpp BAD_READER_OUTSIDE_UNWIND \
     "Reader 'reader' is used outside the unwind region"
 
 # ABI shim contract.
@@ -623,6 +677,8 @@ check_variant project bad-abi-shim-contract.cpp BAD_SHIM_PARAMETER \
     "ABI shim parameters must all be SEXP"
 check_variant project bad-abi-shim-contract.cpp BAD_SHIM_RETURN \
     "ABI shim must return SEXP"
+check_variant project bad-abi-shim-contract.cpp BAD_CXX_CALLS_SHIM \
+    "C++ helper calls fallible R operation 'C_abi_target'"
 
 # Reviewed effects: PRINTNAME and Rf_isInteger can signal, and
 # Rf_unprotect is confined by the raw protection rule.
@@ -649,152 +705,19 @@ check_variant plain bad-override-role.cpp - \
 check_variant plain bad-override-role.cpp BAD_INDIRECT_OVERRIDE \
     "R helper 'Leaf::run' overrides C++ helper virtual 'Base::run' with an incompatible role"
 check_variant plain bad-override-role.cpp BAD_CXX_OVER_NEUTRAL \
-    "C++ helper 'CxxOverride::value' overrides neutral helper virtual"
+    "C++ helper 'CxxOverride::value' overrides neutral helper virtual 'NeutralBase::value'"
 check_variant plain bad-override-role.cpp BAD_EXTERNAL_BASE \
     "overrides external virtual 'std::exception::what' whose effect 'neutral' does not permit it"
+check_variant plain bad-override-role.cpp BAD_EXTERNAL_BASE \
+    "R helper 'Error::what' overrides external virtual 'std::exception::what'"
 
 # Raw protection must balance inside the R helper that pushes it.
 check_variant project bad-hidden-protect.cpp - \
     "R helper 'hide_protect' returns with unbalanced raw R protection"
 check_variant project bad-raw-protection.cpp BAD_EXTRA_UNPROTECT \
-    "releases raw R protections it did not push"
+    "R helper 'extra_unprotect_r' releases raw R protections it did not push"
 check_variant project bad-raw-protection.cpp BAD_UNKNOWN_COUNT \
     "neither a constant nor a local counter with a known value"
-check_variant project bad-raw-protection.cpp BAD_BRANCH_LEAK \
-    "R helper 'branch_leak_r' returns with unbalanced raw R protection"
-check_variant project bad-raw-protection.cpp BAD_LOOP_GROWTH \
-    "grows raw R protection without a bound"
-check_variant project bad-raw-protection.cpp BAD_LAMBDA_PROTECT \
-    "raw R protection inside a lambda cannot be balanced"
-check_variant project bad-raw-protection.cpp BAD_PROTHELPER_LOCAL \
-    "R helper declares a ProtHelper"
-check_variant project bad-raw-protection.cpp BAD_PRESERVE \
-    "R helper uses 'R_PreserveObject'"
-check_variant project bad-raw-protection.cpp BAD_NEUTRAL_UNPROTECT \
-    "neutral helper uses raw R protection operation 'Rf_unprotect'"
-
-# Readers live only in direct entry-point locals or std::vector.
-check_variant plain bad-reader-array.cpp - \
-    "charport::Reader holder 'readers' must be a direct entry-point local"
-check_variant plain bad-reader-field.cpp - \
-    "member 'reader' stores a charport::Reader"
-check_variant plain bad-reader-helper.cpp - \
-    "parameter 'reader' passes a charport::Reader to a helper"
-check_variant plain bad-reader-helper.cpp - \
-    "Reader method 'charport::Reader::size' is called outside an entry point's unwind region"
-
-# Default arguments and dynamic initializers run code with no role.
-check_variant plain bad-default-argument-r.cpp - \
-    "default argument of parameter 'value' calls fallible R operation 'Rf_allocVector'"
-check_variant plain bad-dynamic-initializer-r.cpp - \
-    "dynamic initializer of 'leaked' calls fallible R operation 'Rf_allocVector'"
-check_variant plain bad-dynamic-initializer-r.cpp BAD_THROWING_INITIALIZER \
-    "dynamic initializer of 'loaded' calls potentially throwing operation"
-
-# Callbacks run inside the function that receives them.
-check_variant plain bad-external-callback.cpp - \
-    "passes R helper 'touches_r' as a callback to external function 'run_callback'"
-check_variant plain bad-external-callback.cpp BAD_ESCAPED_POINTER \
-    "charr function 'neutral_callback' escapes as a function pointer"
-check_variant plain bad-external-callback.cpp BAD_LAMBDA_CALLBACK \
-    "lambda passed to external function 'run_functor' calls 'Rf_error'"
-check_r_variant BAD_HELPER_NAME \
-    "SEXP entry point is missing callback_protections"
-check_r_variant BAD_HELPER_NAME \
-    "ProtHelper must have the semantic role name"
-check_r_variant BAD_EXTRA_RETURN \
-    "SEXP entry point must have one final successful return"
-check_r_variant BAD_CPP_MISSING_ENTRY_RELEASE \
-    "C++-error branch must release entry_protections exactly once"
-check_r_variant BAD_POSTLUDE_AFTER_RELEASE \
-    "successful-path postlude R calls must precede entry protection cleanup"
-check_r_variant BAD_PRELUDE_UNPROTECT \
-    "prelude protections must remain until the owner region has ended"
-
-# Helper and entry-point contracts that had no negative fixture.
-check_variant plain bad-helper-contract.cpp BAD_R_THROW \
-    "R helper contains a C++ throw expression"
-check_variant plain bad-helper-contract.cpp BAD_NEUTRAL_THROW \
-    "neutral helper contains a C++ throw expression"
-check_variant plain bad-helper-contract.cpp BAD_R_DELETE \
-    "R helper contains a native deallocation expression"
-check_variant plain bad-helper-contract.cpp BAD_NEUTRAL_DELETE \
-    "neutral helper contains a native deallocation expression"
-check_variant plain bad-helper-contract.cpp BAD_R_MAY_THROW \
-    "R helper 'r_may_throw' must be noexcept"
-check_variant plain bad-helper-contract.cpp BAD_NEUTRAL_MAY_THROW \
-    "neutral helper 'neutral_may_throw' must be noexcept"
-check_variant plain bad-helper-contract.cpp BAD_ENTRY_MAY_THROW \
-    "entry point 'entry_may_throw' must be noexcept"
-check_variant plain bad-helper-contract.cpp BAD_CONFLICTING_ROLES \
-    "function 'conflicting' has conflicting lint roles"
-check_variant plain bad-helper-contract.cpp BAD_CXX_CALLS_ENTRY \
-    "C++ helper calls entry point 'entry_target'"
-check_variant plain bad-helper-contract.cpp BAD_NEUTRAL_CALLS_ENTRY \
-    "neutral helper calls entry point 'entry_target'"
-check_variant plain bad-helper-contract.cpp BAD_UNWIND_FROM_HELPER \
-    "trusted unwind intrinsic may be called only by an entry point"
-check_variant plain bad-helper-contract.cpp BAD_ENTRY_NO_UNWIND \
-    "entry point 'entry_no_unwind' must contain exactly one trusted unwind call"
-check_variant plain bad-helper-contract.cpp BAD_ENTRY_TWO_UNWINDS \
-    "entry point 'entry_two_unwinds' must contain exactly one trusted unwind call"
-check_variant plain bad-entry-unwind-region.cpp BAD_TEMPORARY_BEFORE_TRY \
-    "cleanup-bearing temporary is outside the entry point's owner region"
-check_variant plain bad-entry-unwind-region.cpp BAD_TEMPORARY_AFTER_UNWIND \
-    "cleanup-bearing temporary must precede the primary unwind boundary"
-check_variant plain bad-entry-unwind-region.cpp BAD_NEW_IN_UNWIND \
-    "unwind region contains a native allocation expression"
-check_variant plain bad-entry-unwind-region.cpp BAD_DELETE_IN_UNWIND \
-    "unwind region contains a native deallocation expression"
-check_variant plain bad-entry-unwind-region.cpp BAD_READER_INDIRECT \
-    "Reader methods must use a direct owner-region variable or its indexed Reader vector"
-check_variant plain bad-entry-unwind-region.cpp BAD_READER_OUTSIDE_UNWIND \
-    "Reader 'reader' is used outside the unwind region"
-check_variant plain bad-entry-prothelper-destructor.cpp none \
-    "ProtHelper must remain trivially destructible"
-check_variant project bad-abi-shim-contract.cpp BAD_SHIM_LINKAGE \
-    'ABI shim must have extern "C" linkage'
-check_variant project bad-abi-shim-contract.cpp BAD_SHIM_NOEXCEPT \
-    "ABI shim must be noexcept"
-check_variant project bad-abi-shim-contract.cpp BAD_SHIM_PARAMETER \
-    "ABI shim parameters must all be SEXP"
-check_variant project bad-abi-shim-contract.cpp BAD_SHIM_RETURN \
-    "ABI shim must return SEXP"
-
-# Effect table: these R entry points can signal, so a C++ helper may not
-# call them, and a C++ helper may not write the protection stack.
-check_variant project bad-neutralized-r.cpp none \
-    "C++ helper calls fallible R operation 'PRINTNAME'"
-check_variant project bad-neutralized-r.cpp none \
-    "C++ helper calls fallible R operation 'Rf_isInteger'"
-check_variant project bad-neutralized-r.cpp none \
-    "C++ helper uses raw R protection operation 'Rf_unprotect'"
-
-# noexcept is checked against the body.
-check_variant plain bad-noexcept-cxx-throw.cpp none \
-    "noexcept C++ helper 'grow' contains a C++ throw outside a catch (...) try block"
-check_variant plain bad-noexcept-cxx-throw.cpp none \
-    "noexcept C++ helper 'grow' calls potentially throwing operation 'std::vector<int>::push_back'"
-check_variant plain bad-noexcept-cxx-throw.cpp BAD_THROWING_HELPER \
-    "noexcept C++ helper 'calls_may_throw' calls potentially throwing operation 'may_throw'"
-check_variant plain bad-noexcept-cxx-throw.cpp BAD_THROWING_NEW \
-    "noexcept C++ helper 'allocate' contains a throwing allocation"
-
-# Overrides must honor the contract of every virtual they override.
-check_variant plain bad-override-role.cpp none \
-    "R helper 'Derived::run' overrides C++ helper virtual 'Base::run' with an incompatible role"
-check_variant plain bad-override-role.cpp BAD_INDIRECT_OVERRIDE \
-    "R helper 'Leaf::run' overrides C++ helper virtual 'Base::run' with an incompatible role"
-check_variant plain bad-override-role.cpp BAD_CXX_OVER_NEUTRAL \
-    "C++ helper 'CxxOverride::value' overrides neutral helper virtual 'NeutralBase::value'"
-check_variant plain bad-override-role.cpp BAD_EXTERNAL_BASE \
-    "R helper 'Error::what' overrides external virtual 'std::exception::what'"
-
-# Raw protection must balance inside the R helper that pushes it.
-check_variant project bad-hidden-protect.cpp none \
-    "R helper 'hide_protect' returns with unbalanced raw R protection"
-check_variant project bad-raw-protection.cpp BAD_EXTRA_UNPROTECT \
-    "R helper 'extra_unprotect_r' releases raw R protections it did not push"
 check_variant project bad-raw-protection.cpp BAD_UNKNOWN_COUNT \
     "uses a raw UNPROTECT count that is neither a constant nor a local counter"
 check_variant project bad-raw-protection.cpp BAD_BRANCH_LEAK \
@@ -811,25 +734,25 @@ check_variant project bad-raw-protection.cpp BAD_NEUTRAL_UNPROTECT \
     "neutral helper uses raw R protection operation 'Rf_unprotect'"
 
 # Readers live only in direct entry-point locals or std::vector.
-check_variant plain bad-reader-array.cpp none \
+check_variant project bad-reader-array.cpp - \
     "charport::Reader holder 'readers' must be a direct entry-point local Reader"
-check_variant plain bad-reader-field.cpp none \
+check_variant project bad-reader-field.cpp - \
     "member 'reader' stores a charport::Reader"
-check_variant plain bad-reader-helper.cpp none \
+check_variant project bad-reader-helper.cpp - \
     "parameter 'reader' passes a charport::Reader to a helper"
-check_variant plain bad-reader-helper.cpp none \
+check_variant project bad-reader-helper.cpp - \
     "Reader method 'charport::Reader::size' is called outside an entry point's unwind region"
 
-# Default arguments and dynamic initializers run without a role.
-check_variant plain bad-default-argument-r.cpp none \
+# Default arguments and dynamic initializers run code with no role.
+check_variant plain bad-default-argument-r.cpp - \
     "default argument of parameter 'value' calls fallible R operation 'Rf_allocVector'"
-check_variant plain bad-dynamic-initializer-r.cpp none \
+check_variant plain bad-dynamic-initializer-r.cpp - \
     "dynamic initializer of 'leaked' calls fallible R operation 'Rf_allocVector'"
 check_variant plain bad-dynamic-initializer-r.cpp BAD_THROWING_INITIALIZER \
     "dynamic initializer of 'loaded' calls potentially throwing operation"
 
-# Callbacks are calls at the registration site.
-check_variant plain bad-external-callback.cpp none \
+# Callbacks run inside the function that receives them.
+check_variant plain bad-external-callback.cpp - \
     "passes R helper 'touches_r' as a callback to external function 'run_callback'"
 check_variant plain bad-external-callback.cpp BAD_ESCAPED_POINTER \
     "charr function 'neutral_callback' escapes as a function pointer"

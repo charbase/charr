@@ -1,4 +1,4 @@
-#include "../../../src/shared/lint.h"
+#include "protection-support.h"
 
 #include <string>
 #include <utility>
@@ -14,7 +14,8 @@ CHARR_NEUTRAL_HELPER int neutral_value() noexcept
 
 CHARR_CXX_HELPER std::string make_output()
 {
-    std::string output("value");
+    std::string output;
+    output = "value";
     return output;
 }
 
@@ -34,25 +35,26 @@ CHARR_R_HELPER TrivialResult r_trivial_result() noexcept
     return result;
 }
 
-template<typename Fn>
-CHARR_TRUSTED_UNWIND int test_unwind(Fn&& fn)
+CHARR_ENTRYPOINT SEXP entrypoint() noexcept
 {
-    return fn();
-}
-
-CHARR_ENTRYPOINT int entrypoint() noexcept
-{
-    int result = r_trivial_result().value;
+    CHARR_ENTRYPOINT_BEGIN();
+    const int base = r_trivial_result().value;
     try {
         std::string output;
-        result = test_unwind([&]() -> int {
-            output = make_output();
-            replace_output(output);
-            return r_value() + neutral_value();
-        });
+        result = charr::shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                const int made = static_cast<int>(make_output().size());
+                replace_output(output);
+                const int value =
+                    base + made + r_value() + neutral_value();
+                result = entry_protections.reprotect_one(
+                    Rf_ScalarInteger(value), result_index
+                );
+                CHARR_UNWIND_RETURN();
+            }
+        );
+        CHARR_UNWIND_KEEP_RESULT();
     }
-    catch (...) {
-        return -1;
-    }
-    return result;
+    CHARR_ENTRYPOINT_END();
 }

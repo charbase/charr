@@ -1,29 +1,29 @@
+#include "protection-support.h"
 #include "reader-support.h"
-
-#include <utility>
-
-template<typename Fn>
-CHARR_TRUSTED_UNWIND int test_unwind(Fn&& fn)
-{
-    return fn();
-}
 
 CHARR_CXX_HELPER int read_size(charport::Reader& reader)
 {
     return reader.size();
 }
 
-CHARR_ENTRYPOINT int entrypoint(int input) noexcept
+CHARR_ENTRYPOINT SEXP entrypoint(int input) noexcept
 {
+    CHARR_ENTRYPOINT_BEGIN();
     try {
         charport::Reader reader;
-        return test_unwind([&]() -> int {
-            const int early = read_size(reader);
-            reader.reset(input);
-            return early + reader.size();
-        });
+        result = charr::shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                const int early = read_size(reader);
+                reader.reset(input);
+                const int size = early + reader.size();
+                result = entry_protections.reprotect_one(
+                    Rf_ScalarInteger(size), result_index
+                );
+                CHARR_UNWIND_RETURN();
+            }
+        );
+        CHARR_UNWIND_KEEP_RESULT();
     }
-    catch (...) {
-        return -1;
-    }
+    CHARR_ENTRYPOINT_END();
 }

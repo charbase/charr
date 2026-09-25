@@ -173,55 +173,6 @@ public:
         }
     }
 
-    /** Replace substrings with a given replacement string
-     *
-     * This is reusable output scratch; input records remain view-only.
-     *
-     * @return number of bytes written
-     *
-     * @version 0.3-1 (Marek Gagolewski, 2014-11-02)
-     */
-    size_t replaceAllAtPos(const char* str_cur_s, size_t str_cur_n,
-                           const char* replacement_cur_s, size_t replacement_cur_n,
-                           std::deque< std::pair<R_len_t, R_len_t> >& occurrences)
-    {
-        if ((str_cur_n > 0 && !str_cur_s) ||
-                (replacement_cur_n > 0 && !replacement_cur_s))
-            throw StriException("invalid fixed replacement input");
-
-        size_t buf_used = 0;
-        size_t jlast = 0;
-        const size_t capacity = m_size-1;
-
-        const auto append = [&](const char* source, size_t length) {
-            if (buf_used > capacity || length > capacity-buf_used)
-                throw StriException("fixed replacement output exceeds its buffer");
-            if (length > 0)
-                memcpy(m_str+buf_used, source, length);
-            buf_used += length;
-        };
-
-        std::deque< std::pair<R_len_t, R_len_t> >::iterator iter = occurrences.begin();
-        for (; iter != occurrences.end(); ++iter) {
-            pair<R_len_t, R_len_t> match = *iter;
-            if (match.first < 0 || match.second <= match.first ||
-                    static_cast<size_t>(match.first) < jlast ||
-                    static_cast<size_t>(match.second) > str_cur_n)
-                throw StriException("fixed replacement match is out of bounds");
-
-            const size_t start = static_cast<size_t>(match.first);
-            const size_t end = static_cast<size_t>(match.second);
-            append(str_cur_s+jlast, start-jlast);
-            append(replacement_cur_s, replacement_cur_n);
-            jlast = end;
-        }
-
-        const size_t suffix = str_cur_n-jlast;
-        append(suffix > 0 ? str_cur_s+jlast : NULL, suffix);
-
-        return buf_used;
-    }
-
 };
 
 

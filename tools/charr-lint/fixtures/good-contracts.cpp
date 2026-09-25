@@ -3,6 +3,7 @@
 #include "reader-support.h"
 
 #include <new>
+#include <string>
 
 #ifndef R_NO_REMAP
 #define R_NO_REMAP
@@ -110,4 +111,27 @@ CHARR_R_HELPER SEXP balanced_r(SEXP value, int size) noexcept
 CHARR_CXX_HELPER void release_reader(charport::Reader& reader)
 {
     reader = charport::Reader();
+}
+
+// Compiler-generated special members of a charr type take their role from
+// their exception specification: this copy assignment may throw, so a C++
+// helper may call it, and the implicit constructor is an owner construction.
+struct CHARR_OWNER_TYPE Messages {
+    std::string text;
+};
+
+CHARR_CXX_HELPER void copy_messages(Messages& target)
+{
+    Messages source;
+    target = source;
+}
+
+// A lambda written in the caller's body is checked with that body, so the
+// call shares the caller's role.
+CHARR_CXX_HELPER int local_lambda_sum(int value)
+{
+    const auto twice = [&](int item) {
+        return item * 2;
+    };
+    return twice(value) + twice(1);
 }

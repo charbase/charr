@@ -1,24 +1,23 @@
-#include "../../../src/shared/lint.h"
+#include "protection-support.h"
 
 #include <string>
-#include <utility>
 
-template<typename Fn>
-CHARR_TRUSTED_UNWIND int test_unwind(Fn&& fn)
+CHARR_ENTRYPOINT SEXP bad_entrypoint() noexcept
 {
-    return fn();
-}
-
-CHARR_ENTRYPOINT int bad_entrypoint() noexcept
-{
+    CHARR_ENTRYPOINT_BEGIN();
     try {
-        const int result = test_unwind([&]() -> int {
-            return 1;
-        });
+        result = charr::shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                result = entry_protections.reprotect_one(
+                    R_NilValue, result_index
+                );
+                CHARR_UNWIND_RETURN();
+            }
+        );
+        CHARR_UNWIND_KEEP_RESULT();
         std::string late_owner;
-        return result + static_cast<int>(late_owner.size());
+        (void)late_owner.size();
     }
-    catch (...) {
-        return -1;
-    }
+    CHARR_ENTRYPOINT_END();
 }

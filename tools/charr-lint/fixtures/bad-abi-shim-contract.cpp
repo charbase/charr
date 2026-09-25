@@ -11,6 +11,7 @@ CHARR_ENTRYPOINT SEXP abi_target(SEXP input) noexcept
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END();
 }
@@ -39,5 +40,12 @@ extern "C" CHARR_ABI_SHIM void* C_abi_target(SEXP input) noexcept
 extern "C" CHARR_ABI_SHIM SEXP C_abi_target(SEXP input) noexcept
 {
     return abi_target(input);
+}
+#endif
+
+#if defined(BAD_CXX_CALLS_SHIM)
+CHARR_CXX_HELPER SEXP cxx_calls_shim(SEXP input)
+{
+    return C_abi_target(input);
 }
 #endif

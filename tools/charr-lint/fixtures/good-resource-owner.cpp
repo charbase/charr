@@ -1,7 +1,5 @@
-#include "../../../src/shared/lint.h"
+#include "protection-support.h"
 #include "resource-support.h"
-
-#include <utility>
 
 class CHARR_OWNER_TYPE ResourceOwner {
 private:
@@ -29,21 +27,22 @@ public:
     }
 };
 
-template<typename Fn>
-CHARR_TRUSTED_UNWIND int test_unwind(Fn&& fn)
+CHARR_ENTRYPOINT SEXP entrypoint() noexcept
 {
-    return fn();
-}
-
-CHARR_ENTRYPOINT int entrypoint() noexcept
-{
+    CHARR_ENTRYPOINT_BEGIN();
     try {
         ResourceOwner resource;
-        return test_unwind([&]() -> int {
-            return resource.valid() ? 1 : 0;
-        });
+        result = charr::shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                const int valid = resource.valid() ? 1 : 0;
+                result = entry_protections.reprotect_one(
+                    Rf_ScalarInteger(valid), result_index
+                );
+                CHARR_UNWIND_RETURN();
+            }
+        );
+        CHARR_UNWIND_KEEP_RESULT();
     }
-    catch (...) {
-        return -1;
-    }
+    CHARR_ENTRYPOINT_END();
 }

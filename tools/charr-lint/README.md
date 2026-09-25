@@ -4,6 +4,14 @@
 `CHARR_LINT_*` annotations. It uses Clang's AST and the package compilation
 database.
 
+A definition is charr-owned when it is written in the translation unit's
+main file or in a file whose real path lies under a `src/` directory other
+than `src/icu78/`. Paths are canonicalized (absolute, symlinks and `..`
+resolved) before any path-based decision, because the compilation database
+names headers relative to its directory, such as
+`altrep_backend/../shared/unwind.h`. Diagnostics are reported, and
+deduplicated across translation units, under the canonical path.
+
 ## Contract checks beyond direct calls
 
 A role describes a function's body, so the linter also checks the places
@@ -51,6 +59,32 @@ where a direct-call model would otherwise take a declaration on trust.
   function's external effect. A function pointer that escapes any other way
   (stored, returned) is rejected. A lambda passed to an external function is
   held to the same rule for every call in its body.
+- **ABI shims enter R.** Calling a `CHARR_ABI_SHIM` function is a fallible
+  R call. Naming a shim or an R helper in an initializer, as the `.Call`
+  registration table does, is not.
+- **Implicit members and local lambdas.** A compiler-generated special
+  member of a charr type takes the neutral role when it is `noexcept` and
+  the C++ helper role otherwise; ownership still follows its type. Calls it
+  makes on subobjects are not traced. A call to a lambda written in the
+  caller's own body shares the caller's role (neutral in an entry point),
+  because the lambda body is checked as part of that body. A lambda defined
+  elsewhere is an unclassified call.
+- **setjmp and longjmp.** Only a trusted unwind intrinsic may call
+  `setjmp`, `longjmp`, or their variants.
+
+## Entry-point shape
+
+- Every `CHARR_ENTRYPOINT` returns `SEXP` and uses
+  `charr::shared::unwind_protect` as its one primary boundary, so every
+  entry point receives the full protection-shape check.
+- `CHARR_TRUSTED_UNWIND` is accepted only on definitions in
+  `src/shared/unwind.h`.
+- Each entry point contains exactly one `CHARR_UNWIND_KEEP_RESULT()`. Its
+  arguments are the stable `result` and `result_index`, and it is the
+  owner-try statement immediately after `result = unwind_protect(...)`.
+- A pending R error is continued before anything else runs: no call between
+  the owner try block and the R-error branch, or in its condition, may make
+  a fallible R call or release a protection domain.
 
 ## External effects
 

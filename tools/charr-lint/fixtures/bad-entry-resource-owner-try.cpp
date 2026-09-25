@@ -1,25 +1,23 @@
-#include "../../../src/shared/lint.h"
+#include "protection-support.h"
 #include "resource-support.h"
 
-#include <utility>
-
-template<typename Fn>
-CHARR_TRUSTED_UNWIND int test_unwind(Fn&& fn)
+CHARR_ENTRYPOINT SEXP bad_entrypoint() noexcept
 {
-    return fn();
-}
-
-CHARR_ENTRYPOINT int bad_entrypoint() noexcept
-{
+    CHARR_ENTRYPOINT_BEGIN();
     try {
         void* resource = raw_open();
-        const int result = test_unwind([&]() -> int {
-            return resource != nullptr ? 1 : 0;
-        });
+        result = charr::shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                const int valid = resource != nullptr ? 1 : 0;
+                result = entry_protections.reprotect_one(
+                    Rf_ScalarInteger(valid), result_index
+                );
+                CHARR_UNWIND_RETURN();
+            }
+        );
+        CHARR_UNWIND_KEEP_RESULT();
         raw_close(resource);
-        return result;
     }
-    catch (...) {
-        return -1;
-    }
+    CHARR_ENTRYPOINT_END();
 }

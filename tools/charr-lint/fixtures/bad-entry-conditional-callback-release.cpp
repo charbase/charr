@@ -17,6 +17,7 @@ CHARR_ENTRYPOINT SEXP bad_conditional_callback_release(SEXP input) noexcept
                 return result;
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END();
 }

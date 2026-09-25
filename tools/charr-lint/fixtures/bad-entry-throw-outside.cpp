@@ -1,22 +1,21 @@
-#include "../../../src/shared/lint.h"
+#include "protection-support.h"
 
-#include <utility>
-
-template<typename Fn>
-CHARR_TRUSTED_UNWIND int test_unwind(Fn&& fn)
+CHARR_ENTRYPOINT SEXP bad_entrypoint(bool fail) noexcept
 {
-    return fn();
-}
-
-CHARR_ENTRYPOINT int bad_entrypoint() noexcept
-{
+    CHARR_ENTRYPOINT_BEGIN();
+    if (fail)
+        throw 1;
     try {
-        return test_unwind([&]() -> int {
-            return 1;
-        });
+        result = charr::shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                result = entry_protections.reprotect_one(
+                    R_NilValue, result_index
+                );
+                CHARR_UNWIND_RETURN();
+            }
+        );
+        CHARR_UNWIND_KEEP_RESULT();
     }
-    catch (...) {
-        return -1;
-    }
-    throw 1;
+    CHARR_ENTRYPOINT_END();
 }

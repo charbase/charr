@@ -94,10 +94,12 @@ leaf_map <- get(".charr_leaf_map", envir = charr_ns, inherits = FALSE)
 backend_environments <- get(
   ".charr_backend_environments", envir = charr_ns, inherits = FALSE
 )
+# Every benchmarked operation must be a leaf under its stringi name; leaves
+# with no benchmark (such as stri_write_lines) are allowed.
 expected_stringi <- sub("^ci_", "stri_", names(bench_ops))
 stopifnot(
-  identical(names(leaf_map), expected_stringi),
-  identical(unname(leaf_map), names(bench_ops))
+  all(expected_stringi %in% names(leaf_map)),
+  identical(unname(leaf_map[expected_stringi]), names(bench_ops))
 )
 backend_environment <- backend_environments[[backend]]
 resolve <- function(ci_name) {

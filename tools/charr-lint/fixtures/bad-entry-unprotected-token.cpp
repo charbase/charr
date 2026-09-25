@@ -27,6 +27,7 @@ CHARR_ENTRYPOINT SEXP bad_unprotected_token(SEXP input) noexcept
                 return result;
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     catch (const charr::shared::RUnwind&) {
         error_state.capture_r_error();

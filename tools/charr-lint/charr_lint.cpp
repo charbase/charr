@@ -636,6 +636,36 @@ Role annotation_role(const clang::FunctionDecl& function)
     return found;
 }
 
+// A call to the operator() of a lambda whose closure is declared, possibly
+// through enclosing lambdas, inside `caller`.
+bool is_local_lambda_call(
+    const clang::FunctionDecl& callee,
+    const clang::FunctionDecl& caller
+) {
+    const auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(&callee);
+    if (method == nullptr || !method->getParent()->isLambda())
+        return false;
+    for (const clang::DeclContext* context =
+            method->getParent()->getDeclContext();
+            context != nullptr; context = context->getParent()) {
+        if (context == static_cast<const clang::DeclContext*>(&caller))
+            return true;
+    }
+    return false;
+}
+
+bool is_implicit_special_member(const clang::FunctionDecl& function)
+{
+    const auto* method = llvm::dyn_cast<clang::CXXMethodDecl>(&function);
+    if (method == nullptr || !method->isImplicit())
+        return false;
+    if (llvm::isa<clang::CXXConstructorDecl>(method) ||
+            llvm::isa<clang::CXXDestructorDecl>(method))
+        return true;
+    return method->isCopyAssignmentOperator() ||
+        method->isMoveAssignmentOperator();
+}
+
 bool is_implicit_trivial_special_member(
     const clang::FunctionDecl& function
 ) {
@@ -727,6 +757,34 @@ bool constructs_owner_value(const clang::FunctionDecl& function)
     );
 }
 
+// The file that holds a location, as an absolute path with symlinks and "."
+// and ".." components resolved. A compilation database may name headers
+// relative to its directory and through "..", so every path-driven decision
+// uses this form rather than the spelled name.
+std::string canonical_file_path(
+    const clang::SourceManager& source_manager,
+    clang::SourceLocation location
+) {
+    const clang::SourceLocation file_location =
+        source_manager.getFileLoc(location);
+    const clang::FileEntry* file = source_manager.getFileEntryForID(
+        source_manager.getFileID(file_location)
+    );
+    llvm::SmallString<256> path;
+    if (file != nullptr && !file->tryGetRealPathName().empty()) {
+        path = file->tryGetRealPathName();
+    }
+    else {
+        path = source_manager.getFilename(file_location);
+        if (file != nullptr && !path.empty())
+            llvm::sys::fs::make_absolute(path);
+    }
+    llvm::sys::path::remove_dots(path, true);
+    std::string result = path.str().str();
+    std::replace(result.begin(), result.end(), '\\', '/');
+    return result;
+}
+
 bool is_r_header_path(llvm::StringRef raw_path)
 {
     std::string normalized = raw_path.str();
@@ -771,7 +829,7 @@ bool is_r_api_declaration(
 {
     for (const clang::SourceLocation location :
             declaring_file_locations(function, source_manager)) {
-        if (is_r_header_path(source_manager.getFilename(location)))
+        if (is_r_header_path(canonical_file_path(source_manager, location)))
             return true;
     }
     return false;
@@ -807,14 +865,13 @@ bool is_reviewed_c_api_declaration(
 
     for (const clang::SourceLocation location :
             declaring_file_locations(function, source_manager)) {
+        const std::string normalized =
+            canonical_file_path(source_manager, location);
         if (source_manager.isInSystemHeader(location) ||
-                is_r_header_path(source_manager.getFilename(location))) {
+                is_r_header_path(normalized)) {
             return true;
         }
 
-        std::string normalized =
-            source_manager.getFilename(location).str();
-        std::replace(normalized.begin(), normalized.end(), '\\', '/');
         const llvm::StringRef path(normalized);
         if (path.contains("/src/icu78/unicode/") ||
                 path.contains("/charport/") ||
@@ -835,8 +892,8 @@ bool is_icu_header_location(
     const clang::SourceManager& source_manager
 )
 {
-    std::string normalized = source_manager.getFilename(location).str();
-    std::replace(normalized.begin(), normalized.end(), '\\', '/');
+    const std::string normalized =
+        canonical_file_path(source_manager, location);
     const llvm::StringRef path(normalized);
     if (path.contains("/src/icu78/unicode/") ||
             path.starts_with("src/icu78/unicode/")) {
@@ -983,7 +1040,9 @@ bool is_charr_owned(
             return false;
         if (source_manager.isWrittenInMainFile(location))
             return true;
-        return is_charr_owned_path(source_manager.getFilename(location));
+        return is_charr_owned_path(
+            canonical_file_path(source_manager, location)
+        );
     };
 
     const clang::SourceLocation spelling =
@@ -1026,10 +1085,18 @@ private:
     ) {
         const clang::PresumedLoc presumed =
             source_manager.getPresumedLoc(location);
+        // A header reached from several translation units, or by different
+        // relative spellings, reports under one canonical path, so the
+        // diagnostic is deduplicated across the run.
+        const std::string path = presumed.isValid()
+            ? canonical_file_path(
+                source_manager, source_manager.getExpansionLoc(location)
+            )
+            : std::string();
         std::string key;
         llvm::raw_string_ostream key_stream(key);
         if (presumed.isValid()) {
-            key_stream << presumed.getFilename() << ':'
+            key_stream << path << ':'
                        << presumed.getLine() << ':'
                        << presumed.getColumn() << ':';
         }
@@ -1042,7 +1109,7 @@ private:
         if (integrity)
             ++integrity_errors_;
         if (presumed.isValid()) {
-            llvm::errs() << presumed.getFilename() << ':'
+            llvm::errs() << path << ':'
                          << presumed.getLine() << ':'
                          << presumed.getColumn() << ": error: ";
         }
@@ -1281,6 +1348,15 @@ public:
             is_implicit_trivial_special_member(*callee);
         if (role == Role::none && implicit_trivial)
             role = Role::neutral;
+        // A compiler-generated special member of a charr type has no written
+        // body to annotate. Its role follows its exception specification;
+        // ownership still comes from the constructed or returned type below.
+        // Known limitation: the member's calls on subobjects (for example a
+        // std::vector copy assignment) are not traced.
+        if (role == Role::none && is_implicit_special_member(*callee) &&
+                is_charr_owned(*callee, context_.getSourceManager())) {
+            role = is_nothrow(*callee) ? Role::neutral : Role::cxx;
+        }
         const bool external_call = role == Role::none &&
             !is_charr_owned(*callee, context_.getSourceManager());
         ResolvedExternalEffect external_effect;
@@ -1291,8 +1367,9 @@ public:
             );
             effect = external_effect.effective;
         }
+        // An ABI shim forwards to an entry point, so calling one enters R.
         const bool fallible_r = effect.fallible_r || role == Role::r ||
-            role == Role::entrypoint;
+            role == Role::entrypoint || role == Role::abi_shim;
         const bool cpp_throw = effect.cpp_throw ||
             (role == Role::cxx && !is_nothrow(*callee));
         const bool returns_owner = effect.returns_owner ||
@@ -1397,6 +1474,11 @@ public:
         CallRecord& call = calls.back();
         call.reference = true;
         call.returns_owner = false;
+        // Naming an ABI shim, as the .Call registration table does, does not
+        // call it; a shim passed on as a callback is still checked as
+        // entering R by check_callbacks.
+        if (call.role == Role::abi_shim)
+            call.fallible_r = false;
         return true;
     }
 
@@ -1760,6 +1842,17 @@ bool is_raw_protection_name(llvm::StringRef name)
         name == "R_ReleaseObject";
 }
 
+// setjmp and longjmp skip C++ destructors. The manifest infers them as
+// neutral C functions, so the linter confines them to the trusted unwind
+// intrinsics instead.
+bool is_nonlocal_jump_name(llvm::StringRef name)
+{
+    return name == "setjmp" || name == "_setjmp" || name == "__setjmp" ||
+        name == "sigsetjmp" || name == "__sigsetjmp" ||
+        name == "longjmp" || name == "_longjmp" || name == "siglongjmp" ||
+        name == "__builtin_setjmp" || name == "__builtin_longjmp";
+}
+
 bool is_raw_protection_call(const CallRecord& call)
 {
     return call.callee != nullptr && !call.reference &&
@@ -1835,6 +1928,13 @@ bool contains_reader_type(
     const clang::RecordDecl* record = record_type->getDecl();
     if (record->getQualifiedNameAsString() == "charport::Reader")
         return true;
+    // A closure that captures a Reader by reference is how the unwind
+    // callback reaches the Frame's Readers (unwind_protect keeps a pointer
+    // to it). Reader calls in its body are checked where it is written.
+    if (const auto* closure = llvm::dyn_cast<clang::CXXRecordDecl>(record)) {
+        if (closure->isLambda())
+            return false;
+    }
     if (!visited.insert(record).second)
         return false;
 
@@ -2510,6 +2610,69 @@ private:
             }
         }
 
+        // Exactly one CHARR_UNWIND_KEEP_RESULT() re-protects the stable
+        // result slot, and it is the owner-try statement right after
+        // `result = unwind_protect(...)`, before Frame owners are destroyed.
+        std::vector<const CallRecord*> result_keeps;
+        for (const CallRecord& call : body.calls) {
+            if (is_result_keep(call))
+                result_keeps.push_back(&call);
+        }
+        if (result_keeps.size() != 1) {
+            report(
+                unwind_call.getExprLoc(),
+                "SEXP entry point must contain exactly one CHARR_UNWIND_KEEP_RESULT()"
+            );
+        }
+        else {
+            const auto* keep = llvm::dyn_cast<clang::CallExpr>(
+                result_keeps.front()->expression
+            );
+            if (keep == nullptr || keep->getNumArgs() != 2 ||
+                    result == nullptr || result_index == nullptr ||
+                    direct_variable(keep->getArg(0)) != result ||
+                    direct_variable(keep->getArg(1)) != result_index) {
+                report(
+                    result_keeps.front()->expression->getExprLoc(),
+                    "CHARR_UNWIND_KEEP_RESULT() must re-protect the stable result variable with its PROTECT_INDEX"
+                );
+            }
+
+            bool placed = false;
+            const auto* try_block = llvm::dyn_cast<clang::CompoundStmt>(
+                frame_try.getTryBlock()
+            );
+            const clang::Expr* previous = nullptr;
+            if (try_block != nullptr) {
+                for (const clang::Stmt* statement : try_block->body()) {
+                    const auto* expression =
+                        llvm::dyn_cast<clang::Expr>(statement);
+                    if (expression != nullptr)
+                        expression = expression->IgnoreImplicit();
+                    const auto* assignment =
+                        llvm::dyn_cast_or_null<clang::BinaryOperator>(
+                            previous
+                        );
+                    if (assignment != nullptr &&
+                            assignment->isAssignmentOp() &&
+                            same_or_descendant_of(
+                                context_, unwind_call,
+                                *assignment->getRHS()) &&
+                            expression == keep) {
+                        placed = true;
+                        break;
+                    }
+                    previous = expression;
+                }
+            }
+            if (!placed) {
+                report(
+                    result_keeps.front()->expression->getExprLoc(),
+                    "CHARR_UNWIND_KEEP_RESULT() must be the owner-try statement immediately after the result = unwind_protect(...) assignment"
+                );
+            }
+        }
+
         std::vector<const CallRecord*> callback_releases;
         std::vector<const CallRecord*> callback_reprotects;
         std::vector<const CallRecord*> callback_slot_protections;
@@ -2813,16 +2976,49 @@ private:
             : nullptr;
 
         if (r_error_if != nullptr) {
-            for (const CallRecord& call : body.calls) {
-                if (!function_cfg ||
-                        !statement_dominates(
-                            *function_cfg, function_dominators, context_,
-                            source_manager, frame_try, *call.expression) ||
-                        !statement_dominates(
-                            *function_cfg, function_dominators, context_,
-                            source_manager, *call.expression, *r_error_if)) {
-                    continue;
+            // The owner try block and the R-error branch are statements of
+            // the entry-point body. Every call in a statement between them,
+            // or in the branch condition, runs before a pending R error is
+            // continued. This is structural: CFG blocks do not contain the
+            // try or the if statement themselves.
+            const auto* function_body =
+                llvm::dyn_cast_or_null<clang::CompoundStmt>(
+                    function.getBody()
+                );
+            std::vector<const clang::Stmt*> before_continuation;
+            bool found_try = false;
+            bool found_r_error_if = false;
+            if (function_body != nullptr) {
+                for (const clang::Stmt* statement : function_body->body()) {
+                    if (statement == r_error_if) {
+                        found_r_error_if = found_try;
+                        break;
+                    }
+                    if (found_try)
+                        before_continuation.push_back(statement);
+                    if (statement == &frame_try)
+                        found_try = true;
                 }
+            }
+            if (!found_r_error_if) {
+                report(
+                    r_error_if->getIfLoc(),
+                    "R-error continuation branch must follow the owner try block in the entry-point body"
+                );
+            }
+            before_continuation.push_back(r_error_if->getCond());
+
+            for (const CallRecord& call : body.calls) {
+                bool before = false;
+                for (const clang::Stmt* statement : before_continuation) {
+                    if (same_or_descendant_of(
+                            context_, *call.expression, *statement)) {
+                        before = true;
+                        break;
+                    }
+                }
+                if (!before)
+                    continue;
 
                 const bool helper_cleanup = method_named(
                     call, "charr::shared::ProtHelper", "release_all"
@@ -3091,6 +3287,17 @@ private:
         const clang::FunctionDecl& function,
         const BodyVisitor& body
     ) {
+        // The protection-shape checks apply to SEXP entry points only, so
+        // every entry point must have that shape.
+        if (!is_sexp_type(function.getReturnType())) {
+            report(
+                function.getLocation(),
+                llvm::Twine("entry point '") +
+                    function.getQualifiedNameAsString() +
+                    "' must return SEXP"
+            );
+        }
+
         std::vector<const clang::CallExpr*> unwind_calls;
         for (const CallRecord& call : body.calls) {
             if (call.role != Role::trusted_unwind)
@@ -4028,7 +4235,13 @@ private:
                 );
             }
             check_external_manifest(call);
-            if (call.fallible_r || call.role == Role::entrypoint) {
+            // Naming an R helper, as a .Call registration table entry does,
+            // does not call it. ABI shim references are already not
+            // fallible; an entry point must still be registered via a shim.
+            const bool registered_r_helper =
+                call.reference && call.role == Role::r;
+            if ((call.fallible_r && !registered_r_helper) ||
+                    call.role == Role::entrypoint) {
                 report(
                     call.expression->getExprLoc(),
                     description + " calls fallible R operation '" +
@@ -4155,10 +4368,65 @@ public:
         }
         body.TraverseStmt(const_cast<clang::Stmt*>(function.getBody()));
 
+        // A lambda written in this function's body is checked as part of
+        // that body, so calling it shares the caller's role. In an entry
+        // point its calls were already placed by region where written, so
+        // the call itself is neutral. Lambdas defined elsewhere stay
+        // unclassified.
+        if (role == Role::cxx || role == Role::r || role == Role::neutral ||
+                role == Role::entrypoint) {
+            for (CallRecord& call : body.calls) {
+                if (call.role != Role::none || call.callee == nullptr ||
+                        call.reference ||
+                        !is_local_lambda_call(*call.callee, function)) {
+                    continue;
+                }
+                call.role = role == Role::entrypoint ? Role::neutral : role;
+                call.fallible_r = call.role == Role::r;
+                call.cpp_throw = call.role == Role::cxx &&
+                    !is_nothrow(*call.callee);
+            }
+        }
+
         if (role == Role::trusted_unwind) {
+            // The trusted unwind intrinsics are the package's one R unwind
+            // boundary; the annotation is accepted only in its header.
+            const clang::SourceManager& source_manager =
+                context_.getSourceManager();
+            for (const clang::FunctionDecl* redecl : function.redecls()) {
+                if (!redecl->hasAttr<clang::AnnotateAttr>())
+                    continue;
+                const std::string spelled = canonical_file_path(
+                    source_manager,
+                    source_manager.getSpellingLoc(redecl->getLocation())
+                );
+                const llvm::StringRef path = spelled;
+                if (!path.ends_with("/src/shared/unwind.h") &&
+                        path != "src/shared/unwind.h") {
+                    report(
+                        redecl->getLocation(),
+                        llvm::Twine("trusted unwind intrinsic '") +
+                            function.getQualifiedNameAsString() +
+                            "' must be defined in src/shared/unwind.h"
+                    );
+                }
+            }
             for (const CallRecord& call : body.calls)
                 check_external_manifest(call);
             return;
+        }
+
+        for (const CallRecord& call : body.calls) {
+            if (call.callee != nullptr && !call.reference &&
+                    is_nonlocal_jump_name(
+                        call.callee->getQualifiedNameAsString())) {
+                report(
+                    call.expression->getExprLoc(),
+                    llvm::Twine(role_name(role)) + " calls '" +
+                        call.callee->getQualifiedNameAsString() +
+                        "'; only a trusted unwind intrinsic may use setjmp or longjmp"
+                );
+            }
         }
 
         check_default_arguments(function);

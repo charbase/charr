@@ -6,6 +6,11 @@
 #define callback_protections callback_domain
 #endif
 
+#if defined(BAD_KEEP_RESULT_VARIABLE)
+#undef CHARR_UNWIND_KEEP_RESULT
+#define CHARR_UNWIND_KEEP_RESULT() R_Reprotect(input, result_index)
+#endif
+
 CHARR_ENTRYPOINT SEXP bad_protection_branch(SEXP input) noexcept
 {
     charr::shared::ProtHelper entry_protections;
@@ -34,6 +39,9 @@ CHARR_ENTRYPOINT SEXP bad_protection_branch(SEXP input) noexcept
                 return result;
             }
         );
+#if !defined(BAD_KEEP_RESULT_MISSING) && !defined(BAD_KEEP_RESULT_POSTLUDE)
+        CHARR_UNWIND_KEEP_RESULT();
+#endif
 #if defined(BAD_PRELUDE_UNPROTECT)
         UNPROTECT(1);
 #endif
@@ -50,6 +58,12 @@ CHARR_ENTRYPOINT SEXP bad_protection_branch(SEXP input) noexcept
 
 #if defined(BAD_BEFORE_R_RELEASE)
     entry_protections.release_all();
+#endif
+#if defined(BAD_BEFORE_R_CALLBACK_RELEASE)
+    callback_protections.release_all();
+#endif
+#if defined(BAD_BEFORE_R_CALL)
+    (void)Rf_allocVector(INTSXP, 1);
 #endif
 
     if (error_state.has_r_error()) {
@@ -89,6 +103,9 @@ CHARR_ENTRYPOINT SEXP bad_protection_branch(SEXP input) noexcept
     UNPROTECT(1);
 #else
     entry_protections.release_all();
+#endif
+#if defined(BAD_KEEP_RESULT_POSTLUDE)
+    CHARR_UNWIND_KEEP_RESULT();
 #endif
 #if defined(BAD_POSTLUDE_AFTER_RELEASE)
     (void)Rf_allocVector(INTSXP, 1);

@@ -1,6 +1,4 @@
-#include "../../../src/shared/lint.h"
-
-#include <utility>
+#include "protection-support.h"
 
 class CHARR_OWNER_TYPE Owner {
 public:
@@ -13,22 +11,22 @@ private:
     int value_ = 0;
 };
 
-template<typename Fn>
-CHARR_TRUSTED_UNWIND int test_unwind(Fn&& fn)
+CHARR_ENTRYPOINT SEXP bad_entrypoint() noexcept
 {
-    return fn();
-}
-
-CHARR_ENTRYPOINT int bad_entrypoint() noexcept
-{
+    CHARR_ENTRYPOINT_BEGIN();
     try {
         Owner owner;
-        return test_unwind([&]() -> int {
-            owner = Owner(1);
-            return 0;
-        });
+        result = charr::shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                owner = Owner(1);
+                result = entry_protections.reprotect_one(
+                    R_NilValue, result_index
+                );
+                CHARR_UNWIND_RETURN();
+            }
+        );
+        CHARR_UNWIND_KEEP_RESULT();
     }
-    catch (...) {
-        return -1;
-    }
+    CHARR_ENTRYPOINT_END();
 }

@@ -1,12 +1,5 @@
+#include "protection-support.h"
 #include "reader-support.h"
-
-#include <utility>
-
-template<typename Fn>
-CHARR_TRUSTED_UNWIND int test_unwind(Fn&& fn)
-{
-    return fn();
-}
 
 struct Holder {
     charport::Reader reader;
@@ -14,16 +7,23 @@ struct Holder {
     CHARR_NEUTRAL_HELPER Holder() noexcept = default;
 };
 
-CHARR_ENTRYPOINT int entrypoint(int input) noexcept
+CHARR_ENTRYPOINT SEXP entrypoint(int input) noexcept
 {
-    (void)input;
+    CHARR_ENTRYPOINT_BEGIN();
     try {
+        (void)input;
         Holder holder;
-        return test_unwind([&]() -> int {
-            return holder.reader.size();
-        });
+        result = charr::shared::unwind_protect(
+            unwind_token,
+            [&]() -> SEXP {
+                const int size = holder.reader.size();
+                result = entry_protections.reprotect_one(
+                    Rf_ScalarInteger(size), result_index
+                );
+                CHARR_UNWIND_RETURN();
+            }
+        );
+        CHARR_UNWIND_KEEP_RESULT();
     }
-    catch (...) {
-        return -1;
-    }
+    CHARR_ENTRYPOINT_END();
 }

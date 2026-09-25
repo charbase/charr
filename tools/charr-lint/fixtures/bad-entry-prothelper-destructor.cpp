@@ -4,8 +4,7 @@
 #include <Rinternals.h>
 
 #include "../../../src/shared/lint.h"
-
-#include <utility>
+#include "../../../src/shared/unwind.h"
 
 namespace charr {
 namespace shared {
@@ -16,13 +15,6 @@ public:
     CHARR_NEUTRAL_HELPER ProtHelper() noexcept = default;
     CHARR_NEUTRAL_HELPER ~ProtHelper() noexcept {}
 };
-
-template<typename Fn>
-CHARR_TRUSTED_UNWIND SEXP unwind_protect(SEXP token, Fn&& fn)
-{
-    (void)token;
-    return fn();
-}
 
 } // namespace shared
 } // namespace charr
