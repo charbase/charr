@@ -435,7 +435,7 @@ CHARR_ENTRYPOINT SEXP ci_encode(
         std::vector<icu::UnicodeString> marked_records(
             marked_input ? static_cast<std::size_t>(input_size) : 0U
         );
-        std::exception_ptr pending_error;
+        shared::CapturedError pending_error;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -597,20 +597,21 @@ CHARR_ENTRYPOINT SEXP ci_encode(
                         }
                     }
                     catch (...) {
-                        pending_error = std::current_exception();
+                        pending_error.capture_current();
                     }
 
                     release_conversion_state(
                         source_converter, target_converter, native_converter
                     );
                     warnings.emit_r();
-                    if (pending_error)
-                        std::rethrow_exception(pending_error);
+                    if (pending_error.captured())
+                        pending_error.rethrow();
                 }
 
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END();
 }

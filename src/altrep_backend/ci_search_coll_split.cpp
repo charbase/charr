@@ -815,6 +815,7 @@ CHARR_ENTRYPOINT SEXP ci_split_coll(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_warnings(

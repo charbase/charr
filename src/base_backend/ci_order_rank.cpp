@@ -165,6 +165,7 @@ CHARR_ENTRYPOINT SEXP ci_order(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_warnings(root_fallback_warning);
@@ -248,6 +249,7 @@ CHARR_ENTRYPOINT SEXP ci_rank(SEXP str, SEXP opts_collator) noexcept
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_warnings(root_fallback_warning);

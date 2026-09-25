@@ -48,6 +48,7 @@
 #include <charport.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <exception>
 #include <limits>
@@ -224,6 +225,11 @@ public:
 
     CHARR_CXX_HELPER void reset(std::size_t size)
     {
+        // A bounded count lets the compiler drop new[]'s byte-size overflow
+        // path, which LTO otherwise reports as a SIZE_MAX allocation.
+        if (size > (static_cast<std::size_t>(PTRDIFF_MAX)-sizeof(std::size_t))/
+                sizeof(shared::FixedExtractPlan))
+            throw std::length_error("too many rows");
         shared::FixedExtractPlan* replacement = size == 0
             ? nullptr
             : new shared::FixedExtractPlan[size];
@@ -797,6 +803,7 @@ CHARR_ENTRYPOINT SEXP ci_extract_all_fixed(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_warnings_r(

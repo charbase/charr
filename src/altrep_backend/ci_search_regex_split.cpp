@@ -899,6 +899,7 @@ CHARR_ENTRYPOINT SEXP ci_split_regex(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_empty_pattern_warnings_r(empty_pattern_warnings);

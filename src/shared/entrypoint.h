@@ -84,6 +84,14 @@ static_assert(
     ::charr::shared::ProtHelper callback_protections;                 \
     ::charr::shared::EntryErrorState error_state
 
+/*
+ * Re-protect the result slot with the value the unwind region returned. The
+ * slot already holds it; the direct R_Reprotect lets rchk see that `result`
+ * is protected while Frame owners are destroyed and the postlude runs. Place
+ * it right after the `result = shared::unwind_protect(...)` statement.
+ */
+#define CHARR_UNWIND_KEEP_RESULT() R_Reprotect(result, result_index)
+
 #define CHARR_UNWIND_RETURN()                                         \
     do {                                                              \
         callback_protections.release_all();                           \
@@ -106,6 +114,9 @@ static_assert(
     }                                                                 \
     catch (const StriException& error) {                              \
         error_state.capture_cpp_error(error.getMessage());            \
+    }                                                                 \
+    catch (const ::charr::shared::ReportedError& error) {             \
+        error_state.capture_cpp_error(error.message());               \
     }                                                                 \
     catch (const ::std::exception& error) {                           \
         error_state.capture_cpp_error(error.what());                  \

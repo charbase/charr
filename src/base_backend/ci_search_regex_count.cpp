@@ -362,6 +362,7 @@ CHARR_ENTRYPOINT SEXP ci_count_regex(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_empty_pattern_warnings(empty_pattern_warnings);

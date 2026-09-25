@@ -377,6 +377,7 @@ CHARR_ENTRYPOINT SEXP ci_extract_first_regex(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_empty_pattern_warnings_r(empty_pattern_warnings);
@@ -528,7 +529,9 @@ CHARR_ENTRYPOINT SEXP ci_extract_all_regex(
                                 child = missing_strings_r(child_size);
                             }
                             else {
-                                child = strings_r(child_size);
+                                child = callback_protections.protect_one(
+                                    strings_r(child_size)
+                                );
                                 SET_VECTOR_ELT(result, i, child);
                                 for (R_len_t j = 0;
                                         j < child_size; ++j) {
@@ -539,6 +542,7 @@ CHARR_ENTRYPOINT SEXP ci_extract_all_regex(
                                         ]
                                     );
                                 }
+                                callback_protections.release(1);
                             }
                         }
 
@@ -565,6 +569,7 @@ CHARR_ENTRYPOINT SEXP ci_extract_all_regex(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_empty_pattern_warnings_r(empty_pattern_warnings);

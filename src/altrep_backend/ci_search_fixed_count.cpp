@@ -559,6 +559,7 @@ CHARR_ENTRYPOINT SEXP ci_count_fixed(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_warnings(recycling_warning, empty_pattern_warnings);

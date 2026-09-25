@@ -594,6 +594,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_first_regex(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_warnings_r(
@@ -836,6 +837,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_regex(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_warnings_r(

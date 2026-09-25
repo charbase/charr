@@ -252,7 +252,7 @@ CHARR_R_HELPER void ci__sub_emit_replacement_warnings_r(
 // Prepared bounds are protected in the caller's `protections` domain. The
 // return value is the number of protections added there, so a loop can
 // release one element's bounds before preparing the next.
-CHARR_R_HELPER R_len_t ci__sub_prepare_from_to_length_r(
+CHARR_R_HELPER CHARR_ALWAYS_INLINE R_len_t ci__sub_prepare_from_to_length_r(
     shared::ProtHelper& protections,
     SEXP& from, SEXP& to, SEXP& length,
     R_len_t& from_len, R_len_t& to_len, R_len_t& length_len,
@@ -541,6 +541,7 @@ CHARR_ENTRYPOINT SEXP ci_sub(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END();
 }
@@ -825,6 +826,7 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END();
 }
@@ -1085,6 +1087,7 @@ CHARR_ENTRYPOINT SEXP ci_sub_all(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END();
 }
@@ -1504,6 +1507,7 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement_all(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END();
 }

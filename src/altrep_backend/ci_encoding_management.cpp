@@ -205,8 +205,11 @@ CHARR_ENTRYPOINT SEXP ci_enc_info(SEXP enc) noexcept
                             )
                         );
                         break;
+                    default:
+                        continue;
                     }
                     SET_VECTOR_ELT(result, i, child);
+                    callback_protections.release(1);
                 }
 
                 Rf_setAttrib(result, R_NamesSymbol, names);
@@ -214,6 +217,7 @@ CHARR_ENTRYPOINT SEXP ci_enc_info(SEXP enc) noexcept
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END();
 }

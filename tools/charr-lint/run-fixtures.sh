@@ -527,6 +527,8 @@ check_r_failure bad-entry-missing-result-slot.cpp \
     "must have exactly one entry_protections.protect_with_index()"
 check_r_failure bad-entry-raw-callback-protect.cpp \
     "entry point uses raw R protection operation"
+check_r_failure bad-entry-raw-reprotect-result.cpp \
+    "entry point uses raw R protection operation"
 check_r_failure bad-entry-conditional-callback-release.cpp \
     "normal unwind-callback return is not dominated by ProtHelper::release_all()"
 check_r_failure bad-entry-helper-after-release.cpp \

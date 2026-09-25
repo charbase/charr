@@ -65,3 +65,4 @@ raw-release		usearch_close_78	void (struct UStringSearch *)	Releases an ICU stri
 raw-acquire		usearch_openFromCollator_78	struct UStringSearch *(const char16_t *, int, const char16_t *, int, const struct UCollator *, struct UBreakIterator *, enum UErrorCode *)	Returns an owned ICU string-search handle.
 raw-release		utext_close_78	struct UText *(struct UText *)	Releases an ICU UText handle.
 raw-acquire		utext_openUTF8_78	struct UText *(struct UText *, const char *, long, enum UErrorCode *)	May allocate provider storage that creates a utext_close cleanup obligation; caller-supplied UText storage itself remains caller-owned.
+	r	R_Reprotect	void (struct SEXPREC *, int)	R signals only for an index outside the protection stack; charr passes indices that R_ProtectWithIndex returned in the same, still open protection domain.

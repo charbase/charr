@@ -14,6 +14,8 @@ namespace charr {
 namespace shared {
 
 // Counts one manually managed R protection domain. Destruction does nothing.
+// The protect, reprotect and release methods are forced inline so that the
+// R API calls appear in the calling function, where rchk tracks protection.
 class ProtHelper {
 private:
     int count_ = 0;
@@ -23,28 +25,28 @@ public:
     ProtHelper(const ProtHelper&) = delete;
     ProtHelper& operator=(const ProtHelper&) = delete;
 
-    CHARR_R_HELPER SEXP protect_one(SEXP value) noexcept
+    CHARR_R_HELPER CHARR_ALWAYS_INLINE SEXP protect_one(SEXP value) noexcept
     {
         ::Rf_protect(value);
         ++count_;
         return value;
     }
 
-    CHARR_R_HELPER void protect_with_index(
+    CHARR_R_HELPER CHARR_ALWAYS_INLINE void protect_with_index(
         SEXP value, PROTECT_INDEX* index
     ) noexcept {
         ::R_ProtectWithIndex(value, index);
         ++count_;
     }
 
-    CHARR_R_HELPER SEXP reprotect_one(
+    CHARR_R_HELPER CHARR_ALWAYS_INLINE SEXP reprotect_one(
         SEXP value, PROTECT_INDEX index
     ) noexcept {
         ::R_Reprotect(value, index);
         return value;
     }
 
-    CHARR_R_HELPER SEXP reprotect_slot(
+    CHARR_R_HELPER CHARR_ALWAYS_INLINE SEXP reprotect_slot(
         SEXP value, PROTECT_INDEX index
     ) noexcept {
         ::R_Reprotect(value, index);
@@ -66,13 +68,13 @@ public:
         count_ += count;
     }
 
-    CHARR_NEUTRAL_HELPER void release(int count) noexcept
+    CHARR_NEUTRAL_HELPER CHARR_ALWAYS_INLINE void release(int count) noexcept
     {
         UNPROTECT(count);
         count_ -= count;
     }
 
-    CHARR_NEUTRAL_HELPER void release_all() noexcept
+    CHARR_NEUTRAL_HELPER CHARR_ALWAYS_INLINE void release_all() noexcept
     {
         UNPROTECT(count_);
         count_ = 0;

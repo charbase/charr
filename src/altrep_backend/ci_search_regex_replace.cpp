@@ -813,6 +813,7 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_regex(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         const int deferred_warnings =
@@ -1053,6 +1054,7 @@ CHARR_ENTRYPOINT SEXP ci_replace_first_regex(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_empty_warnings(empty_pattern_warnings);

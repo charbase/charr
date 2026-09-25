@@ -113,6 +113,7 @@ test_that("str_write_lines handles empty input, empty strings, and separators", 
 })
 
 test_that("str_write_lines converts marked inputs and output encodings", {
+  skip_if_selected_stringi_cannot_compare_native()
   latin1 <- rawToChar(as.raw(c(0x63, 0x61, 0x66, 0xe9)))
   Encoding(latin1) <- "latin1"
   ascii <- "plain"
@@ -128,7 +129,14 @@ test_that("str_write_lines converts marked inputs and output encodings", {
   on.exit(unlink(path), add = TRUE)
 
   routes <- write_lines_both_routes(values)
-  expect_identical(routes$path, write_lines_oracle(values))
+  expect_identical(
+    routes$path,
+    c(charToRaw("caf\u00e9\ncaf\u00e9\n"), charToRaw(enc2utf8(native)),
+      charToRaw("\nplain\n"))
+  )
+  if (stringi_can_compare_native()) {
+    expect_identical(routes$path, write_lines_oracle(values))
+  }
   expect_identical(routes$connection, routes$path)
 
   str_write_lines(values, path, encoding = "latin1")
@@ -139,10 +147,12 @@ test_that("str_write_lines converts marked inputs and output encodings", {
              charToRaw(iconv(native, from = "", to = "latin1")),
              0x0a, 0x70, 0x6c, 0x61, 0x69, 0x6e, 0x0a))
   )
-  expect_identical(
-    write_lines_bytes(path),
-    write_lines_oracle(values, encoding = "latin1")
-  )
+  if (stringi_can_compare_native()) {
+    expect_identical(
+      write_lines_bytes(path),
+      write_lines_oracle(values, encoding = "latin1")
+    )
+  }
 
   routes <- write_lines_both_routes(
     c("caf\u00e9", latin1), encoding = "UTF-16LE", sep = "\u00e9"
@@ -215,8 +225,15 @@ test_that("str_write_lines supports binary connections and path translation", {
   str_write_lines("tilde", "~/charr-write-lines-test.txt", encoding = "latin1")
   expect_identical(write_lines_bytes(home_path), charToRaw("tilde\n"))
 
+  # A file system may reject the native spelling of a non-ASCII name: APFS
+  # accepts only UTF-8 names, so a Latin-1 session cannot create this file
+  # with base R either.
   unicode_path <- tempfile(paste0("charr-\u00e9-"))
   on.exit(unlink(unicode_path), add = TRUE)
+  skip_if_not(
+    suppressWarnings(file.create(unicode_path)),
+    "the file system rejects this non-ASCII path in the native encoding"
+  )
   str_write_lines("unicode path", unicode_path)
   expect_identical(str_read_lines(unicode_path), "unicode path")
 })
@@ -289,7 +306,10 @@ test_that("str_write_lines streams ALTREP input without materializing it", {
   input_path <- write_lines_path("charr-write-lines-input-")
   output_path <- write_lines_path("charr-write-lines-output-")
   on.exit(unlink(c(input_path, output_path)), add = TRUE)
-  writeLines(rep(c("stream", "caf\u00e9"), 100L), input_path, useBytes = TRUE)
+  # writeBin, not writeLines: a text-mode connection writes CRLF on Windows.
+  writeBin(
+    charToRaw(strrep("stream\ncaf\u00e9\n", 100L)), input_path
+  )
 
   values <- str_read_lines(input_path, encoding = "UTF-8")
   expect_altrep_unmaterialized(values)

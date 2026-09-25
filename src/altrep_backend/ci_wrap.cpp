@@ -337,7 +337,7 @@ CHARR_ENTRYPOINT SEXP ci_wrap(
         io::OutputBuilder joined_output(0);
         io::ParallelOutputBuilder parallel_joined_output;
         io::GrowableOutputBuilder flat_output;
-        std::exception_ptr prepass_error;
+        shared::CapturedError prepass_error;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -498,7 +498,7 @@ CHARR_ENTRYPOINT SEXP ci_wrap(
                             ));
                         }
                         catch (...) {
-                            prepass_error = std::current_exception();
+                            prepass_error.capture_current();
                             break;
                         }
                     }
@@ -531,8 +531,8 @@ CHARR_ENTRYPOINT SEXP ci_wrap(
                         stores, parallel_joined_output, flat_stores
                     );
                     shared::run_parallel(work_plan, work_length, body);
-                    if (prepass_error)
-                        std::rethrow_exception(prepass_error);
+                    if (prepass_error.captured())
+                        prepass_error.rethrow();
                 }
 
                 if (flatten) {
@@ -582,6 +582,7 @@ CHARR_ENTRYPOINT SEXP ci_wrap(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_locale_warning_r(root_fallback_warning);

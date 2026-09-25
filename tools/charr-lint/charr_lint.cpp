@@ -13,6 +13,7 @@
 #include <clang/Tooling/ArgumentsAdjusters.h>
 #include <clang/Tooling/Tooling.h>
 #include <clang/Index/USRGeneration.h>
+#include <clang/Lex/Lexer.h>
 
 #include <llvm/ADT/SmallString.h>
 #include <llvm/ADT/StringRef.h>
@@ -2484,8 +2485,22 @@ private:
                 call_named(call, "Rf_unprotect_ptr");
         };
 
+        // CHARR_UNWIND_KEEP_RESULT() is the one sanctioned raw protection
+        // call in an entry point: it re-protects the stable result slot with
+        // the unwind region's value so rchk sees `result` protected.
+        const auto is_result_keep = [&](const CallRecord& call) {
+            if (!call_named(call, "R_Reprotect"))
+                return false;
+            const clang::SourceLocation location =
+                call.expression->getBeginLoc();
+            return location.isMacroID() &&
+                clang::Lexer::getImmediateMacroName(
+                    location, source_manager, context_.getLangOpts()
+                ) == "CHARR_UNWIND_KEEP_RESULT";
+        };
+
         for (const CallRecord& call : body.calls) {
-            if (is_raw_protection_call(call)) {
+            if (is_raw_protection_call(call) && !is_result_keep(call)) {
                 report(
                     call.expression->getExprLoc(),
                     llvm::Twine("entry point uses raw R protection operation '") +

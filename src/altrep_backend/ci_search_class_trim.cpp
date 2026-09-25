@@ -863,6 +863,7 @@ CHARR_ENTRYPOINT SEXP ci_trim_both(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_warnings(recycling_warning);
@@ -992,6 +993,7 @@ CHARR_ENTRYPOINT SEXP ci_trim_left(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_warnings(recycling_warning);
@@ -1121,6 +1123,7 @@ CHARR_ENTRYPOINT SEXP ci_trim_right(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_warnings(recycling_warning);

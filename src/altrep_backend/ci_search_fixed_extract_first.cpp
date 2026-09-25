@@ -633,6 +633,7 @@ CHARR_ENTRYPOINT SEXP ci_extract_first_fixed(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_empty_pattern_warnings(empty_pattern_warnings);

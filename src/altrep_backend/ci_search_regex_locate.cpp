@@ -47,6 +47,7 @@
 #include <charport.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <stdexcept>
 #include <string>
@@ -416,6 +417,11 @@ public:
 
     CHARR_CXX_HELPER void reset(std::size_t size)
     {
+        // A bounded count lets the compiler drop new[]'s byte-size overflow
+        // path, which LTO otherwise reports as a SIZE_MAX allocation.
+        if (size > (static_cast<std::size_t>(PTRDIFF_MAX)-sizeof(std::size_t))/
+                sizeof(AllRow))
+            throw std::length_error("too many rows");
         AllRow* replacement = size == 0 ? nullptr : new AllRow[size];
         delete[] rows_;
         rows_ = replacement;
@@ -455,6 +461,11 @@ public:
 
     CHARR_CXX_HELPER void reset(std::size_t size)
     {
+        // A bounded count lets the compiler drop new[]'s byte-size overflow
+        // path, which LTO otherwise reports as a SIZE_MAX allocation.
+        if (size > (static_cast<std::size_t>(PTRDIFF_MAX)-sizeof(std::size_t))/
+                sizeof(std::vector<std::string>))
+            throw std::length_error("too many rows");
         std::vector<std::string>* replacement = size == 0
             ? nullptr : new std::vector<std::string>[size];
         delete[] rows_;
@@ -1136,6 +1147,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_first_regex(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_warnings_r(recycling_warning, empty_pattern_warnings);
@@ -1463,6 +1475,7 @@ CHARR_ENTRYPOINT SEXP ci_locate_all_regex(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_warnings_r(recycling_warning, empty_pattern_warnings);

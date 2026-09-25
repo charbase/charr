@@ -393,7 +393,9 @@ CHARR_ENTRYPOINT SEXP ci_split_regex(
 
                             const R_len_t child_size =
                                 static_cast<R_len_t>(fields.size());
-                            child = strings_r(child_size);
+                            child = callback_protections.protect_one(
+                                strings_r(child_size)
+                            );
                             SET_VECTOR_ELT(result, i, child);
                             for (R_len_t j = 0; j < child_size; ++j) {
                                 const shared::RegexRange& field = fields[
@@ -401,6 +403,7 @@ CHARR_ENTRYPOINT SEXP ci_split_regex(
                                 ];
                                 set_field_r(child, j, subject, field);
                             }
+                            callback_protections.release(1);
                             continue;
                         }
 
@@ -484,7 +487,9 @@ CHARR_ENTRYPOINT SEXP ci_split_regex(
 
                                 const R_len_t child_size =
                                     static_cast<R_len_t>(fields.size());
-                                child = strings_r(child_size);
+                                child = callback_protections.protect_one(
+                                    strings_r(child_size)
+                                );
                                 SET_VECTOR_ELT(result, i, child);
                                 for (R_len_t j = 0; j < child_size; ++j) {
                                     const shared::RegexRange& field = fields[
@@ -500,6 +505,7 @@ CHARR_ENTRYPOINT SEXP ci_split_regex(
                                         );
                                     }
                                 }
+                                callback_protections.release(1);
                             }
 
                             SET_VECTOR_ELT(result, i, child);
@@ -529,6 +535,7 @@ CHARR_ENTRYPOINT SEXP ci_split_regex(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_empty_pattern_warnings_r(empty_pattern_warnings);

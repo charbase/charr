@@ -37,6 +37,7 @@
 #include "ci_external.h"
 #include "ci_messages.h"
 #include "../shared/lint.h"
+#include "../shared/unwind.h"
 
 
 #include <cstdarg>
@@ -104,7 +105,7 @@ public:
  *
  * @version 1.6.3 (Marek Gagolewski, 2021-05-21) snprintf
  */
-class __StriException
+class __StriException : public shared::ReportedError
 {
 
 private:
@@ -148,6 +149,11 @@ public:
     {
         return msg;
     }
+
+    CHARR_NEUTRAL_HELPER const char* message() const noexcept override
+    {
+        return msg;
+    }
 };
 
 #define StriException(...) __StriException(__FILE__, __LINE__, __VA_ARGS__)
@@ -173,7 +179,7 @@ typedef __StriException StriException;
  *
  * @version 1.6.3 (Marek Gagolewski, 2021-05-21) snprintf
  */
-class StriException
+class StriException : public shared::ReportedError
 {
 
 private:
@@ -206,6 +212,11 @@ public:
 
 
     CHARR_NEUTRAL_HELPER const char* getMessage() const noexcept
+    {
+        return msg;
+    }
+
+    CHARR_NEUTRAL_HELPER const char* message() const noexcept override
     {
         return msg;
     }

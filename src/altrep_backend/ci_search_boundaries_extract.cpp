@@ -422,6 +422,7 @@ CHARR_ENTRYPOINT SEXP ci_extract_first_boundaries(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         if (root_fallback_warning)
@@ -653,6 +654,7 @@ CHARR_ENTRYPOINT SEXP ci_extract_all_boundaries(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         if (root_fallback_warning)

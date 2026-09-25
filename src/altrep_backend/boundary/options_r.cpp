@@ -107,7 +107,7 @@ CHARR_R_HELPER void prepare_skip_rules_r(
         return;
 
     R_len_t count = 0;
-    const SEXP names = option_names_r(options, count);
+    const SEXP names = PROTECT(option_names_r(options, count));
     std::int32_t* rules = count > 0
         ? reinterpret_cast<std::int32_t*>(R_alloc(
             static_cast<std::size_t>(count) * 2,
@@ -135,6 +135,7 @@ CHARR_R_HELPER void prepare_skip_rules_r(
 
     result.skip_rules = size > 0 ? rules : nullptr;
     result.skip_size = size;
+    UNPROTECT(1);
 }
 
 

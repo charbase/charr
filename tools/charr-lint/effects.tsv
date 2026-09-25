@@ -16,7 +16,7 @@ r	R_ExpandFileName	const char *(const char *)	r	rule:r-header+rule:reviewed-c-ap
 neutral	R_IsNA	int (double)	r	rule:r-header+rule:reviewed-c-api	R numeric predicate does not allocate or signal an R error.
 r	R_MakeUnwindCont	struct SEXPREC *(void)	r	rule:r-header+rule:reviewed-c-api	
 r	R_ProtectWithIndex	void (struct SEXPREC *, int *)	r	rule:r-header+rule:reviewed-c-api	
-r	R_Reprotect	void (struct SEXPREC *, int)	r	rule:r-header+rule:reviewed-c-api	
+neutral	R_Reprotect	void (struct SEXPREC *, int)	r	rule:r-header+rule:reviewed-c-api	R signals only for an index outside the protection stack; charr passes indices that R_ProtectWithIndex returned in the same, still open protection domain.
 r	R_UnwindProtect	struct SEXPREC *(struct SEXPREC *(*)(void *), void *, void (*)(void *, Rboolean), void *, struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
 r	R_alloc	char *(unsigned long, int)	r	rule:r-header+rule:reviewed-c-api	
 neutral	R_forceSymbols	Rboolean (struct _DllInfo *, Rboolean)	r	rule:r-header+rule:reviewed-c-api	R registration setter does not allocate or signal an R error.

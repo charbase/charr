@@ -468,7 +468,7 @@ CHARR_CXX_HELPER R_len_t preconvert_native_records(
     std::vector<ByteRecord>& records,
     shared::NativeToUtf8& converter,
     shared::SliceArena& storage,
-    std::exception_ptr& pending_error
+    shared::CapturedError& pending_error
 ) {
     for (std::size_t i = 0; i < records.size(); ++i) {
         try {
@@ -488,7 +488,7 @@ CHARR_CXX_HELPER R_len_t preconvert_native_records(
             }
         }
         catch (...) {
-            pending_error = std::current_exception();
+            pending_error.capture_current();
             return static_cast<R_len_t>(i);
         }
     }
@@ -882,7 +882,7 @@ CHARR_CXX_HELPER void transcode_records(
     std::vector<std::size_t>& task_warning_prefix,
     std::vector<R_xlen_t>& task_chunk_begin,
     WarningCutoff& output_cutoff,
-    std::exception_ptr& native_input_error,
+    shared::CapturedError& native_input_error,
     bool& use_parallel_output
 ) {
     UConverter* source_handle = nullptr;
@@ -1037,8 +1037,8 @@ CHARR_CXX_HELPER void transcode_records(
     );
     shared::run_parallel(work_plan, work_size, body);
 
-    if (native_input_error && !native_output)
-        std::rethrow_exception(native_input_error);
+    if (native_input_error.captured() && !native_output)
+        native_input_error.rethrow();
 
     if (native_output) {
         R_len_t attempted_index = -1;
@@ -1065,8 +1065,8 @@ CHARR_CXX_HELPER void transcode_records(
         }
     }
 
-    if (native_input_error)
-        std::rethrow_exception(native_input_error);
+    if (native_input_error.captured())
+        native_input_error.rethrow();
 }
 
 /*
@@ -1147,7 +1147,7 @@ CHARR_CXX_HELPER void release_conversion_state(
     native.reset();
 }
 
-CHARR_R_HELPER SEXP assemble_raw_output_r(
+CHARR_R_HELPER CHARR_ALWAYS_INLINE SEXP assemble_raw_output_r(
     const std::vector<RawResult>& values,
     shared::ProtHelper& protections
 ) noexcept {
@@ -1273,8 +1273,8 @@ CHARR_ENTRYPOINT SEXP ci_encode_string(
         std::vector<std::size_t> task_warning_prefix;
         std::vector<R_xlen_t> task_chunk_begin;
         WarningCutoff output_cutoff = {false, 0, 0};
-        std::exception_ptr native_input_error;
-        std::exception_ptr pending_error;
+        shared::CapturedError native_input_error;
+        shared::CapturedError pending_error;
         bool use_parallel_output = false;
 
         result = shared::unwind_protect(
@@ -1360,7 +1360,7 @@ CHARR_ENTRYPOINT SEXP ci_encode_string(
                     }
                 }
                 catch (...) {
-                    pending_error = std::current_exception();
+                    pending_error.capture_current();
                 }
 
                 release_conversion_state(
@@ -1370,8 +1370,8 @@ CHARR_ENTRYPOINT SEXP ci_encode_string(
                 emit_conversion_warnings_r(
                     warnings, worker_chunks, worker_cutoffs, output_cutoff
                 );
-                if (pending_error)
-                    std::rethrow_exception(pending_error);
+                if (pending_error.captured())
+                    pending_error.rethrow();
 
                 if (raw_output) {
                     result = entry_protections.reprotect_one(
@@ -1392,6 +1392,7 @@ CHARR_ENTRYPOINT SEXP ci_encode_string(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END();
 }
@@ -1492,8 +1493,8 @@ CHARR_ENTRYPOINT SEXP ci_encode_raw(
         std::vector<std::size_t> task_warning_prefix;
         std::vector<R_xlen_t> task_chunk_begin;
         WarningCutoff output_cutoff = {false, 0, 0};
-        std::exception_ptr native_input_error;
-        std::exception_ptr pending_error;
+        shared::CapturedError native_input_error;
+        shared::CapturedError pending_error;
         bool use_parallel_output = false;
 
         result = shared::unwind_protect(
@@ -1579,7 +1580,7 @@ CHARR_ENTRYPOINT SEXP ci_encode_raw(
                     }
                 }
                 catch (...) {
-                    pending_error = std::current_exception();
+                    pending_error.capture_current();
                 }
 
                 release_conversion_state(
@@ -1589,8 +1590,8 @@ CHARR_ENTRYPOINT SEXP ci_encode_raw(
                 emit_conversion_warnings_r(
                     warnings, worker_chunks, worker_cutoffs, output_cutoff
                 );
-                if (pending_error)
-                    std::rethrow_exception(pending_error);
+                if (pending_error.captured())
+                    pending_error.rethrow();
 
                 if (raw_output) {
                     result = entry_protections.reprotect_one(
@@ -1611,6 +1612,7 @@ CHARR_ENTRYPOINT SEXP ci_encode_raw(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END();
 }

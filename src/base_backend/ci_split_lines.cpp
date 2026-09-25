@@ -127,6 +127,7 @@ CHARR_ENTRYPOINT SEXP ci_split_lines1(SEXP str) noexcept
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END();
 }
@@ -247,6 +248,7 @@ CHARR_ENTRYPOINT SEXP ci_split_lines(SEXP str, SEXP omit_empty) noexcept
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END();
 }

@@ -455,6 +455,7 @@ CHARR_ENTRYPOINT SEXP ci_replace_first_coll(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         emit_warnings(
@@ -707,6 +708,7 @@ CHARR_ENTRYPOINT SEXP ci_replace_all_coll(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         const R_len_t deferred_empty_warnings =

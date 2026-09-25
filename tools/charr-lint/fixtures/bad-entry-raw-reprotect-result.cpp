@@ -1,13 +1,12 @@
 #include "protection-support.h"
 
-CHARR_ENTRYPOINT SEXP protected_entrypoint(SEXP input) noexcept
+// Only CHARR_UNWIND_KEEP_RESULT() may re-protect the result slot directly.
+CHARR_ENTRYPOINT SEXP bad_raw_reprotect_result(SEXP input) noexcept
 {
     CHARR_ENTRYPOINT_BEGIN();
-    entry_protections.protect_one(input);
 
     try {
         lint_fixture::Owner owner;
-
         result = charr::shared::unwind_protect(
             unwind_token,
             [&]() -> SEXP {
@@ -17,7 +16,7 @@ CHARR_ENTRYPOINT SEXP protected_entrypoint(SEXP input) noexcept
                 CHARR_UNWIND_RETURN();
             }
         );
-        CHARR_UNWIND_KEEP_RESULT();
+        R_Reprotect(result, result_index);
     }
     CHARR_ENTRYPOINT_END();
 }

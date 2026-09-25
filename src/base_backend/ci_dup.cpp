@@ -215,6 +215,7 @@ CHARR_ENTRYPOINT SEXP ci_dup(SEXP str, SEXP times) noexcept
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END();
 }

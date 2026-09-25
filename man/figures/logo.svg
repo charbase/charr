@@ -1,223 +1,50 @@
-<?xml version='1.0' encoding='utf-8'?>
+<?xml version="1.0" encoding="utf-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1044" height="1201" viewBox="105 15 1044 1201" role="img" aria-labelledby="title desc">
-  <title id="title">Charr — cream school in a violet hexagon</title>
-  <desc id="desc">Three cream char with softly drawn fins swim in a staggered school inside a violet hexagon. The larger middle fish anchors the school above the original charr lettering in cream.</desc>
-  <defs>
-    <radialGradient id="paper" cx="50%" cy="44%" r="70%">
-      <stop offset="0" stop-color="#fffdfa" />
-      <stop offset="0.62" stop-color="#fbf7f1" />
-      <stop offset="1" stop-color="#f8f2e9" />
-    </radialGradient>
-    <linearGradient id="deepPurple" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#30206b" />
-      <stop offset="0.48" stop-color="#3e2a7c" />
-      <stop offset="1" stop-color="#33216f" />
-    </linearGradient>
-  </defs>
-  <path d="M 627 39 L 1126.26 327.25 L 1126.26 903.75            L 627 1192 L 127.74 903.75 L 127.74 327.25 Z" fill="#493467" stroke="#493467" stroke-width="20" stroke-linejoin="miter" />
-  <g id="school" aria-label="Three swimming char">
-    <g transform="translate(685 302) rotate(-5) scale(0.95) translate(-356 -220)">
-      <g id="fish1-fish" stroke="#faf7f0" stroke-linecap="round" stroke-linejoin="round">
-        <g id="fish1-dorsal" transform="translate(382 176) scale(.82 .69) translate(-382 -176)">
-          <path d="M414 176 C409 158 399 139 386 123 C382 118 378 114 375 113 Q371 111 368 115 L365 119 Q361 126 356 131 Q352 137 348 141 Q344 147 339 151 Q335 157 331 160 Q327 165 323 168 Q316 173 316 180 L377 181Z" fill="#faf7f0" stroke-width="2" />
-          <g fill="none" stroke-width="1.05" stroke="#493467">
-            <path d="M406 172 C398 152 386 132 374 119" stroke-width="1.2" />
-            <path d="M395 174 C385 155 376 141 365 130" stroke-width="1.02" />
-            <path d="M383 175 C374 161 365 147 356 141" stroke-width="1.1" />
-            <path d="M373 176 C364 164 355 155 348 150" stroke-width=".94" />
-            <path d="M361 177 Q349 167 339 160" stroke-width="1.05" />
-            <path d="M348 179 Q337 172 328 169" stroke-width=".9" />
-            <path d="M337 179 Q328 176 321 176" stroke-width=".85" />
-          </g>
-        </g>
-        <path d="M237 218 C235 206 224 201 231 198 C240 194 255 203 262 210" fill="#faf7f0" stroke-width="2" />
-        <g id="fish1-lower-fins">
-          <path d="M285 252 C275 267 258 281 237 286 Q237 274 230 263 L241 248Z" fill="#faf7f0" stroke-width="2.1" />
-          <path d="M281 256 Q258 280 239 283" fill="none" stroke="#493467" stroke-width="3.1" />
-          <path d="M271 256 L247 277 M260 254 L242 269 M249 254 L237 263" fill="none" stroke-width="1" stroke="#493467" />
-          <path d="M389 262 C382 278 367 291 340 299 Q343 285 335 270 L346 260Z" fill="#faf7f0" stroke-width="2.1" />
-          <path d="M385 267 Q364 291 343 296" fill="none" stroke="#493467" stroke-width="3.1" />
-          <path d="M376 267 L349 287 M363 267 L345 281 M352 267 L341 274" fill="none" stroke-width="1" stroke="#493467" />
-        </g>
-        <g id="fish1-tail" transform="rotate(3 196 242)">
-          <path d="M198 233 C173 225 146 207 122 191 Q117 188 119 197 C120 214 126 230 134 237 C127 250 117 265 115 275 Q112 281 119 278 C149 273 175 262 199 252Z" fill="#faf7f0" stroke-width="2.4" />
-          <path d="M190 239 Q152 222 128 201 M181 241 Q151 230 135 216 M191 247 Q154 258 124 273 M180 246 Q149 251 130 262 M184 243 L150 240" fill="none" stroke-width="1.1" stroke="#493467" />
-        </g>
-        <path id="fish1-body" d="M193 232 C223 218 249 202 281 190 C315 178 350 173 387 173 C437 171 474 176 505 187 C540 195 572 208 590 220 Q598 225 594 229 L589 232 L592 234 C576 250 548 257 515 256 C476 268 432 275 390 275 C341 274 297 266 260 257 C231 251 211 251 192 252 Q196 242 193 232Z" fill="#493467" stroke-width="2.6" />
-        <path d="M195 234 C231 216 256 200 286 190 C317 179 351 175 387 175 C433 173 474 179 506 190 C538 197 569 209 588 221 C561 214 537 210 521 214 C503 218 504 236 489 237 C448 244 420 241 385 245 C338 248 302 239 266 241 C238 243 217 247 195 248Z" fill="#faf7f0" stroke="none" />
-        <path d="M200 234 C247 207 276 194 309 185 C349 175 388 174 417 177 C379 177 345 183 315 194 C274 208 240 224 200 240Z" fill="#faf7f0" stroke="none" />
-        <g id="fish1-spots" fill="#493467" stroke="none">
-          <ellipse cx="263" cy="220" rx="2.9" ry="2.2" />
-          <ellipse cx="282" cy="207" rx="3.2" ry="2.3" transform="rotate(-17 282 207)" />
-          <path d="M298 221 Q301 218 304 221 Q305 224 301 225 Q298 224 298 221Z" />
-          <ellipse cx="312" cy="198" rx="3.4" ry="2.4" />
-          <ellipse cx="328" cy="215" rx="3.4" ry="2.5" />
-          <ellipse cx="343" cy="190" rx="3.1" ry="2.2" />
-          <ellipse cx="351" cy="232" rx="3.4" ry="2.4" />
-          <ellipse cx="376" cy="219" rx="4.2" ry="2.8" />
-          <ellipse cx="380" cy="187" rx="2.5" ry="2" />
-          <ellipse cx="399" cy="201" rx="3.5" ry="2.6" />
-          <ellipse cx="410" cy="235" rx="3.5" ry="2.7" />
-          <ellipse cx="425" cy="219" rx="4" ry="2.7" />
-          <ellipse cx="433" cy="189" rx="2.8" ry="2.1" />
-          <path d="M451 202 Q454 199 457 202 Q458 205 454 206 Q451 205 451 202Z" />
-          <ellipse cx="479" cy="216" rx="3.3" ry="2.3" />
-          <ellipse cx="482" cy="196" rx="2.6" ry="2" />
-          <ellipse cx="315" cy="240" rx="2.2" ry="1.9" />
-          <ellipse cx="283" cy="235" rx="2.4" ry="1.7" />
-          <ellipse cx="387" cy="244" rx="2.6" ry="2" />
-        </g>
-        <g id="fish1-head">
-          <path d="M509 190 C497 196 489 207 490 221 C490 236 501 245 514 249" fill="none" stroke-width="2" />
-          <path d="M503 198 Q489 222 506 237" fill="none" stroke="#faf7f0" stroke-width="1" />
-          <path d="M594 226 Q576 227 553 239 L540 236" fill="none" stroke-width="1.8" />
-          <path d="M586 235 Q566 244 551 242" fill="none" stroke="#faf7f0" stroke-width="1" />
-          <path d="M546 212 C546 207 550 205 554 207 C559 208 559 214 556 217 C552 220 546 217 546 212Z" fill="#493467" stroke-width="1.25" />
-          <ellipse cx="553" cy="212.1" rx="2.6" ry="2.9" fill="#faf7f0" stroke="none" />
-          <path d="M577 219 L579 219.7" fill="none" stroke-width="1.3" />
-        </g>
-        <g id="fish1-pectoral">
-          <path d="M509 242 C485 237 459 243 430 263 C454 269 486 261 511 247" fill="#faf7f0" stroke-width="2" />
-          <path d="M505 248 Q465 268 434 263" fill="none" stroke="#493467" stroke-width="3" />
-          <path d="M500 245 Q470 249 442 260 M488 244 L454 254 M482 251 L456 259" fill="none" stroke-width="1" />
-        </g>
-      </g>
-    </g>
-    <g transform="translate(554 510) rotate(-4) scale(1.35) translate(-356 -220)">
-      <g id="fish2-fish" stroke="#faf7f0" stroke-linecap="round" stroke-linejoin="round">
-        <g id="fish2-dorsal" transform="translate(382 176) scale(.82 .82) translate(-382 -176)">
-          <path d="M414 176 C409 158 399 139 386 123 C382 118 378 114 375 113 Q371 111 368 115 L365 119 Q361 126 356 131 Q352 137 348 141 Q344 147 339 151 Q335 157 331 160 Q327 165 323 168 Q316 173 316 180 L377 181Z" fill="#faf7f0" stroke-width="2" />
-          <g fill="none" stroke-width="1.05" stroke="#493467">
-            <path d="M406 172 C398 152 386 132 374 119" stroke-width="1.2" />
-            <path d="M395 174 C385 155 376 141 365 130" stroke-width="1.02" />
-            <path d="M383 175 C374 161 365 147 356 141" stroke-width="1.1" />
-            <path d="M373 176 C364 164 355 155 348 150" stroke-width=".94" />
-            <path d="M361 177 Q349 167 339 160" stroke-width="1.05" />
-            <path d="M348 179 Q337 172 328 169" stroke-width=".9" />
-            <path d="M337 179 Q328 176 321 176" stroke-width=".85" />
-          </g>
-        </g>
-        <path d="M237 218 C235 206 224 201 231 198 C240 194 255 203 262 210" fill="#faf7f0" stroke-width="2" />
-        <g id="fish2-lower-fins">
-          <path d="M285 252 C275 267 258 281 237 286 Q237 274 230 263 L241 248Z" fill="#faf7f0" stroke-width="2.1" />
-          <path d="M281 256 Q258 280 239 283" fill="none" stroke="#493467" stroke-width="3.1" />
-          <path d="M271 256 L247 277 M260 254 L242 269 M249 254 L237 263" fill="none" stroke-width="1" stroke="#493467" />
-          <path d="M389 262 C382 278 367 291 340 299 Q343 285 335 270 L346 260Z" fill="#faf7f0" stroke-width="2.1" />
-          <path d="M385 267 Q364 291 343 296" fill="none" stroke="#493467" stroke-width="3.1" />
-          <path d="M376 267 L349 287 M363 267 L345 281 M352 267 L341 274" fill="none" stroke-width="1" stroke="#493467" />
-        </g>
-        <g id="fish2-tail">
-          <path d="M198 233 C173 225 146 207 122 191 Q117 188 119 197 C120 214 126 230 134 237 C127 250 117 265 115 275 Q112 281 119 278 C149 273 175 262 199 252Z" fill="#faf7f0" stroke-width="2.4" />
-          <path d="M190 239 Q152 222 128 201 M181 241 Q151 230 135 216 M191 247 Q154 258 124 273 M180 246 Q149 251 130 262 M184 243 L150 240" fill="none" stroke-width="1.1" stroke="#493467" />
-        </g>
-        <path id="fish2-body" d="M193 232 C223 218 249 202 281 190 C315 178 350 173 387 173 C437 171 474 176 505 187 C540 195 572 208 590 220 Q598 225 594 229 L589 232 L592 234 C576 250 548 257 515 256 C476 268 432 275 390 275 C341 274 297 266 260 257 C231 251 211 251 192 252 Q196 242 193 232Z" fill="#493467" stroke-width="2.6" />
-        <path d="M195 234 C231 216 256 200 286 190 C317 179 351 175 387 175 C433 173 474 179 506 190 C538 197 569 209 588 221 C561 214 537 210 521 214 C503 218 504 236 489 237 C448 244 420 241 385 245 C338 248 302 239 266 241 C238 243 217 247 195 248Z" fill="#faf7f0" stroke="none" />
-        <path d="M200 234 C247 207 276 194 309 185 C349 175 388 174 417 177 C379 177 345 183 315 194 C274 208 240 224 200 240Z" fill="#faf7f0" stroke="none" />
-        <g id="fish2-spots" fill="#493467" stroke="none">
-          <ellipse cx="263" cy="220" rx="2.9" ry="2.2" />
-          <ellipse cx="282" cy="207" rx="3.2" ry="2.3" transform="rotate(-17 282 207)" />
-          <path d="M298 221 Q301 218 304 221 Q305 224 301 225 Q298 224 298 221Z" />
-          <ellipse cx="312" cy="198" rx="3.4" ry="2.4" />
-          <ellipse cx="328" cy="215" rx="3.4" ry="2.5" />
-          <ellipse cx="343" cy="190" rx="3.1" ry="2.2" />
-          <path d="M356 203 Q360 201 362 204 Q362 207 358 207 Q355 207 356 203Z" />
-          <ellipse cx="376" cy="219" rx="4.2" ry="2.8" />
-          <ellipse cx="380" cy="187" rx="2.5" ry="2" />
-          <ellipse cx="399" cy="201" rx="3.5" ry="2.6" />
-          <ellipse cx="410" cy="235" rx="3.5" ry="2.7" />
-          <ellipse cx="425" cy="219" rx="4" ry="2.7" />
-          <ellipse cx="433" cy="189" rx="2.8" ry="2.1" />
-          <ellipse cx="463" cy="230" rx="3.6" ry="2.4" />
-          <ellipse cx="479" cy="216" rx="3.3" ry="2.3" />
-          <ellipse cx="482" cy="196" rx="2.6" ry="2" />
-          <ellipse cx="315" cy="240" rx="2.2" ry="1.9" />
-          <ellipse cx="283" cy="235" rx="2.4" ry="1.7" />
-          <ellipse cx="387" cy="244" rx="2.6" ry="2" />
-        </g>
-        <g id="fish2-head">
-          <path d="M509 190 C497 196 489 207 490 221 C490 236 501 245 514 249" fill="none" stroke-width="2" />
-          <path d="M503 198 Q489 222 506 237" fill="none" stroke="#faf7f0" stroke-width="1" />
-          <path d="M594 226 Q576 227 553 239 L540 236" fill="none" stroke-width="1.8" />
-          <path d="M586 235 Q566 244 551 242" fill="none" stroke="#faf7f0" stroke-width="1" />
-          <path d="M546 212 C546 207 550 205 554 207 C559 208 559 214 556 217 C552 220 546 217 546 212Z" fill="#493467" stroke-width="1.25" />
-          <ellipse cx="553" cy="212.1" rx="2.6" ry="2.9" fill="#faf7f0" stroke="none" />
-          <path d="M577 219 L579 219.7" fill="none" stroke-width="1.3" />
-        </g>
-        <g id="fish2-pectoral">
-          <path d="M509 242 C485 237 459 243 430 263 C454 269 486 261 511 247" fill="#faf7f0" stroke-width="2" />
-          <path d="M505 248 Q465 268 434 263" fill="none" stroke="#493467" stroke-width="3" />
-          <path d="M500 245 Q470 249 442 260 M488 244 L454 254 M482 251 L456 259" fill="none" stroke-width="1" />
-        </g>
-      </g>
-    </g>
-    <g transform="translate(763 675) rotate(-3) scale(1.08) translate(-356 -220)">
-      <g id="fish3-fish" stroke="#faf7f0" stroke-linecap="round" stroke-linejoin="round">
-        <g id="fish3-dorsal" transform="translate(382 176) scale(.82 .82) translate(-382 -176)">
-          <path d="M414 176 C409 158 399 139 386 123 C382 118 378 114 375 113 Q371 111 368 115 L365 119 Q361 126 356 131 Q352 137 348 141 Q344 147 339 151 Q335 157 331 160 Q327 165 323 168 Q316 173 316 180 L377 181Z" fill="#faf7f0" stroke-width="2" />
-          <g fill="none" stroke-width="1.05" stroke="#493467">
-            <path d="M406 172 C398 152 386 132 374 119" stroke-width="1.2" />
-            <path d="M395 174 C385 155 376 141 365 130" stroke-width="1.02" />
-            <path d="M383 175 C374 161 365 147 356 141" stroke-width="1.1" />
-            <path d="M373 176 C364 164 355 155 348 150" stroke-width=".94" />
-            <path d="M361 177 Q349 167 339 160" stroke-width="1.05" />
-            <path d="M348 179 Q337 172 328 169" stroke-width=".9" />
-            <path d="M337 179 Q328 176 321 176" stroke-width=".85" />
-          </g>
-        </g>
-        <path d="M237 218 C235 206 224 201 231 198 C240 194 255 203 262 210" fill="#faf7f0" stroke-width="2" />
-        <g id="fish3-lower-fins">
-          <path d="M285 252 C275 267 258 281 237 286 Q237 274 230 263 L241 248Z" fill="#faf7f0" stroke-width="2.1" />
-          <path d="M281 256 Q258 280 239 283" fill="none" stroke="#493467" stroke-width="3.1" />
-          <path d="M271 256 L247 277 M260 254 L242 269 M249 254 L237 263" fill="none" stroke-width="1" stroke="#493467" />
-          <path d="M389 262 C382 278 367 291 340 299 Q343 285 335 270 L346 260Z" fill="#faf7f0" stroke-width="2.1" />
-          <path d="M385 267 Q364 291 343 296" fill="none" stroke="#493467" stroke-width="3.1" />
-          <path d="M376 267 L349 287 M363 267 L345 281 M352 267 L341 274" fill="none" stroke-width="1" stroke="#493467" />
-        </g>
-        <g id="fish3-tail" transform="rotate(-3 196 242)">
-          <path d="M198 233 C173 225 146 207 122 191 Q117 188 119 197 C120 214 126 230 134 237 C127 250 117 265 115 275 Q112 281 119 278 C149 273 175 262 199 252Z" fill="#faf7f0" stroke-width="2.4" />
-          <path d="M190 239 Q152 222 128 201 M181 241 Q151 230 135 216 M191 247 Q154 258 124 273 M180 246 Q149 251 130 262 M184 243 L150 240" fill="none" stroke-width="1.1" stroke="#493467" />
-        </g>
-        <path id="fish3-body" d="M193 232 C223 218 249 202 281 190 C315 178 350 173 387 173 C437 171 474 176 505 187 C540 195 572 208 590 220 Q598 225 594 229 L589 232 L592 234 C576 250 548 257 515 256 C476 268 432 275 390 275 C341 274 297 266 260 257 C231 251 211 251 192 252 Q196 242 193 232Z" fill="#493467" stroke-width="2.6" />
-        <path d="M195 234 C231 216 256 200 286 190 C317 179 351 175 387 175 C433 173 474 179 506 190 C538 197 569 209 588 221 C561 214 537 210 521 214 C503 218 504 236 489 237 C448 244 420 241 385 245 C338 248 302 239 266 241 C238 243 217 247 195 248Z" fill="#faf7f0" stroke="none" />
-        <path d="M200 234 C247 207 276 194 309 185 C349 175 388 174 417 177 C379 177 345 183 315 194 C274 208 240 224 200 240Z" fill="#faf7f0" stroke="none" />
-        <g id="fish3-spots" fill="#493467" stroke="none">
-          <ellipse cx="263" cy="220" rx="2.9" ry="2.2" />
-          <ellipse cx="282" cy="207" rx="3.2" ry="2.3" transform="rotate(-17 282 207)" />
-          <path d="M298 221 Q301 218 304 221 Q305 224 301 225 Q298 224 298 221Z" />
-          <ellipse cx="312" cy="198" rx="3.4" ry="2.4" />
-          <ellipse cx="328" cy="215" rx="3.4" ry="2.5" />
-          <ellipse cx="351" cy="232" rx="3.4" ry="2.4" />
-          <path d="M356 203 Q360 201 362 204 Q362 207 358 207 Q355 207 356 203Z" />
-          <ellipse cx="376" cy="219" rx="4.2" ry="2.8" />
-          <ellipse cx="380" cy="187" rx="2.5" ry="2" />
-          <ellipse cx="399" cy="201" rx="3.5" ry="2.6" />
-          <ellipse cx="410" cy="235" rx="3.5" ry="2.7" />
-          <ellipse cx="425" cy="219" rx="4" ry="2.7" />
-          <path d="M451 202 Q454 199 457 202 Q458 205 454 206 Q451 205 451 202Z" />
-          <ellipse cx="463" cy="230" rx="3.6" ry="2.4" />
-          <ellipse cx="479" cy="216" rx="3.3" ry="2.3" />
-          <ellipse cx="482" cy="196" rx="2.6" ry="2" />
-          <ellipse cx="315" cy="240" rx="2.2" ry="1.9" />
-          <ellipse cx="283" cy="235" rx="2.4" ry="1.7" />
-          <ellipse cx="387" cy="244" rx="2.6" ry="2" />
-        </g>
-        <g id="fish3-head">
-          <path d="M509 190 C497 196 489 207 490 221 C490 236 501 245 514 249" fill="none" stroke-width="2" />
-          <path d="M503 198 Q489 222 506 237" fill="none" stroke="#faf7f0" stroke-width="1" />
-          <path d="M594 226 Q576 227 553 239 L540 236" fill="none" stroke-width="1.8" />
-          <path d="M586 235 Q566 244 551 242" fill="none" stroke="#faf7f0" stroke-width="1" />
-          <path d="M546 212 C546 207 550 205 554 207 C559 208 559 214 556 217 C552 220 546 217 546 212Z" fill="#493467" stroke-width="1.25" />
-          <ellipse cx="553" cy="212.1" rx="2.6" ry="2.9" fill="#faf7f0" stroke="none" />
-          <path d="M577 219 L579 219.7" fill="none" stroke-width="1.3" />
-        </g>
-        <g id="fish3-pectoral">
-          <path d="M509 242 C485 237 459 243 430 263 C454 269 486 261 511 247" fill="#faf7f0" stroke-width="2" />
-          <path d="M505 248 Q465 268 434 263" fill="none" stroke="#493467" stroke-width="3" />
-          <path d="M500 245 Q470 249 442 260 M488 244 L454 254 M482 251 L456 259" fill="none" stroke-width="1" />
-        </g>
-      </g>
-    </g>
-  </g>
+<title id="title">charr R package logo</title>
+<desc id="desc">An Arctic char with a violet back, pale spots and white-edged lower fins swims below two wave lines, with two faint char behind it, in a deep violet hexagon above the words charr and altrep string methods.</desc>
+<path d="M 627 39 L 1126.26 327.25 L 1126.26 903.75 L 627 1192 L 127.74 903.75 L 127.74 327.25 Z" fill="#35266f" stroke="#30206b" stroke-width="20" stroke-linejoin="miter"/>
+<g fill="none" stroke-linecap="round">
+<path d="M318,250 C352,238 386,238 420,250 S488,262 522,250 S590,238 624,250 S692,262 726,250 S794,238 828,250 S896,262 936,250" stroke="#7b66af" stroke-width="8"/>
+<path d="M352,282 C386,270 420,270 454,282 S522,294 556,282 S624,270 658,282 S726,294 760,282 S838,270 902,282" stroke="#56449a" stroke-width="6"/>
+</g>
+<g transform="translate(392 398) rotate(-4) scale(0.5) translate(-356 -220)" fill="#45357f"><g transform="translate(382 176) scale(.82 .82) translate(-382 -176)"><path d="M414 176 C409 158 399 139 386 123 C382 118 378 114 375 113 Q371 111 368 115 L365 119 Q361 126 356 131 Q352 137 348 141 Q344 147 339 151 Q335 157 331 160 Q327 165 323 168 Q316 173 316 180 L377 181Z"/></g><path d="M198 233 C173 225 146 207 122 191 Q117 188 119 197 C120 214 126 230 134 237 C127 250 117 265 115 275 Q112 281 119 278 C149 273 175 262 199 252Z"/><path d="M285 252 C275 267 258 281 237 286 Q237 274 230 263 L241 248Z"/><path d="M389 262 C382 278 367 291 340 299 Q343 285 335 270 L346 260Z"/><path d="M237 218 C235 206 224 201 231 198 C240 194 255 203 262 210Z"/><path d="M193 232 C223 218 249 202 281 190 C315 178 350 173 387 173 C437 171 474 176 505 187 C540 195 572 208 590 220 Q598 225 594 229 L589 232 L592 234 C576 250 548 257 515 256 C476 268 432 275 390 275 C341 274 297 266 260 257 C231 251 211 251 192 252 Q196 242 193 232Z"/><path d="M509 242 C485 237 459 243 430 263 C454 269 486 261 511 247Z"/></g>
+<g transform="translate(800 360) rotate(-6) scale(0.4) translate(-356 -220)" fill="#45357f"><g transform="translate(382 176) scale(.82 .82) translate(-382 -176)"><path d="M414 176 C409 158 399 139 386 123 C382 118 378 114 375 113 Q371 111 368 115 L365 119 Q361 126 356 131 Q352 137 348 141 Q344 147 339 151 Q335 157 331 160 Q327 165 323 168 Q316 173 316 180 L377 181Z"/></g><path d="M198 233 C173 225 146 207 122 191 Q117 188 119 197 C120 214 126 230 134 237 C127 250 117 265 115 275 Q112 281 119 278 C149 273 175 262 199 252Z"/><path d="M285 252 C275 267 258 281 237 286 Q237 274 230 263 L241 248Z"/><path d="M389 262 C382 278 367 291 340 299 Q343 285 335 270 L346 260Z"/><path d="M237 218 C235 206 224 201 231 198 C240 194 255 203 262 210Z"/><path d="M193 232 C223 218 249 202 281 190 C315 178 350 173 387 173 C437 171 474 176 505 187 C540 195 572 208 590 220 Q598 225 594 229 L589 232 L592 234 C576 250 548 257 515 256 C476 268 432 275 390 275 C341 274 297 266 260 257 C231 251 211 251 192 252 Q196 242 193 232Z"/><path d="M509 242 C485 237 459 243 430 263 C454 269 486 261 511 247Z"/></g>
+<g transform="translate(628 612) rotate(-5) scale(1.62) translate(-356 224) translate(0 -448)">
+<g stroke="#faf7f0" stroke-linecap="round" stroke-linejoin="round">
+<g transform="translate(382 176) scale(.82 .82) translate(-382 -176)">
+<path d="M414 176 C409 158 399 139 386 123 C382 118 378 114 375 113 Q371 111 368 115 L365 119 Q361 126 356 131 Q352 137 348 141 Q344 147 339 151 Q335 157 331 160 Q327 165 323 168 Q316 173 316 180 L377 181Z" fill="#6f5aa6" stroke-width="2"/>
+<g fill="none" stroke="#a795d0" stroke-width="1.05"><path d="M406 172 C398 152 386 132 374 119"/><path d="M395 174 C385 155 376 141 365 130"/><path d="M383 175 C374 161 365 147 356 141"/><path d="M373 176 C364 164 355 155 348 150"/><path d="M361 177 Q349 167 339 160"/><path d="M348 179 Q337 172 328 169"/><path d="M337 179 Q328 176 321 176"/></g>
+</g>
+<path d="M237 218 C235 206 224 201 231 198 C240 194 255 203 262 210" fill="#6f5aa6" stroke-width="2"/>
+<path d="M285 252 C275 267 258 281 237 286 Q237 274 230 263 L241 248Z" fill="#a795d0" stroke-width="2.1"/>
+<path d="M281 256 Q258 280 239 283" fill="none" stroke="#30206b" stroke-width="3.1"/>
+<path d="M271 256 L247 277 M260 254 L242 269 M249 254 L237 263" fill="none" stroke="#30206b" stroke-width="1" stroke-opacity=".55"/>
+<path d="M285 252 C275 267 258 281 237 286" fill="none" stroke-width="3"/>
+<path d="M389 262 C382 278 367 291 340 299 Q343 285 335 270 L346 260Z" fill="#a795d0" stroke-width="2.1"/>
+<path d="M385 267 Q364 291 343 296" fill="none" stroke="#30206b" stroke-width="3.1"/>
+<path d="M376 267 L349 287 M363 267 L345 281 M352 267 L341 274" fill="none" stroke="#30206b" stroke-width="1" stroke-opacity=".55"/>
+<path d="M389 262 C382 278 367 291 340 299" fill="none" stroke-width="3"/>
+<path d="M198 233 C173 225 146 207 122 191 Q117 188 119 197 C120 214 126 230 134 237 C127 250 117 265 115 275 Q112 281 119 278 C149 273 175 262 199 252Z" fill="#6f5aa6" stroke-width="2.4"/>
+<path d="M190 239 Q152 222 128 201 M181 241 Q151 230 135 216 M191 247 Q154 258 124 273 M180 246 Q149 251 130 262 M184 243 L150 240" fill="none" stroke="#a795d0" stroke-width="1.1"/>
+<path d="M193 232 C223 218 249 202 281 190 C315 178 350 173 387 173 C437 171 474 176 505 187 C540 195 572 208 590 220 Q598 225 594 229 L589 232 L592 234 C576 250 548 257 515 256 C476 268 432 275 390 275 C341 274 297 266 260 257 C231 251 211 251 192 252 Q196 242 193 232Z" fill="#f2e2d4" stroke-width="2.6"/>
+<clipPath id="hero-body"><path d="M193 232 C223 218 249 202 281 190 C315 178 350 173 387 173 C437 171 474 176 505 187 C540 195 572 208 590 220 Q598 225 594 229 L589 232 L592 234 C576 250 548 257 515 256 C476 268 432 275 390 275 C341 274 297 266 260 257 C231 251 211 251 192 252 Q196 242 193 232Z"/></clipPath>
+<path d="M180 140 L612 140 L612 231.4 L590.5 231.6 C577 232.6 561 234.4 549 237.6 C536 241 514 242 489 240 C448 244 420 241 385 245 C338 248 302 239 266 241 C238 243 217 247 195 248 L180 248Z" fill="#6f5aa6" stroke="none" clip-path="url(#hero-body)"/>
+<path d="M200 234 C247 207 276 194 309 185 C349 175 388 174 417 177 C379 177 345 183 315 194 C274 208 240 224 200 240Z" fill="#8570b6" stroke="none"/>
+<path d="M193 232 C223 218 249 202 281 190 C315 178 350 173 387 173 C437 171 474 176 505 187 C540 195 572 208 590 220 Q598 225 594 229 L589 232 L592 234 C576 250 548 257 515 256 C476 268 432 275 390 275 C341 274 297 266 260 257 C231 251 211 251 192 252 Q196 242 193 232Z" fill="none" stroke-width="2.6"/>
+<g fill="#faf7f0" stroke="none"><ellipse cx="263" cy="220" rx="2.9" ry="2.2"/><ellipse cx="282" cy="207" rx="3.2" ry="2.3" transform="rotate(-17 282 207)"/><ellipse cx="301" cy="221.5" rx="3.1" ry="2.4"/><ellipse cx="312" cy="198" rx="3.4" ry="2.4"/><ellipse cx="328" cy="215" rx="3.4" ry="2.5"/><ellipse cx="343" cy="190" rx="3.1" ry="2.2"/><ellipse cx="359" cy="204.5" rx="3.0" ry="2.4"/><ellipse cx="376" cy="219" rx="4.2" ry="2.8"/><ellipse cx="380" cy="187" rx="2.5" ry="2.0"/><ellipse cx="399" cy="201" rx="3.5" ry="2.6"/><ellipse cx="425" cy="219" rx="4.0" ry="2.7"/><ellipse cx="433" cy="189" rx="2.8" ry="2.1"/><ellipse cx="463" cy="226" rx="3.6" ry="2.4"/><ellipse cx="479" cy="214" rx="3.3" ry="2.3"/><ellipse cx="482" cy="196" rx="2.6" ry="2.0"/><ellipse cx="452" cy="205" rx="3.0" ry="2.2"/><ellipse cx="291" cy="229" rx="2.6" ry="2.0"/></g>
+<g fill="#e9c6b4" stroke="none"><ellipse cx="410" cy="238" rx="3.2" ry="2.5"/><ellipse cx="315" cy="242" rx="2.2" ry="1.9"/><ellipse cx="352" cy="244" rx="2.4" ry="1.9"/><ellipse cx="446" cy="240" rx="2.6" ry="2.0"/></g>
+<path d="M509 190 C497 196 489 207 490 221 C490 236 501 245 514 249" fill="none" stroke-width="2"/>
+<path d="M503 198 Q489 222 506 237" fill="none" stroke="#8570b6" stroke-width="1"/>
+<path d="M590.5 231.3 C577 232.3 561 234.1 549 237.3 C545 238.4 541.8 239.6 540.9 240.7 C540.4 241.6 541.9 242.1 543.4 241.5 C556 238 575 234.2 590.5 232.5 Z" fill="#30206b" stroke="none"/>
+<path d="M546 212 C546 207 550 205 554 207 C559 208 559 214 556 217 C552 220 546 217 546 212Z" fill="#30206b" stroke-width="1.25"/>
+<ellipse cx="553" cy="212.1" rx="2.6" ry="2.9" fill="#faf7f0" stroke="none"/>
+<ellipse cx="554.2" cy="211.2" rx="1.3" ry="1.5" fill="#30206b" stroke="none"/>
+<ellipse cx="578.5" cy="219.6" rx="1.3" ry="1" fill="#30206b" stroke="none"/>
+<path d="M509 242 C485 237 459 243 430 263 C454 269 486 261 511 247" fill="#a795d0" stroke-width="2"/>
+<path d="M505 248 Q465 268 434 263" fill="none" stroke="#30206b" stroke-width="3"/>
+<path d="M500 245 Q470 249 442 260 M488 244 L454 254 M482 251 L456 259" fill="none" stroke="#30206b" stroke-width="1" stroke-opacity=".55"/>
+<path d="M509 242 C485 237 459 243 430 263" fill="none" stroke-width="3"/>
+</g></g>
   <g fill="#faf7f0" stroke="#faf7f0" stroke-linejoin="round" paint-order="stroke fill">
     <g stroke-width="1.0">
       <g aria-label="charr" transform="translate(627 905) scale(1.12) translate(-490.375 -890.75)">

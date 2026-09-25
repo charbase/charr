@@ -120,7 +120,7 @@ CHARR_R_HELPER bool prepare_skip_options_r(SEXP options) noexcept
         return false;
 
     R_len_t count = 0;
-    const SEXP names = option_names_r(options, count);
+    const SEXP names = PROTECT(option_names_r(options, count));
     bool has_skip_rules = false;
     for (R_len_t i = 0; i < count; ++i) {
         const SEXP name = STRING_ELT(names, i);
@@ -135,6 +135,7 @@ CHARR_R_HELPER bool prepare_skip_options_r(SEXP options) noexcept
             has_skip_rules = true;
         }
     }
+    UNPROTECT(1);
     return has_skip_rules;
 }
 
@@ -349,6 +350,7 @@ CHARR_ENTRYPOINT SEXP ci_trans_totitle(
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END(
         if (root_fallback_warning) {

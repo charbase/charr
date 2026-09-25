@@ -287,6 +287,7 @@ CHARR_ENTRYPOINT SEXP ci_escape_unicode(SEXP str) noexcept
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END();
 }

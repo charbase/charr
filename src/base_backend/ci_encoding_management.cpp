@@ -73,6 +73,9 @@ CHARR_R_HELPER void set_value_r(
             value.missing ? NA_INTEGER : value.scalar
         ));
         break;
+
+    default:
+        return;
     }
 
     SET_VECTOR_ELT(result, index, child);
@@ -203,6 +206,7 @@ CHARR_ENTRYPOINT SEXP ci_enc_info(SEXP enc) noexcept
                 CHARR_UNWIND_RETURN();
             }
         );
+        CHARR_UNWIND_KEEP_RESULT();
     }
     CHARR_ENTRYPOINT_END();
 }
