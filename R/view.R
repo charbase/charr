@@ -21,6 +21,9 @@
 #' @param use_escapes If `TRUE`, all non-ASCII characters will be rendered
 #'   with unicode escapes. This is useful to see exactly what underlying
 #'   values are stored in the string.
+#' @returns If `html = FALSE`, a character vector of class `stringr_view`
+#'   containing the elements selected by `match`, which prints one element per
+#'   line. If `html = TRUE`, an HTML widget.
 #' @export
 #' @examples
 #' # Show special characters

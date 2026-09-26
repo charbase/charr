@@ -12,6 +12,10 @@ coercible to one.}
 
 \item{replacement}{A single string.}
 }
+\value{
+A character vector the same length as \code{string}, with missing
+values replaced by \code{replacement}.
+}
 \description{
 Turn NA into "NA"
 }

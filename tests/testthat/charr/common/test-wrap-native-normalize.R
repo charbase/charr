@@ -1,5 +1,5 @@
 wrap_selected_leaf <- function(...) {
-  backend <- charr_backend()
+  backend <- charr:::.charr_backend_value()
   leaf <- get(
     "stri_wrap",
     envir = charr:::.charr_backend_environments[[backend]],
@@ -172,7 +172,7 @@ test_that("native normalization feeds every wrap mode and option path", {
           drop_unmatched_locale_fallback_warning(expected_flat$warnings)
         )
 
-        if (!identical(charr_backend(), "stringi")) {
+        if (!identical(charr_backend(), "reference")) {
           actual_joined <- wrap_with_warnings(do.call(
             wrap_selected_leaf,
             c(arguments, list(simplify = TRUE, .output_mode = 2L))

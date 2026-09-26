@@ -10,7 +10,7 @@ test_that("optimized regex split matches stringi on scalar patterns", {
 
   for (pattern in patterns) {
     expected <- with_backend(
-      "stringi", charr_test_leaf("ci_split_regex")(values, pattern)
+      "reference", charr_test_leaf("ci_split_regex")(values, pattern)
     )
     expect_identical(
       with_backend("base", charr_test_leaf("ci_split_regex")(values, pattern)),
@@ -40,7 +40,7 @@ test_that("optimized regex split retains vectorized split options", {
 
   for (args in cases) {
     expected <- with_backend(
-      "stringi",
+      "reference",
       do.call(charr_test_leaf("ci_split_regex"), c(list(str = values), args))
     )
     expect_identical(
@@ -65,7 +65,7 @@ test_that("optimized regex split retains vectorized split options", {
 
 
 test_that("regex split keeps bytes errors and lazy pattern compilation", {
-  for (backend in c("stringi", "base", "altrep")) {
+  for (backend in c("reference", "base", "altrep")) {
     missing <- if (identical(backend, "altrep")) {
       charport::as_charvec(NA_character_)
     } else {

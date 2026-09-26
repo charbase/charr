@@ -42,7 +42,7 @@ test_that("optimized regex replacement matches stringi on multilingual text", {
   )
 
   for (operation in operations) {
-    expected <- with_backend("stringi", operation(values, pattern, replacement))
+    expected <- with_backend("reference", operation(values, pattern, replacement))
     for (backend in c("base", "altrep")) {
       subject <- regex_replace_fastpath_input(backend, values)
       actual <- with_backend(backend, operation(subject, pattern, replacement))
@@ -68,7 +68,7 @@ test_that("optimized regex replacement preserves vectorization and ICU syntax", 
 
   for (operation in operations) {
     expected <- regex_replace_fastpath_events(
-      with_backend("stringi", operation(values, patterns, replacements))
+      with_backend("reference", operation(values, patterns, replacements))
     )
     for (backend in c("base", "altrep")) {
       subject <- regex_replace_fastpath_input(backend, values)
@@ -106,7 +106,7 @@ test_that("optimized regex replacement preserves vectorization and ICU syntax", 
       ),
       regex_replace_fastpath_events(
         with_backend(
-          "stringi", charr_test_leaf("ci_replace_all_regex")("abc", "(a)", "$9")
+          "reference", charr_test_leaf("ci_replace_all_regex")("abc", "(a)", "$9")
         )
       )
     )
@@ -120,7 +120,7 @@ test_that("optimized regex replacement preserves vectorization and ICU syntax", 
     for (case in edge_cases) {
       expected <- regex_replace_fastpath_events(
         with_backend(
-          "stringi",
+          "reference",
           charr_test_leaf("ci_replace_all_regex")(
             case$string, case$pattern, case$replacement
           )
@@ -148,7 +148,7 @@ test_that("optimized regex replacement rejects bytes and preserves BOMs", {
   Encoding(bom) <- "UTF-8"
 
   expected_bom <- with_backend(
-    "stringi", charr_test_leaf("ci_replace_first_regex")(bom, ".", "Z")
+    "reference", charr_test_leaf("ci_replace_first_regex")(bom, ".", "Z")
   )
   byte_cases <- list(
     list(string = bytes, pattern = "x", replacement = "y"),
@@ -175,7 +175,7 @@ test_that("optimized regex replacement rejects bytes and preserves BOMs", {
         ),
         regex_replace_fastpath_events(
           with_backend(
-            "stringi",
+            "reference",
             charr_test_leaf("ci_replace_all_regex")(
               case$string, case$pattern, case$replacement
             )

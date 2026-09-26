@@ -18,7 +18,7 @@ test_that("optimized padding preserves ASCII width inside mixed strings", {
 
   for (operation in operations) {
     expected <- with_backend(
-      "stringi",
+      "reference",
       operation(strings, widths, pads, use_length = FALSE)
     )
 

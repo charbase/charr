@@ -18,6 +18,9 @@ coercible to one.}
 
 \item{first_upper}{Logical. Should the first letter be capitalized?}
 }
+\value{
+A character vector the same length as \code{string}.
+}
 \description{
 \itemize{
 \item \code{str_to_camel()} converts to camel case, where the first letter of

@@ -16,7 +16,7 @@ test_that("boundary count preserves UTF-8 input normalization", {
   values <- c(latin1, "\ufeffabc", "\ufeff\ufeffabc", "", NA_character_)
   input <- charport::as_charvec(values)
 
-  expected <- with_backend("stringi", utf8_boundary_count(values))
+  expected <- with_backend("reference", utf8_boundary_count(values))
   actual <- with_backend(selected_test_backend, utf8_boundary_count(input))
 
   expect_identical(expected, c(4L, 3L, 4L, 0L, NA_integer_))

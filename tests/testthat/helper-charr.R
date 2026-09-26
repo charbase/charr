@@ -26,7 +26,7 @@ skip_if_stringi_cannot_compare_native <- function() {
 }
 
 skip_if_selected_stringi_cannot_compare_native <- function() {
-  if (identical(charr_backend(), "stringi")) {
+  if (identical(charr_backend(), "reference")) {
     skip_if_stringi_cannot_compare_native()
   }
 }
@@ -111,6 +111,9 @@ drop_unmatched_locale_fallback_warning <- function(messages) {
 # The ci_* bindings in charr's namespace always target ALTREP. Tests use this
 # selector when the same semantic assertion must reach the active backend.
 charr_test_leaf <- function(name, backend = charr_backend()) {
+  if (identical(backend, "reference")) {
+    backend <- "stringi"
+  }
   if (identical(backend, "altrep")) {
     return(get(name, envir = asNamespace("charr"), inherits = FALSE))
   }
@@ -160,7 +163,7 @@ with_test_backend <- function(use_selected, code) {
   } else if (isTRUE(use_selected)) {
     selected_test_backend
   } else {
-    "stringi"
+    "reference"
   }
   with_backend(backend, code)
 }

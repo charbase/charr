@@ -9,7 +9,8 @@
 #'
 #' @inheritParams str_detect
 #' @param pattern Unlike other stringr functions, `str_match()` only supports
-#'   regular expressions, as described `vignette("regular-expressions")`.
+#'   regular expressions, as described in
+#'   [stringr's regular expressions article](https://stringr.tidyverse.org/articles/regular-expressions.html).
 #'   The pattern should contain at least one capturing group.
 #' @return
 #' * `str_match()`: a character matrix with the same number of rows as the

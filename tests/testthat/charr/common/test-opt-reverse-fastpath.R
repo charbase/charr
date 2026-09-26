@@ -10,7 +10,7 @@ test_that("optimized reverse retains code-point and encoding semantics", {
     empty = "",
     missing = NA_character_
   )
-  expected <- with_backend("stringi", str_reverse(values))
+  expected <- with_backend("reference", str_reverse(values))
 
   expect_identical(
     with_backend("base", str_reverse(values)),
@@ -33,7 +33,7 @@ test_that("optimized reverse validates mixed input before returning output", {
   for (values in list(c("abc", malformed), c("abc", bytes))) {
     messages <- c(
       stringi = tryCatch(
-        with_backend("stringi", str_reverse(values)),
+        with_backend("reference", str_reverse(values)),
         error = conditionMessage
       ),
       base = tryCatch(

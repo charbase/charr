@@ -82,7 +82,7 @@ test_that("str_read_lines uses the startup native encoding by default", {
 
 
 test_that("ci_encode uses the startup native encoding as its default target", {
-  if (identical(charr_backend(), "stringi")) {
+  if (identical(charr_backend(), "reference")) {
     skip("ci_encode is an optimized-backend internal")
   }
 
@@ -109,7 +109,7 @@ test_that("ci_encode uses the startup native encoding as its default target", {
 
 
 test_that("ci_encode rejects an unrepresentable default target", {
-  if (identical(charr_backend(), "stringi")) {
+  if (identical(charr_backend(), "reference")) {
     skip("ci_encode is an optimized-backend internal")
   }
   skip_if(

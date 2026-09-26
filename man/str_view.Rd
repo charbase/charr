@@ -20,8 +20,8 @@ coercible to one.}
 \item{pattern}{Pattern to look for.
 
 The default interpretation is a regular expression, as described in
-\code{vignette("regular-expressions")}. Use \code{\link[=regex]{regex()}} for finer control of the
-matching behaviour.
+\href{https://stringr.tidyverse.org/articles/regular-expressions.html}{stringr's regular expressions article}.
+Use \code{\link[=regex]{regex()}} for finer control of the matching behaviour.
 
 Match a fixed string (i.e. by comparing only bytes), using
 \code{\link[=fixed]{fixed()}}. This is fast, but approximate. Generally,
@@ -45,6 +45,11 @@ will style using ANSI escapes.}
 \item{use_escapes}{If \code{TRUE}, all non-ASCII characters will be rendered
 with unicode escapes. This is useful to see exactly what underlying
 values are stored in the string.}
+}
+\value{
+If \code{html = FALSE}, a character vector of class \code{stringr_view}
+containing the elements selected by \code{match}, which prints one element per
+line. If \code{html = TRUE}, an HTML widget.
 }
 \description{
 \code{str_view()} is used to print the underlying representation of a string and

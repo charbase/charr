@@ -110,7 +110,7 @@ test_that("titlecase warns for a fallback locale before rejecting input", {
   # Invalid native text fails conversion only in a UTF-8 locale, and the
   # stringi oracle does not reject it there.
   if (isTRUE(l10n_info()[["UTF-8"]]) &&
-      !identical(charr_backend(), "stringi")) {
+      !identical(charr_backend(), "reference")) {
     invalid <- rawToChar(as.raw(c(0xc3, 0x28)))
     inputs <- c(inputs, list(rep(c("iI1-ab_ab", invalid, ""), 4L)))
   }

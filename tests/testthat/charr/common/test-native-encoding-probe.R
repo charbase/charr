@@ -27,7 +27,7 @@ test_that("stringi follows its reported native-encoding capability", {
     r_length
   }
 
-  expect_identical(with_backend("stringi", str_length(value)), stringi_length)
+  expect_identical(with_backend("reference", str_length(value)), stringi_length)
   expect_identical(
     stringi_can_compare_native(),
     identical(stringi_length, r_length)
@@ -92,7 +92,7 @@ test_that("a BOM is stripped only where stringi strips it", {
   # UTF-8 container strip it. Pin both halves so neither drifts.
   bom <- "﻿abc"
 
-  expect_identical(with_backend("stringi", str_length(bom)), 4L)
+  expect_identical(with_backend("reference", str_length(bom)), 4L)
   for (backend in c("base", "altrep")) {
     expect_identical(with_backend(backend, str_length(bom)), 4L)
     expect_identical(with_backend(backend, str_sub(bom, 1L, 1L)), "a")
@@ -120,7 +120,7 @@ test_that("BOM handling matches stringi for native-marked UTF-8 input", {
     function(x) str_length(str_reverse(x)),
     function(x) str_count(x, fixed("a"))
   )) {
-    expected <- with_backend("stringi", operation(value))
+    expected <- with_backend("reference", operation(value))
     expect_identical(operation(value), expected)
   }
 })

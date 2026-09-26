@@ -118,7 +118,7 @@ test_that("coll extract seeded differential matches stringi serially", {
     )
     list(value = value, warnings = warnings, error = error)
   }
-  backend <- charr:::.charr_backend_environments[[charr_backend()]]
+  backend <- charr:::.charr_backend_environments[[charr:::.charr_backend_value()]]
   run_backend <- function() list(
     first = backend$stri_extract_first_coll(
       strings, patterns, opts_collator = opts

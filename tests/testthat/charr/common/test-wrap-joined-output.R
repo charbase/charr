@@ -17,7 +17,7 @@ test_that("str_wrap joins lines in the selected backend", {
 
 test_that("dynamic wrapping rejects an overflowing work matrix", {
   skip_if(
-    identical(charr_backend(), "stringi"),
+    identical(charr_backend(), "reference"),
     "The overflow guard is specific to charr's optimized backends"
   )
   skip_if(.Machine$sizeof.pointer != 4L)

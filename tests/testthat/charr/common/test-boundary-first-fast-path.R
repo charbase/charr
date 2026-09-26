@@ -8,7 +8,7 @@ test_that("direct word-boundary first results retain ICU semantics", {
   } else {
     plain
   }
-  backend <- charr:::.charr_backend_environments[[charr_backend()]]
+  backend <- charr:::.charr_backend_environments[[charr:::.charr_backend_value()]]
   locate <- get(
     "stri_locate_first_boundaries", envir = backend, inherits = FALSE
   )

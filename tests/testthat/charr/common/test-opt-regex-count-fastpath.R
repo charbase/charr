@@ -22,7 +22,7 @@ test_that("optimized regex counting matches stringi on direct UTF-8 input", {
   )
 
   for (operation in operations) {
-    expected <- with_backend("stringi", operation(values))
+    expected <- with_backend("reference", operation(values))
     expect_identical(with_backend("base", operation(values)), expected)
 
     input <- charport::as_charvec(values)
@@ -38,7 +38,7 @@ test_that("optimized regex counting retains conversion fallbacks", {
   values <- c(latin1, "plain text", NA_character_)
 
   expected <- with_backend(
-    "stringi", charr_test_leaf("ci_count_regex")(values, "\\p{L}+")
+    "reference", charr_test_leaf("ci_count_regex")(values, "\\p{L}+")
   )
   expect_identical(
     with_backend("base", charr_test_leaf("ci_count_regex")(values, "\\p{L}+")),
@@ -69,7 +69,7 @@ test_that("optimized regex counting retains conversion fallbacks", {
 
 
 test_that("regex counting still compiles patterns lazily around missing input", {
-  for (backend in c("stringi", "base", "altrep")) {
+  for (backend in c("reference", "base", "altrep")) {
     input <- if (identical(backend, "altrep")) {
       charport::as_charvec(NA_character_)
     } else {

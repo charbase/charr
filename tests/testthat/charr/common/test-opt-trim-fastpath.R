@@ -10,7 +10,7 @@ test_that("optimized trim preserves no-op and empty-recycling semantics", {
   Encoding(bytes) <- "bytes"
 
   for (operation in operations) {
-    expected <- with_backend("stringi", operation(values))
+    expected <- with_backend("reference", operation(values))
 
     expect_identical(with_backend("base", operation(values)), expected)
     expect_identical(
@@ -50,7 +50,7 @@ test_that("optimized trim keeps conversion, BOM, and output-mark semantics", {
   for (case in cases) {
     args <- c(list(str = values), case[setdiff(names(case), "operation")])
     expected <- with_backend(
-      "stringi",
+      "reference",
       do.call(case$operation, args)
     )
 
@@ -76,7 +76,7 @@ test_that("optimized trim rejects bytes even under a missing pattern", {
     charr_test_leaf("ci_trim_both")
   )) {
     expected <- tryCatch(
-      with_backend("stringi", operation(bytes, NA_character_)),
+      with_backend("reference", operation(bytes, NA_character_)),
       error = conditionMessage
     )
     expect_match(expected, "bytes")
@@ -129,7 +129,7 @@ test_that("optimized trim keeps malformed UTF-8 scan boundaries", {
     charr_test_leaf("ci_trim_right"),
     charr_test_leaf("ci_trim_both")
   )) {
-    expected <- with_backend("stringi", operation(malformed_inside))
+    expected <- with_backend("reference", operation(malformed_inside))
     expect_identical(with_backend("base", operation(malformed_inside)), expected)
     expect_identical(
       with_backend(
@@ -152,7 +152,7 @@ test_that("optimized trim preserves converted source recycling", {
     charr_test_leaf("ci_trim_right"),
     charr_test_leaf("ci_trim_both")
   )) {
-    expected <- with_backend("stringi", operation(latin1, pattern))
+    expected <- with_backend("reference", operation(latin1, pattern))
     expect_identical(with_backend("base", operation(latin1, pattern)), expected)
     actual <- with_backend(
       "altrep",

@@ -13,6 +13,10 @@ coercible to one.}
 \item{encoding}{Name of encoding. See \code{\link[stringi:stri_enc_list]{stringi::stri_enc_list()}}
 for a complete list.}
 }
+\value{
+A character vector the same length as \code{string}, converted
+from \code{encoding} to UTF-8.
+}
 \description{
 This is a convenient way to override the current encoding of a string.
 }

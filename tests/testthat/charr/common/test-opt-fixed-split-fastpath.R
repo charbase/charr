@@ -21,7 +21,7 @@ test_that("optimized fixed split preserves scalar delimiter semantics", {
 
   for (args in cases) {
     expected <- with_backend(
-      "stringi",
+      "reference",
       do.call(
         charr_test_leaf("ci_split_fixed"),
         c(list(str = values, pattern = " "), args)
@@ -59,7 +59,7 @@ test_that("optimized fixed split keeps general matcher behavior", {
 
   for (args in cases) {
     expected <- with_backend(
-      "stringi",
+      "reference",
       do.call(charr_test_leaf("ci_split_fixed"), c(list(str = values), args))
     )
 
@@ -84,7 +84,7 @@ test_that("optimized fixed split keeps general matcher behavior", {
 test_that("optimized fixed split marks ASCII fields from mixed UTF-8 input", {
   value <- enc2utf8("é plain β")
   expected <- with_backend(
-    "stringi",
+    "reference",
     charr_test_leaf("ci_split_fixed")(value, " ")
   )
 

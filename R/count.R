@@ -7,8 +7,8 @@
 #' @param pattern Pattern to look for.
 #'
 #'   The default interpretation is a regular expression, as described in
-#'   `vignette("regular-expressions")`. Use [regex()] for finer control of the
-#'   matching behaviour.
+#'   [stringr's regular expressions article](https://stringr.tidyverse.org/articles/regular-expressions.html).
+#'   Use [regex()] for finer control of the matching behaviour.
 #'
 #'   Match a fixed string (i.e. by comparing only bytes), using
 #'   [fixed()]. This is fast, but approximate. Generally,

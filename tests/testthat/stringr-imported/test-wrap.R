@@ -5,9 +5,11 @@ test_that("wrapping removes spaces", {
 })
 
 test_that("wrapping with width of 0 puts each word on own line", {
-  n_returns <- letters %>%
-    str_c(collapse = " ") %>%
-    str_wrap(0) %>%
+  # charr change: upstream stringr uses magrittr's %>% here. charr does not
+  # import or re-export magrittr, so this test uses the native pipe instead.
+  n_returns <- letters |>
+    str_c(collapse = " ") |>
+    str_wrap(0) |>
     str_count("\n")
   expect_equal(n_returns, length(letters) - 1)
 })

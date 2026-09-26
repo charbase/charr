@@ -72,6 +72,7 @@ str_to_sentence <- function(string, locale = "en") {
 #' @inheritParams str_to_lower
 #' @export
 #' @param first_upper Logical. Should the first letter be capitalized?
+#' @returns A character vector the same length as `string`.
 #' @examples
 #' str_to_camel("my-variable")
 #' str_to_camel("my-variable", first_upper = TRUE)

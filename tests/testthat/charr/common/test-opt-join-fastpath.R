@@ -23,7 +23,7 @@ test_that("optimized join paths match stringi on direct UTF-8 input", {
   )
 
   for (operation in operations) {
-    expected <- with_backend("stringi", operation(values))
+    expected <- with_backend("reference", operation(values))
     expect_identical(with_backend("base", operation(values)), expected)
     expect_identical(
       with_backend(
@@ -50,7 +50,7 @@ test_that("optimized join paths retain conversion and byte errors", {
   )
 
   for (operation in operations) {
-    expected <- with_backend("stringi", operation(values))
+    expected <- with_backend("reference", operation(values))
     expect_identical(with_backend("base", operation(values)), expected)
     expect_identical(
       with_backend(

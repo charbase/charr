@@ -5,7 +5,7 @@ test_that("str_reverse dispatches without materializing its input", {
     first = "aé🙂üz", second = "a", third = "very_long_🙂_record",
     fourth = "z", fifth = NA, sixth = ""
   )
-  expected <- with_backend("stringi", str_reverse(values))
+  expected <- with_backend("reference", str_reverse(values))
   input <- charport::as_charvec(values)
   result <- with_backend(selected_test_backend, str_reverse(input))
 
@@ -32,7 +32,7 @@ test_that("str_reverse preserves stringi validation and CE_BYTES errors", {
   Encoding(malformed_byte) <- "UTF-8"
   malformed <- charport::as_charvec(malformed_byte)
   expect_error(
-    with_backend("stringi", str_reverse(malformed_byte)),
+    with_backend("reference", str_reverse(malformed_byte)),
     "invalid UTF-8"
   )
   expect_error(
@@ -46,7 +46,7 @@ test_that("str_reverse preserves stringi validation and CE_BYTES errors", {
   bytes <- "\xff"
   Encoding(bytes) <- "bytes"
   expect_error(
-    with_backend("stringi", str_reverse(bytes)),
+    with_backend("reference", str_reverse(bytes)),
     "bytes encoding"
   )
   expect_error(

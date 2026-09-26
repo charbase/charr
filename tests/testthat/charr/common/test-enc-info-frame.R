@@ -68,7 +68,7 @@ expect_enc_info_frame_result <- function(actual, expected, backend) {
 
 
 test_that("encoding info preserves default and empty-name behavior", {
-  backend <- charr_backend()
+  backend <- charr:::.charr_backend_value()
   fun <- enc_info_frame_function(backend)
   expected <- fun()
 

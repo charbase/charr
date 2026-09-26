@@ -296,7 +296,7 @@ compare_case <- function(call) {
     base = run_case(call, "base", 1L),
     altrep_serial = run_case(call, "altrep", 1L),
     altrep_threaded = run_case(call, "altrep", 4L),
-    stringi = run_case(call, "stringi", 1L)
+    stringi = run_case(call, "reference", 1L)
   )
   mismatches <- c(
     diff_kinds("base_vs_altrep_", results$base, results$altrep_serial),

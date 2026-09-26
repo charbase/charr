@@ -7,8 +7,8 @@
 charr_backend(value = NULL)
 }
 \arguments{
-\item{value}{\code{NULL} to query the current backend, or one of \code{"stringi"},
-\code{"base"}, or \code{"altrep"} to select a backend.}
+\item{value}{\code{NULL} to query the current backend, or one of
+\code{"reference"}, \code{"base"}, or \code{"altrep"} to select a backend.}
 }
 \value{
 The current backend when querying. When setting, the previous
@@ -22,7 +22,7 @@ Nested calls stay within the selected backend.
 \details{
 The available backends are:
 \itemize{
-\item \code{"stringi"}: the original stringr route through installed stringi.
+\item \code{"reference"}: the original stringr implementation, which calls stringi.
 \item \code{"base"}: charr's optimized backend returning ordinary R character
 vectors.
 \item \code{"altrep"}: charr's optimized charport backend returning ALTREP character

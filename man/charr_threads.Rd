@@ -18,7 +18,7 @@ is returned invisibly.
 \description{
 \code{charr_threads()} sets how many threads charr's \code{"altrep"} backend may use
 for the operations that have a data-parallel shape. Operations without that
-shape, and the \code{"base"} and \code{"stringi"} backends, always run on one thread.
+shape, and the \code{"base"} and \code{"reference"} backends, always run on one thread.
 }
 \details{
 An eligible operation uses the requested count, capped by its number of

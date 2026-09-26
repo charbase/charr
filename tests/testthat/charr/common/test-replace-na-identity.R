@@ -19,7 +19,7 @@ test_that("str_replace_na returns a no-NA input unchanged", {
 
 test_that("str_replace_na still rebuilds when there is anything to change", {
   values <- c("plain", NA_character_, "café", NA_character_)
-  expected <- with_backend("stringi", str_replace_na(values))
+  expected <- with_backend("reference", str_replace_na(values))
 
   for (backend in c("base", "altrep")) {
     expect_identical(with_backend(backend, str_replace_na(values)), expected)
@@ -40,7 +40,7 @@ test_that("str_replace_na preserves names, replaced or not", {
   replaced <- c(a = "one", b = NA_character_)
 
   for (values in list(unchanged, replaced)) {
-    expected <- with_backend("stringi", str_replace_na(values))
+    expected <- with_backend("reference", str_replace_na(values))
     expect_identical(names(expected), c("a", "b"))
     for (backend in c("base", "altrep")) {
       expect_identical(with_backend(backend, str_replace_na(values)), expected)

@@ -31,7 +31,7 @@ test_that("optimized fixed extract keeps scalar ASCII matches and shapes", {
   )
 
   for (operation in operations) {
-    expected <- with_backend("stringi", operation(values))
+    expected <- with_backend("reference", operation(values))
     expect_identical(with_backend("base", operation(values)), expected)
 
     input <- charport::as_charvec(values)
@@ -71,7 +71,7 @@ test_that("optimized fixed extract pads missing rows like stringi", {
       x, "a", omit_no_match = TRUE, simplify = TRUE
     )
   }
-  expected <- with_backend("stringi", operation(values))
+  expected <- with_backend("reference", operation(values))
 
   expect_identical(with_backend("base", operation(values)), expected)
   expect_identical(
@@ -98,7 +98,7 @@ test_that("optimized fixed extract falls back for conversion and options", {
 
   for (operation in operations) {
     expected <- suppressWarnings(
-      with_backend("stringi", operation(values))
+      with_backend("reference", operation(values))
     )
     expect_identical(
       suppressWarnings(with_backend("base", operation(values))),
@@ -147,7 +147,7 @@ test_that("fixed extract keeps completed rows across mixed encodings", {
   )
 
   for (operation in operations) {
-    expected <- with_backend("stringi", operation(values))
+    expected <- with_backend("reference", operation(values))
     expect_identical(with_backend("base", operation(values)), expected)
     expect_identical(
       with_backend(

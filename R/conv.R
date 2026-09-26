@@ -5,6 +5,8 @@
 #' @inheritParams str_detect
 #' @param encoding Name of encoding. See [stringi::stri_enc_list()]
 #'   for a complete list.
+#' @returns A character vector the same length as `string`, converted
+#'   from `encoding` to UTF-8.
 #' @export
 #' @examples
 #' # Example from encoding?stringi::stringi

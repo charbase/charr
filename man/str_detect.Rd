@@ -13,8 +13,8 @@ coercible to one.}
 \item{pattern}{Pattern to look for.
 
 The default interpretation is a regular expression, as described in
-\code{vignette("regular-expressions")}. Use \code{\link[=regex]{regex()}} for finer control of the
-matching behaviour.
+\href{https://stringr.tidyverse.org/articles/regular-expressions.html}{stringr's regular expressions article}.
+Use \code{\link[=regex]{regex()}} for finer control of the matching behaviour.
 
 Match a fixed string (i.e. by comparing only bytes), using
 \code{\link[=fixed]{fixed()}}. This is fast, but approximate. Generally,

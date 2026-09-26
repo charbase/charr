@@ -1,8 +1,8 @@
 arguments <- commandArgs(trailingOnly = TRUE)
 if (length(arguments) != 2L ||
-    !arguments[[1L]] %in% c("stringi", "base", "altrep")) {
+    !arguments[[1L]] %in% c("reference", "base", "altrep")) {
   stop(
-    "expected a backend (stringi, base, or altrep) and a thread count",
+    "expected a backend (reference, base, or altrep) and a thread count",
     call. = FALSE
   )
 }

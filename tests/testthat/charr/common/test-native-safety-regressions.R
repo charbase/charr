@@ -12,7 +12,7 @@ test_that("scalar substring replacement bounds malformed marked UTF-8", {
   malformed <- rawToChar(as.raw(0xf0))
   Encoding(malformed) <- "UTF-8"
   environments <- charr:::.charr_backend_environments
-  replace_all <- environments[[charr_backend()]][["stri_sub_all<-"]]
+  replace_all <- environments[[charr:::.charr_backend_value()]][["stri_sub_all<-"]]
 
   actual <- replace_all(
     malformed, list(1L), list(1L), value = "XXXX"

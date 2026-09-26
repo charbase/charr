@@ -4,7 +4,7 @@ test_that("optimized replace-NA handles direct and conversion inputs", {
   values <- c("plain", NA_character_, "βeta", latin1, "\ufeffbom")
   replacement <- "中"
   expected <- with_backend(
-    "stringi",
+    "reference",
     charr_test_leaf("ci_replace_na")(values, replacement)
   )
 
@@ -26,7 +26,7 @@ test_that("optimized replace-NA handles direct and conversion inputs", {
 
 test_that("optimized replace-NA drops source attributes like stringi", {
   values <- structure(c("a", NA_character_), names = c("first", "second"))
-  expected <- with_backend("stringi", charr_test_leaf("ci_replace_na")(values, "x"))
+  expected <- with_backend("reference", charr_test_leaf("ci_replace_na")(values, "x"))
 
   expect_identical(
     with_backend("base", charr_test_leaf("ci_replace_na")(values, "x")),

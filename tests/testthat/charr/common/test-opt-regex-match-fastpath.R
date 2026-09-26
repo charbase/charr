@@ -22,7 +22,7 @@ test_that("optimized regex match preserves captures and marked input", {
   )
 
   for (operation in operations) {
-    expected <- with_backend("stringi", operation(values))
+    expected <- with_backend("reference", operation(values))
     expect_identical(with_backend("base", operation(values)), expected)
 
     input <- charport::as_charvec(values)
@@ -46,7 +46,7 @@ test_that("optimized regex match retains vectorized capture shapes", {
     function(x, p) charr_test_leaf("ci_match_all_regex")(x, p)
   )
   for (operation in operations) {
-    expected <- with_backend("stringi", operation(values, patterns))
+    expected <- with_backend("reference", operation(values, patterns))
     expect_identical(
       with_backend("base", operation(values, patterns)),
       expected

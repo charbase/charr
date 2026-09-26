@@ -35,7 +35,7 @@ str_write_lines <- function(string, con, encoding = "UTF-8", sep = "\n") {
   check_string(encoding, allow_null = TRUE)
   check_string(sep)
 
-  if (identical(charr_backend(), "stringi") && anyNA(string)) {
+  if (identical(charr_backend(), "reference") && anyNA(string)) {
     cli::cli_abort("{.arg string} must not contain missing values.")
   }
   stri_write_lines(string, con, encoding = encoding, sep = sep)

@@ -1,10 +1,10 @@
 test_that("substring endpoints handle extreme non-missing integers", {
   skip_if(
-    identical(charr_backend(), "stringi"),
+    identical(charr_backend(), "reference"),
     "stringi's native endpoint arithmetic overflows for these inputs"
   )
 
-  backend <- charr:::.charr_backend_environments[[charr_backend()]]
+  backend <- charr:::.charr_backend_environments[[charr:::.charr_backend_value()]]
   sub <- backend[["stri_sub"]]
   replace <- backend[["stri_sub<-"]]
   sub_all <- backend[["stri_sub_all"]]

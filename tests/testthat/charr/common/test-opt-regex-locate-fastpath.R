@@ -34,7 +34,7 @@ test_that("optimized regex locate matches stringi on direct UTF-8 input", {
   )
 
   for (operation in operations) {
-    expected <- with_backend("stringi", operation(values))
+    expected <- with_backend("reference", operation(values))
     expect_identical(with_backend("base", operation(values)), expected)
 
     input <- charport::as_charvec(values)
@@ -64,7 +64,7 @@ test_that("regex locate keeps capture metadata and recycled patterns", {
   )
 
   for (operation in operations) {
-    expected <- with_backend("stringi", operation(values))
+    expected <- with_backend("reference", operation(values))
     expect_identical(with_backend("base", operation(values)), expected)
     expect_identical(
       with_backend(
@@ -86,7 +86,7 @@ test_that("regex locate retains encoding fallbacks and bytes errors", {
     all = function(x) charr_test_leaf("ci_locate_all_regex")(x, "\\p{L}+")
   )
   for (operation in operations) {
-    expected <- with_backend("stringi", operation(values))
+    expected <- with_backend("reference", operation(values))
     expect_identical(with_backend("base", operation(values)), expected)
     expect_identical(
       with_backend(
@@ -121,7 +121,7 @@ test_that("regex locate accepts zero-length subjects with scalar patterns", {
   )
 
   for (operation in operations) {
-    expected <- with_backend("stringi", operation(character()))
+    expected <- with_backend("reference", operation(character()))
     expect_identical(
       with_backend("base", operation(character())),
       expected

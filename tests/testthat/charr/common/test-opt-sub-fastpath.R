@@ -30,7 +30,7 @@ test_that("optimized scalar substring paths match stringi", {
   )
 
   for (operation in operations) {
-    expected <- with_backend("stringi", operation(values))
+    expected <- with_backend("reference", operation(values))
 
     expect_identical(with_backend("base", operation(values)), expected)
     expect_identical(
@@ -45,13 +45,13 @@ test_that("optimized scalar substring paths retain missing replacements", {
   values <- c("aé\U0001f642üz", "abcdef", NA_character_)
 
   expected <- with_backend(
-    "stringi",
+    "reference",
     charr_test_leaf("ci_sub_replace_all")(
       values, list(2L), list(5L), replacement = NA_character_
     )
   )
   expected_omit <- with_backend(
-    "stringi",
+    "reference",
     charr_test_leaf("ci_sub_replace_all")(
       values, list(2L), list(5L), omit_na = TRUE,
       replacement = NA_character_
@@ -100,7 +100,7 @@ test_that("optimized scalar substring paths retain malformed UTF-8 bytes", {
   )
 
   for (operation in operations) {
-    expected <- with_backend("stringi", operation(malformed))
+    expected <- with_backend("reference", operation(malformed))
     expect_identical(with_backend("base", operation(malformed)), expected)
     expect_identical(
       with_backend(
@@ -129,7 +129,7 @@ test_that("optimized scalar replacement normalizes its replacement once", {
         )
       }
       expected <- with_backend(
-        "stringi", operation(values, replacement)
+        "reference", operation(values, replacement)
       )
 
       expect_identical(

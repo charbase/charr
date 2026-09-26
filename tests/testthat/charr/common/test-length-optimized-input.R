@@ -1,11 +1,11 @@
 test_that("optimized length and width accept unregistered character ALTREP", {
   n <- 1000L
   expected_length <- with_backend(
-    "stringi",
+    "reference",
     str_length(as.character(seq_len(n)))
   )
   expected_width <- with_backend(
-    "stringi",
+    "reference",
     str_width(as.character(seq_len(n)))
   )
 
@@ -35,8 +35,8 @@ test_that("optimized length and width preserve encoding semantics", {
     "\ufeffstart", NA_character_
   )
 
-  expected_length <- with_backend("stringi", str_length(values))
-  expected_width <- with_backend("stringi", str_width(values))
+  expected_length <- with_backend("reference", str_length(values))
+  expected_width <- with_backend("reference", str_width(values))
 
   for (backend in c("base", "altrep")) {
     input <- if (identical(backend, "altrep")) {

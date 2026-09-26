@@ -88,14 +88,25 @@ if (!length(thread_values) ||
 }
 
 backend_runs <- data.frame(
-  backend = c("stringi", "base", rep("altrep", length(altrep_threads))),
+  backend = c("reference", "base", rep("altrep", length(altrep_threads))),
   threads = c(1L, 1L, altrep_threads),
   label = c(
-    "stringi", "base", paste0("altrep/nthreads=", altrep_threads)
+    "reference", "base", paste0("altrep/nthreads=", altrep_threads)
   ),
   stringsAsFactors = FALSE
 )
 startup_locales <- select_startup_locales()
+
+# CRAN runs a reduced matrix: the two optimized backends in the startup locale
+# R was given. The reference backend is stringr's own implementation, and the
+# extra startup locales repeat the whole suite, so they run only where
+# NOT_CRAN is "true" (make test, CI).
+if (!identical(Sys.getenv("NOT_CRAN"), "true")) {
+  backend_runs <- backend_runs[
+    backend_runs$backend != "reference", , drop = FALSE
+  ]
+  startup_locales <- startup_locales[1L]
+}
 statuses <- integer(length(startup_locales) * nrow(backend_runs))
 names(statuses) <- character(length(statuses))
 

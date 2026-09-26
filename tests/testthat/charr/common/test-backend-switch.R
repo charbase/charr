@@ -3,12 +3,12 @@ test_that("the backend option defaults, queries, and sets", {
   on.exit(options(old), add = TRUE)
 
   expect_identical(charr:::charr_backend(), "altrep")
-  expect_invisible(charr:::charr_backend("stringi"))
-  expect_identical(charr:::charr_backend(), "stringi")
-  expect_identical(getOption("charr_backend"), "stringi")
+  expect_invisible(charr:::charr_backend("reference"))
+  expect_identical(charr:::charr_backend(), "reference")
+  expect_identical(getOption("charr_backend"), "reference")
 
   previous <- charr:::charr_backend("altrep")
-  expect_identical(previous, "stringi")
+  expect_identical(previous, "reference")
   expect_identical(charr:::charr_backend(), "altrep")
 })
 
@@ -20,7 +20,8 @@ test_that("setter and direct option writes are validated", {
     TRUE,
     NA_character_,
     character(),
-    c("altrep", "stringi"),
+    c("altrep", "reference"),
+    "stringi",
     factor("altrep"),
     "ALTREP",
     "unknown"
@@ -162,7 +163,7 @@ test_that("nested calls stay on the backend selected at entry", {
   out <- str_subset(
     c("a", "b"),
     {
-      options(charr_backend = "stringi")
+      options(charr_backend = "reference")
       fixed("a")
     }
   )
@@ -173,7 +174,7 @@ test_that("pattern objects can cross backend boundaries", {
   old <- options(charr_backend = NULL)
   on.exit(options(old), add = TRUE)
 
-  charr:::charr_backend("stringi")
+  charr:::charr_backend("reference")
   stringi_pattern <- fixed("a")
   charr:::charr_backend("altrep")
   expect_identical(
@@ -182,7 +183,7 @@ test_that("pattern objects can cross backend boundaries", {
   )
 
   altrep_pattern <- regex("^a", ignore_case = TRUE)
-  charr:::charr_backend("stringi")
+  charr:::charr_backend("reference")
   expect_identical(
     str_detect(c("A", "b"), altrep_pattern),
     c(TRUE, FALSE)
@@ -190,7 +191,7 @@ test_that("pattern objects can cross backend boundaries", {
 })
 
 test_that("str_interp defaults to its public caller's environment", {
-  old <- options(charr_backend = "stringi")
+  old <- options(charr_backend = "reference")
   on.exit(options(old), add = TRUE)
 
   interpolate_here <- function() {

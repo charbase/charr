@@ -14,19 +14,19 @@ test_that("optimized fixed locate keeps scalar byte positions and shapes", {
   )
 
   expected_first <- with_backend(
-    "stringi",
+    "reference",
     charr_test_leaf("ci_locate_first_fixed")(values, " ")
   )
   expected_first_length <- with_backend(
-    "stringi",
+    "reference",
     charr_test_leaf("ci_locate_first_fixed")(values, " ", get_length = TRUE)
   )
   expected_all <- with_backend(
-    "stringi",
+    "reference",
     charr_test_leaf("ci_locate_all_fixed")(values, " ")
   )
   expected_all_omit <- with_backend(
-    "stringi",
+    "reference",
     charr_test_leaf("ci_locate_all_fixed")(
       values, " ", omit_no_match = TRUE, get_length = TRUE
     )
@@ -73,13 +73,13 @@ test_that("optimized fixed locate falls back for options and conversion", {
   values <- c(latin1, "A a", NA_character_)
 
   expected <- with_backend(
-    "stringi",
+    "reference",
     charr_test_leaf("ci_locate_first_fixed")(
       values, "a", case_insensitive = TRUE
     )
   )
   expected_all <- with_backend(
-    "stringi",
+    "reference",
     charr_test_leaf("ci_locate_all_fixed")(
       values, "a", overlap = TRUE, get_length = TRUE
     )
@@ -122,10 +122,10 @@ test_that("optimized fixed locate keeps prefix outputs on conversion fallback", 
   values <- c("éa a", latin1, malformed, NA_character_, "")
 
   expected_first <- with_backend(
-    "stringi", charr_test_leaf("ci_locate_first_fixed")(values, "a")
+    "reference", charr_test_leaf("ci_locate_first_fixed")(values, "a")
   )
   expected_all <- with_backend(
-    "stringi", charr_test_leaf("ci_locate_all_fixed")(values, "a", get_length = TRUE)
+    "reference", charr_test_leaf("ci_locate_all_fixed")(values, "a", get_length = TRUE)
   )
 
   for (backend in c("base", "altrep")) {
@@ -196,13 +196,13 @@ test_that("optimized fixed locate accepts native tails on UTF-8 locales", {
 
   expect_identical(
     with_backend(
-      "stringi", charr_test_leaf("ci_locate_first_fixed")(values, "a")
+      "reference", charr_test_leaf("ci_locate_first_fixed")(values, "a")
     ),
     expected_first
   )
   expect_identical(
     with_backend(
-      "stringi", charr_test_leaf("ci_locate_all_fixed")(values, "a")
+      "reference", charr_test_leaf("ci_locate_all_fixed")(values, "a")
     ),
     expected_all
   )

@@ -201,6 +201,9 @@ col_altrep_4 <- "#432b7d"
 col_ink <- "#2c1f57"
 col_axis <- "#8670bf"
 col_rule <- "#8f7cc4"
+# The summary's reference bar is a neutral grey, so it reads as the yardstick
+# rather than as one more charr configuration on the purple ramp.
+col_reference <- "#c9c4d4"
 
 roundrect <- function(x0, y0, x1, y1, rx, ry, ...) {
   a <- seq(0, pi / 2, length.out = 14)
@@ -246,10 +249,26 @@ row_labels <- function(rows, baseline) {
   )
 }
 
+# `series` names the bars drawn in each group, bottom to top. "reference" is
+# the stringi baseline drawn as a bar of length 1; without it the reference is
+# the dashed line.
+all_series <- c("altrep_4", "altrep_1", "base")
+series_labels <- c(
+  reference = "reference",
+  base = "charr base strings",
+  altrep_1 = "charr ALTREP, 1 thread",
+  altrep_4 = "charr ALTREP, 4 threads"
+)
+series_cols <- c(
+  reference = col_reference, base = col_base, altrep_1 = col_altrep,
+  altrep_4 = col_altrep_4
+)
+
 draw_speedup <- function(rows, title, cex_label = 1.0,
                          headroom = 0.10, show_values = TRUE,
                          baseline = "stacked", axis_title = TRUE,
-                         note = FALSE, space = c(0, 0.85)) {
+                         note = FALSE, space = c(0, 0.85),
+                         series = all_series) {
   rows <- rows[rev(seq_len(nrow(rows))), , drop = FALSE]
   # A horizontal barplot draws the first row of the matrix at the foot of each
   # group, so the rows run backwards here to put base at the top of a group and
@@ -257,9 +276,11 @@ draw_speedup <- function(rows, title, cex_label = 1.0,
   values <- rbind(
     altrep_4 = rows$altrep_4_x,
     altrep_1 = rows$altrep_1_x,
-    base = rows$base_x
-  )
-  cols <- c(col_altrep_4, col_altrep, col_base)
+    base = rows$base_x,
+    reference = rep(1, nrow(rows))
+  )[series, , drop = FALSE]
+  cols <- unname(series_cols[series])
+  reference_bar <- "reference" %in% series
   # A serial operation contributes no four-thread bar, so its slot is NA and
   # stays empty at the right width rather than closing up the group.
   top <- max(values, na.rm = TRUE) * (1 + headroom)
@@ -271,8 +292,13 @@ draw_speedup <- function(rows, title, cex_label = 1.0,
   if (axis_title) {
     mtext("times faster than reference", side = 1, line = 2.2,
           col = col_ink, cex = cex_label * 0.98)
-    mtext(sprintf("dashed line is the reference; median of %d runs", reps),
-          side = 1, line = 3.2, col = col_axis, cex = cex_label * 0.82)
+    footnote <- if (reference_bar) {
+      sprintf("median of %d runs", reps)
+    } else {
+      sprintf("dashed line is the reference; median of %d runs", reps)
+    }
+    mtext(footnote, side = 1, line = 3.2, col = col_axis,
+          cex = cex_label * 0.82)
     if (note) {
       mtext(serial_note, side = 1, line = 4.2, col = col_axis,
             cex = cex_label * 0.82)
@@ -285,15 +311,19 @@ draw_speedup <- function(rows, title, cex_label = 1.0,
   # The reference line crosses every bar, and the deepest bar is close enough
   # to the rule colour to swallow it. A white casing under the same dashes
   # keeps it readable there and disappears against the card everywhere else.
-  abline(v = 1, col = col_card, lty = 2, lwd = 3.0)
-  abline(v = 1, col = col_rule, lty = 2, lwd = 1.7)
+  if (!reference_bar) {
+    abline(v = 1, col = col_card, lty = 2, lwd = 3.0)
+    abline(v = 1, col = col_rule, lty = 2, lwd = 1.7)
+  }
 
   text(x = -0.012 * top, y = colMeans(bp),
        labels = row_labels(rows, baseline), adj = 1,
        xpd = NA, col = col_ink, cex = cex_label)
   if (show_values) {
-    text(x = as.vector(values), y = as.vector(bp),
-         labels = sprintf("%.1f×", as.vector(values)), pos = 4,
+    # The reference bar is 1x by definition, so only charr's bars are labelled.
+    charr_bar <- rownames(values)[row(values)] != "reference"
+    text(x = values[charr_bar], y = bp[charr_bar],
+         labels = sprintf("%.1f×", values[charr_bar]), pos = 4,
          offset = 0.28, xpd = NA, col = col_ink, cex = cex_label * 0.92,
          font = 2)
   }
@@ -302,14 +332,13 @@ draw_speedup <- function(rows, title, cex_label = 1.0,
 
 # Entries run in the order the bars stack within a group, top to bottom, so
 # the key can be read straight off any group in the panel.
-legend_bar <- function(cex = 1.0, where = "bottomright") {
+legend_bar <- function(cex = 1.0, where = "bottomright",
+                       series = all_series, labels = series_labels) {
+  keys <- rev(series)
   legend(where,
-         legend = c(
-           "charr base strings",
-           "charr ALTREP, 1 thread",
-           "charr ALTREP, 4 threads"
-         ),
-         fill = c(col_base, col_altrep, col_altrep_4), border = NA, bty = "n",
+         legend = unname(labels[keys]),
+         fill = unname(series_cols[keys]),
+         border = NA, bty = "n",
          text.col = col_ink, cex = cex, y.intersp = 1.2, inset = c(0.01, 0.03))
 }
 
@@ -326,9 +355,13 @@ legend_bar <- function(cex = 1.0, where = "bottomright") {
 # everything else. The full figure still carries them, where an outlier
 # distorts one panel instead of the whole chart.
 #
+# The summary compares only the default configuration, ALTREP on one thread,
+# with the stringi reference; base strings and threading are left to the full
+# figure, where every operation carries all three bars.
+#
 # str_read_lines leads: reading a file straight into an ALTREP vector is the
 # clearest case for keeping strings out of R's global cache. The rest follow
-# by four-thread speedup, so the chart descends whatever a rerun measures.
+# by one-thread speedup, so the chart descends whatever a rerun measures.
 summary_ops <- c(
   "ci_read_lines",
   "ci_pad_left",
@@ -350,24 +383,25 @@ lead <- summary_rows$op == "ci_read_lines"
 summary_rows <- rbind(
   summary_rows[lead, , drop = FALSE],
   summary_rows[!lead, , drop = FALSE][
-    order(-summary_rows$altrep_4_x[!lead]), , drop = FALSE
+    order(-summary_rows$altrep_1_x[!lead]), , drop = FALSE
   ]
 )
 
-# Three bars a row and a printed multiple beside each one, so the row pitch is
-# set by the height of the value text rather than by the bar: at 1200 px the
-# labels of two near-equal bars collided.
+# Two bars a row: the reference at 1x on top and charr's default
+# configuration below it, with its multiple printed beside the bar.
+summary_series <- c("altrep_1", "reference")
+summary_labels <- replace(series_labels, "altrep_1", "charr ALTREP")
 summary_png <- function(path) {
   png(path, width = 1700, height = 1480, res = 180, bg = "transparent")
   on.exit(dev.off(), add = TRUE)
   card_layer(list(c(0.012, 0.012, 0.988, 0.988)), ry = 0.011)
   par(las = 1, mgp = c(2.4, 0.7, 0))
-  par(fig = c(0.028, 0.982, 0.02, 0.98), mar = c(5.4, 12.6, 1.0, 2.6),
+  par(fig = c(0.028, 0.982, 0.02, 0.98), mar = c(5.0, 12.6, 1.0, 2.6),
       new = TRUE)
   draw_speedup(summary_rows, "", cex_label = 0.92, headroom = 0.13,
-               baseline = "stacked",
-               note = anyNA(summary_rows$altrep_4_x), space = c(0.1, 0.9))
-  legend_bar(cex = 0.95)
+               baseline = "stacked", space = c(0.1, 0.9),
+               series = summary_series)
+  legend_bar(cex = 0.95, series = summary_series, labels = summary_labels)
 }
 
 summary_path_out <- file.path(figures_dir, "bench-summary.png")

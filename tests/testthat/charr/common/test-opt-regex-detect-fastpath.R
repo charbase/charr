@@ -24,7 +24,7 @@ test_that("optimized regex detection matches stringi on direct UTF-8 input", {
   )
 
   for (operation in operations) {
-    expected <- with_backend("stringi", operation(values))
+    expected <- with_backend("reference", operation(values))
     expect_identical(with_backend("base", operation(values)), expected)
 
     input <- charport::as_charvec(values)
@@ -35,7 +35,7 @@ test_that("optimized regex detection matches stringi on direct UTF-8 input", {
   recycled_subject <- values[1:2]
   recycled_patterns <- c("one", "nope", "two", "^$")
   expected <- with_backend(
-    "stringi",
+    "reference",
     charr_test_leaf("ci_detect_regex")(recycled_subject, recycled_patterns)
   )
   expect_identical(
@@ -63,7 +63,7 @@ test_that("optimized regex detection retains conversion fallbacks", {
   values <- c(latin1, "plain text", NA_character_)
 
   expected <- with_backend(
-    "stringi", charr_test_leaf("ci_detect_regex")(values, "\\p{L}+")
+    "reference", charr_test_leaf("ci_detect_regex")(values, "\\p{L}+")
   )
   expect_identical(
     with_backend("base", charr_test_leaf("ci_detect_regex")(values, "\\p{L}+")),

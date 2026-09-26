@@ -12,8 +12,8 @@ CODE_MAP_DIR ?= pkgdown/assets/code-map
 # Public operations implemented by each optimized backend. The code-map
 # validator checks the two counts independently because their native APIs may
 # contain different entrypoints.
-CODE_MAP_BASE_BACKEND_METHODS ?= 70
-CODE_MAP_ALTREP_BACKEND_METHODS ?= 71
+CODE_MAP_BASE_BACKEND_METHODS ?= 71
+CODE_MAP_ALTREP_BACKEND_METHODS ?= 72
 LINT_EFFECT_ARGS := \
 	--effects tools/charr-lint/effects.tsv \
 	--effect-overrides tools/charr-lint/effect-overrides.tsv
@@ -381,7 +381,7 @@ test-locales:
 test: install-dev
 	@$(build_test_locales)
 	$(use_test_locales); \
-	cd tests && CHARR_TEST_ALTREP_THREADS="$(TEST_ALTREP_THREADS)" \
+	cd tests && NOT_CRAN=true CHARR_TEST_ALTREP_THREADS="$(TEST_ALTREP_THREADS)" \
 	  Rscript testthat.R
 
 # Differential fuzzer (tools/fuzz): random stringr calls must agree across
@@ -480,7 +480,7 @@ test-san:
 	  R_MAKEVARS_USER=$$tmp_lib/Makevars.san \
 	  R CMD INSTALL --preclean --no-test-load \
 	    --configure-args=--with-system-icu -l $$tmp_lib .; \
-	cd tests && LD_PRELOAD=$$(gcc -print-file-name=libasan.so) \
+	cd tests && NOT_CRAN=true LD_PRELOAD=$$(gcc -print-file-name=libasan.so) \
 	  ASAN_OPTIONS=detect_leaks=0 LSAN_OPTIONS=detect_leaks=0 \
 	  UBSAN_OPTIONS=print_stacktrace=1 \
 	  R_MAKEVARS_USER=$$tmp_lib/Makevars.san R_LIBS=$$tmp_lib:$(RLIBS) \
@@ -524,7 +524,7 @@ test-valgrind:
 	tmp_lib=$$(mktemp -d /tmp/$(PACKAGE)-vg-XXXXXX); \
 	trap 'rm -rf "$$tmp_lib"' EXIT; \
 	R CMD INSTALL --preclean -l $$tmp_lib .; \
-	cd tests && R_LIBS=$$tmp_lib:$(RLIBS) \
+	cd tests && NOT_CRAN=true R_LIBS=$$tmp_lib:$(RLIBS) \
 	  R --vanilla -d "valgrind --trace-children=yes --tool=memcheck --leak-check=no --error-exitcode=1" \
 	  -f testthat.R
 

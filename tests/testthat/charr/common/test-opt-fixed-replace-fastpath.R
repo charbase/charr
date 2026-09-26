@@ -27,7 +27,7 @@ test_that("fixed replace keeps completed rows across mixed encodings", {
   )
 
   for (operation in operations) {
-    expected <- with_backend("stringi", operation(values))
+    expected <- with_backend("reference", operation(values))
     expect_identical(with_backend("base", operation(values)), expected)
 
     actual <- with_backend(
@@ -58,7 +58,7 @@ test_that("fixed replace preserves general and sequential output shapes", {
 
   for (operation in operations) {
     expected <- suppressWarnings(
-      with_backend("stringi", operation(values))
+      with_backend("reference", operation(values))
     )
     expect_identical(
       suppressWarnings(with_backend("base", operation(values))),

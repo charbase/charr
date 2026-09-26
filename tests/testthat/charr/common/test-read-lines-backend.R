@@ -10,7 +10,7 @@ expect_read_lines_backend_equal <- function(bytes, encoding) {
   path <- write_line_test_file(bytes)
   on.exit(unlink(path), add = TRUE)
 
-  expected <- with_backend("stringi", str_read_lines(path, encoding))
+  expected <- with_backend("reference", str_read_lines(path, encoding))
   actual <- with_backend(
     selected_test_backend,
     str_read_lines(path, encoding)
@@ -110,7 +110,7 @@ test_that("str_read_lines preserves conversion warnings and input errors", {
     as.raw(c(0x61, 0xc3, 0x28, 0x0a, 0x62))
   )
   on.exit(unlink(malformed_path), add = TRUE)
-  expected <- capture_read_lines("stringi", malformed_path, "UTF-8")
+  expected <- capture_read_lines("reference", malformed_path, "UTF-8")
   actual <- capture_read_lines(
     selected_test_backend, malformed_path, "UTF-8"
   )
@@ -124,7 +124,7 @@ test_that("str_read_lines preserves conversion warnings and input errors", {
     as.raw(c(0x61, 0x00, 0x62, 0x0a, 0x63))
   )
   on.exit(unlink(nul_path), add = TRUE)
-  expected_nul <- capture_read_lines("stringi", nul_path, "UTF-8")
+  expected_nul <- capture_read_lines("reference", nul_path, "UTF-8")
   actual_nul <- capture_read_lines(
     selected_test_backend, nul_path, "UTF-8"
   )
@@ -137,7 +137,7 @@ test_that("str_read_lines preserves conversion warnings and input errors", {
 
   auto_path <- write_line_test_file(charToRaw("a"))
   on.exit(unlink(auto_path), add = TRUE)
-  expected_auto <- capture_read_lines("stringi", auto_path, "auto")
+  expected_auto <- capture_read_lines("reference", auto_path, "auto")
   actual_auto <- capture_read_lines(
     selected_test_backend, auto_path, "auto"
   )
@@ -145,7 +145,7 @@ test_that("str_read_lines preserves conversion warnings and input errors", {
   expect_match(actual_auto$error, "no longer supported")
 
   missing_path <- tempfile("charr-lines-missing-")
-  expected_missing <- capture_read_lines("stringi", missing_path, "UTF-8")
+  expected_missing <- capture_read_lines("reference", missing_path, "UTF-8")
   actual_missing <- capture_read_lines(
     selected_test_backend, missing_path, "UTF-8"
   )
@@ -158,7 +158,7 @@ test_that("str_read_lines leaves caller-owned connections open", {
   expected_connection <- rawConnection(bytes, open = "rb")
   on.exit(close(expected_connection), add = TRUE)
   expected <- with_backend(
-    "stringi",
+    "reference",
     str_read_lines(expected_connection, "UTF-8")
   )
 

@@ -4,11 +4,11 @@
 \name{charr-package}
 \alias{charr}
 \alias{charr-package}
-\title{charr: Optimization Experiment for the Stringr API}
+\title{charr: String Processing Reimagined for 'ALTREP' Strings}
 \description{
 \if{html}{\figure{logo.svg}{options: style='float: right' alt='logo' width='120'}}
 
-An optimization and benchmarking experiment derived from the 'stringr' package. It provides the original route through installed 'stringi', an independent backend returning ordinary R character vectors, and an independent backend returning 'ALTREP' character vectors through 'charport'. It is not currently intended as a drop-in replacement for 'stringr' or 'stringi'.
+An experimental fork of 'stringr'. The functions and semantics are the same but everything is optimized around 'ALTREP' strings (custom high-performance string storage), allowing for faster and more efficient operation.
 }
 \seealso{
 Useful links:

@@ -14,7 +14,8 @@ str_match_all(string, pattern)
 coercible to one.}
 
 \item{pattern}{Unlike other stringr functions, \code{str_match()} only supports
-regular expressions, as described \code{vignette("regular-expressions")}.
+regular expressions, as described in
+\href{https://stringr.tidyverse.org/articles/regular-expressions.html}{stringr's regular expressions article}.
 The pattern should contain at least one capturing group.}
 }
 \value{

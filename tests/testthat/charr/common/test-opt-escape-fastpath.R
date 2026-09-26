@@ -11,7 +11,7 @@ test_that("optimized escape matches stringi across input encodings", {
     "",
     NA_character_
   )
-  expected <- with_backend("stringi", charr_test_leaf("ci_escape_unicode")(values))
+  expected <- with_backend("reference", charr_test_leaf("ci_escape_unicode")(values))
 
   expect_identical(
     with_backend("base", charr_test_leaf("ci_escape_unicode")(values)),
@@ -50,7 +50,7 @@ test_that("optimized escape retains invalid-input behavior", {
 
   for (value in list(malformed, bytes)) {
     expected <- escape_fastpath_error(
-      with_backend("stringi", charr_test_leaf("ci_escape_unicode")(value))
+      with_backend("reference", charr_test_leaf("ci_escape_unicode")(value))
     )
     actual_base <- escape_fastpath_error(
       with_backend("base", charr_test_leaf("ci_escape_unicode")(value))

@@ -1,3 +1,6 @@
+# Maps a public backend name to the internal one that keys
+# .charr_backend_environments. Only "reference" differs: its internal name is
+# "stringi", the package it routes to.
 .charr_backend_value <- function(value = getOption("charr_backend", "altrep")) {
   # Keep the successful path small: every public operation resolves this
   # option once, while the detailed error path is necessarily rare.
@@ -7,12 +10,12 @@
   if (identical(value, "base")) {
     return(value)
   }
-  if (identical(value, "stringi")) {
-    return(value)
+  if (identical(value, "reference")) {
+    return("stringi")
   }
 
   cli::cli_abort(
-    "{.option charr_backend} must be one of {.val stringi}, {.val base}, or {.val altrep}."
+    "{.option charr_backend} must be one of {.val reference}, {.val base}, or {.val altrep}."
   )
 }
 
@@ -24,7 +27,7 @@
 #'
 #' The available backends are:
 #'
-#' - `"stringi"`: the original stringr route through installed stringi.
+#' - `"reference"`: the original stringr implementation, which calls stringi.
 #' - `"base"`: charr's optimized backend returning ordinary R character
 #'   vectors.
 #' - `"altrep"`: charr's optimized charport backend returning ALTREP character
@@ -34,8 +37,8 @@
 #' option affects later public calls; it does not change an operation already
 #' in progress.
 #'
-#' @param value `NULL` to query the current backend, or one of `"stringi"`,
-#'   `"base"`, or `"altrep"` to select a backend.
+#' @param value `NULL` to query the current backend, or one of
+#'   `"reference"`, `"base"`, or `"altrep"` to select a backend.
 #' @return The current backend when querying. When setting, the previous
 #'   backend is returned invisibly.
 #' @export
@@ -46,10 +49,11 @@
 charr_backend <- function(value = NULL) {
   old <- getOption("charr_backend", "altrep")
   if (is.null(value)) {
-    return(.charr_backend_value(old))
+    .charr_backend_value(old)
+    return(old)
   }
 
-  value <- .charr_backend_value(value)
+  .charr_backend_value(value)
   options(charr_backend = value)
   invisible(old)
 }
@@ -72,7 +76,7 @@ charr_backend <- function(value = NULL) {
 #'
 #' `charr_threads()` sets how many threads charr's `"altrep"` backend may use
 #' for the operations that have a data-parallel shape. Operations without that
-#' shape, and the `"base"` and `"stringi"` backends, always run on one thread.
+#' shape, and the `"base"` and `"reference"` backends, always run on one thread.
 #'
 #' An eligible operation uses the requested count, capped by its number of
 #' tasks and an internal safety limit of 256. Charr does not apply an

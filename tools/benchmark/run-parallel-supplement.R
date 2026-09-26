@@ -299,7 +299,8 @@ supplement_worker <- function(args) {
     stop("unknown supplementary operation: ", operation)
   }
 
-  options(charr_backend = backend); charr_threads(nthreads)
+  options(charr_backend = if (identical(backend, "stringi")) "reference" else backend)
+  charr_threads(nthreads)
   if (identical(input_mode, "charvec")) {
     x <- readRDS(corpus_charvec)
     info <- charport::charport_info(x)
