@@ -47,7 +47,7 @@ test_that("the active ICU build reports one coherent runtime", {
   expect_false(any(unlist(info[7:11], use.names = FALSE)))
 })
 
-if (!identical(selected_test_backend, "stringi")) {
+if (!identical(selected_test_backend, "reference")) {
 
 test_that("collation tailorings serve arbitrary locales (coll/)", {
   expect_identical(

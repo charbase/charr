@@ -12,7 +12,7 @@ The runtime source and data come from the official ICU4C 78.3 release:
 `common/`, `i18n/`, and `stubdata/` contain every `.cpp` and `.h` runtime file
 from the corresponding official source directories. `unicode/` combines the
 public headers from `common/unicode/` and `i18n/unicode/`. These 965 files were
-imported from the official archive. Charr carries eleven source adjustments for
+imported from the official archive. Charr carries twelve source adjustments for
 CRAN compiler diagnostics and platform compatibility, listed under
 "Source-package adjustments" below.
 
@@ -36,7 +36,7 @@ produced no trimming-specific failure in the wider backend comparison.
 ## Source-package adjustments
 
 The bundled runtime sources come from the official ICU4C 78.3 archive, with
-eleven small changes for CRAN compiler diagnostics and platform compatibility:
+twelve small changes for CRAN compiler diagnostics and platform compatibility:
 
 - `common/locmap.cpp` uses an overlap-safe move when shortening the Windows
   language tags `quz` and `prs`. The upstream `strcat()` call had overlapping
@@ -78,6 +78,14 @@ eleven small changes for CRAN compiler diagnostics and platform compatibility:
 - `i18n/regeximp.h` and `i18n/rematch.cpp` use the same pointer arithmetic
   for every `REStackFrame::fExtra` access, including addresses of elements.
   The frame is allocated to `fFrameSize`; the declared length is 1.
+- `unicode/char16ptr.h`, `unicode/ucol.h`, and `unicode/unistr.h` treat
+  libc++ 17 like libc++ 18: the `std::basic_string_view<uint16_t>` overloads
+  are compiled only before libc++ 17 (upstream: before 18), and the
+  `UnicodeString(const uint16_t *)` constructor that replaces them is
+  compiled from libc++ 17. libc++ 17 deprecates `std::char_traits` for
+  `uint16_t`, so the upstream gates made every translation unit including
+  these headers report `-Wdeprecated-declarations` (seen with Apple clang 17
+  and the macOS 14 SDK). ICU's own libc++ 18 path is unchanged.
 
 The platform-specific optimization and macro-state pragmas remain unchanged;
 they do not suppress compiler diagnostics.

@@ -283,7 +283,7 @@ inline const char16_t *uprv_char16PtrFromUChar(const T *p) {
 #endif
     }
 }
-#if !U_CHAR16_IS_TYPEDEF && (!defined(_LIBCPP_VERSION) || _LIBCPP_VERSION < 180000)
+#if !U_CHAR16_IS_TYPEDEF && (!defined(_LIBCPP_VERSION) || _LIBCPP_VERSION < 170000)
 /** @internal */
 inline const char16_t *uprv_char16PtrFromUint16(const uint16_t *p) {
 #if U_SHOW_CPLUSPLUS_API
@@ -384,7 +384,7 @@ U_NAMESPACE_BEGIN
 template<typename T>
 constexpr bool ConvertibleToU16StringView =
     std::is_convertible_v<T, std::u16string_view>
-#if !U_CHAR16_IS_TYPEDEF && (!defined(_LIBCPP_VERSION) || _LIBCPP_VERSION < 180000)
+#if !U_CHAR16_IS_TYPEDEF && (!defined(_LIBCPP_VERSION) || _LIBCPP_VERSION < 170000)
     || std::is_convertible_v<T, std::basic_string_view<uint16_t>>
 #endif
 #if U_SIZEOF_WCHAR_T==2
@@ -399,7 +399,7 @@ namespace internal {
  */
 inline std::u16string_view toU16StringView(std::u16string_view sv) { return sv; }
 
-#if !U_CHAR16_IS_TYPEDEF && (!defined(_LIBCPP_VERSION) || _LIBCPP_VERSION < 180000)
+#if !U_CHAR16_IS_TYPEDEF && (!defined(_LIBCPP_VERSION) || _LIBCPP_VERSION < 170000)
 /**
  * Basically undefined behavior but sometimes necessary conversion
  * from std::basic_string_view<uint16_t> to std::u16string_view.

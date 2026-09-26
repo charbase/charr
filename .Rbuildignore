@@ -1,6 +1,6 @@
 ^.*\.Rproj$
 ^\.Rproj\.user($|/)
-^\.claude($|/)
+(^|/)\.claude($|/)
 ^\.agents($|/)
 ^\.codex($|/)
 ^\.github($|/)

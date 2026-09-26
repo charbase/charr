@@ -3190,7 +3190,7 @@ public:
 #endif  // U_HIDE_DRAFT_API
 
 #if !U_CHAR16_IS_TYPEDEF && \
-    (defined(U_HIDE_DRAFT_API) || (defined(_LIBCPP_VERSION) && _LIBCPP_VERSION >= 180000))
+    (defined(U_HIDE_DRAFT_API) || (defined(_LIBCPP_VERSION) && _LIBCPP_VERSION >= 170000))
   /**
    * uint16_t * constructor.
    * Delegates to UnicodeString(const char16_t *).

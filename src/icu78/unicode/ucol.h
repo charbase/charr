@@ -1560,7 +1560,7 @@ class Predicate {
         return match(lhs, rhs);
     }
 
-#if !U_CHAR16_IS_TYPEDEF && (!defined(_LIBCPP_VERSION) || _LIBCPP_VERSION < 180000)
+#if !U_CHAR16_IS_TYPEDEF && (!defined(_LIBCPP_VERSION) || _LIBCPP_VERSION < 170000)
     /** @internal */
     bool operator()(std::basic_string_view<uint16_t> lhs, std::basic_string_view<uint16_t> rhs) const {
         return match({uprv_char16PtrFromUint16(lhs.data()), lhs.length()},
