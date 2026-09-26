@@ -35,7 +35,7 @@ expect_parallel_warnings_match_serial <- function(fun, repeats = 100L) {
   serial <- parallel_warning_events(fun)
   expect_true(any(startsWith(serial, "error:")))
 
-  charr_threads(4)
+  charr_threads(charr_test_threads())
   charr_chunks_per_worker(1000)
   charr_min_chunk(1)
   mismatches <- 0L

@@ -9,7 +9,7 @@ charr_threads(value = NULL)
 \arguments{
 \item{value}{\code{NULL} to query the current count, or a positive whole number
 of threads. \code{\link[parallel:detectCores]{parallel::detectCores()}} is the usual source of an upper
-bound; note that CRAN limits checks to two cores.}
+bound.}
 }
 \value{
 The current count when querying. When setting, the previous count

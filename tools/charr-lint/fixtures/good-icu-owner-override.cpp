@@ -20,6 +20,24 @@ CHARR_CXX_HELPER void icu_owner_does_not_throw() noexcept
     (void)converted;
 }
 
+// Every function declared only in ICU headers carries 'fatal': it may not
+// return if an invariant ICU intends to be unreachable fails. That is not an
+// error effect, so every role may call it.
+CHARR_NEUTRAL_HELPER int icu_fatal_in_neutral_helper() noexcept
+{
+    return icu_fixture::plainValue(1);
+}
+
+CHARR_R_HELPER int icu_fatal_in_r_helper() noexcept
+{
+    return icu_fixture::plainValue(2);
+}
+
+CHARR_CXX_HELPER int icu_fatal_in_cxx_helper() noexcept
+{
+    return icu_fixture::plainValue(3);
+}
+
 #ifdef ICU_OWNER_IN_NEUTRAL_HELPER
 CHARR_NEUTRAL_HELPER void icu_owner_is_still_owner() noexcept
 {

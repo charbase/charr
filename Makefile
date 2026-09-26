@@ -20,9 +20,11 @@ LINT_EFFECT_ARGS := \
 
 .PHONY: doc build install install-dev check check-no-vignette rhub-platforms \
 	test test-locales test-system test-bundle fuzz \
-	test-san test-tsan test-valgrind vignette figures pkgdown pkgdown-index \
+	test-san test-tsan test-valgrind test-gctorture vignette figures pkgdown \
+	pkgdown-index \
 	lint lint-tool lint-fixtures lint-db lint-frontier lint-converted lint-audit \
 	lint-effects-update lint-r-literals \
+	lint-db-icu lint-fatal-sites lint-fatal-sites-update lint-converted-icu \
 	code-map code-map-current code-map-validate \
 	clean-pkgdown clean clean-altrep \
 	clean-build-products
@@ -39,6 +41,7 @@ LINT_CONVERTED := \
 	src/shared/collator.cpp \
 	src/shared/encoding_info.cpp \
 	src/shared/fixed_search.cpp \
+	src/shared/icu_fatal.cpp \
 	src/shared/join.cpp \
 	src/shared/line_split.cpp \
 	src/shared/native_to_utf8.cpp \
@@ -185,7 +188,8 @@ lint-tool:
 lint-fixtures:
 	$(MAKE) -C tools/charr-lint fixtures
 
-# Bundled ICU injects uconfig_local.h; it contains macros, not functions.
+# Bundled ICU injects uconfig_local.h; it contains macros and includes
+# shared/icu_fatal.h, which icu_fatal.cpp reaches in either ICU mode.
 lint-frontier:
 	@test -s compile_commands.json
 	@diff -u --label lint-frontier --label production-cpp \
@@ -210,7 +214,7 @@ lint-frontier:
 
 lint-db: clean-altrep
 	rm -f compile_commands.json
-	lint_lib=$$(mktemp -d /tmp/$(PACKAGE)-lint-XXXXXX); \
+	lint_lib=$$(mktemp -d "$${TMPDIR:-/tmp}/$(PACKAGE)-lint-XXXXXX"); \
 	trap 'rm -rf "$$lint_lib"' EXIT; \
 	bear --output compile_commands.json -- \
 	  R CMD INSTALL --preclean --libs-only --no-test-load \
@@ -219,10 +223,61 @@ lint-db: clean-altrep
 	test -s compile_commands.json
 	$(MAKE) clean-altrep
 
+# The bundled-ICU compilation database, for the ICU fatal-site check and
+# lint-converted-icu. clang tooling takes -p as a directory, so it has its own,
+# and compile_commands.json (the default-mode database the other lint targets
+# read) is left alone. This compiles the whole bundled ICU; run it serially,
+# like lint-db:
+# `MAKEFLAGS= make lint-db-icu`. src/Makevars stays in bundled mode until the
+# next install reruns configure.
+LINT_ICU_DB_DIR := local/charr-lint/icu-db
+LINT_FATAL_SITES := tools/charr-lint/fatal-sites.tsv
+
+lint-db-icu: clean-altrep
+	rm -rf $(LINT_ICU_DB_DIR)
+	mkdir -p $(LINT_ICU_DB_DIR)
+	lint_lib=$$(mktemp -d "$${TMPDIR:-/tmp}/$(PACKAGE)-lint-XXXXXX"); \
+	trap 'rm -rf "$$lint_lib"' EXIT; \
+	bear --output $(LINT_ICU_DB_DIR)/compile_commands.json -- \
+	  R CMD INSTALL --preclean --libs-only --no-test-load \
+	    --configure-args=--without-system-icu \
+	    -l "$$lint_lib" .
+	test -s $(LINT_ICU_DB_DIR)/compile_commands.json
+	$(MAKE) clean-altrep
+
+# Every expansion of the ICU fatal macros in src/uconfig_local.h, checked
+# against the reviewed manifest. Run after an ICU update or a change to
+# src/uconfig_local.h; `lint-fatal-sites-update` rewrites the manifest and
+# leaves new or changed rows without a kind until they are reviewed.
+lint-fatal-sites: lint-tool
+	@test -s $(LINT_ICU_DB_DIR)/compile_commands.json || \
+	  { echo 'run `MAKEFLAGS= make lint-db-icu` first' >&2; exit 1; }
+	files=$$(jq -r '.[].file' $(LINT_ICU_DB_DIR)/compile_commands.json | \
+	  sort -u); \
+	local/charr-lint/charr-lint --fatal-sites $(LINT_FATAL_SITES) \
+	  -p $(LINT_ICU_DB_DIR) $$files
+
+lint-fatal-sites-update: lint-tool
+	@test -s $(LINT_ICU_DB_DIR)/compile_commands.json || \
+	  { echo 'run `MAKEFLAGS= make lint-db-icu` first' >&2; exit 1; }
+	files=$$(jq -r '.[].file' $(LINT_ICU_DB_DIR)/compile_commands.json | \
+	  sort -u); \
+	local/charr-lint/charr-lint --fatal-sites $(LINT_FATAL_SITES) \
+	  --write-fatal-sites -p $(LINT_ICU_DB_DIR) $$files
+
 lint-converted: lint-tool
 	@$(MAKE) lint-frontier
 	local/charr-lint/charr-lint \
 	  $(LINT_EFFECT_ARGS) -p . $(LINT_CONVERTED)
+
+# The strict lint of lint-converted against the bundled-ICU database. External
+# effect keys drop the bundled "_charr" rename suffix, so both ICU modes are
+# checked against the same reviewed manifest.
+lint-converted-icu: lint-tool
+	@test -s $(LINT_ICU_DB_DIR)/compile_commands.json || \
+	  { echo 'run `MAKEFLAGS= make lint-db-icu` first' >&2; exit 1; }
+	local/charr-lint/charr-lint \
+	  $(LINT_EFFECT_ARGS) -p $(LINT_ICU_DB_DIR) $(LINT_CONVERTED)
 
 lint-audit: lint-tool lint-db
 	@$(MAKE) lint-frontier
@@ -527,6 +582,12 @@ test-valgrind:
 	cd tests && NOT_CRAN=true R_LIBS=$$tmp_lib:$(RLIBS) \
 	  R --vanilla -d "valgrind --trace-children=yes --tool=memcheck --leak-check=no --error-exitcode=1" \
 	  -f testthat.R
+
+# A focused set of operations under gctorture(TRUE) on the base and altrep
+# backends, each compared with the same call made without torture, plus one
+# native error path. Short inputs keep it to minutes; development only.
+test-gctorture: install-dev
+	Rscript tools/gctorture-tests.R base altrep
 
 # Documentation. The main vignette is also the README and the pkgdown home
 # page, rendered from one source so the three cannot drift apart.

@@ -398,7 +398,7 @@ test_that("threaded prefix computation matches the serial result", {
     rep(c("b", "A", "a", "B", "z"), 40L)
   )
 
-  results <- lapply(c(1L, 4L), function(threads) {
+  results <- lapply(c(1L, charr_test_threads()), function(threads) {
     charr_threads(threads)
     list(
       order = str_order(values, locale = "en", strength = 2L),

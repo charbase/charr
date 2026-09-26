@@ -172,7 +172,7 @@ test_that("equivalence fallback warnings precede bytes input errors", {
   expected <- compare_condition_events(
     stringi::stri_cmp_equiv(left_values, right_values, opts_collator = opts)
   )
-  for (threads in c(1L, 4L)) {
+  for (threads in c(1L, charr_test_threads())) {
     charr_threads(threads)
     expect_identical(
       compare_condition_events(

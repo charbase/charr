@@ -21,6 +21,8 @@
     CHARR_LINT_ANNOTATE("charr.owner_type")
 #define CHARR_TRUSTED_UNWIND \
     CHARR_LINT_ANNOTATE("charr.trusted_unwind")
+#define CHARR_ICU_FATAL_HANDLER \
+    CHARR_LINT_ANNOTATE("charr.icu_fatal_handler")
 
 #if defined(_MSC_VER)
 #define CHARR_ALWAYS_INLINE __forceinline

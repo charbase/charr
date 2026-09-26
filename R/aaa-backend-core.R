@@ -91,7 +91,7 @@ charr_backend <- function(value = NULL) {
 #'
 #' @param value `NULL` to query the current count, or a positive whole number
 #'   of threads. [parallel::detectCores()] is the usual source of an upper
-#'   bound; note that CRAN limits checks to two cores.
+#'   bound.
 #' @return The current count when querying. When setting, the previous count
 #'   is returned invisibly.
 #' @export

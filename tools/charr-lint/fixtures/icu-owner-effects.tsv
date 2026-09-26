@@ -1,3 +1,4 @@
 effect	qualified_name	canonical_type	inferred_effect	inference_basis	override_reason
-owner-nothrow	icu_fixture::IcuOwner::IcuOwner	void (void)	owner	clang:cleanup-construction	Fixture ICU owner reports allocation failure without throwing.
-owner-nothrow	icu_fixture::IcuOwner::fromBytes	class icu_fixture::IcuOwner (const char *)	owner	clang:cleanup-return	Fixture ICU owner reports allocation failure without throwing.
+owner-nothrow+fatal	icu_fixture::IcuOwner::IcuOwner	void (void)	owner+fatal	clang:cleanup-construction+rule:icu-header-fatal	Fixture ICU owner reports allocation failure without throwing.
+owner-nothrow+fatal	icu_fixture::IcuOwner::fromBytes	class icu_fixture::IcuOwner (const char *)	owner+fatal	clang:cleanup-return+rule:icu-header-fatal	Fixture ICU owner reports allocation failure without throwing.
+neutral+fatal	icu_fixture::plainValue	int (int) noexcept	neutral+fatal	clang:no-cxx-propagation+rule:icu-header-fatal	

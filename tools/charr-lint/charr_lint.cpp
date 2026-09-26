@@ -25,6 +25,7 @@
 #include <llvm/Support/raw_ostream.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <limits>
 #include <set>
@@ -44,6 +45,7 @@ enum class Role {
     entrypoint,
     abi_shim,
     trusted_unwind,
+    icu_fatal_handler,
     conflicting
 };
 
@@ -94,6 +96,27 @@ llvm::cl::opt<std::string> write_effects_manifest(
     llvm::cl::cat(lint_category)
 );
 
+llvm::cl::opt<std::string> fatal_sites_path(
+    "fatal-sites",
+    llvm::cl::desc(
+        "Check every ICU fatal handler site against this reviewed manifest "
+        "instead of linting"
+    ),
+    llvm::cl::value_desc("path"),
+    llvm::cl::init(""),
+    llvm::cl::cat(lint_category)
+);
+
+llvm::cl::opt<bool> write_fatal_sites(
+    "write-fatal-sites",
+    llvm::cl::desc(
+        "Rewrite the --fatal-sites manifest from the observed sites, keeping "
+        "reviewed kinds and reasons"
+    ),
+    llvm::cl::init(false),
+    llvm::cl::cat(lint_category)
+);
+
 llvm::cl::opt<std::string> code_map_dir(
     "code-map-dir",
     llvm::cl::desc("Write code-map tables and browser data to this directory"),
@@ -108,6 +131,14 @@ struct Effect {
     bool returns_owner = false;
     bool raw_acquire = false;
     bool raw_release = false;
+    // The function may not return, and only when an internal invariant of
+    // the callee fails at a site the callee's authors intend to be
+    // unreachable. It is not an error effect: it is not a failure mode of
+    // the function's contract, and no caller handles it. It is inferred for
+    // every function declared only in ICU headers, is recorded so the
+    // manifest says where such exits exist, and never changes which calls
+    // are accepted. An override can neither add nor remove it.
+    bool fatal = false;
 };
 
 std::string effect_name(const Effect& effect)
@@ -125,10 +156,11 @@ std::string effect_name(const Effect& effect)
         components.push_back("raw-acquire");
     if (effect.raw_release)
         components.push_back("raw-release");
+    if (effect.fatal)
+        components.push_back("fatal");
     if (components.empty())
         return "neutral";
-    if (!effect.fallible_r && !effect.cpp_throw && !effect.returns_owner &&
-            (effect.raw_acquire || effect.raw_release)) {
+    if (!effect.fallible_r && !effect.cpp_throw && !effect.returns_owner) {
         components.insert(components.begin(), "neutral");
     }
 
@@ -193,6 +225,9 @@ bool parse_effect(
         else if (component == "raw-release") {
             effect.raw_release = true;
         }
+        else if (component == "fatal") {
+            effect.fatal = true;
+        }
         else {
             error = "unknown effect '" + component.str() + "'";
             return false;
@@ -234,6 +269,11 @@ bool parse_effect_delta(
             "remove 'cxx' from an ICU owner instead";
         return false;
     }
+    if (effect.fatal) {
+        error = "'fatal' is not an override component: it is inferred from "
+            "ICU headers alone and can be neither added nor removed";
+        return false;
+    }
     return true;
 }
 
@@ -243,13 +283,14 @@ bool effect_contains(const Effect& whole, const Effect& part)
         (!part.cpp_throw || whole.cpp_throw) &&
         (!part.returns_owner || whole.returns_owner) &&
         (!part.raw_acquire || whole.raw_acquire) &&
-        (!part.raw_release || whole.raw_release);
+        (!part.raw_release || whole.raw_release) &&
+        (!part.fatal || whole.fatal);
 }
 
 bool has_effect(const Effect& effect)
 {
     return effect.fallible_r || effect.cpp_throw || effect.returns_owner ||
-        effect.raw_acquire || effect.raw_release;
+        effect.raw_acquire || effect.raw_release || effect.fatal;
 }
 
 bool effects_overlap(const Effect& left, const Effect& right)
@@ -258,7 +299,8 @@ bool effects_overlap(const Effect& left, const Effect& right)
         (left.cpp_throw && right.cpp_throw) ||
         (left.returns_owner && right.returns_owner) ||
         (left.raw_acquire && right.raw_acquire) ||
-        (left.raw_release && right.raw_release);
+        (left.raw_release && right.raw_release) ||
+        (left.fatal && right.fatal);
 }
 
 bool adds_existing_effect(const Effect& whole, const Effect& addition)
@@ -267,7 +309,8 @@ bool adds_existing_effect(const Effect& whole, const Effect& addition)
         (addition.returns_owner && whole.returns_owner) ||
         (addition.cpp_throw && !addition.returns_owner && whole.cpp_throw) ||
         (addition.raw_acquire && whole.raw_acquire) ||
-        (addition.raw_release && whole.raw_release);
+        (addition.raw_release && whole.raw_release) ||
+        (addition.fatal && whole.fatal);
 }
 
 void add_effect(Effect& target, const Effect& addition)
@@ -277,6 +320,7 @@ void add_effect(Effect& target, const Effect& addition)
     target.returns_owner = target.returns_owner || addition.returns_owner;
     target.raw_acquire = target.raw_acquire || addition.raw_acquire;
     target.raw_release = target.raw_release || addition.raw_release;
+    target.fatal = target.fatal || addition.fatal;
 }
 
 void remove_effect(Effect& target, const Effect& removal)
@@ -291,13 +335,11 @@ void remove_effect(Effect& target, const Effect& removal)
         target.raw_acquire = false;
     if (removal.raw_release)
         target.raw_release = false;
+    if (removal.fatal)
+        target.fatal = false;
 }
 
-std::string function_key(const clang::FunctionDecl& function)
-{
-    return function.getQualifiedNameAsString() + "\t" +
-        function.getType().getCanonicalType().getAsString();
-}
+std::string function_key(const clang::FunctionDecl& function);
 
 std::string function_usr(const clang::FunctionDecl& function)
 {
@@ -578,6 +620,7 @@ const char* role_name(Role role)
     case Role::entrypoint: return "entry point";
     case Role::abi_shim: return "ABI shim";
     case Role::trusted_unwind: return "trusted unwind intrinsic";
+    case Role::icu_fatal_handler: return "ICU fatal handler";
     case Role::conflicting: return "conflicting roles";
     case Role::none: return "unclassified";
     }
@@ -593,6 +636,7 @@ const char* role_tag(Role role)
     case Role::entrypoint: return "entrypoint";
     case Role::abi_shim: return "abi_shim";
     case Role::trusted_unwind: return "trusted_unwind";
+    case Role::icu_fatal_handler: return "icu_fatal_handler";
     case Role::conflicting: return "conflicting";
     case Role::none: return "unclassified";
     }
@@ -619,6 +663,8 @@ Role annotation_role(const clang::FunctionDecl& function)
                 current = Role::abi_shim;
             else if (value == "charr.trusted_unwind")
                 current = Role::trusted_unwind;
+            else if (value == "charr.icu_fatal_handler")
+                current = Role::icu_fatal_handler;
 
             if (current == Role::none)
                 continue;
@@ -921,6 +967,124 @@ bool is_icu_header_declaration(
     return found;
 }
 
+// A bundled ICU is built with U_LIB_SUFFIX_C_NAME=_charr, so its renaming
+// appends "_charr" to the versioned names a system ICU uses: the C entry point
+// ucol_open_78 becomes ucol_open_78_charr and the namespace icu_78 becomes
+// icu_78_charr.
+constexpr llvm::StringLiteral bundled_icu_lib_suffix = "_charr";
+constexpr std::size_t bundled_icu_lib_suffix_length =
+    bundled_icu_lib_suffix.size();
+
+// The length of a "_<digits>_charr" suffix at the end of an identifier, or 0.
+std::size_t bundled_icu_suffix_length(llvm::StringRef identifier)
+{
+    if (!identifier.ends_with(bundled_icu_lib_suffix))
+        return 0;
+    const llvm::StringRef versioned =
+        identifier.drop_back(bundled_icu_lib_suffix_length);
+    const std::size_t underscore = versioned.find_last_not_of("0123456789");
+    if (underscore == llvm::StringRef::npos || underscore == 0 ||
+            underscore + 1 == versioned.size() ||
+            versioned[underscore] != '_') {
+        return 0;
+    }
+    return identifier.size() - underscore;
+}
+
+bool is_identifier_char(char c)
+{
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+// Removes the bundled suffix from each identifier in `text` for which
+// `strip(identifier, scoped)` holds; `scoped` tells whether "::" follows it.
+// With `keep_version` only "_charr" goes, so ucol_open_78_charr becomes the
+// system name ucol_open_78; otherwise the whole "_78_charr" goes.
+template <typename Predicate>
+std::string strip_bundled_icu_suffixes(
+    llvm::StringRef text,
+    bool keep_version,
+    Predicate strip
+) {
+    std::string result;
+    std::size_t index = 0;
+    while (index < text.size()) {
+        if (!is_identifier_char(text[index])) {
+            result += text[index];
+            ++index;
+            continue;
+        }
+        std::size_t end = index;
+        while (end < text.size() && is_identifier_char(text[end]))
+            ++end;
+        llvm::StringRef identifier = text.slice(index, end);
+        const std::size_t suffix = bundled_icu_suffix_length(identifier);
+        if (suffix != 0 &&
+                strip(identifier, text.substr(end).starts_with("::"))) {
+            identifier = identifier.drop_back(
+                keep_version ? bundled_icu_lib_suffix_length : suffix
+            );
+        }
+        result += identifier.str();
+        index = end;
+    }
+    return result;
+}
+
+// True when `name` is a namespace of the translation unit that is declared
+// only in ICU headers, as ICU's U_ICU_NAMESPACE is. ICU opens it through
+// U_NAMESPACE_BEGIN, so the name is pasted and the header is the expansion
+// site.
+bool is_icu_header_namespace(clang::ASTContext& context, llvm::StringRef name)
+{
+    const clang::SourceManager& source_manager = context.getSourceManager();
+    bool found = false;
+    for (const clang::NamedDecl* declaration :
+            context.getTranslationUnitDecl()->lookup(
+                &context.Idents.get(name))) {
+        const auto* space = llvm::dyn_cast<clang::NamespaceDecl>(declaration);
+        if (space == nullptr)
+            return false;
+        for (const clang::NamespaceDecl* redecl : space->redecls()) {
+            const clang::SourceLocation location =
+                source_manager.getExpansionLoc(redecl->getLocation());
+            if (location.isInvalid() ||
+                    !is_icu_header_location(location, source_manager)) {
+                return false;
+            }
+            found = true;
+        }
+    }
+    return found;
+}
+
+// External effect keys are the same in both ICU modes, so one reviewed
+// manifest serves a system and a bundled build. The bundled suffix is removed
+// from ICU's namespace wherever it is named, in the function's scope, a
+// template argument, or the canonical type, and from the function's own name
+// when every file declaration of the function is in an ICU header. Nothing
+// else is rewritten, so a charr or R name ending in "_78_charr" keeps it. The
+// versioned icu_78 is kept: an ICU update must be reviewed again.
+std::string function_key(const clang::FunctionDecl& function)
+{
+    clang::ASTContext& context = function.getASTContext();
+    const auto icu_namespace = [&](llvm::StringRef identifier, bool scoped) {
+        return scoped && identifier.starts_with("icu_") &&
+            is_icu_header_namespace(context, identifier);
+    };
+    std::string name = strip_bundled_icu_suffixes(
+        function.getQualifiedNameAsString(), true, icu_namespace
+    );
+    if (bundled_icu_suffix_length(name) != 0 &&
+            is_icu_header_declaration(function, context.getSourceManager())) {
+        name.resize(name.size() - bundled_icu_lib_suffix_length);
+    }
+    return name + "\t" + strip_bundled_icu_suffixes(
+        function.getType().getCanonicalType().getAsString(), true,
+        icu_namespace
+    );
+}
+
 ResolvedExternalEffect ExternalEffects::resolve(
     const clang::FunctionDecl& function,
     const clang::SourceManager& source_manager
@@ -956,6 +1120,15 @@ ResolvedExternalEffect ExternalEffects::resolve(
     else {
         result.inferred.cpp_throw = true;
         basis.push_back("clang:not-noexcept");
+    }
+
+    // Every ICU function may reach one of ICU's intended-unreachable exits.
+    // With a system ICU that exit is upstream's abort(); in a bundled build
+    // src/uconfig_local.h routes it to charr's handler. Either way no caller
+    // handles it, so it is recorded but permitted everywhere.
+    if (is_icu_header_declaration(function, source_manager)) {
+        result.inferred.fatal = true;
+        basis.push_back("rule:icu-header-fatal");
     }
 
     result.inferred_name = effect_name(result.inferred);
@@ -1368,10 +1541,14 @@ public:
             effect = external_effect.effective;
         }
         // An ABI shim forwards to an entry point, so calling one enters R.
+        // The ICU fatal handler both enters R and throws; no charr function
+        // may call it at all, which the checker reports separately.
         const bool fallible_r = effect.fallible_r || role == Role::r ||
-            role == Role::entrypoint || role == Role::abi_shim;
+            role == Role::entrypoint || role == Role::abi_shim ||
+            role == Role::icu_fatal_handler;
         const bool cpp_throw = effect.cpp_throw ||
-            (role == Role::cxx && !is_nothrow(*callee));
+            (role == Role::cxx && !is_nothrow(*callee)) ||
+            role == Role::icu_fatal_handler;
         const bool returns_owner = effect.returns_owner ||
             returns_owner_value(*callee) || constructed_owner;
         calls.push_back({
@@ -4234,6 +4411,7 @@ private:
                         call.callee->getQualifiedNameAsString() + "'"
                 );
             }
+            check_icu_fatal_handler_use(call, description);
             check_external_manifest(call);
             // Naming an R helper, as a .Call registration table entry does,
             // does not call it. ABI shim references are already not
@@ -4320,6 +4498,71 @@ public:
             llvm::Twine("dynamic initializer of '") +
                 variable.getQualifiedNameAsString() + "'"
         );
+    }
+
+    // The ICU fatal handler is reached only from ICU, through the macros
+    // in src/uconfig_local.h. A charr call, or a reference that could become
+    // one, would treat an intended-unreachable exit as a control path.
+    void check_icu_fatal_handler_use(
+        const CallRecord& call,
+        const llvm::Twine& context_name
+    ) {
+        if (call.callee == nullptr || call.role != Role::icu_fatal_handler)
+            return;
+        report(
+            call.expression->getExprLoc(),
+            context_name + (call.reference ? " refers to" : " calls") +
+                " ICU fatal handler '" +
+                call.callee->getQualifiedNameAsString() +
+                "'; only ICU reaches it, through the macros in "
+                "src/uconfig_local.h"
+        );
+    }
+
+    // The handler may enter R and may throw, which no other helper may do
+    // together, so the role is confined to the reviewed files and to a
+    // declaration that says the function does not return.
+    void check_icu_fatal_handler_shape(const clang::FunctionDecl& function)
+    {
+        const clang::SourceManager& source_manager =
+            context_.getSourceManager();
+        for (const clang::FunctionDecl* redecl : function.redecls()) {
+            if (annotation_role(*redecl) != Role::icu_fatal_handler)
+                continue;
+            const std::string spelled = canonical_file_path(
+                source_manager,
+                source_manager.getSpellingLoc(redecl->getLocation())
+            );
+            const llvm::StringRef path = spelled;
+            if (!path.ends_with("/src/shared/icu_fatal.h") &&
+                    !path.ends_with("/src/shared/icu_fatal.cpp") &&
+                    path != "src/shared/icu_fatal.h" &&
+                    path != "src/shared/icu_fatal.cpp") {
+                report(
+                    redecl->getLocation(),
+                    llvm::Twine("ICU fatal handler '") +
+                        function.getQualifiedNameAsString() +
+                        "' must be declared in src/shared/icu_fatal.h and "
+                        "defined in src/shared/icu_fatal.cpp"
+                );
+            }
+        }
+        if (!function.isNoReturn()) {
+            report(
+                function.getLocation(),
+                llvm::Twine("ICU fatal handler '") +
+                    function.getQualifiedNameAsString() +
+                    "' must be [[noreturn]]"
+            );
+        }
+        if (is_nothrow(function)) {
+            report(
+                function.getLocation(),
+                llvm::Twine("ICU fatal handler '") +
+                    function.getQualifiedNameAsString() +
+                    "' must not be noexcept: it throws inside a parallel body"
+            );
+        }
     }
 
     void check_field(const clang::FieldDecl& field)
@@ -4415,6 +4658,9 @@ public:
                 check_external_manifest(call);
             return;
         }
+
+        if (role == Role::icu_fatal_handler)
+            check_icu_fatal_handler_shape(function);
 
         for (const CallRecord& call : body.calls) {
             if (call.callee != nullptr && !call.reference &&
@@ -4531,6 +4777,7 @@ public:
                 );
             }
             check_external_manifest(call);
+            check_icu_fatal_handler_use(call, role_name(role));
 
             if (role == Role::neutral && call.role == Role::cxx) {
                 report(
@@ -4585,7 +4832,8 @@ public:
             }
 
             if ((role == Role::r || role == Role::neutral ||
-                    role == Role::entrypoint) && call.raw_acquire) {
+                    role == Role::entrypoint ||
+                    role == Role::icu_fatal_handler) && call.raw_acquire) {
                 report(
                     call.expression->getExprLoc(),
                     llvm::Twine(role_name(role)) +
@@ -4595,7 +4843,8 @@ public:
             }
 
             if ((role == Role::r || role == Role::neutral ||
-                    role == Role::entrypoint) && call.raw_release) {
+                    role == Role::entrypoint ||
+                    role == Role::icu_fatal_handler) && call.raw_release) {
                 report(
                     call.expression->getExprLoc(),
                     llvm::Twine(role_name(role)) +
@@ -6078,6 +6327,543 @@ public:
     }
 };
 
+/*
+ * ICU fatal sites. A bundled ICU reaches charr::shared::icu_invariant_failure
+ * only through the macros in src/uconfig_local.h, each at a site ICU's authors
+ * intend to be unreachable. This mode finds every such site after macro
+ * expansion, so a macro in a comment or in a disabled #if block is not
+ * counted, and compares them with tools/charr-lint/fatal-sites.tsv, where
+ * each row records why the site cannot be reached from charr's calls.
+ *
+ * A site is keyed by the file where the outermost macro is written, which
+ * for a function defined in a header is that header, and by the enclosing
+ * function. A site in a lambda belongs to the function around the lambda.
+ * Header sites reached from several translation units count once.
+ */
+// Why a site cannot be reached; tools/charr-lint/README.md defines each.
+const char* const fatal_site_kinds[] = {
+    "loop-exit",
+    "closed-switch",
+    "data-invariant",
+    "uncalled-override",
+    "disabled-path"
+};
+
+bool is_fatal_site_kind(llvm::StringRef kind)
+{
+    for (const char* known : fatal_site_kinds) {
+        if (kind == known)
+            return true;
+    }
+    return false;
+}
+
+// ICU's versioned names would make every row change on an ICU update and
+// discard its review. The namespace icu_78 is written icu, and a bundled C
+// entry point such as umsg_vformat_78_charr loses its renaming suffix.
+std::string normalize_icu_namespace(const std::string& input)
+{
+    const std::string text = strip_bundled_icu_suffixes(
+        input, false, [](llvm::StringRef, bool) { return true; }
+    );
+    std::string result;
+    std::size_t index = 0;
+    while (index < text.size()) {
+        const bool boundary = index == 0 ||
+            !(std::isalnum(static_cast<unsigned char>(text[index - 1])) ||
+              text[index - 1] == '_');
+        if (boundary && text.compare(index, 4, "icu_") == 0) {
+            std::size_t end = index + 4;
+            while (end < text.size() &&
+                    (std::isalnum(static_cast<unsigned char>(text[end])) ||
+                     text[end] == '_')) {
+                ++end;
+            }
+            bool versioned = end > index + 4 &&
+                std::isdigit(static_cast<unsigned char>(text[index + 4]));
+            if (versioned && text.compare(end, 2, "::") == 0) {
+                result += "icu";
+                index = end;
+                continue;
+            }
+        }
+        result += text[index];
+        ++index;
+    }
+    return result;
+}
+
+std::string repository_relative_path(llvm::StringRef path)
+{
+    const std::size_t icu = path.rfind("/src/icu78/");
+    if (icu != llvm::StringRef::npos)
+        return path.substr(icu + 1).str();
+    const std::size_t source = path.rfind("/src/");
+    if (source != llvm::StringRef::npos)
+        return path.substr(source + 1).str();
+    return path.str();
+}
+
+struct FatalSiteRow {
+    unsigned sites = 0;
+    std::string kind;
+    std::string reason;
+};
+
+class FatalSites {
+private:
+    // (file, function) -> distinct site identities
+    std::map<std::string, std::set<std::string>> observed_;
+    std::set<std::string> problems_;
+
+public:
+    void add(
+        const std::string& file,
+        const std::string& function,
+        const std::string& identity
+    ) {
+        observed_[file + "\t" + function].insert(identity);
+    }
+
+    void problem(const std::string& message)
+    {
+        problems_.insert(message);
+    }
+
+    bool report_problems() const
+    {
+        for (const std::string& message : problems_)
+            llvm::errs() << "error: " << message << '\n';
+        return problems_.empty();
+    }
+
+    std::map<std::string, unsigned> counts() const
+    {
+        std::map<std::string, unsigned> result;
+        for (const auto& item : observed_)
+            result[item.first] = static_cast<unsigned>(item.second.size());
+        return result;
+    }
+};
+
+bool load_fatal_sites(
+    llvm::StringRef path,
+    std::map<std::string, FatalSiteRow>& rows,
+    bool require_file,
+    std::string& error
+) {
+    std::ifstream input(path.str());
+    if (!input) {
+        if (!require_file)
+            return true;
+        error = "cannot open ICU fatal-site manifest: " + path.str();
+        return false;
+    }
+
+    static const std::string expected_header =
+        "file\tfunction\tsites\tkind\treason";
+    std::string line;
+    unsigned line_number = 0;
+    bool saw_header = false;
+    while (std::getline(input, line)) {
+        ++line_number;
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        const std::string where =
+            path.str() + ":" + std::to_string(line_number) + ": ";
+        if (!saw_header) {
+            if (line != expected_header) {
+                error = where + "invalid ICU fatal-site manifest header";
+                return false;
+            }
+            saw_header = true;
+            continue;
+        }
+        const std::vector<std::string> fields = split_tsv(line);
+        if (fields.size() != 5) {
+            error = where + "expected five tab-separated fields";
+            return false;
+        }
+        if (fields[0].empty() || fields[1].empty()) {
+            error = where + "file and function are required";
+            return false;
+        }
+        FatalSiteRow row;
+        const llvm::StringRef count = fields[2];
+        if (count.empty() || count.getAsInteger(10, row.sites) ||
+                row.sites == 0) {
+            error = where + "sites must be a positive integer";
+            return false;
+        }
+        row.kind = fields[3];
+        row.reason = fields[4];
+        if (!row.kind.empty() && !is_fatal_site_kind(row.kind)) {
+            error = where + "unknown kind '" + row.kind + "'";
+            return false;
+        }
+        if (!row.kind.empty() && row.reason.empty()) {
+            error = where + "a reviewed kind requires a reason";
+            return false;
+        }
+        if (!rows.insert(
+                std::make_pair(fields[0] + "\t" + fields[1], row)).second) {
+            error = where + "duplicate ICU fatal-site row";
+            return false;
+        }
+    }
+    if (!saw_header) {
+        error = path.str() + ": missing ICU fatal-site manifest header";
+        return false;
+    }
+    return true;
+}
+
+bool write_fatal_sites_file(
+    llvm::StringRef path,
+    const std::map<std::string, FatalSiteRow>& rows,
+    std::string& error
+) {
+    int file_descriptor = -1;
+    llvm::SmallString<256> temporary_path;
+    std::error_code file_error = llvm::sys::fs::createUniqueFile(
+        path.str() + ".tmp-%%%%%%", file_descriptor, temporary_path
+    );
+    if (file_error) {
+        error = "cannot write ICU fatal-site manifest: " +
+            file_error.message();
+        return false;
+    }
+    {
+        llvm::raw_fd_ostream output(file_descriptor, true);
+        output << "file\tfunction\tsites\tkind\treason\n";
+        for (const auto& row : rows) {
+            output << row.first << '\t' << row.second.sites << '\t'
+                   << row.second.kind << '\t' << row.second.reason << '\n';
+        }
+        output.flush();
+        if (output.has_error()) {
+            llvm::sys::fs::remove(temporary_path);
+            error = "cannot write ICU fatal-site manifest";
+            return false;
+        }
+    }
+    file_error = llvm::sys::fs::rename(temporary_path, path);
+    if (file_error) {
+        llvm::sys::fs::remove(temporary_path);
+        error = "cannot replace ICU fatal-site manifest: " +
+            file_error.message();
+        return false;
+    }
+    return true;
+}
+
+class FatalSiteVisitor :
+    public clang::RecursiveASTVisitor<FatalSiteVisitor> {
+private:
+    using Base = clang::RecursiveASTVisitor<FatalSiteVisitor>;
+
+    clang::ASTContext& context_;
+    FatalSites& sites_;
+    // Named functions, which key a site; a lambda belongs to its enclosing
+    // function.
+    std::vector<const clang::FunctionDecl*> functions_;
+    // Every function body, lambdas included, for the noexcept test.
+    std::vector<const clang::FunctionDecl*> bodies_;
+
+    std::string location_text(clang::SourceLocation location) const
+    {
+        const clang::SourceManager& source_manager =
+            context_.getSourceManager();
+        const clang::PresumedLoc presumed =
+            source_manager.getPresumedLoc(location);
+        if (presumed.isInvalid())
+            return "<invalid>";
+        return repository_relative_path(
+                canonical_file_path(source_manager, location)) +
+            ":" + std::to_string(presumed.getLine()) + ":" +
+            std::to_string(presumed.getColumn());
+    }
+
+    // A translation-unit independent identity: where each level of the
+    // macro expansion was written, from the innermost out to the file.
+    std::string site_identity(clang::SourceLocation location) const
+    {
+        const clang::SourceManager& source_manager =
+            context_.getSourceManager();
+        std::string identity;
+        clang::SourceLocation current = location;
+        while (current.isMacroID()) {
+            identity += location_text(source_manager.getSpellingLoc(current));
+            identity += ';';
+            current = source_manager.getImmediateMacroCallerLoc(current);
+        }
+        identity += location_text(current);
+        return identity;
+    }
+
+    std::string function_name(const clang::FunctionDecl* function) const
+    {
+        if (function == nullptr)
+            return "(namespace scope)";
+        std::string name = function->getQualifiedNameAsString() + "(";
+        const clang::PrintingPolicy policy = context_.getPrintingPolicy();
+        bool first = true;
+        for (const clang::ParmVarDecl* parameter : function->parameters()) {
+            if (!first)
+                name += ", ";
+            first = false;
+            name += parameter->getType().getAsString(policy);
+        }
+        if (function->isVariadic())
+            name += first ? "..." : ", ...";
+        name += ")";
+        if (const auto* method =
+                llvm::dyn_cast<clang::CXXMethodDecl>(function)) {
+            if (method->isConst())
+                name += " const";
+        }
+        return normalize_icu_namespace(name);
+    }
+
+    // The handler throws inside a parallel body. A site whose function
+    // cannot throw would turn that into std::terminate, so it is an error
+    // rather than a row. Destructors are noexcept unless declared otherwise.
+    bool cannot_throw(const clang::FunctionDecl& function) const
+    {
+        if (is_nothrow(function))
+            return true;
+        if (const auto* destructor =
+                llvm::dyn_cast<clang::CXXDestructorDecl>(&function)) {
+            const auto* prototype =
+                destructor->getType()->getAs<clang::FunctionProtoType>();
+            return prototype == nullptr ||
+                prototype->getExceptionSpecType() != clang::EST_NoexceptFalse;
+        }
+        return false;
+    }
+
+public:
+    FatalSiteVisitor(clang::ASTContext& context, FatalSites& sites)
+        : context_(context), sites_(sites) {}
+
+    bool TraverseDecl(clang::Decl* declaration)
+    {
+        const auto* body =
+            llvm::dyn_cast_or_null<clang::FunctionDecl>(declaration);
+        const clang::FunctionDecl* function = body;
+        if (function != nullptr) {
+            if (const auto* method =
+                    llvm::dyn_cast<clang::CXXMethodDecl>(function)) {
+                if (method->getParent()->isLambda())
+                    function = nullptr;
+            }
+        }
+        if (body != nullptr)
+            bodies_.push_back(body);
+        if (function != nullptr)
+            functions_.push_back(function);
+        const bool result = Base::TraverseDecl(declaration);
+        if (function != nullptr)
+            functions_.pop_back();
+        if (body != nullptr)
+            bodies_.pop_back();
+        return result;
+    }
+
+    // The traversal enters a lambda body without calling TraverseDecl on
+    // its call operator, so the operator is recorded here.
+    bool TraverseLambdaExpr(clang::LambdaExpr* lambda)
+    {
+        const clang::FunctionDecl* body = lambda->getCallOperator();
+        if (body != nullptr)
+            bodies_.push_back(body);
+        const bool result = Base::TraverseLambdaExpr(lambda);
+        if (body != nullptr)
+            bodies_.pop_back();
+        return result;
+    }
+
+    bool VisitDeclRefExpr(clang::DeclRefExpr* reference)
+    {
+        const auto* handler =
+            llvm::dyn_cast<clang::FunctionDecl>(reference->getDecl());
+        if (handler == nullptr ||
+                annotation_role(*handler) != Role::icu_fatal_handler) {
+            return true;
+        }
+
+        const clang::SourceManager& source_manager =
+            context_.getSourceManager();
+        const clang::SourceLocation location = reference->getLocation();
+        const clang::SourceLocation file_location =
+            source_manager.getExpansionLoc(location);
+        const std::string file = repository_relative_path(
+            canonical_file_path(source_manager, file_location)
+        );
+        const std::string spelled = canonical_file_path(
+            source_manager, source_manager.getSpellingLoc(location)
+        );
+        const clang::FunctionDecl* function =
+            functions_.empty() ? nullptr : functions_.back();
+
+        if (!llvm::StringRef(file).starts_with("src/icu78/")) {
+            sites_.problem(
+                location_text(file_location) +
+                ": ICU fatal handler is referred to outside src/icu78"
+            );
+            return true;
+        }
+        if (!llvm::StringRef(spelled).ends_with("/src/uconfig_local.h")) {
+            sites_.problem(
+                location_text(file_location) +
+                ": ICU fatal handler is referred to other than through a "
+                "src/uconfig_local.h macro"
+            );
+            return true;
+        }
+        const clang::FunctionDecl* body =
+            bodies_.empty() ? nullptr : bodies_.back();
+        if (body != nullptr && cannot_throw(*body)) {
+            sites_.problem(
+                location_text(file_location) + ": ICU fatal site in '" +
+                function_name(function) + "'" +
+                (body != function ? " (in a lambda)" : "") +
+                ", which cannot throw, would terminate inside a parallel "
+                "body"
+            );
+        }
+        sites_.add(file, function_name(function), site_identity(location));
+        return true;
+    }
+};
+
+class FatalSiteConsumer : public clang::ASTConsumer {
+private:
+    FatalSites& sites_;
+
+public:
+    explicit FatalSiteConsumer(FatalSites& sites) : sites_(sites) {}
+
+    void HandleTranslationUnit(clang::ASTContext& context) override
+    {
+        FatalSiteVisitor visitor(context, sites_);
+        visitor.TraverseDecl(context.getTranslationUnitDecl());
+    }
+};
+
+class FatalSiteAction : public clang::ASTFrontendAction {
+private:
+    FatalSites& sites_;
+
+public:
+    explicit FatalSiteAction(FatalSites& sites) : sites_(sites) {}
+
+    std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(
+        clang::CompilerInstance&, llvm::StringRef
+    ) override {
+        return std::make_unique<FatalSiteConsumer>(sites_);
+    }
+};
+
+class FatalSiteActionFactory :
+    public clang::tooling::FrontendActionFactory {
+private:
+    FatalSites& sites_;
+
+public:
+    explicit FatalSiteActionFactory(FatalSites& sites) : sites_(sites) {}
+
+    std::unique_ptr<clang::FrontendAction> create() override
+    {
+        return std::make_unique<FatalSiteAction>(sites_);
+    }
+};
+
+// Returns the process exit status: 0 when the manifest matches (or was
+// written), 1 for a mismatch or an unreviewed row, 2 for an unusable
+// manifest or a site that breaks the handler's rules.
+int run_fatal_sites(clang::tooling::ClangTool& tool)
+{
+    std::map<std::string, FatalSiteRow> reviewed;
+    std::string error;
+    if (!load_fatal_sites(
+            fatal_sites_path, reviewed, !write_fatal_sites, error)) {
+        llvm::errs() << error << '\n';
+        return 2;
+    }
+
+    FatalSites sites;
+    FatalSiteActionFactory factory(sites);
+    const int tooling_result = tool.run(&factory);
+    if (tooling_result != 0)
+        return tooling_result;
+    if (!sites.report_problems())
+        return 2;
+
+    const std::map<std::string, unsigned> observed = sites.counts();
+    if (observed.empty()) {
+        llvm::errs() << "error: no ICU fatal handler site was found; "
+                     << "is this a bundled-ICU compilation database?\n";
+        return 2;
+    }
+
+    unsigned mismatches = 0;
+    unsigned unreviewed = 0;
+    const char* const label = write_fatal_sites ? "note: " : "error: ";
+    std::map<std::string, FatalSiteRow> written;
+    for (const auto& item : observed) {
+        const auto found = reviewed.find(item.first);
+        FatalSiteRow row;
+        row.sites = item.second;
+        if (found == reviewed.end()) {
+            ++mismatches;
+            llvm::errs() << label << "new ICU fatal site row: " << item.first
+                         << '\t' << item.second << '\n';
+        }
+        else {
+            row.reason = found->second.reason;
+            if (found->second.sites != item.second) {
+                ++mismatches;
+                llvm::errs() << label << "ICU fatal site count changed from "
+                             << found->second.sites << " to " << item.second
+                             << ": " << item.first << '\n';
+            }
+            else {
+                row.kind = found->second.kind;
+            }
+        }
+        if (row.kind.empty())
+            ++unreviewed;
+        written[item.first] = row;
+    }
+    for (const auto& item : reviewed) {
+        if (observed.count(item.first) != 0)
+            continue;
+        ++mismatches;
+        llvm::errs() << label << "ICU fatal site row no longer observed: "
+                     << item.first << '\n';
+    }
+
+    if (write_fatal_sites) {
+        if (!write_fatal_sites_file(fatal_sites_path, written, error)) {
+            llvm::errs() << error << '\n';
+            return 2;
+        }
+        llvm::errs() << "wrote " << written.size() << " ICU fatal site rows; "
+                     << unreviewed << " need a reviewed kind\n";
+        return 0;
+    }
+
+    for (const auto& item : reviewed) {
+        if (item.second.kind.empty() && observed.count(item.first) != 0) {
+            ++mismatches;
+            llvm::errs() << "error: ICU fatal site row has no reviewed kind: "
+                         << item.first << '\n';
+        }
+    }
+    return mismatches == 0 ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, const char** argv)
@@ -6088,6 +6874,23 @@ int main(int argc, const char** argv)
     if (!parser) {
         llvm::errs() << parser.takeError();
         return 2;
+    }
+
+    if (write_fatal_sites && fatal_sites_path.empty()) {
+        llvm::errs() << "--write-fatal-sites requires --fatal-sites\n";
+        return 2;
+    }
+    if (!fatal_sites_path.empty()) {
+        clang::tooling::ClangTool tool(
+            parser->getCompilations(), parser->getSourcePathList()
+        );
+        tool.appendArgumentsAdjuster(
+            clang::tooling::getInsertArgumentAdjuster(
+                "-DCHARR_LINT=1",
+                clang::tooling::ArgumentInsertPosition::BEGIN
+            )
+        );
+        return run_fatal_sites(tool);
     }
 
     ExternalEffects effects;

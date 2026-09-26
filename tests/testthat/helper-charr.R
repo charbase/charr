@@ -8,6 +8,13 @@ with_backend <- function(backend, code) {
 
 charr_altrep <- function() identical(charr_backend(), "altrep")
 
+# Thread count for the threaded case of a serial-versus-threaded comparison.
+# CRAN policy allows at most two threads during checks; where NOT_CRAN is
+# "true" (make test, CI) four threads give more interleaving.
+charr_test_threads <- function() {
+  if (identical(Sys.getenv("NOT_CRAN"), "true")) 4L else 2L
+}
+
 stringi_can_compare_native <- function() {
   if (isTRUE(l10n_info()[["UTF-8"]])) {
     return(TRUE)

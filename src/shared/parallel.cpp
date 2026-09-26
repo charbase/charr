@@ -1,4 +1,5 @@
 #include "parallel.h"
+#include "unwind.h"
 
 #include <atomic>
 #include <climits>
@@ -185,10 +186,36 @@ CHARR_NEUTRAL_HELPER R_xlen_t chunk_tasks(
 }
 
 
+/*
+ * How many ParallelBody::run calls this thread is inside. Every call of
+ * run() goes through a BodyScope, on a spawned worker, on the main thread's
+ * own lane, for a worker run inline, and on the serial plan, so the ICU
+ * invariant handler can tell whether an R error is allowed here.
+ */
+thread_local unsigned body_depth = 0;
+
+class BodyScope {
+public:
+    CHARR_NEUTRAL_HELPER BodyScope() noexcept
+    {
+        ++body_depth;
+    }
+
+    CHARR_NEUTRAL_HELPER ~BodyScope() noexcept
+    {
+        --body_depth;
+    }
+
+    BodyScope(const BodyScope&) = delete;
+    BodyScope& operator=(const BodyScope&) = delete;
+};
+
+
 CHARR_CXX_HELPER void run_guarded(
     ParallelBody& body, WorkerContext& context, WorkerReport& report
 ) noexcept {
     try {
+        BodyScope scope;
         body.run(context);
     }
     catch (...) {
@@ -243,21 +270,20 @@ CHARR_CXX_HELPER bool spawn_worker(
 }
 
 
-// A failed join leaves a thread whose destructor terminates anyway, so there
-// is no recoverable state to return to. The terminate is explicit so the
-// noexcept claim does not rest on an escaping exception.
+// join() cannot fail here, so this needs no handler. It reports only three
+// errors: a thread that is not joinable, which the joinable() test excludes;
+// a thread joining itself, which cannot happen because only the main thread
+// that spawned these workers joins them; and no such thread, which cannot
+// happen for a thread started here and not yet joined. The reviewed
+// std::thread::join override in tools/charr-lint/effect-overrides.tsv rests
+// on this function being its only caller.
 CHARR_CXX_HELPER void join_all(
     std::vector<std::thread>& threads
 ) noexcept {
-    try {
-        for (std::vector<std::thread>::iterator it = threads.begin();
-                it != threads.end(); ++it) {
-            if (it->joinable())
-                it->join();
-        }
-    }
-    catch (...) {
-        std::terminate();
+    for (std::vector<std::thread>::iterator it = threads.begin();
+            it != threads.end(); ++it) {
+        if (it->joinable())
+            it->join();
     }
 }
 
@@ -334,12 +360,21 @@ CHARR_CXX_HELPER void ParallelBody::describe_error(
     try {
         throw;
     }
+    catch (const ReportedError& error) {
+        std::snprintf(message, size, "%s", error.message());
+    }
     catch (const std::exception& error) {
         std::snprintf(message, size, "%s", error.what());
     }
     catch (...) {
         std::snprintf(message, size, "unknown C++ exception");
     }
+}
+
+
+CHARR_NEUTRAL_HELPER bool running_parallel_body() noexcept
+{
+    return parallel_detail::body_depth != 0;
 }
 
 
@@ -454,6 +489,7 @@ CHARR_CXX_HELPER void run_region(
 
     if (workers < 2) {
         // Serial: let the exception propagate as it always has.
+        parallel_detail::BodyScope scope;
         body.run(contexts[0]);
         return;
     }

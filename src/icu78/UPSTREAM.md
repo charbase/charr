@@ -17,8 +17,13 @@ CRAN compiler diagnostics and platform compatibility, listed under
 "Source-package adjustments" below.
 
 Package-specific static-build settings are supplied by `src/Makevars`,
-`src/Makevars.win`, and `src/uconfig_local.h`. Bundled symbols are suffixed
-`..._78_charr`. `DECNUMDIGITS=4` is a build define rather than a modification
+`src/Makevars.win`, and `src/uconfig_local.h`. The last also defines ICU's
+`UPRV_UNREACHABLE_EXIT` and double-conversion's
+`DOUBLE_CONVERSION_UNIMPLEMENTED()` and `DOUBLE_CONVERSION_UNREACHABLE()`,
+which upstream expand to `abort()`, as calls to charr's handler in
+`src/shared/icu_fatal.cpp`; ICU's sources are unchanged, and
+`tools/charr-lint/fatal-sites.tsv` lists every expansion. Bundled symbols are
+suffixed `..._78_charr`. `DECNUMDIGITS=4` is a build define rather than a modification
 to ICU's `decNumber.h`.
 
 The full little-endian data archive in the official source release is

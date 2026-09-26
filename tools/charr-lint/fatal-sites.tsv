@@ -1,0 +1,86 @@
+file	function	sites	kind	reason
+src/icu78/common/loadednormalizer2impl.cpp	icu::initSingletons(const char *, UErrorCode &)	1	closed-switch	ICU's own normalizer getters pass only the names nfc, nfkc, nfkc_cf and nfkc_scf.
+src/icu78/common/locid.cpp	icu::Locale::Payload::visit(BogusFn, NestFn, HeapFn, Args...) const	1	closed-switch	The payload tag is always one of eBOGUS, eNEST or eHEAP, all handled.
+src/icu78/common/lstmbe.cpp	icu::createVectorizer(const LSTMData *, UErrorCode &)	1	data-invariant	ICU's LSTM model data declares its type as codepoints or graphclust, the two handled cases.
+src/icu78/common/normalizer2impl.cpp	icu::(anonymous namespace)::codePointFromValidUTF8(const uint8_t *, const uint8_t *)	1	closed-switch	Length of a valid UTF-8 sequence, always 1 to 4.
+src/icu78/common/rbbi_cache.cpp	icu::RuleBasedBreakIterator::BreakCache::populateNear(int32_t, UErrorCode &)	1	data-invariant	populateFollowing() can always advance while the cached end precedes a position inside the text.
+src/icu78/common/rbbi_cache.cpp	icu::RuleBasedBreakIterator::DictionaryCache::following(int32_t, int32_t *, int32_t *)	1	loop-exit	After a for(;;) loop that leaves only by return.
+src/icu78/common/rbbi_cache.cpp	icu::RuleBasedBreakIterator::DictionaryCache::preceding(int32_t, int32_t *, int32_t *)	1	loop-exit	After a for(;;) loop that leaves only by return.
+src/icu78/common/ubidi.cpp	processPropertySeq(UBiDi *, LevState *, uint8_t, int32_t, int32_t)	1	closed-switch	Level action from ICU's bidi state tables; every action value is handled.
+src/icu78/common/ubidi.cpp	resolveImplicitLevels(UBiDi *, int32_t, int32_t, DirProp, DirProp)	1	closed-switch	Sequence action from ICU's bidi state tables; every action value is handled.
+src/icu78/common/ubidi.cpp	ubidi_setPara(UBiDi *, const char16_t *, int32_t, UBiDiLevel, UBiDiLevel *, UErrorCode *)	1	closed-switch	Reordering mode, validated by ubidi_setReorderingMode; every mode is handled.
+src/icu78/common/ubidiln.cpp	getRunFromLogicalIndex(UBiDi *, int32_t)	1	data-invariant	The runs cover the whole line, so a valid logical index is always found in the loop.
+src/icu78/common/uhash.cpp	_uhash_find(const UHashtable *, UHashTok, int32_t)	1	data-invariant	uhash_put keeps count below length, so the table always has an empty or deleted slot.
+src/icu78/common/ustr_titlecase_brkiter.cpp	icu::WholeStringBreakIterator::adoptText(CharacterIterator *)	1	uncalled-override	ICU's own comment: should not be called; title casing sets the text through setText().
+src/icu78/common/ustr_titlecase_brkiter.cpp	icu::WholeStringBreakIterator::getText() const	1	uncalled-override	ICU's own comment: really should not be called; title casing never asks for the CharacterIterator.
+src/icu78/common/utrace.cpp	utrace_exit(int32_t, int32_t, ...)	1	closed-switch	Exit format flags come from ICU's own UTRACE_EXIT macros; also reached only with tracing enabled, which charr never does.
+src/icu78/i18n/collationbuilder.cpp	icu::CollationBuilder::getSpecialResetPosition(const UnicodeString &, const char *&, UErrorCode &)	1	closed-switch	Special reset position from the collation rule parser; every value is handled.
+src/icu78/i18n/collationdatabuilder.cpp	icu::CollationDataBuilder::copyFromBaseCE32(UChar32, uint32_t, UBool, UErrorCode &)	1	closed-switch	CE32 tag of base data; every tag that getFinalCE32 can return is handled.
+src/icu78/i18n/double-conversion-bignum-dtoa.cpp	icu::double_conversion::BignumDtoa(double, BignumDtoaMode, int, Vector<char>, int *, int *)	1	closed-switch	Bignum dtoa mode chosen by ICU's own caller; every mode is handled.
+src/icu78/i18n/double-conversion-bignum.cpp	icu::double_conversion::Bignum::Square()	1	data-invariant	used_bigits_ is bounded by kBigitCapacity (128), below the 256-bigit accumulation limit.
+src/icu78/i18n/double-conversion-bignum.h	icu::double_conversion::Bignum::EnsureCapacity(const int)	1	data-invariant	Bignum operands for IEEE doubles never exceed kMaxSignificantBits.
+src/icu78/i18n/double-conversion-double-to-string.cpp	icu::double_conversion::DoubleToStringConverter::DoubleToAscii(double, DtoaMode, int, char *, int, bool *, int *, int *)	1	closed-switch	Every DtoaMode compiled for ICU is handled.
+src/icu78/i18n/double-conversion-double-to-string.cpp	icu::double_conversion::DtoaToBignumDtoaMode(DoubleToStringConverter::DtoaMode)	1	closed-switch	Every DtoaMode value is handled.
+src/icu78/i18n/double-conversion-fast-dtoa.cpp	icu::double_conversion::FastDtoa(double, FastDtoaMode, int, Vector<char>, int *, int *)	1	closed-switch	Every FastDtoaMode value is handled.
+src/icu78/i18n/double-conversion-string-to-double.cpp	icu::double_conversion::(anonymous namespace)::ToLower(char)	1	disabled-path	Called only with ALLOW_CASE_INSENSITIVITY, and ICU constructs every StringToDoubleConverter with flags 0.
+src/icu78/i18n/double-conversion-strtod.cpp	icu::double_conversion::AdjustmentPowerOfTen(int)	1	closed-switch	The exponent passed is 1 to 7 by construction, all handled.
+src/icu78/i18n/dtptngen.cpp	icu::DateTimePatternGenerator::getDefaultHourCycle(UErrorCode &) const	1	closed-switch	The default hour character is one of h, H, k or K, or zero, which returns earlier.
+src/icu78/i18n/dtptngen.cpp	icu::PatternMap::copyFrom(const PatternMap &, UErrorCode &)	1	data-invariant	After the first element of a bucket, the previous element is always set.
+src/icu78/i18n/formattedvalue.cpp	icu::ConstrainedFieldPosition::matchesField(int32_t, int32_t) const	1	closed-switch	Every constraint type is handled.
+src/icu78/i18n/messageformat2_evaluation.cpp	icu::message2::EmptyEnvironment::lookup(const VariableName &) const	1	uncalled-override	Callers look a variable up only after has() found it, so no lookup reaches the empty environment.
+src/icu78/i18n/number_affixutils.cpp	icu::number::impl::AffixUtils::estimateLength(const UnicodeString &, UErrorCode &)	1	closed-switch	Affix pattern parser state; every state is handled.
+src/icu78/i18n/number_affixutils.cpp	icu::number::impl::AffixUtils::getFieldForType(AffixPatternType)	1	closed-switch	Every affix pattern type is handled.
+src/icu78/i18n/number_affixutils.cpp	icu::number::impl::AffixUtils::nextToken(AffixTag, const UnicodeString &, UErrorCode &)	2	closed-switch	Affix pattern parser state; every state is handled.
+src/icu78/i18n/number_grouping.cpp	icu::number::impl::Grouper::forStrategy(UNumberGroupingStrategy)	1	closed-switch	Every grouping strategy is handled.
+src/icu78/i18n/number_longnames.cpp	icu::number::impl::MixedUnitLongNameHandler::getModifier(Signum, StandardPlural::Form) const	1	uncalled-override	ICU's own comment: kept unreachable; mixed units are formatted through processQuantity().
+src/icu78/i18n/number_modifiers.cpp	icu::number::impl::ConstantAffixModifier::containsField(Field) const	1	uncalled-override	ICU's own comment: this method is not currently used.
+src/icu78/i18n/number_modifiers.cpp	icu::number::impl::ConstantAffixModifier::getParameters(Parameters &) const	1	uncalled-override	ICU's own comment: this method is not currently used.
+src/icu78/i18n/number_modifiers.cpp	icu::number::impl::SimpleModifier::containsField(Field) const	1	uncalled-override	ICU's own comment: this method is not currently used.
+src/icu78/i18n/number_patternmodifier.cpp	icu::number::impl::MutablePatternModifier::containsField(Field) const	1	uncalled-override	ICU's own comment: this method is not currently used.
+src/icu78/i18n/number_patternmodifier.cpp	icu::number::impl::MutablePatternModifier::getParameters(Parameters &) const	1	uncalled-override	ICU's own comment: this method is not currently used.
+src/icu78/i18n/number_patternmodifier.cpp	icu::number::impl::MutablePatternModifier::getSymbol(AffixPatternType) const	1	closed-switch	Every affix pattern symbol type is handled.
+src/icu78/i18n/number_patternmodifier.cpp	icu::number::impl::MutablePatternModifier::strictEquals(const Modifier &) const	1	uncalled-override	ICU's own comment: this method is not currently used.
+src/icu78/i18n/number_patternmodifier.cpp	icu::number::impl::MutablePatternModifier::toUnicodeString() const	1	uncalled-override	ICU's own comment: never called by AffixUtils.
+src/icu78/i18n/number_patternstring.cpp	icu::number::impl::ParsedPatternInfo::charAt(int32_t, int32_t) const	1	data-invariant	Callers index within the endpoints of the parsed pattern.
+src/icu78/i18n/number_patternstring.cpp	icu::number::impl::PatternStringUtils::resolveSignDisplay(UNumberSignDisplay, Signum)	1	closed-switch	Every sign display and signum combination returns before the end.
+src/icu78/i18n/number_rounding.cpp	icu::number::impl::RoundingImpl::apply(impl::DecimalQuantity &, UErrorCode &) const	2	data-invariant	A currency precision is resolved with withCurrency() before apply(); the other site is the default of a closed switch.
+src/icu78/i18n/number_scientific.cpp	icu::number::impl::ScientificModifier::containsField(Field) const	1	uncalled-override	ICU's own comment: not used for inner modifiers.
+src/icu78/i18n/number_skeletons.cpp	icu::number::impl::enum_to_stem_string::decimalSeparatorDisplay(UNumberDecimalSeparatorDisplay, UnicodeString &)	1	closed-switch	Every UNumberDecimalSeparatorDisplay value is handled.
+src/icu78/i18n/number_skeletons.cpp	icu::number::impl::enum_to_stem_string::groupingStrategy(UNumberGroupingStrategy, UnicodeString &)	1	closed-switch	Every UNumberGroupingStrategy value is handled.
+src/icu78/i18n/number_skeletons.cpp	icu::number::impl::enum_to_stem_string::roundingMode(UNumberFormatRoundingMode, UnicodeString &)	1	closed-switch	Every UNumberFormatRoundingMode value is handled.
+src/icu78/i18n/number_skeletons.cpp	icu::number::impl::enum_to_stem_string::signDisplay(UNumberSignDisplay, UnicodeString &)	1	closed-switch	Every UNumberSignDisplay value is handled.
+src/icu78/i18n/number_skeletons.cpp	icu::number::impl::enum_to_stem_string::unitWidth(UNumberUnitWidth, UnicodeString &)	1	closed-switch	Every UNumberUnitWidth value is handled.
+src/icu78/i18n/number_skeletons.cpp	icu::number::impl::skeleton::parseStem(const StringSegment &, const UCharsTrie &, SeenMacroProps &, MacroProps &, UErrorCode &)	1	closed-switch	Stem value from ICU's own skeleton trie; every stem is handled.
+src/icu78/i18n/number_skeletons.cpp	icu::number::impl::stem_to_object::notation(skeleton::StemEnum)	1	closed-switch	Called only with notation stems, all handled.
+src/icu78/i18n/number_skeletons.cpp	icu::number::impl::stem_to_object::precision(skeleton::StemEnum)	1	closed-switch	Called only with precision stems, all handled.
+src/icu78/i18n/number_skeletons.cpp	icu::number::impl::stem_to_object::roundingMode(skeleton::StemEnum)	1	closed-switch	Called only with rounding-mode stems, all handled.
+src/icu78/i18n/number_skeletons.cpp	icu::number::impl::stem_to_object::unit(skeleton::StemEnum)	1	closed-switch	Called only with unit stems, all handled.
+src/icu78/i18n/number_usageprefs.cpp	mixedMeasuresToMicros(const MaybeStackVector<Measure> &, DecimalQuantity *, MicroProps *, UErrorCode)	1	closed-switch	A Measure number is always a double or an int64.
+src/icu78/i18n/number_utils.cpp	icu::number::impl::utils::getPatternForStyle(const Locale &, const char *, CldrPatternStyle, UErrorCode &)	1	closed-switch	Every CldrPatternStyle value is handled.
+src/icu78/i18n/numparse_affixes.cpp	icu::numparse::impl::AffixPatternMatcherBuilder::consumeToken(AffixPatternType, UChar32, UErrorCode &)	1	closed-switch	Every affix pattern token type is handled.
+src/icu78/i18n/numparse_impl.cpp	icu::numparse::impl::NumberParserImpl::parseGreedy(StringSegment &, ParsedNumber &, UErrorCode &) const	1	loop-exit	Follows an if/else in the loop body whose branches both continue.
+src/icu78/i18n/numrange_impl.cpp	icu::number::impl::NumberRangeFormatterImpl::format(UFormattedNumberRangeData &, bool, UErrorCode &) const	1	closed-switch	Every identity fallback and identity result pair is handled.
+src/icu78/i18n/plurrule.cpp	icu::FixedDecimal::getPluralOperand(PluralOperand) const	1	closed-switch	Every PluralOperand value is handled.
+src/icu78/i18n/plurrule.cpp	icu::tokenTypeToPluralOperand(tokenType)	1	closed-switch	Called only with operand tokens from the plural rule parser, all handled.
+src/icu78/i18n/regexcmp.cpp	icu::RegexCompile::buildOp(int32_t, int32_t)	4	data-invariant	The compiler builds only opcodes in 0..255 with operands that fit 24 bits, negative only for reserved ops.
+src/icu78/i18n/regexcmp.cpp	icu::RegexCompile::doParseActions(int32_t)	2	closed-switch	Parse action from the regex state table, and flag characters the scanner already filtered.
+src/icu78/i18n/regexcmp.cpp	icu::RegexCompile::findCaseInsensitiveStarters(UChar32, UnicodeSet *)	1	data-invariant	Called with code points decoded from the pattern, always in 0..0x10FFFF.
+src/icu78/i18n/regexcmp.cpp	icu::RegexCompile::handleCloseParen()	1	closed-switch	Paren type pushed by the compiler itself; every type is handled.
+src/icu78/i18n/regexcmp.cpp	icu::RegexCompile::matchStartType()	2	closed-switch	Opcode of the compiled pattern; look-around continuation ops are consumed by their start op.
+src/icu78/i18n/regexcmp.cpp	icu::RegexCompile::maxMatchLength(int32_t, int32_t)	2	closed-switch	Opcode of the compiled pattern; loop ops are skipped by their init op.
+src/icu78/i18n/regexcmp.cpp	icu::RegexCompile::minMatchLength(int32_t, int32_t)	1	closed-switch	Opcode of the compiled pattern; every op is handled.
+src/icu78/i18n/regexcmp.cpp	icu::RegexCompile::setEval(int32_t)	1	closed-switch	Set operator pushed by the compiler itself; every operator is handled.
+src/icu78/i18n/regexcmp.cpp	icu::RegexCompile::stripNOPs()	1	closed-switch	Opcode of the compiled pattern; every op is handled.
+src/icu78/i18n/rematch.cpp	icu::RegexMatcher::find(UErrorCode &)	4	loop-exit	After for(;;) loops, and a switch, whose paths all return.
+src/icu78/i18n/rematch.cpp	icu::RegexMatcher::findUsingChunk(UErrorCode &)	4	loop-exit	After for(;;) loops, and a switch, whose paths all return.
+src/icu78/i18n/smpdtfmt.cpp	icu::SimpleDateFormat::subFormat(UnicodeString &, char16_t, int32_t, UDisplayContext, int32_t, char16_t, FieldPositionHandler &, Calendar &, UErrorCode &) const	1	closed-switch	Time zone pattern field; every zone pattern character is handled.
+src/icu78/i18n/timezone.cpp	icu::TimeZone::getDisplayName(UBool, EDisplayType, const Locale &, UnicodeString &) const	3	closed-switch	Every EDisplayType value is handled.
+src/icu78/i18n/tmunit.cpp	icu::TimeUnit::TimeUnit(TimeUnit::UTimeUnitFields)	1	closed-switch	createInstance validates the field before construction; every field is handled.
+src/icu78/i18n/transreg.cpp	icu::TransliteratorAlias::create(UParseError &, UErrorCode &)	1	data-invariant	create() is not called for a rule-based alias; callers check isRuleBased() first.
+src/icu78/i18n/transreg.cpp	icu::TransliteratorRegistry::instantiateEntry(const UnicodeString &, TransliteratorEntry *, TransliteratorAlias *&, UErrorCode &)	1	closed-switch	Every registry entry type is handled.
+src/icu78/i18n/tzfmt.cpp	icu::GMTOffsetField::isValid(FieldType, int32_t)	1	closed-switch	Every GMT offset field type is handled.
+src/icu78/i18n/tzfmt.cpp	icu::TimeZoneFormat::parse(UTimeZoneFormatStyle, const UnicodeString &, ParsePosition &, int32_t, UTimeZoneFormatTimeType *) const	1	closed-switch	Every UTimeZoneFormatStyle value is handled.
+src/icu78/i18n/tzfmt.cpp	icu::TimeZoneFormat::setGMTOffsetPattern(UTimeZoneFormatGMTOffsetPatternType, const UnicodeString &, UErrorCode &)	1	closed-switch	Every UTimeZoneFormatGMTOffsetPatternType value is handled.
+src/icu78/i18n/umsg.cpp	umsg_vformat(const UMessageFormat *, char16_t *, int32_t, __va_list_tag *, UErrorCode *)	1	closed-switch	Argument type from the parsed message pattern; every supported type is handled.
+src/icu78/i18n/umsg.cpp	umsg_vparse(const UMessageFormat *, const char16_t *, int32_t, int32_t *, __va_list_tag *, UErrorCode *)	2	data-invariant	MessageFormat parsing never produces kObject or kArray values.
+src/icu78/i18n/uspoof_impl.cpp	icu::SpoofData::reserveSpace(int32_t, UErrorCode &)	1	data-invariant	Space is reserved only while building spoof data, which owns its memory.

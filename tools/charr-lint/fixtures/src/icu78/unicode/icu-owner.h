@@ -13,6 +13,8 @@ public:
     static IcuOwner fromBytes(const char* bytes);
 };
 
+int plainValue(int value) noexcept;
+
 } // namespace icu_fixture
 
 #endif

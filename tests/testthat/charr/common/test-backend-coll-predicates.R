@@ -550,7 +550,7 @@ test_that("collation fallback warnings precede bytes input errors", {
     charr_min_chunk(old_minimum)
   }, add = TRUE)
 
-  for (threads in c(1L, 4L)) {
+  for (threads in c(1L, charr_test_threads())) {
     charr_threads(threads)
     for (case in cases) {
       expect_identical(

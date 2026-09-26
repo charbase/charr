@@ -49,6 +49,7 @@ raw-acquire		malloc	void *(unsigned long) noexcept	Returns owned memory that fre
 raw-acquire+raw-release		realloc	void *(void *, unsigned long) noexcept	May replace and release the original allocation on success; preserves it on allocation failure.
 	cxx	std::min	const int &(const int &, const int &)	Integer comparison and reference selection cannot throw.
 	cxx	std::min	const unsigned long &(const unsigned long &, const unsigned long &)	Integer comparison and reference selection cannot throw.
+	cxx	std::thread::join	void (void)	join() reports only a thread that is not joinable, a thread joining itself, or no such thread. Its one caller, parallel_detail::join_all in src/shared/parallel.cpp, excludes all three: it joins only threads that joinable() accepts, which the main thread started there and has not yet joined.
 raw-release		ubrk_close_78	void (struct UBreakIterator *)	Releases an ICU BreakIterator handle.
 raw-acquire		ubrk_openRules_78	struct UBreakIterator *(const char16_t *, int, const char16_t *, int, struct UParseError *, enum UErrorCode *)	Returns an owned ICU BreakIterator handle.
 raw-acquire		ubrk_open_78	struct UBreakIterator *(enum UBreakIteratorType, const char *, const char16_t *, int, enum UErrorCode *)	Returns an owned ICU BreakIterator handle.

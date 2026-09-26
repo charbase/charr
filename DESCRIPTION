@@ -16,7 +16,8 @@ Authors@R: c(
            comment = "Infrastructure Steering Committee grant: Universal ALTREP Interoperability for Strings")
   )
 Description: An experimental fork of 'stringr'. The functions and semantics
-    are the same but everything is optimized around 'ALTREP' strings (custom
+    are the same, apart from differences between 'ICU' and Unicode versions,
+    but everything is optimized around 'ALTREP' strings (custom
     high-performance string storage), allowing for faster and more efficient
     operation.
 License: MIT + file LICENSE

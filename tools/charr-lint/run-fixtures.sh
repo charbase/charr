@@ -367,6 +367,12 @@ check_inference_failure inferred-effects.tsv redundant-effect-overrides.tsv \
     "override redundantly adds an inferred effect"
 check_inference_failure inferred-effects.tsv remove-owner-effect-overrides.tsv \
     "ownership inference cannot be removed"
+# 'fatal' comes only from ICU headers: an override can neither remove it nor
+# add it elsewhere.
+check_inference_failure inferred-effects.tsv remove-fatal-effect-overrides.tsv \
+    "'fatal' is not an override component"
+check_inference_failure inferred-effects.tsv add-fatal-effect-overrides.tsv \
+    "'fatal' is not an override component"
 check_override_integrity_failure
 check_integrity_failure \
     "external manifest key identifies distinct function template specializations" \
@@ -455,6 +461,56 @@ if [[ $(<"$generated_effects") != sentinel ]]; then
     exit 1
 fi
 rm -f "$output" "$generated_effects"
+
+# A bundled ICU appends "_charr" to its versioned C entry points and
+# namespace. The external effect key drops it, so both ICU modes, vendored or
+# system headers, lint cleanly against one manifest and regenerate it byte for
+# byte. The same names declared outside ICU headers keep the suffix.
+# check_icu_renamed_manifest EFFECTS [COMPILER_ARGS...]
+check_icu_renamed_manifest() {
+    effects=$1
+    shift
+    run_lint --effects "$effects" "$fixture_dir/good-icu-renamed.cpp" -- \
+        -std=c++17 -DCHARR_LINT=1 "$@"
+    generated_effects=$(mktemp)
+    run_lint --audit --write-effects-manifest "$generated_effects" \
+        "$fixture_dir/good-icu-renamed.cpp" -- -std=c++17 -DCHARR_LINT=1 "$@"
+    if ! cmp "$effects" "$generated_effects"; then
+        printf 'ICU renamed manifest is not mode independent: %s\n' "$*" >&2
+        rm -f "$generated_effects"
+        exit 1
+    fi
+    rm -f "$generated_effects"
+}
+
+icu_renamed_effects="$fixture_dir/icu-renamed-effects.tsv"
+check_icu_renamed_manifest "$icu_renamed_effects"
+check_icu_renamed_manifest "$icu_renamed_effects" -DICU_RENAMED_BUNDLED
+check_icu_renamed_manifest "$icu_renamed_effects" \
+    -DICU_RENAMED_SYSTEM_HEADER -isystem "$fixture_dir/sysicu"
+check_icu_renamed_manifest "$icu_renamed_effects" -DICU_RENAMED_BUNDLED \
+    -DICU_RENAMED_SYSTEM_HEADER -isystem "$fixture_dir/sysicu"
+check_icu_renamed_manifest "$fixture_dir/icu-renamed-non-icu-effects.tsv" \
+    -DICU_RENAMED_BUNDLED -DICU_RENAMED_NON_ICU_HEADER
+output=$(mktemp)
+if "$lint" --effects "$icu_renamed_effects" \
+        "$fixture_dir/good-icu-renamed.cpp" -- \
+        -std=c++17 -DCHARR_LINT=1 -DICU_RENAMED_BUNDLED \
+        -DICU_RENAMED_NON_ICU_HEADER >"$output" 2>&1; then
+    printf '%s\n' 'non-ICU renamed name unexpectedly matched ICU rows' >&2
+    rm -f "$output"
+    exit 1
+fi
+reject_compile_errors "$output" 'non-ICU renamed name'
+if ! grep -F \
+        "calls unreviewed external function 'icu_renamed_open_78_charr'" \
+        "$output" >/dev/null; then
+    printf '%s\n' 'non-ICU renamed name did not keep its suffix' >&2
+    cat "$output" >&2
+    rm -f "$output"
+    exit 1
+fi
+rm -f "$output"
 
 # A compilation database names sources relative to its directory, so a
 # header is reached as "sub/../shared/..."; it is still charr-owned and
@@ -653,6 +709,97 @@ check_variant project bad-helper-contract.cpp BAD_CXX_SETJMP \
     "C++ helper calls '_setjmp'; only a trusted unwind intrinsic may use setjmp or longjmp"
 check_variant project bad-helper-contract.cpp BAD_NONLOCAL_LAMBDA_CALL \
     "C++ helper calls unclassified charr function '(anonymous class)::operator()'"
+
+# The ICU fatal handler: its reviewed definition passes; the role demands
+# [[noreturn]], a declaration that may throw, and the reviewed files; and no
+# charr function may call it or take its address.
+run_lint --effects "$project_effects" \
+    --effect-overrides "$project_overrides" \
+    "$fixture_dir/src/shared/icu_fatal.cpp" -- \
+    -std=c++17 -DCHARR_LINT=1 -I/usr/share/R/include
+check_variant project src/shared/icu_fatal.cpp BAD_HANDLER_RETURNS \
+    "ICU fatal handler 'returning_handler' must be [[noreturn]]"
+check_variant project src/shared/icu_fatal.cpp BAD_HANDLER_NOEXCEPT \
+    "ICU fatal handler 'noexcept_handler' must not be noexcept"
+check_variant plain bad-icu-fatal-handler.cpp - \
+    "C++ helper calls ICU fatal handler 'charr::shared::icu_invariant_failure'; only ICU reaches it"
+check_variant plain bad-icu-fatal-handler.cpp BAD_HANDLER_ADDRESS \
+    "neutral helper refers to ICU fatal handler 'charr::shared::icu_invariant_failure'"
+check_variant plain bad-icu-fatal-handler.cpp BAD_HANDLER_OUTSIDE_FILE \
+    "ICU fatal handler 'stray_handler' must be declared in src/shared/icu_fatal.h"
+
+# ICU fatal sites are counted after preprocessing, keyed by the file that
+# spells the outermost macro, and compared with a reviewed manifest.
+fatal_site_units=(
+    "$fixture_dir/src/icu78/fatal-site-a.cpp"
+    "$fixture_dir/src/icu78/fatal-site-b.cpp"
+)
+run_lint --fatal-sites "$fixture_dir/fatal-sites.tsv" \
+    "${fatal_site_units[@]}" -- -std=c++17 -DCHARR_LINT=1
+generated_sites=$(mktemp)
+cp "$fixture_dir/fatal-sites.tsv" "$generated_sites"
+run_lint --fatal-sites "$generated_sites" --write-fatal-sites \
+    "${fatal_site_units[@]}" -- -std=c++17 -DCHARR_LINT=1
+if ! cmp "$fixture_dir/fatal-sites.tsv" "$generated_sites"; then
+    printf '%s\n' 'ICU fatal-site manifest is not stable' >&2
+    rm -f "$generated_sites"
+    exit 1
+fi
+# Rewriting a stale manifest drops the missing row and clears the kind of a
+# row whose count changed, so the next check fails until it is reviewed.
+cp "$fixture_dir/stale-fatal-sites.tsv" "$generated_sites"
+run_lint --fatal-sites "$generated_sites" --write-fatal-sites \
+    "${fatal_site_units[@]}" -- -std=c++17 -DCHARR_LINT=1
+if ! grep -F $'icu::two_sites(int)\t2\t\tFixture' "$generated_sites" \
+        >/dev/null || grep -F 'removed.cpp' "$generated_sites" >/dev/null; then
+    printf '%s\n' 'ICU fatal-site rewrite kept a stale review' >&2
+    cat "$generated_sites" >&2
+    rm -f "$generated_sites"
+    exit 1
+fi
+rm -f "$generated_sites"
+
+# check_fatal_sites_failure MANIFEST DEFINITION EXPECTED
+check_fatal_sites_failure() {
+    manifest=$1
+    definition=$2
+    expected=$3
+    output=$(mktemp)
+    defines=()
+    if [[ $definition != - ]]; then
+        defines+=(-D"$definition")
+    fi
+    if "$lint" --fatal-sites "$fixture_dir/$manifest" \
+            "${fatal_site_units[@]}" -- -std=c++17 -DCHARR_LINT=1 \
+            "${defines[@]}" >"$output" 2>&1; then
+        printf 'ICU fatal-site fixture unexpectedly passed: %s %s\n' \
+            "$manifest" "$definition" >&2
+        rm -f "$output"
+        exit 1
+    fi
+    reject_compile_errors "$output" "$*"
+    if ! grep -F "$expected" "$output" >/dev/null; then
+        printf 'ICU fatal-site fixture did not report expected diagnostic: %s %s\n' \
+            "$manifest" "$definition" >&2
+        cat "$output" >&2
+        rm -f "$output"
+        exit 1
+    fi
+    rm -f "$output"
+}
+
+check_fatal_sites_failure stale-fatal-sites.tsv - \
+    "ICU fatal site count changed from 1 to 2: src/icu78/fatal-site-a.cpp"
+check_fatal_sites_failure stale-fatal-sites.tsv - \
+    "ICU fatal site row no longer observed: src/icu78/removed.cpp"
+check_fatal_sites_failure unreviewed-fatal-sites.tsv - \
+    "ICU fatal site row has no reviewed kind: src/icu78/fatal-site.h"
+check_fatal_sites_failure fatal-sites.tsv BAD_DIRECT_CALL \
+    "ICU fatal handler is referred to other than through a src/uconfig_local.h macro"
+check_fatal_sites_failure fatal-sites.tsv BAD_NOEXCEPT_SITE \
+    "ICU fatal site in 'noexcept_site()', which cannot throw"
+check_fatal_sites_failure fatal-sites.tsv BAD_NOEXCEPT_LAMBDA_SITE \
+    "ICU fatal site in 'noexcept_lambda_site(int)' (in a lambda), which cannot throw"
 
 # Entry-point owner and unwind regions.
 check_variant project bad-entry-unwind-region.cpp BAD_TEMPORARY_BEFORE_TRY \

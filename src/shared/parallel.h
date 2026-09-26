@@ -124,8 +124,8 @@ public:
 
     // Called from inside the driver's worker handler while the failing
     // exception is active. Backends override it to name their own exception
-    // types; the shared implementation covers std::exception and unknown
-    // exceptions.
+    // types; the shared implementation covers ReportedError (which the ICU
+    // invariant handler throws), std::exception and unknown exceptions.
     CHARR_CXX_HELPER virtual void describe_error(
         char* message, std::size_t size
     ) noexcept;
@@ -268,6 +268,16 @@ CHARR_CXX_HELPER void run_parallel_with_warnings(
     const ParallelPlan& plan, R_xlen_t tasks, ParallelBody& body,
     SerialWarnings& warnings
 );
+
+
+/*
+ * Whether this thread is inside a ParallelBody::run started by the driver,
+ * on any lane: a spawned worker, the main thread's own lane, a worker run
+ * inline because it could not be started, or the serial plan. An R error
+ * must never be raised there, so the ICU invariant handler
+ * (src/shared/icu_fatal.h) throws instead when this is true.
+ */
+CHARR_NEUTRAL_HELPER bool running_parallel_body() noexcept;
 
 } // namespace shared
 } // namespace charr

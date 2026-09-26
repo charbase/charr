@@ -8,7 +8,7 @@
 \description{
 \if{html}{\figure{logo.svg}{options: style='float: right' alt='logo' width='120'}}
 
-An experimental fork of 'stringr'. The functions and semantics are the same but everything is optimized around 'ALTREP' strings (custom high-performance string storage), allowing for faster and more efficient operation.
+An experimental fork of 'stringr'. The functions and semantics are the same, apart from differences between 'ICU' and Unicode versions, but everything is optimized around 'ALTREP' strings (custom high-performance string storage), allowing for faster and more efficient operation.
 }
 \seealso{
 Useful links:

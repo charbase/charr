@@ -721,6 +721,7 @@ unit:src/runtime/registration.cpp	unit:src/runtime/icu.cpp	src/runtime/registrat
 unit:src/runtime/registration.cpp	unit:src/shared/parallel.cpp	src/runtime/registration.cpp	src/shared/parallel.cpp	references_function	3	1
 unit:src/shared/case_mapper.cpp	unit:src/shared/native_to_utf8.cpp	src/shared/case_mapper.cpp	src/shared/native_to_utf8.cpp	calls	2	1
 unit:src/shared/case_mapper.cpp	unit:src/shared/native_to_utf8.cpp	src/shared/case_mapper.cpp	src/shared/native_to_utf8.cpp	constructs	1	1
+unit:src/shared/icu_fatal.cpp	unit:src/shared/parallel.cpp	src/shared/icu_fatal.cpp	src/shared/parallel.cpp	calls	1	1
 unit:src/shared/nfc_normalizer.cpp	unit:src/shared/native_to_utf8.cpp	src/shared/nfc_normalizer.cpp	src/shared/native_to_utf8.cpp	calls	2	1
 unit:src/shared/nfc_normalizer.cpp	unit:src/shared/native_to_utf8.cpp	src/shared/nfc_normalizer.cpp	src/shared/native_to_utf8.cpp	constructs	1	1
 unit:src/shared/title_case.cpp	unit:src/shared/native_to_utf8.cpp	src/shared/title_case.cpp	src/shared/native_to_utf8.cpp	calls	2	1

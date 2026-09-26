@@ -7,10 +7,7 @@
 #ifndef CHARR_UCONFIG_LOCAL_H
 #define CHARR_UCONFIG_LOCAL_H
 
-#ifndef R_NO_REMAP
-#define R_NO_REMAP
-#endif
-#include <R_ext/Error.h>
+#include "shared/icu_fatal.h"
 
 /* Rtools40's 32-bit import library does not provide ResolveLocaleName. */
 #if defined(_WIN32) && !defined(_WIN64)
@@ -19,12 +16,21 @@
 #define CHARR_DISABLE_RESOLVE_LOCALE_NAME 0
 #endif
 
-/* Never terminate the R process for an ICU internal invariant failure. */
+/*
+ * Never terminate the R process for an ICU internal invariant failure. ICU
+ * uses these macros only at sites its authors intend to be unreachable. The
+ * handler throws inside a parallel body and signals an R error elsewhere;
+ * see src/shared/icu_fatal.h. `make lint-fatal-sites` checks every expansion
+ * against tools/charr-lint/fatal-sites.tsv.
+ */
 #define UPRV_UNREACHABLE_EXIT \
-    (Rf_error("ICU internal error: UPRV_UNREACHABLE"))
+    (::charr::shared::icu_invariant_failure( \
+        "ICU internal error: UPRV_UNREACHABLE"))
 #define DOUBLE_CONVERSION_UNIMPLEMENTED() \
-    (Rf_error("ICU internal error: DOUBLE_CONVERSION_UNIMPLEMENTED"))
+    (::charr::shared::icu_invariant_failure( \
+        "ICU internal error: DOUBLE_CONVERSION_UNIMPLEMENTED"))
 #define DOUBLE_CONVERSION_UNREACHABLE() \
-    (Rf_error("ICU internal error: DOUBLE_CONVERSION_UNREACHABLE"))
+    (::charr::shared::icu_invariant_failure( \
+        "ICU internal error: DOUBLE_CONVERSION_UNREACHABLE"))
 
 #endif

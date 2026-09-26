@@ -39,6 +39,7 @@ SHARED_SOURCES = \
   shared/collator.cpp \
   shared/encoding_info.cpp \
   shared/fixed_search.cpp \
+  shared/icu_fatal.cpp \
   shared/join.cpp \
   shared/line_split.cpp \
   shared/native_to_utf8.cpp \

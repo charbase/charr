@@ -26,12 +26,16 @@ public:
     {
         // Called only from the driver's worker handler, with the failing
         // exception active. StriException is a plain class, not a
-        // std::exception, so it needs its own clause.
+        // std::exception, so it needs its own clause. Any other
+        // ReportedError, such as the ICU invariant handler's, comes next.
         try {
             throw;
         }
         catch (const StriException& error) {
             std::snprintf(message, size, "%s", error.getMessage());
+        }
+        catch (const shared::ReportedError& error) {
+            std::snprintf(message, size, "%s", error.message());
         }
         catch (const std::exception& error) {
             std::snprintf(message, size, "%s", error.what());

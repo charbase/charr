@@ -67,10 +67,10 @@ r	SET_VECTOR_ELT	struct SEXPREC *(struct SEXPREC *, long, struct SEXPREC *)	r	ru
 r	STRING_ELT	struct SEXPREC *(struct SEXPREC *, long)	r	rule:r-header+rule:reviewed-c-api	
 r	STRING_PTR_RO	struct SEXPREC *const *(struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
 neutral	TYPEOF	int (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	R inline accessor reads the object type without allocating or signaling an R error.
-neutral	UCNV_FROM_U_CALLBACK_SUBSTITUTE_78	void (const void *, UConverterFromUnicodeArgs *, const char16_t *, int, int, UConverterCallbackReason, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	UCNV_TO_U_CALLBACK_SUBSTITUTE_78	void (const void *, UConverterToUnicodeArgs *, const char *, int, UConverterCallbackReason, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	U_FAILURE	signed char (enum UErrorCode)	cxx	clang:not-noexcept	Inline ICU error predicate performs one integer comparison.
-neutral	U_SUCCESS	signed char (enum UErrorCode)	cxx	clang:not-noexcept	Inline ICU error predicate performs one integer comparison.
+neutral+fatal	UCNV_FROM_U_CALLBACK_SUBSTITUTE_78	void (const void *, UConverterFromUnicodeArgs *, const char16_t *, int, int, UConverterCallbackReason, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	UCNV_TO_U_CALLBACK_SUBSTITUTE_78	void (const void *, UConverterToUnicodeArgs *, const char *, int, UConverterCallbackReason, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	U_FAILURE	signed char (enum UErrorCode)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	Inline ICU error predicate performs one integer comparison.
+neutral+fatal	U_SUCCESS	signed char (enum UErrorCode)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	Inline ICU error predicate performs one integer comparison.
 r	VECTOR_ELT	struct SEXPREC *(struct SEXPREC *, long)	r	rule:r-header+rule:reviewed-c-api	
 r	XLENGTH	long (struct SEXPREC *)	r	rule:r-header+rule:reviewed-c-api	
 neutral	__builtin_va_end	void (struct __va_list_tag *) noexcept	neutral	clang:no-cxx-propagation	
@@ -157,50 +157,50 @@ neutral	icu_78::BreakIterator::getLocaleID	const char *(ULocDataLocaleType, enum
 neutral	icu_78::BreakIterator::next	int (void)		legacy-unobserved	
 neutral	icu_78::BreakIterator::setText	void (struct UText *, enum UErrorCode &)		legacy-unobserved	
 neutral	icu_78::Locale::createFromName	class icu_78::Locale (const char *)		legacy-unobserved	
-cxx	icu_78::Normalizer2::getNFCInstance	const class icu_78::Normalizer2 *(enum UErrorCode &)	cxx	clang:not-noexcept	
-cxx	icu_78::Normalizer2::normalize	class icu_78::UnicodeString &(const class icu_78::UnicodeString &, class icu_78::UnicodeString &, enum UErrorCode &) const	cxx	clang:not-noexcept	
-cxx	icu_78::Normalizer2::normalizeUTF8	void (unsigned int, class icu_78::StringPiece, class icu_78::ByteSink &, class icu_78::Edits *, enum UErrorCode &) const	cxx	clang:not-noexcept	
-owner-nothrow	icu_78::RegexMatcher::RegexMatcher	void (const class icu_78::UnicodeString &, unsigned int, enum UErrorCode &)	owner	clang:cleanup-construction	ICU is built without C++ exceptions; pattern compilation allocates through uprv_malloc and reports syntax and allocation failures through UErrorCode. Ownership inference still applies.
-cxx	icu_78::RegexMatcher::appendReplacement	class icu_78::RegexMatcher &(class icu_78::UnicodeString &, const class icu_78::UnicodeString &, enum UErrorCode &)	cxx	clang:not-noexcept	
-cxx	icu_78::RegexMatcher::appendTail	class icu_78::UnicodeString &(class icu_78::UnicodeString &)	cxx	clang:not-noexcept	
-cxx	icu_78::RegexMatcher::end	int (enum UErrorCode &) const	cxx	clang:not-noexcept	
-cxx	icu_78::RegexMatcher::end	int (int, enum UErrorCode &) const	cxx	clang:not-noexcept	
-cxx	icu_78::RegexMatcher::find	signed char (enum UErrorCode &)	cxx	clang:not-noexcept	
-neutral	icu_78::RegexMatcher::groupCount	int (void) const	cxx	clang:not-noexcept	ICU accessor reads compiled regular-expression metadata without allocating.
-cxx	icu_78::RegexMatcher::pattern	const class icu_78::RegexPattern &(void) const	cxx	clang:not-noexcept	
-owner	icu_78::RegexMatcher::replaceAll	class icu_78::UnicodeString (const class icu_78::UnicodeString &, enum UErrorCode &)	owner	clang:cleanup-return	
-cxx	icu_78::RegexMatcher::reset	class icu_78::RegexMatcher &(const class icu_78::UnicodeString &)	cxx	clang:not-noexcept	
-neutral	icu_78::RegexMatcher::setStackLimit	void (int, enum UErrorCode &)	cxx	clang:not-noexcept	ICU is built without C++ exceptions; the setter resets the matcher, records a stack capacity limit, and reports failure through UErrorCode.
-neutral	icu_78::RegexMatcher::setTimeLimit	void (int, enum UErrorCode &)	cxx	clang:not-noexcept	ICU setter stores the time limit and reports an invalid value through UErrorCode without allocating.
-cxx	icu_78::RegexMatcher::start	int (enum UErrorCode &) const	cxx	clang:not-noexcept	
-cxx	icu_78::RegexMatcher::start	int (int, enum UErrorCode &) const	cxx	clang:not-noexcept	
-cxx	icu_78::RegexPattern::groupNumberFromName	int (const char *, int, enum UErrorCode &) const	cxx	clang:not-noexcept	
-cxx	icu_78::RegexPattern::patternText	struct UText *(enum UErrorCode &) const	cxx	clang:not-noexcept	
-owner	icu_78::StringByteSink<std::basic_string<char>>::StringByteSink	void (class std::basic_string<char> *)	owner	clang:cleanup-construction	
-cxx	icu_78::StringPiece::StringPiece	void (const char *)	cxx	clang:not-noexcept	
-neutral	icu_78::StringPiece::StringPiece	void (const char *, int)	cxx	clang:not-noexcept	Inline ICU constructor stores a pointer and a length.
-owner-nothrow	icu_78::UnicodeSet::UnicodeSet	void (void)	owner	clang:cleanup-construction	ICU constructor initializes an empty set in its inline storage without allocating. Ownership inference still applies.
-cxx	icu_78::UnicodeSet::applyPattern	class icu_78::UnicodeSet &(const class icu_78::UnicodeString &, enum UErrorCode &)	cxx	clang:not-noexcept	
-cxx	icu_78::UnicodeSet::complement	class icu_78::UnicodeSet &(void)	cxx	clang:not-noexcept	
-neutral	icu_78::UnicodeSet::contains	signed char (int) const	cxx	clang:not-noexcept	ICU membership test does not allocate or propagate C++ exceptions.
-cxx	icu_78::UnicodeSet::freeze	class icu_78::UnicodeSet *(void)	cxx	clang:not-noexcept	
-neutral	icu_78::UnicodeSet::isBogus	signed char (void) const	cxx	clang:not-noexcept	Inline ICU accessor tests a stored flag without allocating.
-cxx	icu_78::UnicodeSet::setToBogus	void (void)	cxx	clang:not-noexcept	
-owner	icu_78::UnicodeString::UnicodeString	void (int, int, int)	owner	clang:cleanup-construction	
-owner-nothrow	icu_78::UnicodeString::UnicodeString	void (void)	owner	clang:cleanup-construction	Inline ICU constructor initializes an empty short string without allocating. Ownership inference still applies.
-cxx	icu_78::UnicodeString::append	class icu_78::UnicodeString &(const char16_t *, int, int)	cxx	clang:not-noexcept	
-owner-nothrow	icu_78::UnicodeString::fromUTF8	class icu_78::UnicodeString (class icu_78::StringPiece)	owner	clang:cleanup-return	ICU is built without C++ exceptions; UTF-8 conversion allocates through uprv_malloc and returns a bogus string on allocation failure. Ownership inference still applies.
-neutral	icu_78::UnicodeString::getBuffer	char16_t *(int)	cxx	clang:not-noexcept	ICU uses a non-throwing allocator and records allocation failure in the string state.
-neutral	icu_78::UnicodeString::getBuffer	const char16_t *(void) const	cxx	clang:not-noexcept	ICU accessor returns the existing string buffer without allocating.
-neutral	icu_78::UnicodeString::isBogus	signed char (void) const	cxx	clang:not-noexcept	Inline ICU accessor tests a stored flag without allocating.
-neutral	icu_78::UnicodeString::length	int (void) const	cxx	clang:not-noexcept	ICU accessor reads the stored string length without allocating.
-neutral	icu_78::UnicodeString::operator=	class icu_78::UnicodeString &(class icu_78::UnicodeString &&) noexcept	neutral	clang:no-cxx-propagation	
-cxx	icu_78::UnicodeString::releaseBuffer	void (int)	cxx	clang:not-noexcept	
-cxx	icu_78::UnicodeString::remove	class icu_78::UnicodeString &(void)	cxx	clang:not-noexcept	
-neutral	icu_78::UnicodeString::setTo	class icu_78::UnicodeString &(const class icu_78::UnicodeString &)	cxx	clang:not-noexcept	ICU is built without C++ exceptions; the copy allocates through uprv_malloc and marks the destination bogus on allocation failure.
-cxx	icu_78::UnicodeString::setToBogus	void (void)	cxx	clang:not-noexcept	
-neutral	icu_78::UnicodeString::swap	void (class icu_78::UnicodeString &) noexcept	neutral	clang:no-cxx-propagation	
-cxx	icu_78::UnicodeString::toUTF8String	class std::basic_string<char> &(class std::basic_string<char> &) const	cxx	clang:not-noexcept	
+cxx+fatal	icu_78::Normalizer2::getNFCInstance	const class icu_78::Normalizer2 *(enum UErrorCode &)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+cxx+fatal	icu_78::Normalizer2::normalize	class icu_78::UnicodeString &(const class icu_78::UnicodeString &, class icu_78::UnicodeString &, enum UErrorCode &) const	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+cxx+fatal	icu_78::Normalizer2::normalizeUTF8	void (unsigned int, class icu_78::StringPiece, class icu_78::ByteSink &, class icu_78::Edits *, enum UErrorCode &) const	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+owner-nothrow+fatal	icu_78::RegexMatcher::RegexMatcher	void (const class icu_78::UnicodeString &, unsigned int, enum UErrorCode &)	owner+fatal	clang:cleanup-construction+rule:icu-header-fatal	ICU is built without C++ exceptions; pattern compilation allocates through uprv_malloc and reports syntax and allocation failures through UErrorCode. Ownership inference still applies.
+cxx+fatal	icu_78::RegexMatcher::appendReplacement	class icu_78::RegexMatcher &(class icu_78::UnicodeString &, const class icu_78::UnicodeString &, enum UErrorCode &)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+cxx+fatal	icu_78::RegexMatcher::appendTail	class icu_78::UnicodeString &(class icu_78::UnicodeString &)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+cxx+fatal	icu_78::RegexMatcher::end	int (enum UErrorCode &) const	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+cxx+fatal	icu_78::RegexMatcher::end	int (int, enum UErrorCode &) const	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+cxx+fatal	icu_78::RegexMatcher::find	signed char (enum UErrorCode &)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+neutral+fatal	icu_78::RegexMatcher::groupCount	int (void) const	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	ICU accessor reads compiled regular-expression metadata without allocating.
+cxx+fatal	icu_78::RegexMatcher::pattern	const class icu_78::RegexPattern &(void) const	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+owner+fatal	icu_78::RegexMatcher::replaceAll	class icu_78::UnicodeString (const class icu_78::UnicodeString &, enum UErrorCode &)	owner+fatal	clang:cleanup-return+rule:icu-header-fatal	
+cxx+fatal	icu_78::RegexMatcher::reset	class icu_78::RegexMatcher &(const class icu_78::UnicodeString &)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+neutral+fatal	icu_78::RegexMatcher::setStackLimit	void (int, enum UErrorCode &)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	ICU is built without C++ exceptions; the setter resets the matcher, records a stack capacity limit, and reports failure through UErrorCode.
+neutral+fatal	icu_78::RegexMatcher::setTimeLimit	void (int, enum UErrorCode &)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	ICU setter stores the time limit and reports an invalid value through UErrorCode without allocating.
+cxx+fatal	icu_78::RegexMatcher::start	int (enum UErrorCode &) const	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+cxx+fatal	icu_78::RegexMatcher::start	int (int, enum UErrorCode &) const	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+cxx+fatal	icu_78::RegexPattern::groupNumberFromName	int (const char *, int, enum UErrorCode &) const	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+cxx+fatal	icu_78::RegexPattern::patternText	struct UText *(enum UErrorCode &) const	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+owner+fatal	icu_78::StringByteSink<std::basic_string<char>>::StringByteSink	void (class std::basic_string<char> *)	owner+fatal	clang:cleanup-construction+rule:icu-header-fatal	
+cxx+fatal	icu_78::StringPiece::StringPiece	void (const char *)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+neutral+fatal	icu_78::StringPiece::StringPiece	void (const char *, int)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	Inline ICU constructor stores a pointer and a length.
+owner-nothrow+fatal	icu_78::UnicodeSet::UnicodeSet	void (void)	owner+fatal	clang:cleanup-construction+rule:icu-header-fatal	ICU constructor initializes an empty set in its inline storage without allocating. Ownership inference still applies.
+cxx+fatal	icu_78::UnicodeSet::applyPattern	class icu_78::UnicodeSet &(const class icu_78::UnicodeString &, enum UErrorCode &)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+cxx+fatal	icu_78::UnicodeSet::complement	class icu_78::UnicodeSet &(void)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+neutral+fatal	icu_78::UnicodeSet::contains	signed char (int) const	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	ICU membership test does not allocate or propagate C++ exceptions.
+cxx+fatal	icu_78::UnicodeSet::freeze	class icu_78::UnicodeSet *(void)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+neutral+fatal	icu_78::UnicodeSet::isBogus	signed char (void) const	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	Inline ICU accessor tests a stored flag without allocating.
+cxx+fatal	icu_78::UnicodeSet::setToBogus	void (void)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+owner+fatal	icu_78::UnicodeString::UnicodeString	void (int, int, int)	owner+fatal	clang:cleanup-construction+rule:icu-header-fatal	
+owner-nothrow+fatal	icu_78::UnicodeString::UnicodeString	void (void)	owner+fatal	clang:cleanup-construction+rule:icu-header-fatal	Inline ICU constructor initializes an empty short string without allocating. Ownership inference still applies.
+cxx+fatal	icu_78::UnicodeString::append	class icu_78::UnicodeString &(const char16_t *, int, int)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+owner-nothrow+fatal	icu_78::UnicodeString::fromUTF8	class icu_78::UnicodeString (class icu_78::StringPiece)	owner+fatal	clang:cleanup-return+rule:icu-header-fatal	ICU is built without C++ exceptions; UTF-8 conversion allocates through uprv_malloc and returns a bogus string on allocation failure. Ownership inference still applies.
+neutral+fatal	icu_78::UnicodeString::getBuffer	char16_t *(int)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	ICU uses a non-throwing allocator and records allocation failure in the string state.
+neutral+fatal	icu_78::UnicodeString::getBuffer	const char16_t *(void) const	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	ICU accessor returns the existing string buffer without allocating.
+neutral+fatal	icu_78::UnicodeString::isBogus	signed char (void) const	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	Inline ICU accessor tests a stored flag without allocating.
+neutral+fatal	icu_78::UnicodeString::length	int (void) const	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	ICU accessor reads the stored string length without allocating.
+neutral+fatal	icu_78::UnicodeString::operator=	class icu_78::UnicodeString &(class icu_78::UnicodeString &&) noexcept	neutral+fatal	clang:no-cxx-propagation+rule:icu-header-fatal	
+cxx+fatal	icu_78::UnicodeString::releaseBuffer	void (int)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+cxx+fatal	icu_78::UnicodeString::remove	class icu_78::UnicodeString &(void)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+neutral+fatal	icu_78::UnicodeString::setTo	class icu_78::UnicodeString &(const class icu_78::UnicodeString &)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	ICU is built without C++ exceptions; the copy allocates through uprv_malloc and marks the destination bogus on allocation failure.
+cxx+fatal	icu_78::UnicodeString::setToBogus	void (void)	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
+neutral+fatal	icu_78::UnicodeString::swap	void (class icu_78::UnicodeString &) noexcept	neutral+fatal	clang:no-cxx-propagation+rule:icu-header-fatal	
+cxx+fatal	icu_78::UnicodeString::toUTF8String	class std::basic_string<char> &(class std::basic_string<char> &) const	cxx+fatal	clang:not-noexcept+rule:icu-header-fatal	
 neutral	longjmp	void (struct __jmp_buf_tag *, int) __attribute__((noreturn)) noexcept	neutral	clang:no-cxx-propagation	
 neutral	make_strview	struct charport_strview (const char *, int, struct cetype_ext_t) noexcept	neutral	clang:no-cxx-propagation	
 neutral+raw-acquire	malloc	void *(unsigned long) noexcept	neutral	clang:no-cxx-propagation	Returns owned memory that free must release.
@@ -284,7 +284,7 @@ owner	std::set<unsigned long, charr::shared::collation_ordering::IndexLess>::set
 cxx	std::stable_sort	void (class __gnu_cxx::__normal_iterator<int *, class std::vector<int> >, class __gnu_cxx::__normal_iterator<int *, class std::vector<int> >, struct charr::shared::collation_ordering::IndexLess)	cxx	clang:not-noexcept	
 cxx	std::stable_sort	void (class __gnu_cxx::__normal_iterator<struct charr::shared::CollationPrefix *, class std::vector<struct charr::shared::CollationPrefix> >, class __gnu_cxx::__normal_iterator<struct charr::shared::CollationPrefix *, class std::vector<struct charr::shared::CollationPrefix> >, struct charr::shared::collation_ordering::EntryLess)	cxx	clang:not-noexcept	
 neutral	std::terminate	void (void) __attribute__((noreturn)) noexcept	neutral	clang:no-cxx-propagation	
-cxx	std::thread::join	void (void)	cxx	clang:not-noexcept	
+neutral	std::thread::join	void (void)	cxx	clang:not-noexcept	join() reports only a thread that is not joinable, a thread joining itself, or no such thread. Its one caller, parallel_detail::join_all in src/shared/parallel.cpp, excludes all three: it joins only threads that joinable() accepts, which the main thread started there and has not yet joined.
 neutral	std::thread::joinable	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
 neutral	std::unique_ptr<char[]>::get	char *(void) const noexcept	neutral	clang:no-cxx-propagation	
 neutral	std::unique_ptr<charr::shared::ByteSearchMatcher>::operator bool	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
@@ -668,69 +668,63 @@ owner	std::vector<unsigned long>::vector	void (void) noexcept	owner	clang:cleanu
 neutral	strcmp	int (const char *, const char *) noexcept	neutral	clang:no-cxx-propagation	
 neutral	strerror	char *(int) noexcept	neutral	clang:no-cxx-propagation	
 neutral	strlen	unsigned long (const char *) noexcept	neutral	clang:no-cxx-propagation	
-neutral	u_charType_78	signed char (int)	neutral	rule:reviewed-c-api	
-neutral	u_errorName_78	const char *(enum UErrorCode)	neutral	rule:reviewed-c-api	
-neutral	u_getDataVersion_78	void (unsigned char *, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	u_getDataVersion_78_charr	void (unsigned char *, enum UErrorCode *)		legacy-unobserved	
-neutral	u_getIntPropertyValue_78	int (int, enum UProperty)	neutral	rule:reviewed-c-api	
-neutral	u_getUnicodeVersion_78	void (unsigned char *)	neutral	rule:reviewed-c-api	
-neutral	u_getUnicodeVersion_78_charr	void (unsigned char *)		legacy-unobserved	
-neutral	u_getVersion_78	void (unsigned char *)	neutral	rule:reviewed-c-api	
-neutral	u_getVersion_78_charr	void (unsigned char *)		legacy-unobserved	
-neutral	u_hasBinaryProperty_78	signed char (int, enum UProperty)	neutral	rule:reviewed-c-api	
-neutral	u_init_78	void (enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	u_init_78_charr	void (enum UErrorCode *)		legacy-unobserved	
-neutral	u_strFromUTF8WithSub_78	char16_t *(char16_t *, int, int *, const char *, int, int, int *, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	u_strToUTF8_78	char *(char *, int, int *, const char16_t *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	u_toupper_78	int (int)	neutral	rule:reviewed-c-api	
-neutral	u_versionToString_78	void (const unsigned char *, char *)	neutral	rule:reviewed-c-api	
-neutral	u_versionToString_78_charr	void (const unsigned char *, char *)		legacy-unobserved	
-neutral+raw-release	ubrk_close_78	void (struct UBreakIterator *)	neutral	rule:reviewed-c-api	Releases an ICU BreakIterator handle.
-neutral	ubrk_first_78	int (struct UBreakIterator *)	neutral	rule:reviewed-c-api	
-neutral	ubrk_getLocaleByType_78	const char *(const struct UBreakIterator *, ULocDataLocaleType, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	ubrk_getRuleStatus_78	int (struct UBreakIterator *)	neutral	rule:reviewed-c-api	
-neutral	ubrk_last_78	int (struct UBreakIterator *)	neutral	rule:reviewed-c-api	
-neutral	ubrk_next_78	int (struct UBreakIterator *)	neutral	rule:reviewed-c-api	
-neutral+raw-acquire	ubrk_openRules_78	struct UBreakIterator *(const char16_t *, int, const char16_t *, int, struct UParseError *, enum UErrorCode *)	neutral	rule:reviewed-c-api	Returns an owned ICU BreakIterator handle.
-neutral+raw-acquire	ubrk_open_78	struct UBreakIterator *(enum UBreakIteratorType, const char *, const char16_t *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	Returns an owned ICU BreakIterator handle.
-neutral	ubrk_previous_78	int (struct UBreakIterator *)	neutral	rule:reviewed-c-api	
-neutral	ubrk_setUText_78	void (struct UBreakIterator *, struct UText *, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral+raw-release	ucasemap_close_78	void (struct UCaseMap *)	neutral	rule:reviewed-c-api	Releases an ICU CaseMap handle.
-neutral	ucasemap_getLocale_78	const char *(const struct UCaseMap *)	neutral	rule:reviewed-c-api	
-neutral+raw-acquire	ucasemap_open_78	struct UCaseMap *(const char *, unsigned int, enum UErrorCode *)	neutral	rule:reviewed-c-api	Returns an owned ICU CaseMap handle.
-neutral	ucasemap_setBreakIterator_78	void (struct UCaseMap *, struct UBreakIterator *, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	ucasemap_utf8ToLower_78	int (const struct UCaseMap *, char *, int, const char *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	ucasemap_utf8ToTitle_78	int (struct UCaseMap *, char *, int, const char *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	ucasemap_utf8ToUpper_78	int (const struct UCaseMap *, char *, int, const char *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral+raw-release	ucnv_close_78	void (struct UConverter *)	neutral	rule:reviewed-c-api	Releases an ICU converter handle.
-neutral	ucnv_compareNames_78	int (const char *, const char *)	neutral	rule:reviewed-c-api	
-neutral	ucnv_convertEx_78	void (struct UConverter *, struct UConverter *, char **, const char *, const char **, const char *, char16_t *, char16_t **, char16_t **, const char16_t *, signed char, signed char, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	ucnv_countStandards_78	unsigned short (void)	neutral	rule:reviewed-c-api	
-neutral	ucnv_fromUChars_78	int (struct UConverter *, char *, int, const char16_t *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	ucnv_getMaxCharSize_78	signed char (const struct UConverter *)	neutral	rule:reviewed-c-api	
-neutral	ucnv_getMinCharSize_78	signed char (const struct UConverter *)	neutral	rule:reviewed-c-api	
-neutral	ucnv_getName_78	const char *(const struct UConverter *, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	ucnv_getNextUChar_78	int (struct UConverter *, const char **, const char *, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	ucnv_getStandardName_78	const char *(const char *, const char *, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	ucnv_getStandard_78	const char *(unsigned short, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral+raw-acquire	ucnv_open_78	struct UConverter *(const char *, enum UErrorCode *)	neutral	rule:reviewed-c-api	Returns an owned ICU converter handle.
-neutral	ucnv_resetFromUnicode_78	void (struct UConverter *)	neutral	rule:reviewed-c-api	
-neutral	ucnv_reset_78	void (struct UConverter *)	neutral	rule:reviewed-c-api	
-neutral	ucnv_setFromUCallBack_78	void (struct UConverter *, void (*)(const void *, UConverterFromUnicodeArgs *, const char16_t *, int, int, UConverterCallbackReason, enum UErrorCode *), const void *, void (**)(const void *, UConverterFromUnicodeArgs *, const char16_t *, int, int, UConverterCallbackReason, enum UErrorCode *), const void **, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	ucnv_setToUCallBack_78	void (struct UConverter *, void (*)(const void *, UConverterToUnicodeArgs *, const char *, int, UConverterCallbackReason, enum UErrorCode *), const void *, void (**)(const void *, UConverterToUnicodeArgs *, const char *, int, UConverterCallbackReason, enum UErrorCode *), const void **, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral+raw-acquire	ucol_clone_78	struct UCollator *(const struct UCollator *, enum UErrorCode *)	neutral	rule:reviewed-c-api	Returns an owned ICU collator clone that ucol_close must release.
-neutral+raw-release	ucol_close_78	void (struct UCollator *)	neutral	rule:reviewed-c-api	Releases an ICU collator handle.
-neutral	ucol_getAttribute_78	UColAttributeValue (const struct UCollator *, UColAttribute, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	ucol_getLocaleByType_78	const char *(const struct UCollator *, ULocDataLocaleType, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	ucol_nextSortKeyPart_78	int (const struct UCollator *, struct UCharIterator *, unsigned int *, unsigned char *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral+raw-acquire	ucol_open_78	struct UCollator *(const char *, enum UErrorCode *)	neutral	rule:reviewed-c-api	Returns an owned ICU collator handle.
-neutral	ucol_setAttribute_78	void (struct UCollator *, UColAttribute, UColAttributeValue, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	ucol_strcollUTF8_78	UCollationResult (const struct UCollator *, const char *, int, const char *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	udata_setCommonData_78	void (const void *, enum UErrorCode *)		legacy-unobserved	
-neutral	udata_setCommonData_78_charr	void (const void *, enum UErrorCode *)		legacy-unobserved	
-neutral	uiter_setUTF8_78	void (struct UCharIterator *, const char *, int)	neutral	rule:reviewed-c-api	
-neutral	uloc_canonicalize_78	int (const char *, char *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	uloc_getDefault_78	const char *(void)	neutral	rule:reviewed-c-api	
+neutral+fatal	u_charType_78	signed char (int)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	u_errorName_78	const char *(enum UErrorCode)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	u_getDataVersion_78	void (unsigned char *, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	u_getIntPropertyValue_78	int (int, enum UProperty)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	u_getUnicodeVersion_78	void (unsigned char *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	u_getVersion_78	void (unsigned char *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	u_hasBinaryProperty_78	signed char (int, enum UProperty)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	u_init_78	void (enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	u_strFromUTF8WithSub_78	char16_t *(char16_t *, int, int *, const char *, int, int, int *, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	u_strToUTF8_78	char *(char *, int, int *, const char16_t *, int, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	u_toupper_78	int (int)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	u_versionToString_78	void (const unsigned char *, char *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+raw-release+fatal	ubrk_close_78	void (struct UBreakIterator *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	Releases an ICU BreakIterator handle.
+neutral+fatal	ubrk_first_78	int (struct UBreakIterator *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ubrk_getLocaleByType_78	const char *(const struct UBreakIterator *, ULocDataLocaleType, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ubrk_getRuleStatus_78	int (struct UBreakIterator *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ubrk_last_78	int (struct UBreakIterator *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ubrk_next_78	int (struct UBreakIterator *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+raw-acquire+fatal	ubrk_openRules_78	struct UBreakIterator *(const char16_t *, int, const char16_t *, int, struct UParseError *, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	Returns an owned ICU BreakIterator handle.
+neutral+raw-acquire+fatal	ubrk_open_78	struct UBreakIterator *(enum UBreakIteratorType, const char *, const char16_t *, int, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	Returns an owned ICU BreakIterator handle.
+neutral+fatal	ubrk_previous_78	int (struct UBreakIterator *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ubrk_setUText_78	void (struct UBreakIterator *, struct UText *, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+raw-release+fatal	ucasemap_close_78	void (struct UCaseMap *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	Releases an ICU CaseMap handle.
+neutral+fatal	ucasemap_getLocale_78	const char *(const struct UCaseMap *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+raw-acquire+fatal	ucasemap_open_78	struct UCaseMap *(const char *, unsigned int, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	Returns an owned ICU CaseMap handle.
+neutral+fatal	ucasemap_setBreakIterator_78	void (struct UCaseMap *, struct UBreakIterator *, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ucasemap_utf8ToLower_78	int (const struct UCaseMap *, char *, int, const char *, int, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ucasemap_utf8ToTitle_78	int (struct UCaseMap *, char *, int, const char *, int, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ucasemap_utf8ToUpper_78	int (const struct UCaseMap *, char *, int, const char *, int, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+raw-release+fatal	ucnv_close_78	void (struct UConverter *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	Releases an ICU converter handle.
+neutral+fatal	ucnv_compareNames_78	int (const char *, const char *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ucnv_convertEx_78	void (struct UConverter *, struct UConverter *, char **, const char *, const char **, const char *, char16_t *, char16_t **, char16_t **, const char16_t *, signed char, signed char, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ucnv_countStandards_78	unsigned short (void)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ucnv_fromUChars_78	int (struct UConverter *, char *, int, const char16_t *, int, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ucnv_getMaxCharSize_78	signed char (const struct UConverter *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ucnv_getMinCharSize_78	signed char (const struct UConverter *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ucnv_getName_78	const char *(const struct UConverter *, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ucnv_getNextUChar_78	int (struct UConverter *, const char **, const char *, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ucnv_getStandardName_78	const char *(const char *, const char *, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ucnv_getStandard_78	const char *(unsigned short, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+raw-acquire+fatal	ucnv_open_78	struct UConverter *(const char *, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	Returns an owned ICU converter handle.
+neutral+fatal	ucnv_resetFromUnicode_78	void (struct UConverter *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ucnv_reset_78	void (struct UConverter *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ucnv_setFromUCallBack_78	void (struct UConverter *, void (*)(const void *, UConverterFromUnicodeArgs *, const char16_t *, int, int, UConverterCallbackReason, enum UErrorCode *), const void *, void (**)(const void *, UConverterFromUnicodeArgs *, const char16_t *, int, int, UConverterCallbackReason, enum UErrorCode *), const void **, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ucnv_setToUCallBack_78	void (struct UConverter *, void (*)(const void *, UConverterToUnicodeArgs *, const char *, int, UConverterCallbackReason, enum UErrorCode *), const void *, void (**)(const void *, UConverterToUnicodeArgs *, const char *, int, UConverterCallbackReason, enum UErrorCode *), const void **, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+raw-acquire+fatal	ucol_clone_78	struct UCollator *(const struct UCollator *, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	Returns an owned ICU collator clone that ucol_close must release.
+neutral+raw-release+fatal	ucol_close_78	void (struct UCollator *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	Releases an ICU collator handle.
+neutral+fatal	ucol_getAttribute_78	UColAttributeValue (const struct UCollator *, UColAttribute, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ucol_getLocaleByType_78	const char *(const struct UCollator *, ULocDataLocaleType, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ucol_nextSortKeyPart_78	int (const struct UCollator *, struct UCharIterator *, unsigned int *, unsigned char *, int, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+raw-acquire+fatal	ucol_open_78	struct UCollator *(const char *, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	Returns an owned ICU collator handle.
+neutral+fatal	ucol_setAttribute_78	void (struct UCollator *, UColAttribute, UColAttributeValue, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	ucol_strcollUTF8_78	UCollationResult (const struct UCollator *, const char *, int, const char *, int, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	udata_setCommonData_78	void (const void *, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	uiter_setUTF8_78	void (struct UCharIterator *, const char *, int)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	uloc_canonicalize_78	int (const char *, char *, int, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	uloc_getDefault_78	const char *(void)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
 neutral+raw-release	uregex_close_78	void (struct URegularExpression *)		legacy-unobserved	Releases an ICU regular-expression handle.
 neutral	uregex_findNext_78	signed char (struct URegularExpression *, enum UErrorCode *)		legacy-unobserved	
 neutral	uregex_find_78	signed char (struct URegularExpression *, int, enum UErrorCode *)		legacy-unobserved	
@@ -738,18 +732,18 @@ neutral+raw-acquire	uregex_open_78	struct URegularExpression *(const char16_t *,
 neutral	uregex_setStackLimit_78	void (struct URegularExpression *, int, enum UErrorCode *)		legacy-unobserved	
 neutral	uregex_setText_78	void (struct URegularExpression *, const char16_t *, int, enum UErrorCode *)		legacy-unobserved	
 neutral	uregex_setTimeLimit_78	void (struct URegularExpression *, int, enum UErrorCode *)		legacy-unobserved	
-neutral+raw-release	usearch_close_78	void (struct UStringSearch *)	neutral	rule:reviewed-c-api	Releases an ICU string-search handle.
-neutral	usearch_first_78	int (struct UStringSearch *, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	usearch_getMatchedLength_78	int (const struct UStringSearch *)	neutral	rule:reviewed-c-api	
-neutral	usearch_last_78	int (struct UStringSearch *, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	usearch_next_78	int (struct UStringSearch *, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral+raw-acquire	usearch_openFromCollator_78	struct UStringSearch *(const char16_t *, int, const char16_t *, int, const struct UCollator *, struct UBreakIterator *, enum UErrorCode *)	neutral	rule:reviewed-c-api	Returns an owned ICU string-search handle.
-neutral	usearch_setPattern_78	void (struct UStringSearch *, const char16_t *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral	usearch_setText_78	void (struct UStringSearch *, const char16_t *, int, enum UErrorCode *)	neutral	rule:reviewed-c-api	
-neutral+raw-release	utext_close_78	struct UText *(struct UText *)	neutral	rule:reviewed-c-api	Releases an ICU UText handle.
-neutral	utext_next32From_78	int (struct UText *, long)	neutral	rule:reviewed-c-api	
-neutral	utext_next32_78	int (struct UText *)	neutral	rule:reviewed-c-api	
-neutral+raw-acquire	utext_openUTF8_78	struct UText *(struct UText *, const char *, long, enum UErrorCode *)	neutral	rule:reviewed-c-api	May allocate provider storage that creates a utext_close cleanup obligation; caller-supplied UText storage itself remains caller-owned.
-neutral	utf8_back1SafeBody_78	int (const unsigned char *, int, int)	neutral	rule:reviewed-c-api	
-neutral	utf8_prevCharSafeBody_78	int (const unsigned char *, int, int *, int, signed char)	neutral	rule:reviewed-c-api	
+neutral+raw-release+fatal	usearch_close_78	void (struct UStringSearch *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	Releases an ICU string-search handle.
+neutral+fatal	usearch_first_78	int (struct UStringSearch *, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	usearch_getMatchedLength_78	int (const struct UStringSearch *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	usearch_last_78	int (struct UStringSearch *, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	usearch_next_78	int (struct UStringSearch *, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+raw-acquire+fatal	usearch_openFromCollator_78	struct UStringSearch *(const char16_t *, int, const char16_t *, int, const struct UCollator *, struct UBreakIterator *, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	Returns an owned ICU string-search handle.
+neutral+fatal	usearch_setPattern_78	void (struct UStringSearch *, const char16_t *, int, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	usearch_setText_78	void (struct UStringSearch *, const char16_t *, int, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+raw-release+fatal	utext_close_78	struct UText *(struct UText *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	Releases an ICU UText handle.
+neutral+fatal	utext_next32From_78	int (struct UText *, long)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	utext_next32_78	int (struct UText *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+raw-acquire+fatal	utext_openUTF8_78	struct UText *(struct UText *, const char *, long, enum UErrorCode *)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	May allocate provider storage that creates a utext_close cleanup obligation; caller-supplied UText storage itself remains caller-owned.
+neutral+fatal	utf8_back1SafeBody_78	int (const unsigned char *, int, int)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
+neutral+fatal	utf8_prevCharSafeBody_78	int (const unsigned char *, int, int *, int, signed char)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
 neutral	vsnprintf	int (char *, unsigned long, const char *, struct __va_list_tag *) noexcept	neutral	clang:no-cxx-propagation	
