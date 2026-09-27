@@ -14,6 +14,11 @@ public:
     int size() const noexcept;
 };
 
+/* A nested namespace spelled like ICU's is not ICU's namespace. */
+namespace icu_2_charr {
+int nested_value() noexcept;
+} // namespace icu_2_charr
+
 } // namespace icu_renamed_support
 
 #endif

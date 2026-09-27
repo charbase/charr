@@ -1,5 +1,15 @@
 file	function	sites	kind	reason
 src/icu78/fatal-site-a.cpp	c_entry(int)	1	closed-switch	Fixture: kind is always zero.
+src/icu78/fatal-site-a.cpp	fixture_names::_7_charr(int)	1	closed-switch	Fixture: kind is always zero.
+src/icu78/fatal-site-a.cpp	fixture_names::nodigits__charr(int)	1	closed-switch	Fixture: kind is always zero.
+src/icu78/fatal-site-a.cpp	fixture_names::version7_charr(int)	1	closed-switch	Fixture: kind is always zero.
+src/icu78/fatal-site-a.cpp	icu::ConstSite::check(int) const	1	closed-switch	Fixture: kind is always zero.
+src/icu78/fatal-site-a.cpp	icu::lambda_site(int)	1	closed-switch	Fixture: kind is always zero.
 src/icu78/fatal-site-a.cpp	icu::loop_exit(int)	1	loop-exit	Fixture: after a for(;;) loop that leaves only by return.
+src/icu78/fatal-site-a.cpp	icu::nested_sites(int)	2	closed-switch	Fixture: kind is always zero.
 src/icu78/fatal-site-a.cpp	icu::two_sites(int)	2	closed-switch	Fixture: kind is always zero.
+src/icu78/fatal-site-a.cpp	icu::variadic_site(int, ...)	1	closed-switch	Fixture: kind is always zero.
+src/icu78/fatal-site-a.cpp	icu_4byte_site(int)	1	closed-switch	Fixture: kind is always zero.
+src/icu78/fatal-site-a.cpp	icu_impl::unversioned_site(int)	1	closed-switch	Fixture: kind is always zero.
+src/icu78/fatal-site-a.cpp	xicu_78::boundary_site(int)	1	closed-switch	Fixture: kind is always zero.
 src/icu78/fatal-site.h	fixture_header_site(int)	1	data-invariant	Fixture: value is never negative.

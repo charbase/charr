@@ -4487,8 +4487,20 @@ public:
 
         const clang::Expr* initializer = variable.getInit();
         if (initializer == nullptr || variable.getType()->isDependentType() ||
-                initializer->isValueDependent() ||
-                variable.hasConstantInitialization()) {
+                initializer->isValueDependent()) {
+            return;
+        }
+        // A constant initializer runs no code, so only the ICU fatal handler
+        // rule applies to it: no charr code may name the handler, and a
+        // stored pointer to it could later be called.
+        if (variable.hasConstantInitialization()) {
+            BodyVisitor body(context_, effects_);
+            body.TraverseStmt(const_cast<clang::Expr*>(initializer));
+            const std::string description =
+                "constant initializer of '" +
+                variable.getQualifiedNameAsString() + "'";
+            for (const CallRecord& call : body.calls)
+                check_icu_fatal_handler_use(call, description);
             return;
         }
         BodyVisitor body(context_, effects_);
@@ -4654,8 +4666,10 @@ public:
                     );
                 }
             }
-            for (const CallRecord& call : body.calls)
+            for (const CallRecord& call : body.calls) {
                 check_external_manifest(call);
+                check_icu_fatal_handler_use(call, role_name(role));
+            }
             return;
         }
 

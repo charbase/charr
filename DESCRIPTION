@@ -1,7 +1,7 @@
 Package: charr
 Title: String Processing Reimagined for 'ALTREP' Strings
 Version: 0.1.0
-Date: 2026-09-25
+Date: 2026-09-26
 Authors@R: c(
     person("Travers", "Ching", , "traversc@gmail.com", role = c("aut", "cre", "cph")),
     person("Hadley", "Wickham", , "hadley@posit.co", role = c("ctb", "cph"),

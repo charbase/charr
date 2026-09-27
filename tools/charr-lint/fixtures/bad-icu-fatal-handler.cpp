@@ -23,3 +23,27 @@ CHARR_NEUTRAL_HELPER Handler takes_icu_fatal_handler() noexcept
     throw what;
 }
 #endif
+
+// Default arguments and dynamic initializers have no role; naming or calling
+// the handler there is the same error.
+#if defined(BAD_HANDLER_DEFAULT_ARGUMENT)
+using DefaultHandler = void (*)(const char*);
+
+CHARR_NEUTRAL_HELPER bool has_default_handler(
+    DefaultHandler handler = &charr::shared::icu_invariant_failure
+) noexcept
+{
+    return handler != nullptr;
+}
+#endif
+
+#if defined(BAD_HANDLER_DYNAMIC_INITIALIZER)
+int handler_initialized =
+    (charr::shared::icu_invariant_failure("fixture"), 0);
+#endif
+
+// A constant initializer runs no code, but a stored pointer could be called.
+#if defined(BAD_HANDLER_CONSTANT_POINTER)
+void (*const stored_handler)(const char*) =
+    &charr::shared::icu_invariant_failure;
+#endif

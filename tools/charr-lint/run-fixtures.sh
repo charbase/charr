@@ -727,6 +727,27 @@ check_variant plain bad-icu-fatal-handler.cpp BAD_HANDLER_ADDRESS \
     "neutral helper refers to ICU fatal handler 'charr::shared::icu_invariant_failure'"
 check_variant plain bad-icu-fatal-handler.cpp BAD_HANDLER_OUTSIDE_FILE \
     "ICU fatal handler 'stray_handler' must be declared in src/shared/icu_fatal.h"
+check_variant project not-shared/icu_fatal.cpp - \
+    "ICU fatal handler 'misplaced_handler' must be declared in src/shared/icu_fatal.h"
+check_variant project src/shared/icu_fatal.cpp BAD_HANDLER_RAW_ACQUIRE \
+    "ICU fatal handler directly calls raw resource acquisition 'malloc'"
+check_variant project src/shared/icu_fatal.cpp BAD_HANDLER_RAW_RELEASE \
+    "ICU fatal handler directly calls raw resource release 'free'"
+# Contexts without a role reject the handler too, and a caller sees it as
+# both a fallible R call and a potentially throwing one.
+check_variant plain bad-icu-fatal-handler.cpp BAD_HANDLER_DEFAULT_ARGUMENT \
+    "default argument of parameter 'handler' refers to ICU fatal handler 'charr::shared::icu_invariant_failure'"
+check_variant plain bad-icu-fatal-handler.cpp BAD_HANDLER_DEFAULT_ARGUMENT \
+    "default argument of parameter 'handler' calls fallible R operation 'charr::shared::icu_invariant_failure'"
+check_variant plain bad-icu-fatal-handler.cpp BAD_HANDLER_DEFAULT_ARGUMENT \
+    "default argument of parameter 'handler' calls potentially throwing operation 'charr::shared::icu_invariant_failure'"
+check_variant plain bad-icu-fatal-handler.cpp BAD_HANDLER_DYNAMIC_INITIALIZER \
+    "dynamic initializer of 'handler_initialized' calls ICU fatal handler 'charr::shared::icu_invariant_failure'"
+check_variant plain bad-icu-fatal-handler.cpp BAD_HANDLER_CONSTANT_POINTER \
+    "constant initializer of 'stored_handler' refers to ICU fatal handler 'charr::shared::icu_invariant_failure'"
+check_variant project bad-trusted-unreviewed-external.cpp \
+    BAD_TRUSTED_CALLS_ICU_FATAL_HANDLER \
+    "trusted unwind intrinsic calls ICU fatal handler 'charr::shared::icu_invariant_failure'"
 
 # ICU fatal sites are counted after preprocessing, keyed by the file that
 # spells the outermost macro, and compared with a reviewed manifest.
@@ -736,6 +757,10 @@ fatal_site_units=(
 )
 run_lint --fatal-sites "$fixture_dir/fatal-sites.tsv" \
     "${fatal_site_units[@]}" -- -std=c++17 -DCHARR_LINT=1
+# A bundled-ICU compilation database does not define CHARR_LINT; the
+# fatal-site mode adds it so the handler's annotation is visible.
+run_lint --fatal-sites "$fixture_dir/fatal-sites.tsv" \
+    "${fatal_site_units[@]}" -- -std=c++17
 generated_sites=$(mktemp)
 cp "$fixture_dir/fatal-sites.tsv" "$generated_sites"
 run_lint --fatal-sites "$generated_sites" --write-fatal-sites \
@@ -800,6 +825,90 @@ check_fatal_sites_failure fatal-sites.tsv BAD_NOEXCEPT_SITE \
     "ICU fatal site in 'noexcept_site()', which cannot throw"
 check_fatal_sites_failure fatal-sites.tsv BAD_NOEXCEPT_LAMBDA_SITE \
     "ICU fatal site in 'noexcept_lambda_site(int)' (in a lambda), which cannot throw"
+check_fatal_sites_failure fatal-sites.tsv BAD_DESTRUCTOR_SITE \
+    "ICU fatal site in 'DestructorSite::~DestructorSite()', which cannot throw"
+check_fatal_sites_failure fatal-sites.tsv BAD_TEMPLATE_DESTRUCTOR_SITE \
+    "ICU fatal site in 'TemplateDestructorSite::~TemplateDestructorSite<T>()', which cannot throw"
+# Each comparison failure fails on its own.
+check_fatal_sites_failure new-row-fatal-sites.tsv - \
+    "new ICU fatal site row: src/icu78/fatal-site-a.cpp"
+check_fatal_sites_failure changed-count-fatal-sites.tsv - \
+    "ICU fatal site count changed from 1 to 2: src/icu78/fatal-site-a.cpp"
+check_fatal_sites_failure missing-row-fatal-sites.tsv - \
+    "ICU fatal site row no longer observed: src/icu78/removed.cpp"
+# A handler reference outside src/icu78 is an error, even through the macro.
+fatal_site_units+=("$fixture_dir/src/fatal-site-outside.cpp")
+check_fatal_sites_failure fatal-sites.tsv - \
+    "src/fatal-site-outside.cpp:8:9: ICU fatal handler is referred to outside src/icu78"
+fatal_site_units=("$fixture_dir/good-dependent-template-call.cpp")
+check_fatal_sites_failure empty-fatal-sites.tsv - \
+    "no ICU fatal handler site was found"
+fatal_site_units=(
+    "$fixture_dir/src/icu78/fatal-site-a.cpp"
+    "$fixture_dir/src/icu78/fatal-site-b.cpp"
+)
+
+# check_fatal_manifest_failure CONTENT EXPECTED: an unusable manifest is
+# rejected before any site is compared.
+check_fatal_manifest_failure() {
+    manifest=$(mktemp)
+    printf '%b' "$1" >"$manifest"
+    output=$(mktemp)
+    if "$lint" --fatal-sites "$manifest" "${fatal_site_units[@]}" -- \
+            -std=c++17 -DCHARR_LINT=1 >"$output" 2>&1; then
+        printf 'ICU fatal-site manifest unexpectedly accepted: %s\n' "$2" >&2
+        rm -f "$manifest" "$output"
+        exit 1
+    fi
+    if ! grep -F "$2" "$output" >/dev/null; then
+        printf 'ICU fatal-site manifest did not report: %s\n' "$2" >&2
+        cat "$output" >&2
+        rm -f "$manifest" "$output"
+        exit 1
+    fi
+    rm -f "$manifest" "$output"
+}
+
+fatal_rows=$(tail -n +2 "$fixture_dir/fatal-sites.tsv")
+fatal_header=$'file\tfunction\tsites\tkind\treason'
+check_fatal_manifest_failure "file\tfunction\tsites\tkind\n$fatal_rows\n" \
+    "invalid ICU fatal-site manifest header"
+check_fatal_manifest_failure "" "missing ICU fatal-site manifest header"
+check_fatal_manifest_failure "$fatal_header\n$fatal_rows\nsrc/icu78/x.cpp\tf()\t1\tloop-exit\n" \
+    "expected five tab-separated fields"
+check_fatal_manifest_failure "$fatal_header\n$fatal_rows\n\tf()\t1\tloop-exit\tReason.\n" \
+    "file and function are required"
+check_fatal_manifest_failure "$fatal_header\n$fatal_rows\nsrc/icu78/x.cpp\tf()\t0\tloop-exit\tReason.\n" \
+    "sites must be a positive integer"
+check_fatal_manifest_failure "$fatal_header\n$fatal_rows\nsrc/icu78/x.cpp\tf()\tone\tloop-exit\tReason.\n" \
+    "sites must be a positive integer"
+check_fatal_manifest_failure "$fatal_header\n$fatal_rows\nsrc/icu78/x.cpp\tf()\t1\tbogus\tReason.\n" \
+    "unknown kind 'bogus'"
+check_fatal_manifest_failure "$fatal_header\n$fatal_rows\nsrc/icu78/x.cpp\tf()\t1\tloop-exit\t\n" \
+    "a reviewed kind requires a reason"
+check_fatal_manifest_failure "$fatal_header\n$fatal_rows\n$(tail -n 1 "$fixture_dir/fatal-sites.tsv")\n" \
+    "duplicate ICU fatal-site row"
+# check_fatal_usage_failure EXPECTED LINT_ARGS...
+check_fatal_usage_failure() {
+    expected=$1
+    shift
+    output=$(mktemp)
+    if "$lint" "$@" >"$output" 2>&1 ||
+            ! grep -F -- "$expected" "$output" >/dev/null; then
+        printf 'ICU fatal-site usage error not reported: %s\n' "$expected" >&2
+        cat "$output" >&2
+        rm -f "$output"
+        exit 1
+    fi
+    rm -f "$output"
+}
+
+check_fatal_usage_failure 'cannot open ICU fatal-site manifest' \
+    --fatal-sites "$fixture_dir/no-such-fatal-sites.tsv" \
+    "${fatal_site_units[@]}" -- -std=c++17 -DCHARR_LINT=1
+check_fatal_usage_failure '--write-fatal-sites requires --fatal-sites' \
+    --write-fatal-sites "$fixture_dir/good-dependent-template-call.cpp" \
+    -- -std=c++17 -DCHARR_LINT=1
 
 # Entry-point owner and unwind regions.
 check_variant project bad-entry-unwind-region.cpp BAD_TEMPORARY_BEFORE_TRY \

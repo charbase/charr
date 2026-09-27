@@ -79,9 +79,10 @@ where a direct-call model would otherwise take a declaration on trust.
   declarations in `src/shared/icu_fatal.h` and `src/shared/icu_fatal.cpp`,
   the function must be `[[noreturn]]`, and it must not be `noexcept`,
   because it throws inside a parallel body. No charr function may call it
-  or name it, in any role or context; only ICU reaches it, through the
-  macros in `src/uconfig_local.h`. Those sites are checked separately, see
-  "ICU fatal sites" below.
+  or name it, in any role or context, including trusted unwind intrinsics,
+  default arguments, and dynamic and constant initializers; only ICU
+  reaches it, through the macros in `src/uconfig_local.h`. Those sites are
+  checked separately, see "ICU fatal sites" below.
 
 ## Entry-point shape
 

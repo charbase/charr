@@ -25,7 +25,8 @@ for matching human text, you'll want \code{\link[=coll]{coll()}} which
 respects character matching rules for the specified locale.
 
 Match character, word, line and sentence boundaries with
-\code{\link[=boundary]{boundary()}}. The empty string, \verb{""``, is equivalent to }boundary("character")`.}
+\code{\link[=boundary]{boundary()}}. The empty string, \code{""}, is equivalent to
+\code{boundary("character")}.}
 
 \item{group}{If supplied, instead of returning the complete match, will
 return the matched text from the specified capturing group.}
@@ -38,7 +39,7 @@ return the matched text from the specified capturing group.}
 }
 \value{
 \itemize{
-\item \code{str_extract()}: an character vector the same length as \code{string}/\code{pattern}.
+\item \code{str_extract()}: a character vector the same length as \code{string}/\code{pattern}.
 \item \code{str_extract_all()}: a list of character vectors the same length as
 \code{string}/\code{pattern}.
 }

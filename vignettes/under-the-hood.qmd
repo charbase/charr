@@ -37,7 +37,7 @@ ICU (International Components for Unicode) is the low-level C++ library that pro
 
 `charr` uses system ICU for 78.2 and 78.3. If neither of those versions are installed, the configure script selects the bundled ICU 78.3 statically linked with every ICU C symbol suffixed `_78_charr` so it doesn't collide with the ICU inside `stringi` or any other loaded package.
 
-`CHARR_SYSTEM_ICU=yes` or `no` forces either side; unset, `configure` auto-detects and falls back to the bundle. Windows always uses the bundle.
+`CHARR_SYSTEM_ICU=yes` or `no` forces either side; unset, `configure` auto-detects and falls back to the bundle. Windows always uses the bundle, and macOS uses it unless `CHARR_SYSTEM_ICU=yes` is set.
 
 ICU 78 requires C++17, and `charr` compiles as C++17 so it can always use a current ICU: the system ICU 78.2 or 78.3 when present, and its bundled ICU 78.3 otherwise. At the time of writing, `stringi` (version 1.8.9) uses the system ICU when one is installed and otherwise its bundled ICU 74.1, which is always the case on Windows. When the two packages end up on different ICU versions, results can differ slightly.
 

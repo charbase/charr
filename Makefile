@@ -458,7 +458,7 @@ FUZZ_BUILD_JOBS ?= $(shell nproc 2>/dev/null || echo 1)
 fuzz:
 	@$(build_test_locales)
 	@set -uo pipefail; \
-	tmp_lib=$$(mktemp -d /tmp/$(PACKAGE)-fuzz-XXXXXX) || exit 1; \
+	tmp_lib=$$(mktemp -d "$${TMPDIR:-/tmp}/$(PACKAGE)-fuzz-XXXXXX") || exit 1; \
 	trap '$(MAKE) clean-altrep >/dev/null; rm -rf "$$tmp_lib"' EXIT; \
 	MAKEFLAGS=-j$(FUZZ_BUILD_JOBS) R CMD INSTALL --preclean \
 	  --configure-args=--with-system-icu -l "$$tmp_lib" . \
@@ -528,7 +528,7 @@ test-bundle:
 test-san:
 	@$(build_test_locales)
 	$(use_test_locales); \
-	tmp_lib=$$(mktemp -d /tmp/$(PACKAGE)-san-XXXXXX); \
+	tmp_lib=$$(mktemp -d "$${TMPDIR:-/tmp}/$(PACKAGE)-san-XXXXXX"); \
 	trap 'rm -rf "$$tmp_lib"' EXIT; \
 	printf 'CXXFLAGS = -g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all\nCXX17FLAGS = -g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all\nSHLIB_CXXLDFLAGS = -fsanitize=address,undefined -shared\nSHLIB_CXX17LDFLAGS = -fsanitize=address,undefined -shared\n' > $$tmp_lib/Makevars.san; \
 	ASAN_OPTIONS=detect_leaks=0 LSAN_OPTIONS=detect_leaks=0 \
@@ -558,7 +558,7 @@ TSAN_THREADS ?= 4
 test-tsan:
 	@$(build_test_locales)
 	$(use_test_locales); \
-	tmp_lib=$$(mktemp -d /tmp/$(PACKAGE)-tsan-XXXXXX); \
+	tmp_lib=$$(mktemp -d "$${TMPDIR:-/tmp}/$(PACKAGE)-tsan-XXXXXX"); \
 	trap 'rm -rf "$$tmp_lib"' EXIT; \
 	printf 'CXXFLAGS = -g -O1 -fno-omit-frame-pointer -fsanitize=thread\nCXX17FLAGS = -g -O1 -fno-omit-frame-pointer -fsanitize=thread\nSHLIB_CXXLDFLAGS = -fsanitize=thread -shared\nSHLIB_CXX17LDFLAGS = -fsanitize=thread -shared\n' > $$tmp_lib/Makevars.tsan; \
 	R_MAKEVARS_USER=$$tmp_lib/Makevars.tsan \
@@ -576,7 +576,7 @@ test-tsan:
 test-valgrind:
 	@$(build_test_locales)
 	$(use_test_locales); \
-	tmp_lib=$$(mktemp -d /tmp/$(PACKAGE)-vg-XXXXXX); \
+	tmp_lib=$$(mktemp -d "$${TMPDIR:-/tmp}/$(PACKAGE)-vg-XXXXXX"); \
 	trap 'rm -rf "$$tmp_lib"' EXIT; \
 	R CMD INSTALL --preclean -l $$tmp_lib .; \
 	cd tests && NOT_CRAN=true R_LIBS=$$tmp_lib:$(RLIBS) \

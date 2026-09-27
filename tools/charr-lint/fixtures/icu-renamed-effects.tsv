@@ -2,4 +2,6 @@ effect	qualified_name	canonical_type	inferred_effect	inference_basis	override_re
 neutral+fatal	icu_78::Thing::value	int (void) const noexcept	neutral+fatal	clang:no-cxx-propagation+rule:icu-header-fatal	
 neutral+fatal	icu_renamed_open_78	int (int)	neutral+fatal	rule:reviewed-c-api+rule:icu-header-fatal	
 neutral	icu_renamed_support::Holder<icu_78::Thing>::size	int (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	icu_renamed_support::icu_2_charr::nested_value	int (void) noexcept	neutral	clang:no-cxx-propagation	
 neutral	icu_renamed_support::take	int (const class icu_78::Thing &) noexcept	neutral	clang:no-cxx-propagation	
+neutral+fatal	legacy_1_charr::legacy_value	int (void) noexcept	neutral+fatal	clang:no-cxx-propagation+rule:icu-header-fatal	

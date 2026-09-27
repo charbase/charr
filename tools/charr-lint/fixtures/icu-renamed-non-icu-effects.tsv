@@ -2,4 +2,6 @@ effect	qualified_name	canonical_type	inferred_effect	inference_basis	override_re
 neutral	icu_78_charr::Thing::value	int (void) const noexcept	neutral	clang:no-cxx-propagation	
 cxx	icu_renamed_open_78_charr	int (int)	cxx	clang:not-noexcept	
 neutral	icu_renamed_support::Holder<icu_78_charr::Thing>::size	int (void) const noexcept	neutral	clang:no-cxx-propagation	
+neutral	icu_renamed_support::icu_2_charr::nested_value	int (void) noexcept	neutral	clang:no-cxx-propagation	
 neutral	icu_renamed_support::take	int (const class icu_78_charr::Thing &) noexcept	neutral	clang:no-cxx-propagation	
+neutral	legacy_1_charr::legacy_value	int (void) noexcept	neutral	clang:no-cxx-propagation	

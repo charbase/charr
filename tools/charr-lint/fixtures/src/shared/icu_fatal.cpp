@@ -41,3 +41,25 @@ CHARR_ICU_FATAL_HANDLER void returning_handler(const char* what)
     Rf_error("%s", what);
 }
 #endif
+
+// Like an R helper, the handler may not own a raw resource.
+#if defined(BAD_HANDLER_RAW_ACQUIRE) || defined(BAD_HANDLER_RAW_RELEASE)
+#include <stdlib.h>
+#endif
+
+#if defined(BAD_HANDLER_RAW_ACQUIRE)
+[[noreturn]] CHARR_ICU_FATAL_HANDLER void acquiring_handler(const char* what)
+{
+    void* buffer = malloc(1);
+    (void)buffer;
+    Rf_error("%s", what);
+}
+#endif
+
+#if defined(BAD_HANDLER_RAW_RELEASE)
+[[noreturn]] CHARR_ICU_FATAL_HANDLER void releasing_handler(const char* what)
+{
+    free(nullptr);
+    Rf_error("%s", what);
+}
+#endif

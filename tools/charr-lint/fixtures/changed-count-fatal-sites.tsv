@@ -13,4 +13,3 @@ src/icu78/fatal-site-a.cpp	icu_4byte_site(int)	1	closed-switch	Fixture: kind is 
 src/icu78/fatal-site-a.cpp	icu_impl::unversioned_site(int)	1	closed-switch	Fixture: kind is always zero.
 src/icu78/fatal-site-a.cpp	xicu_78::boundary_site(int)	1	closed-switch	Fixture: kind is always zero.
 src/icu78/fatal-site.h	fixture_header_site(int)	1	data-invariant	Fixture: value is never negative.
-src/icu78/removed.cpp	icu::removed()	1	closed-switch	Fixture: no longer present.

@@ -18,5 +18,7 @@ CHARR_CXX_HELPER int icu_renamed_calls(const icu_renamed::Thing& thing)
 {
     const icu_renamed_support::Holder<icu_renamed::Thing> holder;
     return icu_renamed_open(thing.value()) +
-        icu_renamed_support::take(thing) + holder.size();
+        icu_renamed_support::take(thing) + holder.size() +
+        legacy_1_charr::legacy_value() +
+        icu_renamed_support::icu_2_charr::nested_value();
 }

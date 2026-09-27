@@ -12,7 +12,7 @@
 #'   * `FALSE` (the default): returns a list of character vectors.
 #'   * `TRUE`: returns a character matrix.
 #' @return
-#' * `str_extract()`: an character vector the same length as `string`/`pattern`.
+#' * `str_extract()`: a character vector the same length as `string`/`pattern`.
 #' * `str_extract_all()`: a list of character vectors the same length as
 #'   `string`/`pattern`.
 #' @export

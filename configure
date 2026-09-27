@@ -4,7 +4,7 @@
 # CRAN prefers system libraries where available, so this script probes for a
 # allowlisted system ICU4C candidate with pkg-config and links against it when
 # the structural and service probes pass. Otherwise (and always on Windows,
-# which has no configure) charr compiles
+# which has no configure, and by default on macOS) charr compiles
 # its vendored, symbol-suffixed ICU and installs its packaged data archive.
 # System ICU acceptance is an explicit candidate allowlist, not an open-ended
 # version range. The reproducible bundle is ICU 78.3.
@@ -13,7 +13,8 @@
 #   CHARR_SYSTEM_ICU=no   (or --without-system-icu)  force the bundle
 #   CHARR_SYSTEM_ICU=yes  (or --with-system-icu)     require system ICU; fail
 #                                                    instead of falling back
-#   unset                                            auto-detect
+#   unset                                            auto-detect; the bundle
+#                                                    on macOS
 #
 # Outputs: src/Makevars (from src/Makevars.in) and src/icu_mode (read by
 # src/install.libs.R to decide whether to install the bundled data archive).
@@ -76,6 +77,14 @@ fail_or_bundle() {
 
 if [ "$want" = no ]; then
   echo "* charr: system ICU disabled by request"
+  emit_bundle
+fi
+
+# CRAN distributes macOS binaries, which must not depend on a shared ICU that
+# users may not have, so macOS takes the static bundle unless a system ICU is
+# requested explicitly.
+if [ "$want" = auto ] && [ "$(uname -s)" = Darwin ]; then
+  echo "* charr: macOS uses the bundled ICU unless CHARR_SYSTEM_ICU=yes"
   emit_bundle
 fi
 

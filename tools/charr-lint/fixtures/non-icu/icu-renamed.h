@@ -33,4 +33,9 @@ public:
 
 namespace icu_renamed = ICU_RENAMED_NAMESPACE;
 
+/* Not ICU's namespace, though its name looks renamed: the key keeps it. */
+namespace legacy_1_charr {
+int legacy_value() noexcept;
+} // namespace legacy_1_charr
+
 #endif
