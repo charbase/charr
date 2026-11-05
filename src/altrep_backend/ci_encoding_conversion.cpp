@@ -34,6 +34,7 @@
 #include "ci_parallel.h"
 #include "ci_string8buf.h"
 #include "ci_ucnv.h"
+#include "io/reader_utils.h"
 #include "io/string_view.h"
 #include "io/utf8_output.h"
 #include "../shared/deferred_warnings.h"
@@ -371,6 +372,18 @@ CHARR_NEUTRAL_HELPER cetype_ext_t extended_encoding(
     }
 }
 
+// The output mark is chosen per call, but an ASCII record never carries a
+// native, Latin-1 or bytes mark: R drops all three for ASCII, and charport's
+// tags follow R.
+CHARR_NEUTRAL_HELPER cetype_ext_t record_encoding(
+    const char* data, std::size_t length, cetype_ext_t encoding
+) noexcept {
+    if ((encoding == CETYPE_EXT_NATIVE || encoding == CETYPE_EXT_LATIN1 ||
+            encoding == CETYPE_EXT_BYTES) && io::is_ascii(data, length))
+        return CETYPE_EXT_ASCII;
+    return encoding;
+}
+
 CHARR_CXX_HELPER void reject_embedded_nul(
     const char* data,
     std::size_t length
@@ -408,7 +421,10 @@ CHARR_CXX_HELPER void store_converted(
     }
     output.set_validated(
         index,
-        make_strview(data, static_cast<int>(length), encoding)
+        make_strview(
+            data, static_cast<int>(length),
+            record_encoding(data, length, encoding)
+        )
     );
 }
 
@@ -460,7 +476,10 @@ CHARR_CXX_HELPER void store_parallel_converted(
     }
     output.set_validated(
         worker, index,
-        make_strview(data, static_cast<int>(length), encoding)
+        make_strview(
+            data, static_cast<int>(length),
+            record_encoding(data, length, encoding)
+        )
     );
 }
 

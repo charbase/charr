@@ -26,6 +26,7 @@ r		charport::charvec::GrowableBuilder::to_sexp	struct SEXPREC *(void) noexcept	c
 r		charport::charvec::ParallelBuilder::to_sexp	struct SEXPREC *(void) noexcept	charport permits R errors during ALTREP wrapping and does not propagate C++ exceptions.
 r		charport::charvec::wrap	struct SEXPREC *(class charport::charvec::Store &&) noexcept	charport permits R errors during ALTREP wrapping and does not propagate C++ exceptions.
 r	cxx	charport::check_abi	_Bool (void)	The first ABI check may raise an R error while resolving charport through R_GetCCallable; it does not propagate C++ exceptions.
+	cxx	charport::native_is_utf8	_Bool (void)	charport throws no C++ exception here. Its only R error is the first R_GetCCallable lookup, which C_charr_abi_ok performs during .onLoad, so later calls only read R's locale flag.
 raw-release		fclose	int (struct _IO_FILE *)	Closes and releases an owned FILE handle.
 raw-acquire		fopen	struct _IO_FILE *(const char *, const char *)	Returns an owned FILE handle that fclose must release.
 raw-release		free	void (void *) noexcept	Releases memory returned by a C allocation function.

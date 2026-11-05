@@ -29,10 +29,11 @@ public:
         const char* data, int length
     );
 
-    // Whether R's native encoding is UTF-8, decided by probing the same
-    // converter the native() path uses. This is the only such predicate:
-    // do not reintroduce a locale-name test or ICU's default converter name.
-    // The result is cached only for the lifetime of this per-operation object.
+    // Whether R's native encoding is UTF-8, from charport::native_is_utf8(),
+    // which reads R's own utf8locale flag and so follows Sys.setlocale(). This
+    // is the only such predicate: do not reintroduce a locale-name test or
+    // ICU's default converter name. The result is cached only for the
+    // lifetime of this per-operation object.
     CHARR_CXX_HELPER bool native_is_utf8();
 
     CHARR_CXX_HELPER void reset() noexcept;

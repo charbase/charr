@@ -36,7 +36,7 @@ BugReports: https://github.com/charbase/charr/issues
 Depends:
     R (>= 4.1.0)
 Imports:
-    charport (>= 0.1.1),
+    charport (>= 0.2.0),
     cli,
     glue (>= 1.6.1),
     lifecycle (>= 1.0.3),
@@ -44,7 +44,7 @@ Imports:
     stringi (>= 1.5.3),
     vctrs (>= 0.4.0)
 LinkingTo:
-    charport (>= 0.1.1)
+    charport (>= 0.2.0)
 Suggests:
     htmltools,
     htmlwidgets,

@@ -142,6 +142,7 @@ neutral	charport::charvec::components::empty_data	const char *(void) noexcept	ne
 neutral	charport::charvec::components::na_record	struct charport_strview (void) noexcept	neutral	clang:no-cxx-propagation	
 r	charport::charvec::wrap	struct SEXPREC *(class charport::charvec::Store &&) noexcept	neutral	clang:no-cxx-propagation	charport permits R errors during ALTREP wrapping and does not propagate C++ exceptions.
 r	charport::check_abi	_Bool (void)	cxx	clang:not-noexcept	The first ABI check may raise an R error while resolving charport through R_GetCCallable; it does not propagate C++ exceptions.
+neutral	charport::native_is_utf8	_Bool (void)	cxx	clang:not-noexcept	charport throws no C++ exception here. Its only R error is the first R_GetCCallable lookup, which C_charr_abi_ok performs during .onLoad, so later calls only read R's locale flag.
 neutral	charport_strview::is_na	_Bool (void) const noexcept	neutral	clang:no-cxx-propagation	
 neutral+raw-release	fclose	int (struct _IO_FILE *)	neutral	rule:reviewed-c-api	Closes and releases an owned FILE handle.
 neutral	ferror	int (struct _IO_FILE *) noexcept	neutral	clang:no-cxx-propagation	

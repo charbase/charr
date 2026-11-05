@@ -114,7 +114,12 @@ CHARR_CXX_HELPER bool initialize_icu_native(const char* path) noexcept
 extern "C" {
 
 SEXP C_charr_abi_ok(void) noexcept {
-  return Rf_ScalarLogical(charport::check_abi() ? TRUE : FALSE);
+  const bool ok = charport::check_abi();
+  // Resolve the callable while R errors are allowed, so that
+  // NativeToUtf8::native_is_utf8() never raises one later.
+  if (ok)
+    (void)charport::native_is_utf8();
+  return Rf_ScalarLogical(ok ? TRUE : FALSE);
 }
 
 SEXP C_charr_icu_init(SEXP path) noexcept {

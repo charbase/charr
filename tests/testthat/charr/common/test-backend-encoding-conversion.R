@@ -279,3 +279,24 @@ test_that("encode preserves all zero-length shapes", {
   )
   expect_encoding_conversion_unmaterialized(empty)
 })
+
+test_that("ASCII output of a native-target encode is not tagged native", {
+  skip_if_not(identical(selected_test_backend, "altrep"))
+  # charport has no R view of a record's tag, but a charvec with any
+  # native-tagged record is saved outside a UTF-8 locale as a plain character
+  # vector, while one without stays a charvec.
+  subject <- charport::as_charvec(c("abc", "", NA))
+  output <- with_test_backend(
+    TRUE, charr_test_leaf("ci_encode")(subject, NULL, NULL, FALSE)
+  )
+  expect_encoding_conversion_unmaterialized(output)
+
+  old <- Sys.getlocale("LC_CTYPE")
+  on.exit(Sys.setlocale("LC_CTYPE", old), add = TRUE)
+  expect_true(nzchar(Sys.setlocale("LC_CTYPE", "C")))
+  restored <- unserialize(serialize(output, NULL))
+  Sys.setlocale("LC_CTYPE", old)
+
+  expect_true(charport::is_charvec(restored))
+  expect_identical(restored, c("abc", "", NA))
+})

@@ -7,6 +7,8 @@
 #include <R_ext/Riconv.h>
 #include <Rinternals.h>
 
+#include <charport.h>
+
 namespace charr {
 namespace shared {
 
@@ -147,26 +149,11 @@ bool NativeToUtf8::native_is_utf8()
     if (native_is_utf8_ != Tristate::unresolved)
         return native_is_utf8_ == Tristate::yes;
 
-    // U+00E9 in UTF-8. Chosen because it round-trips to itself only when the
-    // native encoding is UTF-8: a single-byte encoding decodes the two bytes
-    // as two separate characters (4 output bytes for Latin-1 and Windows-1252),
-    // and encodings that cannot represent them fail outright. Either way the
-    // answer to "may these bytes be read as UTF-8 without converting?" is no.
-    static const char probe[2] = { '\xc3', '\xa9' };
-
-    bool resolved = false;
-    try {
-        const ByteView converted = convert(
-            native_descriptor(), probe, 2
-        );
-        resolved = converted.len == 2 &&
-            converted.ptr[0] == probe[0] &&
-            converted.ptr[1] == probe[1];
-    }
-    catch (const std::exception&) {
-        resolved = false;
-    }
-
+    // charport reads R's own utf8locale flag (an iconv probe of the native
+    // encoding before R 4.5), so the answer follows Sys.setlocale().
+    // C_charr_abi_ok resolves the callable during .onLoad, so this raises no
+    // R error.
+    const bool resolved = charport::native_is_utf8();
     native_is_utf8_ = resolved ? Tristate::yes : Tristate::no;
     return resolved;
 }
