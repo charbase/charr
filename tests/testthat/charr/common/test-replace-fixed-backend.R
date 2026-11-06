@@ -69,7 +69,7 @@ test_that("fixed replacement sequential mode preserves copied order", {
 
 test_that("fixed replacement bounds forward Reader scans", {
   strings <- charr_test_leaf("ci_trim_both")(c("aaa", "z", "aaaa", "xyz", "abcx"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     charr_test_leaf("ci_replace_first_fixed")(strings, "xy", "!"),
@@ -80,7 +80,7 @@ test_that("fixed replacement bounds forward Reader scans", {
 test_that("fixed replacement borrows stable values and owns conversions", {
   large <- paste(rep("é🙂xyz", 256L), collapse = "")
   stable <- charr_test_leaf("ci_replace_all_fixed")(large, "~", "~")
-  expect_identical(charport::is_charvec(stable), charr_altrep())
+  expect_identical(is_charr_result(stable), charr_altrep())
   expect_identical(
     charr_test_leaf("ci_replace_all_fixed")("a-a", "a", stable),
     paste0(stable, "-", stable)

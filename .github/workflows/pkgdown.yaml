@@ -14,7 +14,8 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Not ubuntu-latest: see R-CMD-check.yaml.
+    runs-on: ubuntu-24.04
 
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
@@ -35,7 +36,8 @@ jobs:
 
       - uses: r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
         with:
-          extra-packages: any::pkgdown, any::xml2, local::.
+          # charport from GitHub, as in R-CMD-check.yaml.
+          extra-packages: any::pkgdown, any::xml2, github::charbase/charport, local::.
           install-quarto: true
           needs: website
 

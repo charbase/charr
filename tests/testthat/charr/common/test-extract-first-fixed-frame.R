@@ -97,9 +97,9 @@ expect_extract_first_fixed_frame_inputs <- function(backend, inputs) {
 expect_extract_first_fixed_frame_output <- function(backend, output) {
   expect_null(attributes(output))
   if (identical(backend, "base")) {
-    expect_false(charport::is_charvec(output))
+    expect_false(is_charr_result(output))
   } else if (identical(backend, "altrep")) {
-    expect_true(charport::is_charvec(output))
+    expect_true(is_charr_result(output))
     expect_false(charport::charport_info(output)$is_materialized)
   }
   invisible(NULL)

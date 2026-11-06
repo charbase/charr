@@ -297,6 +297,6 @@ test_that("ASCII output of a native-target encode is not tagged native", {
   restored <- unserialize(serialize(output, NULL))
   Sys.setlocale("LC_CTYPE", old)
 
-  expect_true(charport::is_charvec(restored))
+  expect_true(is_charr_result(restored))
   expect_identical(restored, c("abc", "", NA))
 })

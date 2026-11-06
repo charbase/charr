@@ -11,13 +11,13 @@ test_that("coll extract emits exact UTF-16 match slices through Builder", {
     " 😀ä-a-A ", " üxÜ ", " å-aa-Å ", " none ", " ", NA
   ))
   patterns <- extract_coll_input(c("a", "ü", "aa", "a", "x", NA))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-  expect_identical(charport::is_charvec(patterns), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
+  expect_identical(is_charr_result(patterns), charr_altrep())
   opts <- list(locale = "de", strength = 1L)
 
   first <- extract_first_coll(strings, patterns, opts_collator = opts)
   expect_identical(first, c("ä", "ü", "aa", NA, NA, NA))
-  expect_identical(charport::is_charvec(first), charr_altrep())
+  expect_identical(is_charr_result(first), charr_altrep())
   expect_identical(Encoding(first), c("UTF-8", "UTF-8", "unknown",
     "unknown", "unknown", "unknown"))
 })
@@ -26,8 +26,8 @@ test_that("coll extract emits exact UTF-16 match slices through Builder", {
 test_that("coll extract all preserves list, omit, and simplify shapes", {
   strings <- extract_coll_input(c("😀ä-a-A", "üxÜ", "none", "", NA))
   patterns <- extract_coll_input(c("a", "ü", "a", "x", "a"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-  expect_identical(charport::is_charvec(patterns), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
+  expect_identical(is_charr_result(patterns), charr_altrep())
   opts <- list(locale = "de", strength = 1L)
 
   all <- extract_all_coll(strings, patterns, opts_collator = opts)
@@ -36,7 +36,7 @@ test_that("coll extract all preserves list, omit, and simplify shapes", {
     NA_character_, NA_character_, NA_character_
   ))
   expect_identical(
-    vapply(all, charport::is_charvec, logical(1L)),
+    vapply(all, is_charr_result, logical(1L)),
     rep(charr_altrep(), 5L)
   )
 
@@ -61,8 +61,8 @@ test_that("coll extract all preserves list, omit, and simplify shapes", {
 test_that("coll extract preserves Danish tailoring, recycling, and empties", {
   strings <- extract_coll_input(c("Aarhus", "Århus", "blaa", "blå", NA, ""))
   patterns <- extract_coll_input(c("Å", "aa"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-  expect_identical(charport::is_charvec(patterns), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
+  expect_identical(is_charr_result(patterns), charr_altrep())
   opts <- list(locale = "da", strength = 1L)
 
   expect_identical(
@@ -96,8 +96,8 @@ test_that("coll extract seeded differential matches stringi serially", {
   )
   strings <- charport::as_charvec(plain_strings)
   patterns <- charport::as_charvec(plain_patterns)
-  expect_altrep_charvec(strings)
-  expect_altrep_charvec(patterns)
+  expect_altrep_result(strings)
+  expect_altrep_result(patterns)
   opts <- list(locale = "de", strength = 1L)
 
   capture <- function(expr) {

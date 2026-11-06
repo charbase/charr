@@ -3,16 +3,16 @@ test_that("str_wrap joins lines in the selected backend", {
   output <- str_wrap(input, width = 3)
 
   expect_identical(
-    output,
-    c(text = "one\ntwo", missing = NA_character_, empty = "")
-  )
-  expect_identical(
-    charport::is_charvec(output),
+    is_charr_result(output),
     identical(charr_backend(), "altrep")
   )
   if (identical(charr_backend(), "altrep")) {
-    expect_false(charport::charport_info(output)$is_materialized)
+    expect_lazy_result(output)
   }
+  expect_identical(
+    output,
+    c(text = "one\ntwo", missing = NA_character_, empty = "")
+  )
 })
 
 test_that("dynamic wrapping rejects an overflowing work matrix", {

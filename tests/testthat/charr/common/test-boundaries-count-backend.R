@@ -11,7 +11,7 @@ test_that("boundary count handles every iterator type", {
     "\U0001f469\u200d\U0001f469\u200d\U0001f467\u200d\U0001f466e\u0301",
     "One. Two! Three?", "", NA
   ))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     count_boundaries(strings, opts_brkiter = list(type = "character")),
@@ -37,7 +37,7 @@ test_that("boundary count keeps dictionary engines and custom rules", {
   dictionary <- boundary_count_input(c(
     "日本語の文章です", "ภาษาไทยภาษาไทย"
   ))
-  expect_identical(charport::is_charvec(dictionary), charr_altrep())
+  expect_identical(is_charr_result(dictionary), charr_altrep())
   expect_identical(
     count_boundaries(dictionary, opts_brkiter = list(
       type = "word", skip_word_none = TRUE, locale = "ja"
@@ -61,7 +61,7 @@ test_that("boundary count is lenient for malformed declared UTF-8", {
   malformed <- rawToChar(as.raw(c(0xc3, 0x28)))
   Encoding(malformed) <- "UTF-8"
   malformed <- str_replace_all(malformed, fixed("\uffff"), "")
-  expect_identical(charport::is_charvec(malformed), charr_altrep())
+  expect_identical(is_charr_result(malformed), charr_altrep())
   expect_identical(
     count_boundaries(malformed, opts_brkiter = list(type = "word")),
     2L
@@ -72,7 +72,7 @@ test_that("boundary count is lenient for malformed declared UTF-8", {
 test_that("boundary locale fallback warns once per call", {
   skip_if_backend_lacks_locale_fallback_warning()
   strings <- boundary_count_input(rep("abc", 64L))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
   warnings <- character()
   value <- withCallingHandlers(
     count_boundaries(strings, opts_brkiter = list(

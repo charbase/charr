@@ -5,7 +5,7 @@ split_fixed <- function(...) charr_test_leaf("ci_split_fixed")(...)
 
 test_that("fixed split emits exact multibyte Reader slices", {
   strings <- charr_test_leaf("ci_trim_both")(c(" café🙂café ", " ü|🙂|é ", " x|á|x "))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   result <- split_fixed(strings, c("🙂", "|", "|"))
   expect_identical(
@@ -20,7 +20,7 @@ test_that("fixed split emits exact multibyte Reader slices", {
 
 test_that("fixed split stays inside adjacent Reader records", {
   strings <- charr_test_leaf("ci_trim_both")(c("a", "long_record_without_delimiter", "x_y", "z", "p__q"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     split_fixed(strings, "_"),
@@ -34,7 +34,7 @@ test_that("fixed split stays inside adjacent Reader records", {
 
 test_that("fixed split preserves n, omit_empty, and tokens_only interactions", {
   strings <- charr_test_leaf("ci_trim_both")(c(" a_b_c__d ", " _a__b_ "))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     split_fixed(strings[1], "_", n = 4L),
@@ -61,7 +61,7 @@ test_that("fixed split preserves n, omit_empty, and tokens_only interactions", {
 
 test_that("fixed split preserves empty, missing, and no-token shapes", {
   strings <- charr_test_leaf("ci_trim_both")(c("", "abc", NA_character_))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(split_fixed(strings[1], "_", n = 0L), list(character()))
   expect_identical(
@@ -85,7 +85,7 @@ test_that("fixed split preserves empty, missing, and no-token shapes", {
 
 test_that("fixed split preserves empty-pattern warnings and n validation order", {
   strings <- charr_test_leaf("ci_trim_both")(c("abc", ""))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_warning(
     empty_pattern <- split_fixed(strings, ""),
@@ -108,7 +108,7 @@ test_that("fixed split preserves empty-pattern warnings and n validation order",
 
 test_that("fixed split preserves omit NA, simplify, and recycling", {
   strings <- charr_test_leaf("ci_trim_both")(c("a__b", "x_y", ""))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     split_fixed(strings[1], "_", omit_empty = NA),
@@ -141,7 +141,7 @@ test_that("fixed split passes malformed UTF-8 fields through verbatim", {
   malformed <- rawToChar(as.raw(c(0x61, 0xff, 0x7c, 0x62)))
   Encoding(malformed) <- "UTF-8"
   strings <- charr_test_leaf("ci_replace_all_fixed")(malformed, "z", "z")
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   fields <- split_fixed(strings, "|")[[1]]
   expect_identical(charToRaw(fields[1]), as.raw(c(0x61, 0xff)))
@@ -152,7 +152,7 @@ test_that("fixed split passes malformed UTF-8 fields through verbatim", {
 test_that("fixed split persists many fields", {
   string <- paste(rep(c("a", "", "é"), 128L), collapse = "|")
   strings <- charr_test_leaf("ci_trim_both")(rep(string, 16L))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expected <- rep(c("a", NA_character_, "é"), 128L)
   fields <- split_fixed(strings, "|", omit_empty = NA)

@@ -58,8 +58,8 @@ expect_extract_boundaries_frame_unmaterialized <- function(backend, value) {
   if (!identical(backend, "altrep")) {
     return(invisible(NULL))
   }
-  expect_true(charport::is_charvec(value))
-  expect_false(charport::charport_info(value)$is_materialized)
+  expect_true(is_charr_result(value))
+  expect_lazy_result(value)
   invisible(NULL)
 }
 
@@ -81,7 +81,7 @@ expect_extract_boundaries_frame_output <- function(
   if (identical(backend, "altrep")) {
     expect_extract_boundaries_frame_unmaterialized(backend, value)
   } else {
-    expect_false(charport::is_charvec(value))
+    expect_false(is_charr_result(value))
   }
   invisible(NULL)
 }
@@ -148,6 +148,9 @@ test_that("boundary extraction preserves iterator types and skip ranges", {
         actual <- extract_boundaries_frame_invoke(
           backend, operation, input, backend_options
         )
+        expect_extract_boundaries_frame_output(
+          backend, actual, list_output = identical(operation, "all")
+        )
 
         expect_identical(
           actual, expected,
@@ -156,9 +159,6 @@ test_that("boundary extraction preserves iterator types and skip ranges", {
         expect_extract_boundaries_frame_unmaterialized(backend, input)
         expect_extract_boundaries_frame_unmaterialized(
           backend, backend_options$type
-        )
-        expect_extract_boundaries_frame_output(
-          backend, actual, list_output = identical(operation, "all")
         )
       }
     }
@@ -193,12 +193,12 @@ test_that("boundary extraction preserves custom rules and marked input", {
         actual <- extract_boundaries_frame_invoke(
           backend, operation, input, backend_options
         )
-
-        expect_identical(actual, expected, info = paste(backend, operation))
-        expect_extract_boundaries_frame_unmaterialized(backend, input)
         expect_extract_boundaries_frame_output(
           backend, actual, list_output = identical(operation, "all")
         )
+
+        expect_identical(actual, expected, info = paste(backend, operation))
+        expect_extract_boundaries_frame_unmaterialized(backend, input)
       }
     }
   }
@@ -317,11 +317,11 @@ test_that("all-boundary extraction preserves list and matrix shapes", {
           extract_boundaries_frame_options(backend, options),
           simplify = simplify, omit_no_match = case$omit
         )
-
-        expect_identical(actual, expected, info = paste(backend, simplify))
         expect_extract_boundaries_frame_output(
           backend, actual, list_output = identical(simplify, FALSE)
         )
+
+        expect_identical(actual, expected, info = paste(backend, simplify))
         expect_extract_boundaries_frame_unmaterialized(backend, input)
       }
     }

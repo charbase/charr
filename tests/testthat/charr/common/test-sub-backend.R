@@ -12,18 +12,18 @@ sub_replace_all <- function(..., replacement) {
 
 test_that("positional sub slices multibyte Reader records by code point", {
   strings <- charr_test_leaf("ci_trim_both")(c(" aé🙂üz ", " 🙂x🙂 ", " üü ", " abc "))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   result <- sub_pos(strings, from = c(2L, -2L, 2L, 2L), to = c(5L, -1L, 3L, 2L))
   expect_identical(result, c("é🙂ü", "x🙂", "̈u", "b"))
-  expect_identical(charport::is_charvec(result), charr_altrep())
+  expect_identical(is_charr_result(result), charr_altrep())
   expect_identical(Encoding(result), c("UTF-8", "UTF-8", "UTF-8", "unknown"))
 })
 
 
 test_that("positional sub preserves negative and out-of-range clamping", {
   strings <- charr_test_leaf("ci_trim_both")(rep(" aé🙂üz ", 10L))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     sub_pos(
@@ -38,7 +38,7 @@ test_that("positional sub preserves negative and out-of-range clamping", {
 
 test_that("positional sub preserves length and matrix forms", {
   strings <- charr_test_leaf("ci_trim_both")(c(" aé🙂üz ", " abc ", " 🙂x🙂 "))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     sub_pos(strings, from = c(2L, -2L, 2L), length = c(3L, 1L, 0L)),
@@ -79,7 +79,7 @@ test_that("positional sub preserves length and matrix forms", {
 
 test_that("positional sub stays inside short and long adjacent records", {
   strings <- charr_test_leaf("ci_trim_both")(c(" a ", " very_long_🙂_record ", " z ", " é🙂 "))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     sub_pos(strings, from = c(1L, 6L, -1L, 2L), length = c(1L, 6L, 1L, 1L)),
@@ -90,7 +90,7 @@ test_that("positional sub stays inside short and long adjacent records", {
 
 test_that("single positional replacement preserves insertion and omission rules", {
   strings <- charr_test_leaf("ci_trim_both")(rep(" aé🙂üz ", 8L))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   replaced <- sub_replace(
     strings,
@@ -105,7 +105,7 @@ test_that("single positional replacement preserves insertion and omission rules"
       "Xaé🙂üz", "aé🙂üX", "aé🙂üzX", NA
     )
   )
-  expect_identical(charport::is_charvec(replaced), charr_altrep())
+  expect_identical(is_charr_result(replaced), charr_altrep())
 
   expect_identical(
     sub_replace(
@@ -127,7 +127,7 @@ test_that("single positional replacement preserves insertion and omission rules"
 
 test_that("sub_all preserves inner shapes, matrices, and negative lengths", {
   strings <- charr_test_leaf("ci_trim_both")(c(" aé🙂üz ", " abc ", NA_character_))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     sub_all_pos(
@@ -162,7 +162,7 @@ test_that("sub_all preserves inner shapes, matrices, and negative lengths", {
 
 test_that("sub_all replacement splices sorted disjoint code-point ranges", {
   strings <- charr_test_leaf("ci_trim_both")(c(" aé🙂üz ", " abcdef "))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   result <- sub_replace_all(
     strings,
@@ -171,7 +171,7 @@ test_that("sub_all replacement splices sorted disjoint code-point ranges", {
     replacement = list(c("A", "B", "C"), c("X", "Y"))
   )
   expect_identical(result, c("AéBüC", "aXdY"))
-  expect_identical(charport::is_charvec(result), charr_altrep())
+  expect_identical(is_charr_result(result), charr_altrep())
 
   expect_identical(
     sub_replace_all(
@@ -201,7 +201,7 @@ test_that("positional sub is lenient for malformed UTF-8 Reader records", {
   malformed <- rawToChar(as.raw(c(0x61, 0xff, 0x62, 0x63)))
   Encoding(malformed) <- "UTF-8"
   strings <- charr_test_leaf("ci_replace_all_fixed")(malformed, "z", "z")
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   extracted <- sub_pos(strings, 2L, 3L)
   expect_identical(charToRaw(extracted), as.raw(c(0xff, 0x62)))

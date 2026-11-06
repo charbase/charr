@@ -393,7 +393,7 @@ test_that("fixed matchers stay within Reader-backed record lengths", {
   # not C strings. Neighbouring records must never satisfy a search in the
   # preceding record. The stringi oracle asserts the same observable result.
   strings <- charr_test_leaf("ci_trim_both")(c("aaa", "z", "aaaa", "xyz", "abcx"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     detect_fixed(strings, c("z", "z", "xy", "xy", "x")),
@@ -409,7 +409,7 @@ test_that("short fixed matchers skip false first-byte candidates", {
   strings <- charr_test_leaf("ci_trim_both")(c(
     "ttttttthe", "ttttttthx", "abababababa", "abcabcabc", "short"
   ))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
   expect_identical(
     detect_fixed(strings, c("the", "the", "aba", "cab", "shorter")),
     c(TRUE, FALSE, TRUE, TRUE, FALSE)

@@ -52,9 +52,9 @@ expect_read_lines_frame_shape <- function(backend, value) {
   expect_null(attributes(value))
 
   if (identical(backend, "base")) {
-    expect_false(charport::is_charvec(value))
+    expect_false(is_charr_result(value))
   } else if (identical(backend, "altrep")) {
-    expect_true(charport::is_charvec(value))
+    expect_true(is_charr_result(value))
     expect_false(charport::charport_info(value)$is_materialized)
   }
   invisible(NULL)

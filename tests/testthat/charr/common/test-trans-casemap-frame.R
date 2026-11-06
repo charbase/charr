@@ -45,7 +45,7 @@ expect_casemap_frame_parity <- function(mode, values, locale) {
 
     if (identical(backend, "altrep")) {
       expect_false(charport::charport_info(actual$input)$is_materialized)
-      expect_true(charport::is_charvec(actual$output))
+      expect_true(is_charr_result(actual$output))
       expect_false(charport::charport_info(actual$output)$is_materialized)
     }
 

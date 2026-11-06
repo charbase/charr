@@ -78,8 +78,8 @@ expect_trim_frame_lazy <- function(backend, inputs, output = NULL) {
   expect_true(charport::is_charvec(inputs$pattern))
   expect_false(charport::charport_info(inputs$pattern)$is_materialized)
   if (!is.null(output)) {
-    expect_true(charport::is_charvec(output))
-    expect_false(charport::charport_info(output)$is_materialized)
+    expect_true(is_charr_result(output))
+    expect_lazy_result(output)
   }
   invisible(NULL)
 }
@@ -117,9 +117,9 @@ test_that("character-class trim preserves direction and vectorization", {
         actual <- trim_frame_invoke(
           backend, direction, inputs, negate = negate
         )
+        expect_trim_frame_lazy(backend, inputs, actual)
 
         expect_identical(actual, oracle, info = backend)
-        expect_trim_frame_lazy(backend, inputs, actual)
       }
     }
   }
@@ -222,8 +222,8 @@ test_that("character-class trim warning errors leave the Frame reusable", {
         )
       )
       actual <- trim_frame_invoke(backend, direction, valid_inputs)
-      expect_identical(actual, oracle, info = backend)
       expect_trim_frame_lazy(backend, valid_inputs, actual)
+      expect_identical(actual, oracle, info = backend)
     }
   }
 })
@@ -244,6 +244,7 @@ test_that("character-class trim warnings permit ALTREP reentry", {
       )
     }
   )
+  expect_trim_frame_lazy("altrep", inputs, actual$value)
 
   oracle <- trim_frame_capture(trim_frame_invoke(
     "stringi", "both",
@@ -255,6 +256,5 @@ test_that("character-class trim warnings permit ALTREP reentry", {
   expect_identical(actual$events, oracle$events)
   expect_identical(actual$value, oracle$value)
   expect_identical(reentered, c("a", "b", "c"))
-  expect_trim_frame_lazy("altrep", inputs, actual$value)
   expect_false(charport::charport_info(scalar_pattern)$is_materialized)
 })

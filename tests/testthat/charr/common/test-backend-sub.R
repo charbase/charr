@@ -182,7 +182,7 @@ test_that("sub_all converts only source records with requested substrings", {
   )
   expected <- stringi::stri_sub_all(values, from = from, to = to)
 
-  expect_altrep_charvec_list(actual)
+  expect_altrep_result_list(actual)
   invisible(lapply(actual, expect_sub_unmaterialized))
   expect_identical(actual, expected)
   expect_sub_unmaterialized(subject)
@@ -198,7 +198,7 @@ test_that("sub_all reuses one source borrow across many singleton records", {
   )
 
   expect_length(actual, n)
-  expect_altrep_charvec_list(actual)
+  expect_altrep_result_list(actual)
   expect_identical(actual[c(1L, n)], list("b", "b"))
   expect_sub_unmaterialized(subject)
 })

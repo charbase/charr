@@ -117,7 +117,7 @@ replace_coll_frame_marked <- function(bytes, encoding) {
 
 expect_replace_coll_frame_shape <- function(backend, inputs, output = NULL) {
   if (identical(backend, "base") && !is.null(output)) {
-    expect_false(charport::is_charvec(output))
+    expect_false(is_charr_result(output))
   }
   if (!identical(backend, "altrep")) {
     return(invisible(NULL))
@@ -128,8 +128,8 @@ expect_replace_coll_frame_shape <- function(backend, inputs, output = NULL) {
     expect_false(charport::charport_info(input)$is_materialized)
   }
   if (!is.null(output)) {
-    expect_true(charport::is_charvec(output))
-    expect_false(charport::charport_info(output)$is_materialized)
+    expect_true(is_charr_result(output))
+    expect_lazy_result(output)
   }
   invisible(NULL)
 }
@@ -161,6 +161,7 @@ test_that("collation replacement preserves Frame results and encodings", {
         backend, operation, inputs,
         opts_collator = options
       )
+      expect_replace_coll_frame_shape(backend, inputs, actual)
 
       expect_identical(actual, oracle, info = paste(backend, operation))
       expect_identical(
@@ -176,7 +177,6 @@ test_that("collation replacement preserves Frame results and encodings", {
         Encoding(actual), Encoding(oracle),
         info = paste(backend, operation)
       )
-      expect_replace_coll_frame_shape(backend, inputs, actual)
     }
   }
 })
@@ -200,8 +200,8 @@ test_that("sequential collation replacement preserves traversal", {
       backend, "all", inputs,
       vectorize_all = FALSE, opts_collator = options
     )
-    expect_identical(actual, oracle, info = backend)
     expect_replace_coll_frame_shape(backend, inputs, actual)
+    expect_identical(actual, oracle, info = backend)
   }
 
   missing_pattern <- c("z", NA_character_)
@@ -216,8 +216,8 @@ test_that("sequential collation replacement preserves traversal", {
     actual <- replace_coll_frame_invoke(
       backend, "all", inputs, vectorize_all = FALSE
     )
-    expect_identical(actual, oracle_missing, info = backend)
     expect_replace_coll_frame_shape(backend, inputs, actual)
+    expect_identical(actual, oracle_missing, info = backend)
   }
 })
 
@@ -288,8 +288,8 @@ test_that("collation replacement keeps validation and warning order", {
         vectorize_all = scenario$vectorize_all,
         opts_collator = scenario$options
       ))
-      expect_identical(actual, oracle, info = backend)
       expect_replace_coll_frame_shape(backend, inputs, actual$value)
+      expect_identical(actual, oracle, info = backend)
     }
   }
 
@@ -303,8 +303,8 @@ test_that("collation replacement keeps validation and warning order", {
     actual <- replace_coll_frame_capture(replace_coll_frame_invoke(
       backend, "all", inputs, vectorize_all = FALSE
     ))
-    expect_identical(actual, scalar_empty_oracle, info = backend)
     expect_replace_coll_frame_shape(backend, inputs, actual$value)
+    expect_identical(actual, scalar_empty_oracle, info = backend)
   }
 })
 
@@ -333,7 +333,7 @@ test_that("collation replacement warnings leave Frames reusable", {
     actual <- replace_coll_frame_invoke(
       backend, "all", valid_inputs
     )
-    expect_identical(actual, oracle, info = backend)
     expect_replace_coll_frame_shape(backend, valid_inputs, actual)
+    expect_identical(actual, oracle, info = backend)
   }
 })

@@ -5,7 +5,14 @@
 #
 #   * the r-hub actions are pinned by commit SHA rather than the mutable v1 tag;
 #   * `config` defaults to every platform r-hub offers, not the three-platform
-#     upstream default.
+#     upstream default;
+#   * charport is installed from its GitHub default branch rather than CRAN,
+#     as in R-CMD-check.yaml (`extra-packages` in both setup-deps steps, and a
+#     GITHUB_PAT for the GitHub API).
+#   * each Linux container has its own R_LIBS_USER, and so its own package
+#     cache (see the linux-containers job);
+#   * the Linux containers check charr at -O2, as CRAN does, rather than the
+#     -O3 their Makevars sets (see the "Compile at -O2" step).
 #
 # The pinned SHA resolves the platform names, so the pin and the list below are
 # two halves of one fact and are updated together by `make rhub-platforms`.
@@ -42,6 +49,7 @@ on:
 env:
   BUILD_ARGS: --no-build-vignettes
   CHECK_ARGS: --ignore-vignettes
+  GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
 
@@ -69,6 +77,14 @@ jobs:
         config: ${{ fromJson(needs.setup.outputs.containers) }}
     container:
       image: ${{ matrix.config.container }}
+    # setup-deps caches R_LIBS_USER under a key built from the OS release, the
+    # R version and the R-hub repository, so containers that differ only in
+    # compiler restore each other's builds (an Intel-built charport needing
+    # libsvml.so, a digest linked against libc++). actions/cache only restores
+    # an entry saved from the same paths, so a library path per platform keeps
+    # the caches apart.
+    env:
+      R_LIBS_USER: /github/home/R/rhub-${{ matrix.config.label }}
 
     steps:
       - uses: r-hub/actions/checkout@cf6c8eff3145ef225104294e6b0c023de4bba9c6 # v1.7.7
@@ -80,6 +96,18 @@ jobs:
         with:
           token: ${{ secrets.RHUB_TOKEN }}
           job-config: ${{ matrix.config.job-config }}
+          extra-packages: any::rcmdcheck, github::charbase/charport
+      # The compiler containers point R_MAKEVARS_USER at a Makevars that builds
+      # with -O3, which CRAN's checks do not use. At -O3, GCC 13-15 report
+      # false positives (-Warray-bounds in charport's headers,
+      # -Wstringop-overflow in ICU's decNumber) that R CMD check counts as
+      # warnings. Check at -O2 and leave the Makevars' other flags alone.
+      - name: Compile at -O2
+        run: |
+          if [ -f "${R_MAKEVARS_USER:-}" ]; then
+            sed -i 's/-O3\b/-O2/g' "$R_MAKEVARS_USER"
+            cat "$R_MAKEVARS_USER"
+          fi
       - uses: r-hub/actions/run-check@cf6c8eff3145ef225104294e6b0c023de4bba9c6 # v1.7.7
         with:
           token: ${{ secrets.RHUB_TOKEN }}
@@ -109,6 +137,7 @@ jobs:
         with:
           job-config: ${{ matrix.config.job-config }}
           token: ${{ secrets.RHUB_TOKEN }}
+          extra-packages: any::rcmdcheck, github::charbase/charport
       - uses: r-hub/actions/run-check@cf6c8eff3145ef225104294e6b0c023de4bba9c6 # v1.7.7
         with:
           job-config: ${{ matrix.config.job-config }}

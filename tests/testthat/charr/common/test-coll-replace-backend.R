@@ -11,9 +11,9 @@ test_that("coll replace splices literal UTF-16 ranges", {
   ))
   patterns <- replace_coll_input(c("a", "ü", "aa", "a", "x", "a"))
   replacements <- replace_coll_input(c("$1", "Z", NA))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-  expect_identical(charport::is_charvec(patterns), charr_altrep())
-  expect_identical(charport::is_charvec(replacements), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
+  expect_identical(is_charr_result(patterns), charr_altrep())
+  expect_identical(is_charr_result(replacements), charr_altrep())
   opts <- list(locale = "de", strength = 1L)
 
   all <- replace_all_coll(
@@ -28,8 +28,8 @@ test_that("coll replace splices literal UTF-16 ranges", {
   expect_identical(
     first, c("😀$1-a-A", "ZxÜ", NA, "none", "", NA)
   )
-  expect_identical(charport::is_charvec(all), charr_altrep())
-  expect_identical(charport::is_charvec(first), charr_altrep())
+  expect_identical(is_charr_result(all), charr_altrep())
+  expect_identical(is_charr_result(first), charr_altrep())
   expect_identical(
     Encoding(all),
     c("UTF-8", "unknown", "unknown", "unknown", "unknown", "unknown")
@@ -41,9 +41,9 @@ test_that("coll replace preserves locale tailoring and strength", {
   danish <- replace_coll_input(c("Aarhus", "Århus", "blaa", "blå"))
   danish_patterns <- replace_coll_input(c("Å", "aa"))
   replacement <- replace_coll_input("X")
-  expect_identical(charport::is_charvec(danish), charr_altrep())
-  expect_identical(charport::is_charvec(danish_patterns), charr_altrep())
-  expect_identical(charport::is_charvec(replacement), charr_altrep())
+  expect_identical(is_charr_result(danish), charr_altrep())
+  expect_identical(is_charr_result(danish_patterns), charr_altrep())
+  expect_identical(is_charr_result(replacement), charr_altrep())
   expect_identical(
     replace_all_coll(
       danish, danish_patterns, replacement,
@@ -83,10 +83,10 @@ test_that("coll replace preserves NA and empty-pattern timing", {
   hit_patterns <- replace_coll_input(c("h", "i"))
   miss_patterns <- replace_coll_input(c("z", "i"))
   replacements <- replace_coll_input(c(NA, "X"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-  expect_identical(charport::is_charvec(hit_patterns), charr_altrep())
-  expect_identical(charport::is_charvec(miss_patterns), charr_altrep())
-  expect_identical(charport::is_charvec(replacements), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
+  expect_identical(is_charr_result(hit_patterns), charr_altrep())
+  expect_identical(is_charr_result(miss_patterns), charr_altrep())
+  expect_identical(is_charr_result(replacements), charr_altrep())
 
   expect_identical(
     replace_all_coll(
@@ -134,14 +134,14 @@ test_that("coll replace sequential mode applies patterns in order", {
   ))
   patterns <- replace_coll_input(c("ä", "a", "Ü"))
   replacements <- replace_coll_input(c("X", "Y", "Z"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-  expect_identical(charport::is_charvec(patterns), charr_altrep())
-  expect_identical(charport::is_charvec(replacements), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
+  expect_identical(is_charr_result(patterns), charr_altrep())
+  expect_identical(is_charr_result(replacements), charr_altrep())
 
   result <- replace_all_coll(
     strings, patterns, replacements, vectorize_all = FALSE,
     opts_collator = list(locale = "de", strength = 3L)
   )
   expect_identical(result, c("X-Y-A", "ü-Z", "å-YY", "none", "", NA))
-  expect_identical(charport::is_charvec(result), charr_altrep())
+  expect_identical(is_charr_result(result), charr_altrep())
 })

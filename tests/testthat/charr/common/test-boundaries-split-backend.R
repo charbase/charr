@@ -11,14 +11,14 @@ test_that("boundary split handles every ICU iterator type", {
     "日本語の文章です", "ภาษาไทยภาษาไทย",
     "One. Two! Three?"
   ))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   character <- split_boundaries(
     strings[1L], opts_brkiter = list(type = "character")
   )
   expect_identical(character, list(c("👩‍👩‍👧‍👦", "e\u0301")))
   expect_identical(
-    charport::is_charvec(character[[1L]]), charr_altrep()
+    is_charr_result(character[[1L]]), charr_altrep()
   )
   word_opts <- list(type = "word", skip_word_none = TRUE)
   expect_identical(
@@ -40,7 +40,7 @@ test_that("boundary split handles every ICU iterator type", {
 })
 test_that("boundary split preserves n, tokens_only, and skip accounting", {
   string <- boundary_split_input("abc 123 日本語 カナ")
-  expect_identical(charport::is_charvec(string), charr_altrep())
+  expect_identical(is_charr_result(string), charr_altrep())
   words <- list(type = "word", skip_word_none = TRUE)
 
   expect_identical(
@@ -66,7 +66,7 @@ test_that("boundary split preserves n, tokens_only, and skip accounting", {
 
 test_that("boundary split preserves recycling, NA, empty, and simplify shapes", {
   strings <- boundary_split_input(c("abc def", "", NA, "123 456"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
   opts <- list(type = "word", skip_word_none = TRUE)
 
   expect_warning(
@@ -79,7 +79,7 @@ test_that("boundary split preserves recycling, NA, empty, and simplify shapes", 
     list("abc def", character(), NA_character_, "123 456")
   )
   expect_identical(
-    vapply(recycled, charport::is_charvec, logical(1L)),
+    vapply(recycled, is_charr_result, logical(1L)),
     rep(charr_altrep(), 4L)
   )
 
@@ -125,7 +125,7 @@ test_that("boundary split supports custom rules and malformed UTF-8", {
     "$letters+; $numbers+; .;"
   )
   strings <- boundary_split_input(c("abc 123", "é42"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
   expect_identical(
     split_boundaries(strings, opts_brkiter = list(type = rules)),
     list(c("abc", " ", "123"), c("é", "42"))
@@ -134,7 +134,7 @@ test_that("boundary split supports custom rules and malformed UTF-8", {
   malformed <- rawToChar(as.raw(c(0x61, 0xc3, 0x28, 0x62)))
   Encoding(malformed) <- "UTF-8"
   malformed <- str_replace_all(malformed, fixed("\uffff"), "")
-  expect_identical(charport::is_charvec(malformed), charr_altrep())
+  expect_identical(is_charr_result(malformed), charr_altrep())
   opts <- list(type = "character")
   expect_identical(
     split_boundaries(malformed, opts_brkiter = opts),

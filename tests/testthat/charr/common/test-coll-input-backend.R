@@ -13,8 +13,8 @@ test_that("coll input search reads CHARVEC UTF-16 records", {
     " äpfel ", " Apfel ", " blåbær ", " blaa ", " 😀ä ", " ", NA
   ))
   patterns <- coll_input(c("a", "a", "blaa", "blå", "ä", "x", "a"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-  expect_identical(charport::is_charvec(patterns), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
+  expect_identical(is_charr_result(patterns), charr_altrep())
 
   primary <- list(locale = "de", strength = 1L)
   tertiary <- list(locale = "de", strength = 3L)
@@ -36,8 +36,8 @@ test_that("coll input search reads CHARVEC UTF-16 records", {
 test_that("coll starts and ends use code-point from/to indexes", {
   strings <- coll_input(rep("aé😀bcä", 8L))
   patterns <- coll_input(c("a", "é", "😀", "b", "c", "a", "ä", "x"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-  expect_identical(charport::is_charvec(patterns), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
+  expect_identical(is_charr_result(patterns), charr_altrep())
 
   opts <- list(locale = "de", strength = 1L)
   expect_identical(
@@ -62,8 +62,8 @@ test_that("coll search preserves Danish tailoring, recycling, and max_count", {
     "Aarhus", "Århus", "blaa", "blå", "none", "", NA, "Aalborg"
   ))
   patterns <- coll_input(c("Å", "aa"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-  expect_identical(charport::is_charvec(patterns), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
+  expect_identical(is_charr_result(patterns), charr_altrep())
 
   opts <- list(locale = "da", strength = 1L)
   expect_identical(
@@ -104,8 +104,8 @@ test_that("coll empty patterns warn once and numeric search errors", {
   strings <- coll_input(c("abc", "", NA))
   empty <- coll_input("")
   numeric_pattern <- coll_input("x2")
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-  expect_identical(charport::is_charvec(empty), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
+  expect_identical(is_charr_result(empty), charr_altrep())
 
   expect_warning(
     value <- detect_coll(strings, empty, max_count = 0L),

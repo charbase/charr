@@ -62,13 +62,13 @@ test_that("boundary character results preserve every iterator traversal", {
         subject, opts_brkiter = case$opts
       )
     )
+    expect_boundary_char_unmaterialized(first)
     expect_identical(
       first,
       stringi::stri_extract_first_boundaries(
         case$values, opts_brkiter = case$opts
       )
     )
-    expect_boundary_char_unmaterialized(first)
 
     all <- with_test_backend(
       TRUE,
@@ -76,13 +76,13 @@ test_that("boundary character results preserve every iterator traversal", {
         subject, opts_brkiter = case$opts
       )
     )
+    expect_boundary_char_list_unmaterialized(all)
     expect_identical(
       all,
       stringi::stri_extract_all_boundaries(
         case$values, opts_brkiter = case$opts
       )
     )
-    expect_boundary_char_list_unmaterialized(all)
 
     split <- with_test_backend(
       TRUE,
@@ -90,13 +90,13 @@ test_that("boundary character results preserve every iterator traversal", {
         subject, opts_brkiter = case$opts
       )
     )
+    expect_boundary_char_list_unmaterialized(split)
     expect_identical(
       split,
       stringi::stri_split_boundaries(
         case$values, opts_brkiter = case$opts
       )
     )
-    expect_boundary_char_list_unmaterialized(split)
     expect_boundary_char_unmaterialized(subject)
   }
 })
@@ -127,21 +127,21 @@ test_that("boundary character results preserve skip rules and custom rules", {
         subject, opts_brkiter = opts
       )
     )
+    expect_boundary_char_list_unmaterialized(extracted)
     expect_identical(
       extracted,
       stringi::stri_extract_all_boundaries(value, opts_brkiter = opts)
     )
-    expect_boundary_char_list_unmaterialized(extracted)
 
     split <- with_test_backend(
       TRUE,
       charr_test_leaf("ci_split_boundaries")(subject, opts_brkiter = opts)
     )
+    expect_boundary_char_list_unmaterialized(split)
     expect_identical(
       split,
       stringi::stri_split_boundaries(value, opts_brkiter = opts)
     )
-    expect_boundary_char_list_unmaterialized(split)
   }
 
   rules <- paste0(
@@ -157,13 +157,13 @@ test_that("boundary character results preserve skip rules and custom rules", {
       custom_subject, opts_brkiter = custom_opts
     )
   )
+  expect_boundary_char_list_unmaterialized(custom_extract)
   expect_identical(
     custom_extract,
     stringi::stri_extract_all_boundaries(
       custom_values, opts_brkiter = custom_opts
     )
   )
-  expect_boundary_char_list_unmaterialized(custom_extract)
 
   custom_split <- with_test_backend(
     TRUE,
@@ -171,13 +171,13 @@ test_that("boundary character results preserve skip rules and custom rules", {
       custom_subject, opts_brkiter = custom_opts
     )
   )
+  expect_boundary_char_list_unmaterialized(custom_split)
   expect_identical(
     custom_split,
     stringi::stri_split_boundaries(
       custom_values, opts_brkiter = custom_opts
     )
   )
-  expect_boundary_char_list_unmaterialized(custom_split)
   expect_boundary_char_unmaterialized(subject)
   expect_boundary_char_unmaterialized(custom_subject)
 })
@@ -196,11 +196,11 @@ test_that("boundary extraction preserves NA, omit, and simplify shapes", {
       subject, opts_brkiter = opts
     )
   )
+  expect_boundary_char_unmaterialized(first)
   expect_identical(
     first,
     stringi::stri_extract_first_boundaries(values, opts_brkiter = opts)
   )
-  expect_boundary_char_unmaterialized(first)
 
   for (omit_no_match in c(FALSE, TRUE)) {
     all <- with_test_backend(
@@ -210,6 +210,7 @@ test_that("boundary extraction preserves NA, omit, and simplify shapes", {
         opts_brkiter = opts
       )
     )
+    expect_boundary_char_list_unmaterialized(all)
     expect_identical(
       all,
       stringi::stri_extract_all_boundaries(
@@ -217,7 +218,6 @@ test_that("boundary extraction preserves NA, omit, and simplify shapes", {
         opts_brkiter = opts
       )
     )
-    expect_boundary_char_list_unmaterialized(all)
   }
 
   mixed_values <- c("abc 123", "abc", NA_character_, "")
@@ -230,13 +230,13 @@ test_that("boundary extraction preserves NA, omit, and simplify shapes", {
         mixed, simplify = simplify, opts_brkiter = words
       )
     )
+    expect_boundary_char_unmaterialized(matrix_result)
     expect_identical(
       matrix_result,
       stringi::stri_extract_all_boundaries(
         mixed_values, simplify = simplify, opts_brkiter = words
       )
     )
-    expect_boundary_char_unmaterialized(matrix_result)
   }
 
   empty <- charport::as_charvec(character())
@@ -291,6 +291,7 @@ test_that("boundary split preserves n, tokens_only, recycling, and simplify", {
         )
       )
     )
+    expect_boundary_char_list_unmaterialized(actual$value)
     expected <- boundary_char_condition_events(
       stringi::stri_split_boundaries(
         values, n = case$n, tokens_only = case$tokens_only,
@@ -298,7 +299,6 @@ test_that("boundary split preserves n, tokens_only, recycling, and simplify", {
       )
     )
     expect_identical(actual, expected)
-    expect_boundary_char_list_unmaterialized(actual$value)
   }
 
   for (simplify in list(TRUE, NA)) {
@@ -309,6 +309,7 @@ test_that("boundary split preserves n, tokens_only, recycling, and simplify", {
         opts_brkiter = opts
       )
     )
+    expect_boundary_char_unmaterialized(matrix_result)
     expect_identical(
       matrix_result,
       stringi::stri_split_boundaries(
@@ -316,7 +317,6 @@ test_that("boundary split preserves n, tokens_only, recycling, and simplify", {
         opts_brkiter = opts
       )
     )
-    expect_boundary_char_unmaterialized(matrix_result)
   }
 
   empty <- with_test_backend(
@@ -351,6 +351,7 @@ test_that("boundary character output can be consumed without materializing", {
       extracted[[1L]], opts_brkiter = list(type = "character")
     )
   )
+  expect_boundary_char_list_unmaterialized(chained)
   expect_identical(
     chained,
     stringi::stri_split_boundaries(
@@ -360,7 +361,6 @@ test_that("boundary character output can be consumed without materializing", {
       opts_brkiter = list(type = "character")
     )
   )
-  expect_boundary_char_list_unmaterialized(chained)
   expect_boundary_char_unmaterialized(extracted[[1L]])
   expect_boundary_char_unmaterialized(subject)
 })
@@ -501,6 +501,7 @@ test_that("boundary character results preserve marked input semantics", {
     TRUE,
     charr_test_leaf("ci_extract_first_boundaries")(subject, opts_brkiter = opts)
   )
+  expect_boundary_char_unmaterialized(first)
   expected_first <- stringi::stri_extract_first_boundaries(
     values, opts_brkiter = opts
   )
@@ -510,27 +511,26 @@ test_that("boundary character results preserve marked input semantics", {
     lapply(expected_first, charToRaw)
   )
   expect_identical(Encoding(first), Encoding(expected_first))
-  expect_boundary_char_unmaterialized(first)
 
   all <- with_test_backend(
     TRUE,
     charr_test_leaf("ci_extract_all_boundaries")(subject, opts_brkiter = opts)
   )
+  expect_boundary_char_list_unmaterialized(all)
   expect_identical(
     all,
     stringi::stri_extract_all_boundaries(values, opts_brkiter = opts)
   )
-  expect_boundary_char_list_unmaterialized(all)
 
   split <- with_test_backend(
     TRUE,
     charr_test_leaf("ci_split_boundaries")(subject, opts_brkiter = opts)
   )
+  expect_boundary_char_list_unmaterialized(split)
   expect_identical(
     split,
     stringi::stri_split_boundaries(values, opts_brkiter = opts)
   )
-  expect_boundary_char_list_unmaterialized(split)
   expect_boundary_char_unmaterialized(subject)
 
   bytes <- boundary_char_marked_string(c(0xff, 0xfe), "bytes")

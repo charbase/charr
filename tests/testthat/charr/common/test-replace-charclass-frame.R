@@ -85,7 +85,7 @@ expect_replace_charclass_frame_shape <- function(
     backend, inputs, output = NULL
 ) {
   if (identical(backend, "base") && !is.null(output)) {
-    expect_false(charport::is_charvec(output))
+    expect_false(is_charr_result(output))
   }
   if (!identical(backend, "altrep")) {
     return(invisible(NULL))
@@ -96,8 +96,8 @@ expect_replace_charclass_frame_shape <- function(
     expect_false(charport::charport_info(input)$is_materialized)
   }
   if (!is.null(output)) {
-    expect_true(charport::is_charvec(output))
-    expect_false(charport::charport_info(output)$is_materialized)
+    expect_true(is_charr_result(output))
+    expect_lazy_result(output)
   }
   invisible(NULL)
 }
@@ -409,9 +409,9 @@ test_that("character-class replacement preserves encoded and malformed input", {
         backend, subject, "[a]", malformed
       )
       actual <- replace_charclass_frame_invoke(backend, inputs)
+      expect_replace_charclass_frame_shape(backend, inputs, actual)
       expect_identical(actual, oracle, info = backend)
       expect_identical(charToRaw(actual), charToRaw(oracle), info = backend)
-      expect_replace_charclass_frame_shape(backend, inputs, actual)
     }
   }
 
@@ -428,9 +428,9 @@ test_that("character-class replacement preserves encoded and malformed input", {
       actual <- replace_charclass_frame_invoke(
         backend, inputs, merge = merge
       )
+      expect_replace_charclass_frame_shape(backend, inputs, actual)
       expect_identical(actual, oracle, info = backend)
       expect_identical(Encoding(actual), Encoding(oracle), info = backend)
-      expect_replace_charclass_frame_shape(backend, inputs, actual)
     }
   }
 })
@@ -515,6 +515,7 @@ test_that("character-class recycling warnings permit ALTREP reentry", {
       )
     }
   )
+  expect_replace_charclass_frame_shape("altrep", inputs, actual$value)
   oracle <- replace_charclass_frame_capture(
     replace_charclass_frame_invoke(
       "stringi",
@@ -530,7 +531,6 @@ test_that("character-class recycling warnings permit ALTREP reentry", {
   expect_identical(actual$events, oracle$events)
   expect_identical(actual$value, oracle$value)
   expect_identical(reentered, c("y1", "y2", "y3"))
-  expect_replace_charclass_frame_shape("altrep", inputs, actual$value)
   expect_false(charport::charport_info(scalar_pattern)$is_materialized)
   expect_false(charport::charport_info(scalar_replacement)$is_materialized)
 })

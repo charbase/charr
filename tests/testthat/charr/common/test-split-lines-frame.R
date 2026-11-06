@@ -75,9 +75,9 @@ line_split_marked <- function(bytes, encoding) {
 expect_line_split_shape <- function(backend, input, output, scalar = FALSE) {
   if (identical(backend, "base")) {
     if (scalar) {
-      expect_false(charport::is_charvec(output))
+      expect_false(is_charr_result(output))
     } else {
-      expect_false(any(vapply(output, charport::is_charvec, logical(1))))
+      expect_false(any(vapply(output, is_charr_result, logical(1))))
     }
     return(invisible(NULL))
   }
@@ -88,10 +88,10 @@ expect_line_split_shape <- function(backend, input, output, scalar = FALSE) {
   expect_true(charport::is_charvec(input))
   expect_false(charport::charport_info(input)$is_materialized)
   if (scalar) {
-    expect_true(charport::is_charvec(output))
+    expect_true(is_charr_result(output))
     expect_false(charport::charport_info(output)$is_materialized)
   } else {
-    expect_true(all(vapply(output, charport::is_charvec, logical(1))))
+    expect_true(all(vapply(output, is_charr_result, logical(1))))
     expect_true(all(vapply(
       output,
       function(value) !charport::charport_info(value)$is_materialized,

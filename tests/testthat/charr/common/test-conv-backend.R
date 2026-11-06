@@ -7,11 +7,11 @@ test_that("conv reads CHARVEC records and preserves marked conversion", {
     c("ascii", "aé", "ü", "🙂", "very_long_🙂_record", "", NA),
     "not present", ""
   )
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   utf8 <- charr_test_leaf("ci_conv")(strings, NULL, "UTF-8")
   expect_identical(utf8, strings)
-  expect_identical(charport::is_charvec(utf8), charr_altrep())
+  expect_identical(is_charr_result(utf8), charr_altrep())
 
   latin_input <- strings[c(1L, 2L, 6L, 7L)]
   latin_raw <- charr_test_leaf("ci_conv")(latin_input, NULL, "latin1", to_raw = TRUE)
@@ -24,7 +24,7 @@ test_that("conv reads CHARVEC records and preserves marked conversion", {
     "cannot be converted"
   )
   latin <- suppressWarnings(charr_test_leaf("ci_conv")(strings, NULL, "latin1"))
-  expect_identical(charport::is_charvec(latin), charr_altrep())
+  expect_identical(is_charr_result(latin), charr_altrep())
 })
 
 

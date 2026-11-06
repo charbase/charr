@@ -254,8 +254,8 @@ test_that("line splitting recognizes every copied separator", {
   subject <- charport::as_charvec(values)
 
   actual <- charr_test_leaf("ci_split_lines")(subject, FALSE)
-  expect_identical(actual, stringi::stri_split_lines(values, FALSE))
   expect_altrep_unmaterialized_list(actual)
+  expect_identical(actual, stringi::stri_split_lines(values, FALSE))
   expect_join_other_unmaterialized(subject)
 })
 

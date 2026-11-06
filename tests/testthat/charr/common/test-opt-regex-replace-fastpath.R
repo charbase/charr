@@ -46,11 +46,13 @@ test_that("optimized regex replacement matches stringi on multilingual text", {
     for (backend in c("base", "altrep")) {
       subject <- regex_replace_fastpath_input(backend, values)
       actual <- with_backend(backend, operation(subject, pattern, replacement))
+      if (identical(backend, "altrep")) {
+        expect_true(is_charr_result(actual))
+        expect_lazy_result(actual)
+      }
       expect_identical(actual, expected)
       expect_identical(Encoding(actual), Encoding(expected))
       if (identical(backend, "altrep")) {
-        expect_true(charport::is_charvec(actual))
-        expect_false(charport::charport_info(actual)$is_materialized)
         expect_false(charport::charport_info(subject)$is_materialized)
       }
     }

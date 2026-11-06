@@ -83,10 +83,10 @@ test_that("optimized regex extraction matches stringi on scalar patterns", {
     expect_identical(altrep_result, expected)
     if (is.list(altrep_result)) {
       expect_true(all(vapply(
-        altrep_result, charport::is_charvec, logical(1)
+        altrep_result, is_charr_result, logical(1)
       )))
     } else {
-      expect_true(charport::is_charvec(altrep_result))
+      expect_true(is_charr_result(altrep_result))
     }
     expect_false(charport::charport_info(input)$is_materialized)
   }

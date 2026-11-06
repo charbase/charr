@@ -82,8 +82,8 @@ expect_split_boundaries_frame_unmaterialized <- function(backend, value) {
   if (!identical(backend, "altrep")) {
     return(invisible(NULL))
   }
-  expect_true(charport::is_charvec(value))
-  expect_false(charport::charport_info(value)$is_materialized)
+  expect_true(is_charr_result(value))
+  expect_lazy_result(value)
   invisible(NULL)
 }
 
@@ -104,7 +104,7 @@ expect_split_boundaries_frame_output <- function(
       expect_false(charport::is_charvec(element))
     }
   } else {
-    expect_false(charport::is_charvec(value))
+    expect_false(is_charr_result(value))
   }
   invisible(NULL)
 }
@@ -154,6 +154,7 @@ test_that("boundary split preserves iterator types and skip ranges", {
       actual <- split_boundaries_frame_invoke(
         backend, input, options = backend_options
       )
+      expect_split_boundaries_frame_output(backend, actual, FALSE)
 
       expect_identical(actual, expected, info = backend)
       if (identical(options$type, "char")) {
@@ -166,7 +167,6 @@ test_that("boundary split preserves iterator types and skip ranges", {
       expect_split_boundaries_frame_unmaterialized(
         backend, backend_options$type
       )
-      expect_split_boundaries_frame_output(backend, actual, FALSE)
     }
   }
 })
@@ -207,12 +207,12 @@ test_that("boundary split preserves n, token caps, and matrix shapes", {
           options = split_boundaries_frame_options(backend, options)
         )
       )
-
-      expect_identical(actual$events, expected$events, info = backend)
-      expect_identical(actual$value, expected$value, info = backend)
       expect_split_boundaries_frame_output(
         backend, actual$value, case$simplify
       )
+
+      expect_identical(actual$events, expected$events, info = backend)
+      expect_identical(actual$value, expected$value, info = backend)
       expect_split_boundaries_frame_unmaterialized(backend, input)
     }
   }
@@ -239,10 +239,10 @@ test_that("boundary split preserves n, token caps, and matrix shapes", {
         backend, input, n = case$n, simplify = case$simplify,
         options = split_boundaries_frame_options(backend, options)
       )
-      expect_identical(actual, expected, info = backend)
       expect_split_boundaries_frame_output(
         backend, actual, case$simplify
       )
+      expect_identical(actual, expected, info = backend)
       expect_split_boundaries_frame_unmaterialized(backend, input)
     }
   }
@@ -346,9 +346,9 @@ test_that("boundary split preserves marked input and output encodings", {
       backend, input,
       options = split_boundaries_frame_options(backend, options)
     )
+    expect_split_boundaries_frame_output(backend, actual, FALSE)
     expect_identical(actual, expected, info = backend)
     expect_identical(lapply(actual, Encoding), lapply(expected, Encoding))
-    expect_split_boundaries_frame_output(backend, actual, FALSE)
     expect_split_boundaries_frame_unmaterialized(backend, input)
   }
 })

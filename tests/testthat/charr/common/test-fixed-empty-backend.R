@@ -44,7 +44,7 @@ test_that("fixed operations return exact empty shapes before acquisition", {
 
   extracted <- charr_test_leaf("ci_extract_first_fixed")(bytes, character())
   expect_identical(extracted, character())
-  expect_identical(charport::is_charvec(extracted), charr_altrep())
+  expect_identical(is_charr_result(extracted), charr_altrep())
   expect_identical(
     charr_test_leaf("ci_extract_all_fixed")(bytes, character()),
     list()
@@ -56,7 +56,7 @@ test_that("fixed operations return exact empty shapes before acquisition", {
 
   replaced <- charr_test_leaf("ci_replace_all_fixed")(bytes, "a", character())
   expect_identical(replaced, character())
-  expect_identical(charport::is_charvec(replaced), charr_altrep())
+  expect_identical(is_charr_result(replaced), charr_altrep())
 
   expect_identical(
     charr_test_leaf("ci_split_fixed")(bytes, "_", n = integer()),

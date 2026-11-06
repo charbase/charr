@@ -13,10 +13,10 @@ test_that("boundary locate uses code-point positions for every iterator type", {
   cjk <- boundary_locate_input("日本語の文章です")
   thai <- boundary_locate_input("ภาษาไทยภาษาไทย")
   sentence <- boundary_locate_input("One. Two! Three?")
-  expect_identical(charport::is_charvec(emoji), charr_altrep())
-  expect_identical(charport::is_charvec(cjk), charr_altrep())
-  expect_identical(charport::is_charvec(thai), charr_altrep())
-  expect_identical(charport::is_charvec(sentence), charr_altrep())
+  expect_identical(is_charr_result(emoji), charr_altrep())
+  expect_identical(is_charr_result(cjk), charr_altrep())
+  expect_identical(is_charr_result(thai), charr_altrep())
+  expect_identical(is_charr_result(sentence), charr_altrep())
 
   expect_identical(
     locate_all_boundaries(emoji, opts_brkiter = list(type = "character"))[[1L]],
@@ -43,7 +43,7 @@ test_that("boundary locate uses code-point positions for every iterator type", {
 })
 test_that("boundary locate preserves empty, NA, and omit shapes", {
   strings <- boundary_locate_input(c("", NA))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   first <- locate_first_boundaries(strings, get_length = TRUE)
   expect_identical(first, structure(
@@ -84,7 +84,7 @@ test_that("boundary locate is lenient for malformed declared UTF-8", {
   malformed <- rawToChar(as.raw(c(0x61, 0xc3, 0x28, 0x62)))
   Encoding(malformed) <- "UTF-8"
   malformed <- str_replace_all(malformed, fixed("\uffff"), "")
-  expect_identical(charport::is_charvec(malformed), charr_altrep())
+  expect_identical(is_charr_result(malformed), charr_altrep())
   opts <- list(type = "character")
   expect_identical(
     locate_all_boundaries(malformed, opts_brkiter = opts),

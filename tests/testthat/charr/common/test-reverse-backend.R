@@ -11,7 +11,7 @@ test_that("str_reverse dispatches without materializing its input", {
 
   expect_false(charport::is_charvec(expected))
   expect_identical(
-    charport::is_charvec(result),
+    is_charr_result(result),
     identical(selected_test_backend, "altrep")
   )
   if (identical(selected_test_backend, "altrep")) {

@@ -22,6 +22,7 @@ test_that("replace_na returns unmaterialized normalized output", {
     TRUE,
     charr_test_leaf("ci_replace_na")(subject, replacement)
   )
+  expect_replace_na_unmaterialized(actual)
   expected <- with_test_backend(
     FALSE,
     charr_test_leaf("ci_replace_na")(values, replacement_value)
@@ -32,7 +33,6 @@ test_that("replace_na returns unmaterialized normalized output", {
     with_test_backend(TRUE, charr_test_leaf("ci_count_fixed")(actual, "\u00e9")),
     stringi::stri_count_fixed(expected, "\u00e9")
   )
-  expect_replace_na_unmaterialized(actual)
   expect_replace_na_unmaterialized(subject)
   expect_replace_na_unmaterialized(replacement)
 })
@@ -46,12 +46,12 @@ test_that("replace_na handles missing replacement and exact aliases", {
     TRUE,
     charr_test_leaf("ci_replace_na")(subject, replacement)
   )
+  expect_replace_na_unmaterialized(actual)
   expected <- with_test_backend(
     FALSE,
     charr_test_leaf("ci_replace_na")(values, NA_character_)
   )
   expect_identical(actual, expected)
-  expect_replace_na_unmaterialized(actual)
   expect_replace_na_unmaterialized(subject)
   expect_replace_na_unmaterialized(replacement)
 
@@ -150,8 +150,8 @@ test_that("replace_na preserves scalar replacement preparation", {
     ),
     warning
   )
-  expect_identical(actual, expected)
   expect_replace_na_unmaterialized(actual)
+  expect_identical(actual, expected)
   expect_replace_na_unmaterialized(subject)
   expect_replace_na_unmaterialized(replacement)
 

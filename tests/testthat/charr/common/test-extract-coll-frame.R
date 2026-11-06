@@ -95,12 +95,12 @@ expect_extract_coll_frame_inputs_unmaterialized <- function(backend, inputs) {
 
 expect_extract_coll_frame_output_unmaterialized <- function(value, all) {
   if (!all || !is.list(value)) {
-    expect_true(charport::is_charvec(value))
+    expect_true(is_charr_result(value))
     expect_false(charport::charport_info(value)$is_materialized)
     return(invisible(NULL))
   }
 
-  expect_true(all(vapply(value, charport::is_charvec, logical(1))))
+  expect_true(all(vapply(value, is_charr_result, logical(1))))
   expect_true(all(vapply(
     value,
     function(element) !charport::charport_info(element)$is_materialized,

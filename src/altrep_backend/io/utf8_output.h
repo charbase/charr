@@ -91,10 +91,19 @@ private:
     std::vector<std::vector<Entry> > rows_;
 };
 
-CHARR_R_HELPER inline SEXP finalize(OutputStore&& store) noexcept
-{
-    return charport::charvec::wrap(std::move(store));
-}
+// Results of at most 64 strings and 64 KiB of text become charpacks: one raw
+// vector, no external pointer or finalizer, several times smaller for short
+// vectors. Anything larger becomes a charvec, which takes over the store's
+// memory without copying. The limits are compile-time constants.
+CHARR_NEUTRAL_HELPER [[nodiscard]] bool fits_charpack(
+    const OutputStore& store
+) noexcept;
+
+// The R vector for a finished store. The store belongs to the caller (a Frame
+// owner) until this returns: a charvec takes its memory, and after a charpack
+// copy it is freed here. On an R error it is untouched, so the Frame frees it
+// while unwinding.
+CHARR_R_HELPER SEXP finalize(OutputStore&& store) noexcept;
 
 class CHARR_OWNER_TYPE OutputBuilder {
 public:
@@ -154,6 +163,13 @@ public:
 private:
     R_xlen_t size_;
     charport::charvec::Builder builder_;
+    // The finished store while finalize() runs, so an R error leaves it with
+    // this Frame owner rather than in a temporary that a longjmp would skip.
+    OutputStore store_;
+
+    // Moves the builder's finished store into store_. Ownership changes
+    // happen here, in a C++ helper, never in the R helper to_sexp().
+    CHARR_CXX_HELPER void stage() noexcept;
 };
 
 class CHARR_OWNER_TYPE ParallelOutputBuilder {
@@ -213,6 +229,9 @@ public:
 private:
     R_xlen_t size_;
     charport::charvec::ParallelBuilder builder_;
+    OutputStore store_;  // as in OutputBuilder
+
+    CHARR_CXX_HELPER void stage() noexcept;  // as in OutputBuilder
 };
 
 /*
@@ -324,6 +343,9 @@ public:
 
 private:
     charport::charvec::GrowableBuilder builder_;
+    OutputStore store_;  // as in OutputBuilder
+
+    CHARR_CXX_HELPER void stage() noexcept;  // as in OutputBuilder
 };
 
 } // namespace io

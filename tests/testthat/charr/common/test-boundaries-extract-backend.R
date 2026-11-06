@@ -12,14 +12,14 @@ test_that("boundary extract handles every ICU iterator type", {
     "日本語の文章です", "ภาษาไทยภาษาไทย",
     "One. Two! Three?", "", NA
   ))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   character <- extract_all_boundaries(
     strings[1L], opts_brkiter = list(type = "character")
   )
   expect_identical(character, list(c("👩‍👩‍👧‍👦", "e\u0301")))
   expect_identical(
-    charport::is_charvec(character[[1L]]), charr_altrep()
+    is_charr_result(character[[1L]]), charr_altrep()
   )
 
   word_opts <- list(type = "word", skip_word_none = TRUE)
@@ -40,7 +40,7 @@ test_that("boundary extract handles every ICU iterator type", {
 })
 test_that("boundary extract honors skip rule-status ranges", {
   string <- boundary_extract_input("abc 123 日本語 カナ")
-  expect_identical(charport::is_charvec(string), charr_altrep())
+  expect_identical(is_charr_result(string), charr_altrep())
   base <- list(type = "word", skip_word_none = TRUE)
 
   expect_identical(
@@ -69,18 +69,18 @@ test_that("boundary extract honors skip rule-status ranges", {
 
 test_that("boundary extract preserves NA, no-match, omit, and simplify shapes", {
   strings <- boundary_extract_input(c("", NA, "abc"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
   opts <- list(type = "word", skip_word_none = TRUE,
     skip_word_letter = TRUE)
 
   first <- extract_first_boundaries(strings, opts_brkiter = opts)
   expect_identical(first, rep(NA_character_, 3L))
-  expect_identical(charport::is_charvec(first), charr_altrep())
+  expect_identical(is_charr_result(first), charr_altrep())
 
   all <- extract_all_boundaries(strings, opts_brkiter = opts)
   expect_identical(all, rep(list(NA_character_), 3L))
   expect_identical(
-    vapply(all, charport::is_charvec, logical(1L)),
+    vapply(all, is_charr_result, logical(1L)),
     rep(charr_altrep(), 3L)
   )
   omitted <- extract_all_boundaries(
@@ -107,7 +107,7 @@ test_that("boundary extract supports custom RBBI rules", {
     "$letters+; $numbers+; .;"
   )
   strings <- boundary_extract_input(c("abc 123", "é42"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
   expect_identical(
     extract_all_boundaries(strings, opts_brkiter = list(type = rules)),
     list(c("abc", " ", "123"), c("é", "42"))
@@ -119,7 +119,7 @@ test_that("boundary extract is lenient for malformed declared UTF-8", {
   malformed <- rawToChar(as.raw(c(0x61, 0xc3, 0x28, 0x62)))
   Encoding(malformed) <- "UTF-8"
   malformed <- str_replace_all(malformed, fixed("\uffff"), "")
-  expect_identical(charport::is_charvec(malformed), charr_altrep())
+  expect_identical(is_charr_result(malformed), charr_altrep())
   opts <- list(type = "character")
   expect_identical(
     extract_all_boundaries(malformed, opts_brkiter = opts),

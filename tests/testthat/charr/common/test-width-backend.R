@@ -7,7 +7,7 @@ test_that("width preserves ICU property and emoji-context semantics", {
   strings <- charr_test_leaf("ci_replace_all_fixed")(c(
     "a", "Ａ", "ｱ", "Ω", "ü", "\t", "🙂", "👩‍👧", "🇺🇸", "", NA
   ), "not present", "")
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     width_cp(strings),
@@ -20,7 +20,7 @@ test_that("width stays inside adjacent Reader records", {
   strings <- charr_test_leaf("ci_trim_both")(c(
     " a ", " very_long_👩‍👧_record ", " z ", " ü ", " Ａ "
   ))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
   expect_identical(width_cp(strings), c(1L, 19L, 1L, 1L, 2L))
 })
 
@@ -29,7 +29,7 @@ test_that("width validates UTF-8 and rejects CE_BYTES", {
   malformed_byte <- rawToChar(as.raw(0xc3))
   Encoding(malformed_byte) <- "UTF-8"
   malformed <- charr_test_leaf("ci_replace_all_fixed")("a", "a", malformed_byte)
-  expect_identical(charport::is_charvec(malformed), charr_altrep())
+  expect_identical(is_charr_result(malformed), charr_altrep())
   expect_error(width_cp(malformed), "invalid UTF-8")
 
   bytes <- "\xff"

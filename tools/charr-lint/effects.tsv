@@ -99,6 +99,7 @@ neutral	charport::StrViews::ptrs	const char **(void) noexcept	neutral	clang:no-c
 neutral	charport::StrViews::ptrs	const char *const *(void) const noexcept	neutral	clang:no-cxx-propagation	
 cxx	charport::StrViews::resize	void (long)	cxx	clang:not-noexcept	
 neutral	charport::StrViews::size	long (void) const noexcept	neutral	clang:no-cxx-propagation	
+r	charport::charpack::from_store	struct SEXPREC *(const class charport::charvec::Store &) noexcept	neutral	clang:no-cxx-propagation	charport allocates the charpack through R and permits R errors (allocation, or a length R cannot hold); it copies the store and does not propagate C++ exceptions.
 owner	charport::charvec::Builder::Builder	void (long)	owner	clang:cleanup-construction	
 owner	charport::charvec::Builder::release_store	class charport::charvec::Store (void) noexcept	owner	clang:cleanup-return	
 cxx	charport::charvec::Builder::reserve	char *(long, unsigned long, struct cetype_ext_t)	cxx	clang:not-noexcept	
@@ -129,6 +130,7 @@ owner	charport::charvec::Store::scalar	class charport::charvec::Store (const cha
 neutral	charport::charvec::Store::size	unsigned long (void) const noexcept	neutral	clang:no-cxx-propagation	
 neutral	charport::charvec::Store::view	struct charport_strview (unsigned long) const noexcept	neutral	clang:no-cxx-propagation	
 owner	charport::charvec::components::RecordTable::RecordTable	void (unsigned long)	owner	clang:cleanup-construction	
+neutral	charport::charvec::components::RecordTable::lengths	const int *(void) const noexcept	neutral	clang:no-cxx-propagation	
 neutral	charport::charvec::components::RecordTable::operator=	struct charport::charvec::components::RecordTable &(struct charport::charvec::components::RecordTable &&) noexcept	neutral	clang:no-cxx-propagation	
 cxx	charport::charvec::components::RecordTable::push_back	void (const struct charport_strview &)		legacy-unobserved	
 cxx	charport::charvec::components::RecordTable::reserve	void (unsigned long)		legacy-unobserved	

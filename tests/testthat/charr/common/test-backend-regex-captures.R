@@ -130,6 +130,7 @@ test_that("vectorized regex patterns keep per-element capture metadata", {
   matched <- with_test_backend(
     TRUE, charr_test_leaf("ci_match_all_regex")(subject, pattern)
   )
+  expect_altrep_unmaterialized_list(matched)
 
   expect_identical(
     located,
@@ -140,7 +141,6 @@ test_that("vectorized regex patterns keep per-element capture metadata", {
   expect_identical(
     matched, stringi::stri_match_all_regex(values, patterns)
   )
-  expect_altrep_unmaterialized_list(matched)
   expect_regex_capture_unmaterialized(subject)
   expect_regex_capture_unmaterialized(pattern)
 })
@@ -299,7 +299,7 @@ test_that("regex captures preserve marked-input normalization", {
     TRUE, charr_test_leaf("ci_match_all_regex")(subject, "(.)")
   )
   expect_regex_capture_unmaterialized(first)
-  expect_altrep_charvec_list(all)
+  expect_altrep_result_list(all)
   expect_identical(
     first, stringi::stri_match_first_regex(values, "(.)")
   )

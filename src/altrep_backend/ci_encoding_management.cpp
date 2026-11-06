@@ -32,6 +32,7 @@
 
 
 #include "ci_stringi.h"
+#include "io/utf8_output.h"
 #include "../shared/encoding_info.h"
 #include "../shared/entrypoint.h"
 #include "../shared/protect.h"
@@ -152,6 +153,7 @@ CHARR_ENTRYPOINT SEXP ci_enc_info(SEXP enc) noexcept
     try {
         shared::EncodingInfo info;
         charport::charvec::Builder character_builder(1);
+        io::OutputStore character_store;
 
         result = shared::unwind_protect(
             unwind_token,
@@ -187,8 +189,9 @@ CHARR_ENTRYPOINT SEXP ci_enc_info(SEXP enc) noexcept
                         continue;
                     case shared::EncodingInfoValueKind::character:
                         stage_character(character_builder, value);
+                        character_store = character_builder.release_store();
                         child = callback_protections.protect_one(
-                            character_builder.to_sexp()
+                            io::finalize(std::move(character_store))
                         );
                         break;
                     case shared::EncodingInfoValueKind::logical:

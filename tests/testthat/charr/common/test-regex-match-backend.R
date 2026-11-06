@@ -8,7 +8,7 @@ match_all <- function(...) charr_test_leaf("ci_match_all_regex")(...)
 
 test_that("regex match extracts capture groups over UTF-16 subjects", {
   strings <- charr_test_leaf("ci_trim_both")(c(" abc123 ", " é4😀5 ", " zzz ", NA))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   m <- match_first(strings, "([[:alpha:]]+)([0-9]+)")
   expect_identical(dim(m), c(4L, 3L))
@@ -22,7 +22,7 @@ test_that("regex match extracts capture groups over UTF-16 subjects", {
 
 test_that("regex match names columns for named capture groups; cg_missing", {
   strings <- charr_test_leaf("ci_replace_all_fixed")(c("2024-01", "nope"), "~", "~")
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   m <- match_first(strings, "(?<yr>[0-9]+)-(?<mo>[0-9]+)", cg_missing = "?")
   expect_identical(dimnames(m)[[2]], c("", "yr", "mo"))
@@ -39,7 +39,7 @@ test_that("regex match names columns for named capture groups; cg_missing", {
 
 test_that("regex match first and match_all preserve shapes", {
   strings <- charr_test_leaf("ci_replace_all_fixed")(c("a1b2c3", "xx"), "~", "~")
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(match_first(strings, "([a-z])([0-9])")[1, ], c("a1", "a", "1"))
 
@@ -60,7 +60,7 @@ test_that("regex match preserves malformed declared UTF-8 like stringi", {
   Encoding(malformed) <- "UTF-8"
   with_test_backend(TRUE, {
     malformed <- charport::as_charvec(malformed)
-    expect_altrep_charvec(malformed)
+    expect_altrep_result(malformed)
 
     # R and stringi retain the declared UTF-8 byte in captured source slices.
     replacement <- rawToChar(as.raw(0x80))

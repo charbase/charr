@@ -408,8 +408,9 @@ CHARR_ENTRYPOINT SEXP ci_replace_na(
                             );
                         }
                     }
+                    output = builder.release_store();
                     result = entry_protections.reprotect_one(
-                        builder.to_sexp(), result_index
+                        io::finalize(std::move(output)), result_index
                     );
                 }
 

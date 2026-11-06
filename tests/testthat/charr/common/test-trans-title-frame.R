@@ -77,7 +77,7 @@ test_that("titlecase supports built-in prefixes and custom rules", {
 
       if (identical(backend, "altrep")) {
         expect_false(charport::charport_info(actual$input)$is_materialized)
-        expect_true(charport::is_charvec(actual$output))
+        expect_true(is_charr_result(actual$output))
         expect_false(charport::charport_info(actual$output)$is_materialized)
       }
 
@@ -166,6 +166,9 @@ test_that("titlecase validates the full type vector before scalar selection", {
     actual_vector <- title_frame_capture(
       fun(input, opts_brkiter = vector_options)
     )
+    if (identical(backend, "altrep")) {
+      expect_lazy_result(actual_vector$value)
+    }
     expect_identical(actual_vector, expected_vector)
 
     actual_missing <- title_frame_capture(
@@ -175,7 +178,6 @@ test_that("titlecase validates the full type vector before scalar selection", {
 
     if (identical(backend, "altrep")) {
       expect_false(charport::charport_info(input)$is_materialized)
-      expect_false(charport::charport_info(actual_vector$value)$is_materialized)
     }
   }
 })

@@ -13,7 +13,7 @@ join_two <- function(x, y) charr_test_leaf("ci_c")(x, y)
 
 test_that("dup preserves recycling and times edge cases", {
   strings <- charr_test_leaf("ci_trim_both")(c(" aé🙂 ", " x ", " ", NA))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     dup_strings(strings, c(2L, 0L, -1L, NA_integer_)),
@@ -31,8 +31,8 @@ test_that("dup preserves recycling and times edge cases", {
 test_that("binary and variadic joins recycle Reader records exactly", {
   left <- charr_test_leaf("ci_trim_both")(c(" a ", " é ", NA, " z "))
   right <- charr_test_leaf("ci_trim_both")(c(" 🙂 ", " x "))
-  expect_identical(charport::is_charvec(left), charr_altrep())
-  expect_identical(charport::is_charvec(right), charr_altrep())
+  expect_identical(is_charr_result(left), charr_altrep())
+  expect_identical(is_charr_result(right), charr_altrep())
 
   expect_identical(join_two(left, right), c("a🙂", "éx", NA, "zx"))
   expect_identical(
@@ -48,7 +48,7 @@ test_that("binary and variadic joins recycle Reader records exactly", {
 
 test_that("join keeps empty-vector and collapsed special cases", {
   strings <- charr_test_leaf("ci_trim_both")(c(" a ", " é ", " 🙂 "))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(join_strings(strings, character()), character())
   expect_identical(
@@ -74,7 +74,7 @@ test_that("flatten preserves NA and empty-element controls", {
   strings <- charr_test_leaf("ci_replace_all_fixed")(
     c(NA, "", "A", "", "B", NA, "C"), "not present", ""
   )
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(flatten_strings(strings, ","), NA_character_)
   expect_identical(
@@ -100,7 +100,7 @@ test_that("join copies malformed declared UTF-8 without validating", {
   malformed_byte <- rawToChar(as.raw(0xc3))
   Encoding(malformed_byte) <- "UTF-8"
   malformed <- charr_test_leaf("ci_replace_all_fixed")("a", "a", malformed_byte)
-  expect_identical(charport::is_charvec(malformed), charr_altrep())
+  expect_identical(is_charr_result(malformed), charr_altrep())
 
   joined <- join_strings(malformed, "x")
   expect_identical(charToRaw(joined), as.raw(c(0xc3, 0x78)))

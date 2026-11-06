@@ -8,7 +8,7 @@ test_that("regex detect uses length-delimited UTF-8 subjects and full ICU modes"
   strings <- charr_test_leaf("ci_trim_both")(c(
     " café ", " 😀a ", " 𐐷Z ", " ü ", " WORD ", NA_character_
   ))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     detect_regex(strings, c("é", "a$", "𐐷", "\\p{M}", "(?wi)word", "x")),
@@ -21,7 +21,7 @@ test_that("regex detect uses length-delimited UTF-8 subjects and full ICU modes"
 })
 test_that("regex detect preserves recycling, NA, zero-length, and max_count", {
   strings <- charr_test_leaf("ci_trim_both")(c(" a ", " b ", " 😀 ", "", NA, " aa "))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     detect_regex(strings, c("^a", "(?=b)")),
@@ -41,9 +41,9 @@ test_that("regex detect preserves eager encoding and lazy compile errors", {
   present <- charr_test_leaf("ci_trim_both")(" x ")
   missing <- charr_test_leaf("ci_trim_both")(NA_character_)
   exhausted <- charr_test_leaf("ci_trim_both")(c(" x ", " x "))
-  expect_identical(charport::is_charvec(present), charr_altrep())
-  expect_identical(charport::is_charvec(missing), charr_altrep())
-  expect_identical(charport::is_charvec(exhausted), charr_altrep())
+  expect_identical(is_charr_result(present), charr_altrep())
+  expect_identical(is_charr_result(missing), charr_altrep())
+  expect_identical(is_charr_result(exhausted), charr_altrep())
 
   expect_error(
     detect_regex(present, "["),
@@ -56,7 +56,7 @@ test_that("regex detect preserves eager encoding and lazy compile errors", {
   )
 
   bytes <- charr_test_leaf("ci_conv")("Ą", "UTF-8", "ISO-8859-2")
-  expect_identical(charport::is_charvec(bytes), charr_altrep())
+  expect_identical(is_charr_result(bytes), charr_altrep())
   expect_error(
     detect_regex(bytes, "x", max_count = 0L),
     "bytes encoding is not supported"

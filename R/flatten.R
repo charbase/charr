@@ -39,6 +39,9 @@ str_flatten <- function(string, collapse = "", last = NULL, na.rm = FALSE) {
   check_string(last, allow_null = TRUE)
   check_bool(na.rm)
 
+  if (na.rm && is.null(last)) {
+    return(.charr_flatten_omit_na(string, collapse))
+  }
   if (na.rm) {
     string <- string[!is.na(string)]
   }

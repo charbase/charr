@@ -43,8 +43,8 @@ test_that("regex replacement keeps the copied vectorized traversal", {
     TRUE,
     charr_test_leaf("ci_replace_all_regex")(subject, pattern, replacement)
   )
-  expect_identical(actual_all, expected_all)
   expect_regex_replace_unmaterialized(actual_all)
+  expect_identical(actual_all, expected_all)
 
   expected_first <- stringi::stri_replace_first_regex(
     values, patterns, replacements
@@ -53,8 +53,8 @@ test_that("regex replacement keeps the copied vectorized traversal", {
     TRUE,
     charr_test_leaf("ci_replace_first_regex")(subject, pattern, replacement)
   )
-  expect_identical(actual_first, expected_first)
   expect_regex_replace_unmaterialized(actual_first)
+  expect_identical(actual_first, expected_first)
 
   chained <- with_test_backend(
     TRUE,
@@ -78,11 +78,11 @@ test_that("regex replacement accepts exact aliases for all inputs", {
     TRUE,
     charr_test_leaf("ci_replace_all_regex")(shared, shared, shared)
   )
+  expect_regex_replace_unmaterialized(actual)
   expect_identical(
     actual,
     stringi::stri_replace_all_regex(values, values, values)
   )
-  expect_regex_replace_unmaterialized(actual)
   expect_regex_replace_unmaterialized(shared)
 })
 
@@ -145,13 +145,13 @@ test_that("non-vectorized regex replacement applies patterns in sequence", {
       subject, pattern, replacement, vectorize_all = FALSE
     )
   )
+  expect_regex_replace_unmaterialized(actual)
   expect_identical(
     actual,
     stringi::stri_replace_all_regex(
       values, patterns, replacements, vectorize_all = FALSE
     )
   )
-  expect_regex_replace_unmaterialized(actual)
 
   missing_pattern <- charport::as_charvec(c(NA_character_, "a"))
   missing_actual <- with_test_backend(
@@ -160,6 +160,7 @@ test_that("non-vectorized regex replacement applies patterns in sequence", {
       subject, missing_pattern, replacement, vectorize_all = FALSE
     )
   )
+  expect_regex_replace_unmaterialized(missing_actual)
   expect_identical(
     missing_actual,
     stringi::stri_replace_all_regex(
@@ -167,7 +168,6 @@ test_that("non-vectorized regex replacement applies patterns in sequence", {
       vectorize_all = FALSE
     )
   )
-  expect_regex_replace_unmaterialized(missing_actual)
   expect_regex_replace_unmaterialized(subject)
   expect_regex_replace_unmaterialized(pattern)
   expect_regex_replace_unmaterialized(replacement)
@@ -345,11 +345,11 @@ test_that("regex replacement preserves marks and exact UTF-8 bytes", {
     TRUE,
     charr_test_leaf("ci_replace_all_regex")(subject, pattern, replacement)
   )
+  expect_regex_replace_unmaterialized(actual)
   expected <- stringi::stri_replace_all_regex(
     values, patterns, replacements
   )
   expect_identical(actual, expected)
-  expect_regex_replace_unmaterialized(actual)
   expect_identical(
     lapply(as.character(actual), charToRaw),
     lapply(expected, charToRaw)

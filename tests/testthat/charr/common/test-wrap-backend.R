@@ -28,7 +28,7 @@ test_that("wrap retains line breaking and output shapes", {
     "one two three four", "日本語の文章です", "ภาษาไทยภาษาไทย",
     family_text, "", NA
   ))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   got <- wrap_backend(
     strings, width = 5L, simplify = FALSE, normalize = FALSE,
@@ -41,7 +41,7 @@ test_that("wrap retains line breaking and output shapes", {
   expect_identical(got, want)
   expect_identical(paste(got[[4L]], collapse = " "), family_text)
   expect_identical(
-    vapply(got, charport::is_charvec, logical(1L)),
+    vapply(got, is_charr_result, logical(1L)),
     rep(charr_altrep(), length(strings))
   )
 })
@@ -54,9 +54,9 @@ test_that("wrap preserves greedy, dynamic, width, and paragraph adornments", {
   ))
   prefix <- wrap_input("λ> ")
   initial <- wrap_input("初> ")
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-  expect_identical(charport::is_charvec(prefix), charr_altrep())
-  expect_identical(charport::is_charvec(initial), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
+  expect_identical(is_charr_result(prefix), charr_altrep())
+  expect_identical(is_charr_result(initial), charr_altrep())
 
   for (cost_exponent in c(-1, 2)) {
     for (use_length in c(FALSE, TRUE)) {
@@ -91,7 +91,7 @@ test_that("wrap preserves NA, empty, prefix, and initial shapes", {
   strings <- wrap_input(c("", " ", NA, "one two"))
   prefix <- wrap_input("> ")
   initial <- wrap_input("* ")
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   got <- wrap_backend(
     strings, width = 4L, simplify = FALSE, normalize = FALSE,
@@ -104,7 +104,7 @@ test_that("wrap preserves NA, empty, prefix, and initial shapes", {
   )
   expect_identical(got, want)
   expect_identical(
-    vapply(got, charport::is_charvec, logical(1L)),
+    vapply(got, is_charr_result, logical(1L)),
     rep(charr_altrep(), length(strings))
   )
 
@@ -121,7 +121,7 @@ test_that("wrap preserves NA, empty, prefix, and initial shapes", {
 test_that("wrap locale fallback warning fires once", {
   skip_if_stringi_lacks_locale_fallback_warning()
   strings <- wrap_input(rep("one two three", 64L))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   got <- capture_wrap_warnings(wrap_backend(
     strings, width = 5L, simplify = FALSE, normalize = FALSE,
@@ -142,8 +142,8 @@ test_that("wrap retains copied malformed UTF-8 and newline errors", {
   Encoding(malformed) <- "UTF-8"
   malformed <- wrap_input(malformed)
   newline <- wrap_input("alpha\nbeta")
-  expect_identical(charport::is_charvec(malformed), charr_altrep())
-  expect_identical(charport::is_charvec(newline), charr_altrep())
+  expect_identical(is_charr_result(malformed), charr_altrep())
+  expect_identical(is_charr_result(newline), charr_altrep())
 
   got_malformed <- tryCatch(
     wrap_backend(malformed, width = 2L, normalize = FALSE),
@@ -248,7 +248,7 @@ test_that("normalize strips U+FEFF at field starts like per-field flatten", {
     paste0("a\n", strrep(bom, 3), "b"),
     paste0(strrep(bom, 2), "\n", bom, "y")
   ))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
   expect_altrep_unmaterialized(strings)
   got <- wrap_backend(strings, width = 80L)
   expect_altrep_unmaterialized(got)

@@ -33,7 +33,7 @@ test_that("fixed replace keeps completed rows across mixed encodings", {
     actual <- with_backend(
       "altrep", operation(charport::as_charvec(values))
     )
-    expect_true(charport::is_charvec(actual))
+    expect_true(is_charr_result(actual))
     expect_identical(actual, expected)
     expect_identical(Encoding(actual), Encoding(expected))
   }

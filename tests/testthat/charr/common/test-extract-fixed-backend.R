@@ -6,11 +6,11 @@ extract_all_fixed <- function(...) charr_test_leaf("ci_extract_all_fixed")(...)
 
 test_that("fixed extract emits multibyte Reader slices with exact encodings", {
   strings <- charr_test_leaf("ci_trim_both")(c(" éaé ", " 🙂x🙂 ", " üü ", " abc "))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   first <- extract_first_fixed(strings, c("é", "🙂", "ü", "b"))
   expect_identical(first, c("é", "🙂", "ü", "b"))
-  expect_identical(charport::is_charvec(first), charr_altrep())
+  expect_identical(is_charr_result(first), charr_altrep())
   expect_identical(Encoding(first), c("UTF-8", "UTF-8", "UTF-8", "unknown"))
 
   expect_identical(
@@ -23,7 +23,7 @@ test_that("fixed extract emits multibyte Reader slices with exact encodings", {
 })
 test_that("fixed extract stays inside each Reader record", {
   strings <- charr_test_leaf("ci_trim_both")(c("aaa", "z", "aaaa", "xyz", "abcx"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     extract_first_fixed(strings, c("z", "z", "xy", "xy", "x")),
@@ -37,7 +37,7 @@ test_that("fixed extract stays inside each Reader record", {
 
 test_that("fixed extract preserves no-match, NA, omit, and simplify shapes", {
   strings <- charr_test_leaf("ci_trim_both")(c("aa", "none", "", NA_character_))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     extract_all_fixed(strings, "a", omit_no_match = FALSE),
@@ -60,7 +60,7 @@ test_that("fixed extract preserves no-match, NA, omit, and simplify shapes", {
 
 test_that("fixed extract preserves recycling and empty-pattern semantics", {
   strings <- charr_test_leaf("ci_trim_both")(c("a", "ba", "ca"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_warning(
     recycled <- extract_first_fixed(strings, c("a", "b")),
@@ -86,7 +86,7 @@ test_that("fixed extract passes malformed UTF-8 slices through verbatim", {
   malformed <- rawToChar(as.raw(c(0x61, 0xff, 0x62)))
   Encoding(malformed) <- "UTF-8"
   malformed <- charr_test_leaf("ci_replace_all_fixed")(malformed, "z", "z")
-  expect_identical(charport::is_charvec(malformed), charr_altrep())
+  expect_identical(is_charr_result(malformed), charr_altrep())
 
   bad_pattern <- rawToChar(as.raw(0xff))
   Encoding(bad_pattern) <- "UTF-8"

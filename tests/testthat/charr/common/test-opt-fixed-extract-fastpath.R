@@ -37,9 +37,9 @@ test_that("optimized fixed extract keeps scalar ASCII matches and shapes", {
     input <- charport::as_charvec(values)
     actual <- with_backend("altrep", operation(input))
     if (is.list(actual)) {
-      expect_true(all(vapply(actual, charport::is_charvec, logical(1))))
+      expect_true(all(vapply(actual, is_charr_result, logical(1))))
     } else {
-      expect_true(charport::is_charvec(actual))
+      expect_true(is_charr_result(actual))
     }
     expect_identical(actual, expected)
   }

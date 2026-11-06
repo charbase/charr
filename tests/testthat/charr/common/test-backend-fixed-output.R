@@ -31,7 +31,7 @@ test_that("fixed first extraction uses unmaterialized inputs and outputs", {
   pattern <- charport::as_charvec(patterns)
 
   first <- with_test_backend(TRUE, charr_test_leaf("ci_extract_first_fixed")(subject, pattern))
-  expect_altrep_charvec(first)
+  expect_altrep_result(first)
   expect_altrep_unmaterialized(first)
   expect_identical(
     first,
@@ -47,7 +47,7 @@ test_that("fixed extraction covers aliases and matcher lanes", {
   alias <- charport::as_charvec(alias_values)
 
   actual <- with_test_backend(TRUE, charr_test_leaf("ci_extract_first_fixed")(alias, alias))
-  expect_altrep_charvec(actual)
+  expect_altrep_result(actual)
   expect_identical(
     actual,
     with_test_backend(
@@ -97,7 +97,7 @@ test_that("fixed extraction and replacement preserve case-insensitive matching",
       case_insensitive = TRUE
     )
   )
-  expect_altrep_charvec(replaced)
+  expect_altrep_result(replaced)
   expect_altrep_unmaterialized(replaced)
   expect_identical(
     replaced,
@@ -171,7 +171,7 @@ test_that("fixed extract all preserves omit and simplify shapes", {
         subject, pattern, omit_no_match = TRUE, simplify = simplify
       )
     )
-    expect_altrep_charvec(actual)
+    expect_altrep_result(actual)
     expect_altrep_unmaterialized(actual)
     expect_identical(
       actual,
@@ -226,9 +226,9 @@ test_that("fixed extraction preserves warning order and zero-length shapes", {
     )
   )
   expect_identical(first, character())
-  expect_altrep_charvec(first)
+  expect_altrep_result(first)
   expect_identical(all, list())
-  expect_altrep_charvec(simplified)
+  expect_altrep_result(simplified)
   expect_altrep_unmaterialized(simplified)
   expect_identical(simplified, matrix(character(), 0L, 0L))
   expect_fixed_output_input_unmaterialized(zero_subject)
@@ -295,7 +295,7 @@ test_that("fixed first and all replacement produce lazy outputs", {
     )
   )
   for (case in cases) {
-    expect_altrep_charvec(case$actual)
+    expect_altrep_result(case$actual)
     expect_altrep_unmaterialized(case$actual)
     expect_identical(case$actual, case$expected)
   }
@@ -311,7 +311,7 @@ test_that("fixed replacement preserves aliases, chaining, and matcher lanes", {
     TRUE,
     charr_test_leaf("ci_replace_first_fixed")(alias, alias, alias)
   )
-  expect_altrep_charvec(actual)
+  expect_altrep_result(actual)
   expect_altrep_unmaterialized(actual)
   expect_identical(actual, alias_values)
   expect_fixed_output_input_unmaterialized(alias)
@@ -325,7 +325,7 @@ test_that("fixed replacement preserves aliases, chaining, and matcher lanes", {
     TRUE,
     charr_test_leaf("ci_replace_all_fixed")(subject, pattern, replacement)
   )
-  expect_altrep_charvec(replaced)
+  expect_altrep_result(replaced)
   expect_altrep_unmaterialized(replaced)
   extracted <- with_test_backend(
     TRUE,
@@ -385,7 +385,7 @@ test_that("sequential fixed replacement retains mutable-container semantics", {
       values, patterns, replacements, vectorize_all = FALSE
     )
   )
-  expect_altrep_charvec(actual)
+  expect_altrep_result(actual)
   expect_altrep_unmaterialized(actual)
   expect_identical(actual, expected)
   expect_identical(actual, c("!!a", "none", "!!"))
@@ -403,7 +403,7 @@ test_that("sequential fixed replacement retains mutable-container semantics", {
       vectorize_all = FALSE
     )
   )
-  expect_altrep_charvec(fast)
+  expect_altrep_result(fast)
   expect_altrep_unmaterialized(fast)
   expect_identical(fast, c("XbX", "none"))
   expect_fixed_output_input_unmaterialized(fast_subject)
@@ -572,7 +572,7 @@ test_that("fixed replacement zero recycling skips Reader acquisition", {
     FALSE,
     charr_test_leaf("ci_replace_all_fixed")(bytes, "a", character())
   )
-  expect_altrep_charvec(actual)
+  expect_altrep_result(actual)
   expect_identical(actual, expected)
   expect_identical(actual, character())
   expect_fixed_output_input_unmaterialized(subject)
@@ -585,6 +585,6 @@ test_that("fixed replacement zero recycling skips Reader acquisition", {
       vectorize_all = FALSE
     )
   )
-  expect_altrep_charvec(sequential)
+  expect_altrep_result(sequential)
   expect_identical(sequential, character())
 })

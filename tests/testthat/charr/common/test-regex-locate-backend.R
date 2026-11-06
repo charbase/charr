@@ -24,7 +24,7 @@ test_that("regex locate converts UTF-16 offsets to code-point positions", {
   strings <- charr_test_leaf("ci_trim_both")(c(
     " 😀a😀 ", " 𐐷Z ", " é😀b ", " üa ", NA_character_
   ))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     locate_first_regex(strings, c("a", "Z", "b", "̈", "x")),
@@ -45,7 +45,7 @@ test_that("regex locate converts UTF-16 offsets to code-point positions", {
 })
 test_that("regex locate all handles astral and zero-length matches", {
   strings <- charr_test_leaf("ci_trim_both")(c(" 😀a😀 ", " 𐐷𐐷 ", " é😀é ", "", "a"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     locate_all_regex(strings, c("😀", "𐐷", "é", "^", "(?=a)")),
@@ -59,7 +59,7 @@ test_that("regex locate all handles astral and zero-length matches", {
   )
 
   zeroes <- charr_test_leaf("ci_trim_both")(c("", "a", "😀a", "😀"))
-  expect_identical(charport::is_charvec(zeroes), charr_altrep())
+  expect_identical(is_charr_result(zeroes), charr_altrep())
   expect_identical(
     locate_all_regex(zeroes, ".*?", get_length = TRUE),
     list(
@@ -73,7 +73,7 @@ test_that("regex locate all handles astral and zero-length matches", {
 
 test_that("regex locate preserves no-match, omit, NA, and empty shapes", {
   strings <- charr_test_leaf("ci_trim_both")(c(" abc ", "", NA_character_, " 😀 "))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     locate_first_regex(strings, "x", get_length = TRUE),
@@ -120,7 +120,7 @@ test_that("regex locate preserves no-match, omit, NA, and empty shapes", {
 
 test_that("regex locate preserves named capture-group attributes", {
   strings <- charr_test_leaf("ci_trim_both")(c(" 😀a ", " x ", NA_character_))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
   pattern <- "(?<emoji>😀)?(?<letter>a)?"
 
   expected_first <- matrix(
@@ -143,7 +143,7 @@ test_that("regex locate preserves named capture-group attributes", {
   )
 
   one <- charr_test_leaf("ci_trim_both")(" 😀a ")
-  expect_identical(charport::is_charvec(one), charr_altrep())
+  expect_identical(is_charr_result(one), charr_altrep())
   whole <- matrix(c(1L, 3L, 2L, 2L), ncol = 2L)
   attr(whole, "capture_groups") <- list(
     emoji = cbind(start = c(1L, NA_integer_), end = c(1L, NA_integer_)),
@@ -164,8 +164,8 @@ test_that("regex locate preserves named capture-group attributes", {
 test_that("regex locate compiles before NA subjects and honors inline modes", {
   missing <- charr_test_leaf("ci_trim_both")(NA_character_)
   present <- charr_test_leaf("ci_trim_both")(c(" WORD ", " a ", " z "))
-  expect_identical(charport::is_charvec(missing), charr_altrep())
-  expect_identical(charport::is_charvec(present), charr_altrep())
+  expect_identical(is_charr_result(missing), charr_altrep())
+  expect_identical(is_charr_result(present), charr_altrep())
 
   expect_error(
     locate_first_regex(missing, "["),
@@ -200,7 +200,7 @@ test_that("regex locate all converts capture groups that move backward", {
   strings <- charr_test_leaf("ci_trim_both")(c(
     " aa\u00e9 ", " \u00e9a\u00e9a\u00e9\u00e9 ", " a\U0001F642a "
   ))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   value <- locate_all_regex(strings, "a(?=(.*))", capture_groups = TRUE)
   groups <- lapply(value, function(x) attr(x, "capture_groups")[[1L]])

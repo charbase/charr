@@ -58,7 +58,7 @@ expect_enc_info_frame_result <- function(actual, expected, backend) {
     character_children <- which(vapply(actual, is.character, logical(1)))
     expect_gt(length(character_children), 0L)
     for (i in character_children) {
-      expect_true(charport::is_charvec(actual[[i]]))
+      expect_true(is_charr_result(actual[[i]]))
       expect_false(charport::charport_info(actual[[i]])$is_materialized)
     }
   }

@@ -79,17 +79,11 @@ expect_split_regex_frame_shape <- function(
     if (!is.null(output)) {
       if (identical(simplify, FALSE)) {
         expect_true(all(vapply(
-          output, charport::is_charvec, logical(1)
+          output, is_charr_result, logical(1)
         )))
-        expect_true(all(vapply(
-          output,
-          function(value) {
-            !charport::charport_info(value)$is_materialized
-          },
-          logical(1)
-        )))
+        invisible(lapply(output, expect_lazy_result))
       } else {
-        expect_true(charport::is_charvec(output))
+        expect_true(is_charr_result(output))
         expect_false(charport::charport_info(output)$is_materialized)
       }
     }
@@ -97,11 +91,11 @@ expect_split_regex_frame_shape <- function(
     if (identical(simplify, FALSE)) {
       expect_true(all(vapply(
         output,
-        function(value) !charport::is_charvec(value),
+        function(value) !is_charr_result(value),
         logical(1)
       )))
     } else {
-      expect_false(charport::is_charvec(output))
+      expect_false(is_charr_result(output))
     }
   }
   invisible(NULL)

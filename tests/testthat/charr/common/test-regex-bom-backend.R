@@ -16,7 +16,7 @@ bom_str <- function() {
 
 test_that("BOM is stripped by UTF8-origin regex ops (extract/split/match)", {
   x <- bom_str()
-  expect_identical(charport::is_charvec(x), charr_altrep())
+  expect_identical(is_charr_result(x), charr_altrep())
 
   # extract "." gets "a" (BOM gone), not the BOM code point
   expect_identical(as.character(charr_test_leaf("ci_extract_first_regex")(x, ".", NULL)), "a")
@@ -33,7 +33,7 @@ test_that("BOM is stripped by UTF8-origin regex ops (extract/split/match)", {
 
 test_that("BOM is preserved by non-stripping regex ops (detect/replace)", {
   x <- bom_str()
-  expect_identical(charport::is_charvec(x), charr_altrep())
+  expect_identical(is_charr_result(x), charr_altrep())
 
   # ^a must NOT match: the first code point is still the BOM
   expect_false(charr_test_leaf("ci_detect_regex")(x, "^a", FALSE, -1L, NULL))

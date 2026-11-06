@@ -90,7 +90,7 @@ replace_fixed_frame_marked <- function(bytes, encoding) {
 
 expect_replace_fixed_frame_shape <- function(backend, inputs, output = NULL) {
   if (identical(backend, "base") && !is.null(output)) {
-    expect_false(charport::is_charvec(output))
+    expect_false(is_charr_result(output))
   }
   if (!identical(backend, "altrep")) {
     return(invisible(NULL))
@@ -101,8 +101,8 @@ expect_replace_fixed_frame_shape <- function(backend, inputs, output = NULL) {
     expect_false(charport::charport_info(input)$is_materialized)
   }
   if (!is.null(output)) {
-    expect_true(charport::is_charvec(output))
-    expect_false(charport::charport_info(output)$is_materialized)
+    expect_true(is_charr_result(output))
+    expect_lazy_result(output)
   }
   invisible(NULL)
 }
@@ -206,8 +206,8 @@ test_that("sequential fixed replacement keeps condition order", {
           opts_fixed = scenario[[4L]]
         )
       )
-      expect_identical(actual, oracle, info = backend)
       expect_replace_fixed_frame_shape(backend, inputs, actual$value)
+      expect_identical(actual, oracle, info = backend)
     }
   }
 })
@@ -243,8 +243,8 @@ test_that("fixed replacement warnings keep their phase order", {
         opts_fixed = invalid_options
       )
     )
-    expect_identical(actual, oracle, info = backend)
     expect_replace_fixed_frame_shape(backend, inputs, actual$value)
+    expect_identical(actual, oracle, info = backend)
   }
 
   sequential_oracle <- replace_fixed_frame_capture(
@@ -269,8 +269,8 @@ test_that("fixed replacement warnings keep their phase order", {
         backend, "all", inputs, vectorize_all = FALSE
       )
     )
-    expect_identical(actual, sequential_oracle, info = backend)
     expect_replace_fixed_frame_shape(backend, inputs, actual$value)
+    expect_identical(actual, sequential_oracle, info = backend)
   }
 })
 
@@ -302,8 +302,8 @@ test_that("fixed replacement warnings leave the Frame reusable", {
     actual <- replace_fixed_frame_invoke(
       backend, "all", valid_inputs
     )
-    expect_identical(actual, oracle, info = backend)
     expect_replace_fixed_frame_shape(backend, valid_inputs, actual)
+    expect_identical(actual, oracle, info = backend)
   }
 })
 
@@ -324,6 +324,7 @@ test_that("fixed replacement warnings permit ALTREP reentry", {
       )
     }
   )
+  expect_replace_fixed_frame_shape("altrep", inputs, actual$value)
   oracle <- replace_fixed_frame_capture(
     replace_fixed_frame_invoke(
       "stringi", "all",
@@ -335,7 +336,6 @@ test_that("fixed replacement warnings permit ALTREP reentry", {
 
   expect_identical(actual, oracle)
   expect_identical(reentered, c("y", "b", "c"))
-  expect_replace_fixed_frame_shape("altrep", inputs, actual$value)
   expect_false(charport::charport_info(scalar_pattern)$is_materialized)
   expect_false(charport::charport_info(scalar_replacement)$is_materialized)
 })

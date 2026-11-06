@@ -97,7 +97,7 @@ test_that("wrap preserves whitespace-only, width-zero, and adornment rules", {
       locale = "en_US"
     )
 
-    expect_altrep_charvec_list(actual)
+    expect_altrep_result_list(actual)
     expect_identical(actual, expected)
   }
 
@@ -131,7 +131,7 @@ test_that("wrap reuses exact aliases and consumes its lazy line output", {
     whitespace_only = FALSE, use_length = TRUE
   )
 
-  expect_altrep_charvec_list(second)
+  expect_altrep_result_list(second)
   expect_wrap_backend_unmaterialized(first[[1L]])
   expect_identical(first, expected_first)
   expect_identical(second, expected_second)
@@ -178,7 +178,7 @@ test_that("wrap preserves missing, empty, bytes, and malformed behavior", {
   expected <- wrap_backend_call(FALSE, values, width = 4L)
 
   expect_identical(actual, expected)
-  expect_altrep_charvec_list(actual)
+  expect_altrep_result_list(actual)
   expect_wrap_backend_unmaterialized(subject)
 
   empty <- charport::as_charvec(character())

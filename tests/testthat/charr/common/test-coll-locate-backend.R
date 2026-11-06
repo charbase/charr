@@ -11,8 +11,8 @@ test_that("coll locate converts UTF-16 offsets to code-point positions", {
     " 😀ä-a-A ", " üxÜ ", " å-aa-Å ", " none ", " ", NA
   ))
   patterns <- locate_coll_input(c("a", "ü", "aa", "a", "x", NA))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-  expect_identical(charport::is_charvec(patterns), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
+  expect_identical(is_charr_result(patterns), charr_altrep())
   opts <- list(locale = "de", strength = 1L)
 
   expect_identical(
@@ -28,8 +28,8 @@ test_that("coll locate converts UTF-16 offsets to code-point positions", {
 test_that("coll locate all preserves match and no-match matrix shapes", {
   strings <- locate_coll_input(c("😀ä-a-A", "üxÜ", "none", "", NA))
   patterns <- locate_coll_input(c("a", "ü", "a", "x", "a"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-  expect_identical(charport::is_charvec(patterns), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
+  expect_identical(is_charr_result(patterns), charr_altrep())
   opts <- list(locale = "de", strength = 1L)
 
   all <- locate_all_coll(strings, patterns, opts_collator = opts)
@@ -60,8 +60,8 @@ test_that("coll locate all preserves match and no-match matrix shapes", {
 test_that("coll locate preserves recycling and empty-pattern warnings", {
   strings <- locate_coll_input(c("Aarhus", "Århus", "blaa", "blå", NA, ""))
   patterns <- locate_coll_input(c("Å", "aa"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-  expect_identical(charport::is_charvec(patterns), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
+  expect_identical(is_charr_result(patterns), charr_altrep())
 
   located <- locate_first_coll(
     strings, patterns, opts_collator = list(locale = "da", strength = 1L)

@@ -31,7 +31,7 @@ test_that("explicit UTF-8 identity conversion matches stringi", {
   )
   expect_identical(actual_altrep, expected)
   expect_identical(Encoding(actual_altrep), Encoding(expected))
-  expect_true(charport::is_charvec(actual_altrep))
+  expect_true(is_charr_result(actual_altrep))
   expect_false(charport::charport_info(input)$is_materialized)
 
   expected_marked <- with_backend(

@@ -160,10 +160,10 @@ test_that("mapped transformation output stays lazy through a chain", {
   expected <- stringi::stri_trans_nfc(expected)
   expected <- stringi::stri_trans_toupper(expected, "de")
 
-  expect_identical(upper, expected)
   for (value in list(subject, lower, normalized, upper)) {
     expect_transformation_unmaterialized(value)
   }
+  expect_identical(upper, expected)
 })
 
 test_that("mapped transformation entry points return lazy empty vectors", {

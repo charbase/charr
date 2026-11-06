@@ -75,9 +75,50 @@ CHARR_CXX_HELPER cetype_ext_t reserve_encoding(cetype_ext_t encoding)
     }
 }
 
+// See fits_charpack().
+constexpr std::size_t charpack_max_strings = 64;
+constexpr std::size_t charpack_max_bytes = std::size_t(64) << 10;
+
+// A C++ helper: replacing the store frees it. finalize() is an R helper and
+// takes no ownership action itself.
+CHARR_CXX_HELPER void discard(OutputStore& store) noexcept
+{
+    store = OutputStore();
+}
+
 } // namespace utf8_output
 
 using namespace utf8_output;
+
+bool fits_charpack(const OutputStore& store) noexcept
+{
+    const std::size_t n = store.size();
+    if (n > charpack_max_strings)
+        return false;
+    const int* lengths = store.records.lengths();
+    std::size_t bytes = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        // NA records hold NA_INTEGER, which is negative.
+        if (lengths[i] <= 0)
+            continue;
+        bytes += static_cast<std::size_t>(lengths[i]);
+        if (bytes > charpack_max_bytes)
+            return false;
+    }
+    return true;
+}
+
+SEXP finalize(OutputStore&& store) noexcept
+{
+    if (fits_charpack(store)) {
+        SEXP result = charport::charpack::from_store(store);
+        // Freeing the copied store allocates nothing in R, so result needs
+        // no protection here.
+        discard(store);
+        return result;
+    }
+    return charport::charvec::wrap(std::move(store));
+}
 
 OutputRecord missing_output_record() noexcept
 {
@@ -225,7 +266,7 @@ OutputStore ChunkStores::concatenate()
 }
 
 OutputBuilder::OutputBuilder(R_xlen_t size)
-    : size_(size), builder_(size)
+    : size_(size), builder_(size), store_()
 {
 }
 
@@ -270,14 +311,20 @@ char* OutputBuilder::reserve(
     return builder_.reserve(index, length, checked_encoding);
 }
 
+void OutputBuilder::stage() noexcept
+{
+    store_ = builder_.release_store();
+}
+
 SEXP OutputBuilder::to_sexp() noexcept
 {
     size_ = 0;
-    return builder_.to_sexp();
+    stage();
+    return finalize(std::move(store_));
 }
 
 ParallelOutputBuilder::ParallelOutputBuilder()
-    : size_(0), builder_(0, 1)
+    : size_(0), builder_(0, 1), store_()
 {
 }
 
@@ -326,14 +373,20 @@ char* ParallelOutputBuilder::reserve(
     return builder_.reserve(worker, index, length, checked_encoding);
 }
 
+void ParallelOutputBuilder::stage() noexcept
+{
+    store_ = builder_.release_store();
+}
+
 SEXP ParallelOutputBuilder::to_sexp() noexcept
 {
     size_ = 0;
-    return builder_.to_sexp();
+    stage();
+    return finalize(std::move(store_));
 }
 
 GrowableOutputBuilder::GrowableOutputBuilder()
-    : builder_()
+    : builder_(), store_()
 {
 }
 
@@ -406,11 +459,16 @@ OutputStore GrowableOutputBuilder::release_store() noexcept
     return store;
 }
 
+void GrowableOutputBuilder::stage() noexcept
+{
+    store_ = builder_.release_store();
+    reset();
+}
+
 SEXP GrowableOutputBuilder::to_sexp() noexcept
 {
-    SEXP result = builder_.to_sexp();
-    reset();
-    return result;
+    stage();
+    return finalize(std::move(store_));
 }
 
 } // namespace io

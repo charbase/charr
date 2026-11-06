@@ -28,7 +28,7 @@ str_trunc <- function(
   check_string(ellipsis)
 
   len <- str_length(string)
-  too_long <- !is.na(string) & len > width
+  too_long <- .charr_trunc_too_long(string, len, width)
   width... <- width - str_length(ellipsis)
 
   if (width... < 0) {

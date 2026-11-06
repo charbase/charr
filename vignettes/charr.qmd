@@ -70,8 +70,6 @@ prev <- charr_backend("base")    # Optimized functions using ordinary strings
 charr_backend("reference")       # Original stringr reference
 ```
 
-Under `altrep`, passing one `charr` call's output into the next keeps the data in ALTREP form the whole way; nothing materializes until something outside `charr` asks for ordinary strings.
-
 The `charr_backend` selection is stored as an option so you can retrieve it with `getOption("charr_backend")`.
 
 ## Additional functions

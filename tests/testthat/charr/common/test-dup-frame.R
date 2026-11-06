@@ -61,7 +61,7 @@ dup_frame_marked <- function(bytes, encoding) {
 
 expect_dup_frame_shape <- function(backend, input, output = NULL) {
   if (identical(backend, "base") && !is.null(output)) {
-    expect_false(charport::is_charvec(output))
+    expect_false(is_charr_result(output))
   }
   if (!identical(backend, "altrep")) {
     return(invisible(NULL))
@@ -70,8 +70,8 @@ expect_dup_frame_shape <- function(backend, input, output = NULL) {
   expect_true(charport::is_charvec(input))
   expect_false(charport::charport_info(input)$is_materialized)
   if (!is.null(output)) {
-    expect_true(charport::is_charvec(output))
-    expect_false(charport::charport_info(output)$is_materialized)
+    expect_true(is_charr_result(output))
+    expect_lazy_result(output)
   }
   invisible(NULL)
 }
@@ -93,10 +93,10 @@ test_that("duplicate Frame preserves values, encodings, and output shape", {
   for (backend in c("base", "altrep")) {
     input <- dup_frame_input(backend, unname(values))
     actual <- dup_frame_function(backend)(input, times)
+    expect_dup_frame_shape(backend, input, actual)
 
     expect_identical(actual, unname(oracle), info = backend)
     expect_identical(Encoding(as.character(actual)), Encoding(unname(oracle)))
-    expect_dup_frame_shape(backend, input, actual)
   }
 })
 
@@ -171,8 +171,8 @@ test_that("duplicate recovers from warning and overflow errors", {
 
     valid_input <- dup_frame_input(backend, c("a", "bc"))
     actual <- dup_frame_function(backend)(valid_input, c(2L, 1L))
-    expect_identical(actual, c("aa", "bc"), info = backend)
     expect_dup_frame_shape(backend, valid_input, actual)
+    expect_identical(actual, c("aa", "bc"), info = backend)
   }
 })
 
@@ -190,12 +190,12 @@ test_that("duplicate recycling warnings permit ALTREP reentry", {
       )
     }
   )
+  expect_dup_frame_shape("altrep", input, actual$value)
+  expect_dup_frame_shape("altrep", reentry_input, reentered)
   oracle <- dup_frame_capture(
     dup_frame_call("stringi", c("a", "b", "c"), c(1L, 2L))
   )
 
   expect_identical(actual, oracle)
   expect_identical(reentered, c("xx", "yz"))
-  expect_dup_frame_shape("altrep", input, actual$value)
-  expect_dup_frame_shape("altrep", reentry_input, reentered)
 })

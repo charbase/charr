@@ -35,14 +35,15 @@ test_that("fixed split returns unmaterialized fields and supports chaining", {
   )
   expected <- stringi::stri_split_fixed(values, patterns)
 
-  expect_altrep_charvec_list(actual)
+  expect_altrep_result_list(actual)
   invisible(lapply(actual, expect_fixed_split_unmaterialized))
-  expect_identical(actual, expected)
   expect_identical(
     with_test_backend(TRUE, charr_test_leaf("ci_count_fixed")(actual[[2]], "|")),
     integer(3)
   )
+  # The count read actual[[2]] through charport; compare values after.
   expect_fixed_split_unmaterialized(actual[[2]])
+  expect_identical(actual, expected)
   expect_fixed_split_unmaterialized(subject)
   expect_fixed_split_unmaterialized(pattern)
 })
@@ -279,7 +280,7 @@ test_that("fixed split normalizes Latin-1 and BOM inputs", {
 
   actual <- with_test_backend(TRUE, charr_test_leaf("ci_split_fixed")(subject, pattern))
   expect_identical(actual, stringi::stri_split_fixed(values, patterns))
-  expect_altrep_charvec_list(actual)
+  expect_altrep_result_list(actual)
   expect_fixed_split_unmaterialized(subject)
   expect_fixed_split_unmaterialized(pattern)
 })
@@ -305,7 +306,7 @@ test_that("fixed split preserves malformed UTF-8 and long field runs", {
     TRUE,
     charr_test_leaf("ci_split_fixed")(subject, "|", omit_empty = NA)
   )
-  expect_altrep_charvec_list(actual)
+  expect_altrep_result_list(actual)
   expect_identical(
     actual,
     rep(list(rep(c("a", NA_character_, "\u00e9"), 128L)), 4L)

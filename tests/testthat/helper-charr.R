@@ -8,6 +8,19 @@ with_backend <- function(backend, code) {
 
 charr_altrep <- function() identical(charr_backend(), "altrep")
 
+# An ALTREP-backend character result: a charpack for at most 64 strings and
+# 64 KiB of text, otherwise a charvec.
+is_charr_result <- function(x) {
+  charport::is_charvec(x) || charport::is_charpack(x)
+}
+
+# A fresh result stays unmaterialized until R reads it. A charvec caches only
+# the elements R reads, but a charpack materializes whole on its first element
+# read, so check before comparing values.
+expect_lazy_result <- function(x) {
+  testthat::expect_false(charport::charport_info(x)$is_materialized)
+}
+
 # Thread count for the threaded case of a serial-versus-threaded comparison.
 # CRAN policy allows at most two threads during checks; where NOT_CRAN is
 # "true" (make test, CI) four threads give more interleaving.
@@ -175,31 +188,31 @@ with_test_backend <- function(use_selected, code) {
   with_backend(backend, code)
 }
 
-expect_altrep_charvec <- function(value) {
+expect_altrep_result <- function(value) {
   if (charr_altrep()) {
-    expect_true(charport::is_charvec(value))
+    expect_true(is_charr_result(value))
   }
   invisible(NULL)
 }
 
 expect_altrep_unmaterialized <- function(value) {
   if (charr_altrep()) {
-    expect_altrep_charvec(value)
-    expect_false(charport::charport_info(value)$is_materialized)
+    expect_altrep_result(value)
+    expect_lazy_result(value)
   }
   invisible(NULL)
 }
 
-expect_altrep_charvec_list <- function(value) {
+expect_altrep_result_list <- function(value) {
   if (charr_altrep()) {
-    expect_true(all(vapply(value, charport::is_charvec, logical(1L))))
+    expect_true(all(vapply(value, is_charr_result, logical(1L))))
   }
   invisible(NULL)
 }
 
 expect_altrep_unmaterialized_list <- function(value) {
   if (charr_altrep()) {
-    expect_altrep_charvec_list(value)
+    expect_altrep_result_list(value)
     invisible(lapply(value, expect_altrep_unmaterialized))
   }
   invisible(NULL)

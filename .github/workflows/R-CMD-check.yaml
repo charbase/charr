@@ -37,13 +37,15 @@ jobs:
           - {os: windows-latest, r: 'oldrel-3'}
           - {os: windows-latest, r: 'oldrel-4'}
           - {os: windows-latest, r: '4.1'}
-          - {os: ubuntu-latest,  r: 'devel',   http-user-agent: 'release'}
-          - {os: ubuntu-latest,  r: 'release'}
-          - {os: ubuntu-latest,  r: 'oldrel-1'}
-          - {os: ubuntu-latest,  r: 'oldrel-2'}
-          - {os: ubuntu-latest,  r: 'oldrel-3'}
-          - {os: ubuntu-latest,  r: 'oldrel-4'}
-          - {os: ubuntu-latest,  r: '4.1'}
+          # ubuntu-24.04, not ubuntu-latest: on the newer image sudo ignores -E,
+          # so setup-r-dependencies passes R an empty R_LIB_FOR_PAK.
+          - {os: ubuntu-24.04,   r: 'devel',   http-user-agent: 'release'}
+          - {os: ubuntu-24.04,   r: 'release'}
+          - {os: ubuntu-24.04,   r: 'oldrel-1'}
+          - {os: ubuntu-24.04,   r: 'oldrel-2'}
+          - {os: ubuntu-24.04,   r: 'oldrel-3'}
+          - {os: ubuntu-24.04,   r: 'oldrel-4'}
+          - {os: ubuntu-24.04,   r: '4.1'}
 
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
@@ -76,9 +78,12 @@ jobs:
       - name: Check portable R string literals
         run: Rscript tools/check-r-unicode-literals.R
 
+      # charport comes from its GitHub default branch, not CRAN: the two
+      # packages are developed together, and charport's revdep workflow checks
+      # the other direction.
       - uses: r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
         with:
-          extra-packages: any::rcmdcheck
+          extra-packages: any::rcmdcheck, github::charbase/charport
           needs: check
 
       - uses: r-lib/actions/check-r-package@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2

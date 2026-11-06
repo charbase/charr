@@ -187,6 +187,52 @@
   )
 }
 
+# The reference forms keep stringr's code. The native forms answer
+# missingness from lengths or in the flatten kernel, so a charport input is not
+# read as R strings just to find its NAs. That is equivalent only for plain
+# character vectors: stringr tests is.na() before coercion, and coercion turns
+# a numeric NaN into "NaN" and a list's NA into "NA". Other inputs keep
+# stringr's check.
+.charr_trunc_too_long_stringi <- function(string, len, width) {
+  !is.na(string) & len > width
+}
+
+.charr_trunc_too_long_native <- function(string, len, width) {
+  missing <- if (is.character(string) && !is.object(string)) {
+    is.na(len)
+  } else {
+    is.na(string)
+  }
+  !missing & len > width
+}
+
+.charr_flatten_omit_na_stringi <- function(string, collapse) {
+  stri_flatten(string[!is.na(string)], collapse = collapse)
+}
+
+.charr_flatten_omit_na_native <- function(string, collapse) {
+  if (is.character(string) && !is.object(string)) {
+    return(stri_flatten(string, collapse = collapse, na_empty = NA))
+  }
+  stri_flatten(string[!is.na(string)], collapse = collapse)
+}
+
+# Helpers that templates call by name, with a reference and a native form.
+.charr_backend_variants <- list(
+  .charr_wrap_joined = list(
+    stringi = .charr_wrap_joined_stringi,
+    native = .charr_wrap_joined_native
+  ),
+  .charr_trunc_too_long = list(
+    stringi = .charr_trunc_too_long_stringi,
+    native = .charr_trunc_too_long_native
+  ),
+  .charr_flatten_omit_na = list(
+    stringi = .charr_flatten_omit_na_stringi,
+    native = .charr_flatten_omit_na_native
+  )
+)
+
 .charr_namespace <- environment(.charr_make_public_dispatch)
 .charr_backend_templates <- mget(
   c(.charr_backend_roots, .charr_backend_helpers),
@@ -234,26 +280,27 @@ for (.charr_backend_name in names(.charr_backend_environments)) {
   .charr_backend_environment <- .charr_backend_environments[[
     .charr_backend_name
   ]]
-  .charr_wrap_joined_template <- if (
-    identical(.charr_backend_name, "stringi")
-  ) {
-    .charr_wrap_joined_stringi
+  .charr_variant_form <- if (identical(.charr_backend_name, "stringi")) {
+    "stringi"
   } else {
-    .charr_wrap_joined_native
+    "native"
   }
-  assign(
-    ".charr_wrap_joined",
-    .charr_clone_function(
-      .charr_wrap_joined_template,
-      .charr_backend_environment
-    ),
-    envir = .charr_backend_environment
-  )
+  for (.charr_variant in names(.charr_backend_variants)) {
+    assign(
+      .charr_variant,
+      .charr_clone_function(
+        .charr_backend_variants[[.charr_variant]][[.charr_variant_form]],
+        .charr_backend_environment
+      ),
+      envir = .charr_backend_environment
+    )
+  }
 }
 rm(
   .charr_backend_name,
   .charr_backend_environment,
-  .charr_wrap_joined_template
+  .charr_variant_form,
+  .charr_variant
 )
 
 for (.charr_backend_environment in .charr_backend_environments) {
@@ -262,7 +309,7 @@ for (.charr_backend_environment in .charr_backend_environments) {
     c(
       names(.charr_leaf_map),
       names(.charr_backend_templates),
-      ".charr_wrap_joined"
+      names(.charr_backend_variants)
     )
   )
 }

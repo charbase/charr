@@ -8,7 +8,7 @@ test_that("escape_unicode emits exact ASCII escapes from CHARVEC records", {
     c("aé🙂ü", "a\\\"'\t\n", "", NA, "very_long_🙂_record"),
     "not present", ""
   )
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   result <- escape_unicode(strings)
   expect_identical(
@@ -17,7 +17,7 @@ test_that("escape_unicode emits exact ASCII escapes from CHARVEC records", {
       "very_long_\\U0001f642_record")
   )
   expect_identical(Encoding(result), rep("unknown", 5L))
-  expect_identical(charport::is_charvec(result), charr_altrep())
+  expect_identical(is_charr_result(result), charr_altrep())
 })
 
 

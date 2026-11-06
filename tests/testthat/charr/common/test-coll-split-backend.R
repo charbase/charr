@@ -9,8 +9,8 @@ test_that("coll split slices UTF-16 fields around tailored delimiters", {
     " 😀äAäB ", " üÜx ", " åaaÅ ", " none ", " ", NA
   ))
   patterns <- split_coll_input(c("a", "ü", "å", "a", "x", "a"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-  expect_identical(charport::is_charvec(patterns), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
+  expect_identical(is_charr_result(patterns), charr_altrep())
   opts <- list(locale = "de", strength = 1L)
 
   expect_identical(
@@ -33,8 +33,8 @@ test_that("coll split slices UTF-16 fields around tailored delimiters", {
 test_that("coll split preserves tokens_only and omit-empty accounting", {
   strings <- split_coll_input(c("aAäB", "üÜx", "åaaÅ", "", NA))
   patterns <- split_coll_input(c("a", "ü", "å", "x", "a"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-  expect_identical(charport::is_charvec(patterns), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
+  expect_identical(is_charr_result(patterns), charr_altrep())
   opts <- list(locale = "de", strength = 1L)
 
   expect_identical(
@@ -71,8 +71,8 @@ test_that("coll split preserves tokens_only and omit-empty accounting", {
 test_that("coll split preserves simplify padding and validation order", {
   strings <- split_coll_input(c("😀äAäB", "üÜx", "none", "", NA))
   patterns <- split_coll_input(c("a", "ü", "a", "x", "a"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
-  expect_identical(charport::is_charvec(patterns), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
+  expect_identical(is_charr_result(patterns), charr_altrep())
   opts <- list(locale = "de", strength = 1L)
 
   empty_pad <- split_coll(

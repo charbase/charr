@@ -7,7 +7,7 @@ locate_all_fixed <- function(...) charr_test_leaf("ci_locate_all_fixed")(...)
 
 test_that("fixed locate converts Reader byte offsets to code-point positions", {
   strings <- charr_test_leaf("ci_trim_both")(c(" éaé ", " 🙂x🙂 ", " üü "))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     locate_first_fixed(strings, c("a", "x", "̈")),
@@ -32,7 +32,7 @@ test_that("fixed locate converts Reader byte offsets to code-point positions", {
 })
 test_that("fixed locate keeps Reader scans inside each record", {
   strings <- charr_test_leaf("ci_trim_both")(c("aaa", "z", "aaaa", "xyz", "abcx"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_identical(
     locate_first_fixed(strings, c("z", "z", "xy", "xy", "x")),
@@ -45,7 +45,7 @@ test_that("fixed locate keeps Reader scans inside each record", {
 
 test_that("fixed locate preserves no-match, NA, and omit_no_match shapes", {
   strings <- charr_test_leaf("ci_trim_both")(c("abc", "", "éé", NA_character_))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
   patterns <- c("x", "x", "é", "x")
 
   expect_identical(
@@ -77,7 +77,7 @@ test_that("fixed locate preserves no-match, NA, and omit_no_match shapes", {
 
 test_that("fixed empty patterns warn and never become zero-length matches", {
   strings <- charr_test_leaf("ci_trim_both")(c("abc", "", NA_character_))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_warning(
     first <- locate_first_fixed(strings, ""),
@@ -102,7 +102,7 @@ test_that("fixed empty patterns warn and never become zero-length matches", {
 
 test_that("fixed locate preserves recycling and lenient malformed UTF-8 indexing", {
   strings <- charr_test_leaf("ci_trim_both")(c("a", "ba", "ca"))
-  expect_identical(charport::is_charvec(strings), charr_altrep())
+  expect_identical(is_charr_result(strings), charr_altrep())
 
   expect_warning(
     recycled <- locate_first_fixed(strings, c("a", "b")),
@@ -116,7 +116,7 @@ test_that("fixed locate preserves recycling and lenient malformed UTF-8 indexing
   malformed <- rawToChar(as.raw(c(0x61, 0xc3, 0x28, 0x62)))
   Encoding(malformed) <- "UTF-8"
   malformed <- charr_test_leaf("ci_replace_all_fixed")(malformed, "z", "z")
-  expect_identical(charport::is_charvec(malformed), charr_altrep())
+  expect_identical(is_charr_result(malformed), charr_altrep())
   expect_identical(
     locate_first_fixed(malformed, "b"),
     cbind(start = 4L, end = 4L)

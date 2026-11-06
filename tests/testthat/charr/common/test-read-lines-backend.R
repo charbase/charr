@@ -18,7 +18,7 @@ expect_read_lines_backend_equal <- function(bytes, encoding) {
 
   expect_false(charport::is_charvec(expected))
   expect_identical(
-    charport::is_charvec(actual),
+    is_charr_result(actual),
     identical(selected_test_backend, "altrep")
   )
   if (identical(selected_test_backend, "altrep")) {
@@ -171,7 +171,7 @@ test_that("str_read_lines leaves caller-owned connections open", {
 
   expect_true(isOpen(connection))
   expect_identical(
-    charport::is_charvec(actual),
+    is_charr_result(actual),
     identical(selected_test_backend, "altrep")
   )
   if (identical(selected_test_backend, "altrep")) {

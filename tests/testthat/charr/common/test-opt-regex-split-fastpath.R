@@ -22,7 +22,7 @@ test_that("optimized regex split matches stringi on scalar patterns", {
       "altrep", charr_test_leaf("ci_split_regex")(input, pattern)
     )
     expect_identical(actual, expected)
-    expect_true(all(vapply(actual, charport::is_charvec, logical(1))))
+    expect_true(all(vapply(actual, is_charr_result, logical(1))))
     expect_false(charport::charport_info(input)$is_materialized)
   }
 })

@@ -47,10 +47,10 @@ test_that("collation replacement preserves all vectorized traversals", {
       subject, pattern, replacement, opts_collator = opts
     )
   )
+  expect_coll_replace_unmaterialized(actual_all)
   expected_all <- stringi::stri_replace_all_coll(
     values, patterns, replacements, opts_collator = opts
   )
-  expect_identical(actual_all, expected_all)
 
   actual_first <- with_test_backend(
     TRUE,
@@ -58,15 +58,13 @@ test_that("collation replacement preserves all vectorized traversals", {
       subject, pattern, replacement, opts_collator = opts
     )
   )
+  expect_coll_replace_unmaterialized(actual_first)
   expect_identical(
     actual_first,
     stringi::stri_replace_first_coll(
       values, patterns, replacements, opts_collator = opts
     )
   )
-
-  expect_coll_replace_unmaterialized(actual_all)
-  expect_coll_replace_unmaterialized(actual_first)
 
   chained <- with_test_backend(
     TRUE,
@@ -79,7 +77,9 @@ test_that("collation replacement preserves all vectorized traversals", {
     chained,
     stringi::stri_count_coll(expected_all, "Z", opts_collator = opts)
   )
+  # The count read actual_all through charport; compare its values after.
   expect_coll_replace_unmaterialized(actual_all)
+  expect_identical(actual_all, expected_all)
 
   expect_coll_replace_unmaterialized(subject)
   expect_coll_replace_unmaterialized(pattern)
@@ -120,13 +120,13 @@ test_that("collation replacement accepts aliases and sequential patterns", {
     TRUE,
     charr_test_leaf("ci_replace_all_coll")(shared, shared, shared)
   )
+  expect_coll_replace_unmaterialized(aliased)
   expect_identical(
     aliased,
     stringi::stri_replace_all_coll(
       shared_values, shared_values, shared_values
     )
   )
-  expect_coll_replace_unmaterialized(aliased)
   expect_coll_replace_unmaterialized(shared)
 
   values <- c("\u00e4-a-A", "u\u0308-\u00dc", "\u00e5-aa", "none", "", NA_character_)
@@ -144,6 +144,7 @@ test_that("collation replacement accepts aliases and sequential patterns", {
       vectorize_all = FALSE, opts_collator = opts
     )
   )
+  expect_coll_replace_unmaterialized(sequential)
   expect_identical(
     sequential,
     stringi::stri_replace_all_coll(
@@ -151,7 +152,6 @@ test_that("collation replacement accepts aliases and sequential patterns", {
       vectorize_all = FALSE, opts_collator = opts
     )
   )
-  expect_coll_replace_unmaterialized(sequential)
 
   missing_pattern <- charport::as_charvec(c("a", NA_character_))
   missing <- with_test_backend(
@@ -161,6 +161,7 @@ test_that("collation replacement accepts aliases and sequential patterns", {
       vectorize_all = FALSE
     )
   )
+  expect_coll_replace_unmaterialized(missing)
   expect_identical(
     missing,
     stringi::stri_replace_all_coll(
@@ -168,7 +169,6 @@ test_that("collation replacement accepts aliases and sequential patterns", {
       vectorize_all = FALSE
     )
   )
-  expect_coll_replace_unmaterialized(missing)
   expect_coll_replace_unmaterialized(missing_pattern)
 
   na_replacement <- charport::as_charvec(c(NA_character_, "A"))
@@ -179,6 +179,7 @@ test_that("collation replacement accepts aliases and sequential patterns", {
       vectorize_all = FALSE
     )
   )
+  expect_coll_replace_unmaterialized(na_actual)
   expect_identical(
     na_actual,
     stringi::stri_replace_all_coll(
@@ -186,7 +187,6 @@ test_that("collation replacement accepts aliases and sequential patterns", {
       vectorize_all = FALSE
     )
   )
-  expect_coll_replace_unmaterialized(na_actual)
   expect_coll_replace_unmaterialized(na_replacement)
   expect_coll_replace_unmaterialized(subject)
   expect_coll_replace_unmaterialized(pattern)
@@ -455,6 +455,7 @@ test_that("collation replacement preserves marked and malformed strings", {
     TRUE,
     charr_test_leaf("ci_replace_all_coll")(subject, pattern, replacement)
   )
+  expect_coll_replace_unmaterialized(actual)
   expected <- stringi::stri_replace_all_coll(
     values, patterns, replacements
   )
@@ -464,7 +465,6 @@ test_that("collation replacement preserves marked and malformed strings", {
     lapply(expected, charToRaw)
   )
   expect_identical(Encoding(actual), Encoding(expected))
-  expect_coll_replace_unmaterialized(actual)
   expect_coll_replace_unmaterialized(subject)
   expect_coll_replace_unmaterialized(pattern)
   expect_coll_replace_unmaterialized(replacement)
