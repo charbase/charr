@@ -30,6 +30,7 @@ Missing values are an error. Strings marked with the \code{"bytes"} encoding
 are an error, as in \code{\link[=str_c]{str_c()}}. Characters that the output encoding cannot
 represent are written as that encoding's substitution character, with a
 warning.
+An error can leave the destination file partially written.
 }
 \examples{
 path <- tempfile()

@@ -464,6 +464,8 @@ public:
         throw std::logic_error("ByteSearchMatcher: invalid strategy");
     }
 
+    // Currently unused. Forward and reverse KMP share one lazily built
+    // failure table, so do not mix search directions on the same matcher.
     CHARR_CXX_HELPER int find_last()
     {
         switch (strategy_) {

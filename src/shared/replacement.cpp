@@ -1,4 +1,5 @@
 #include "replacement.h"
+#include "ascii.h"
 
 #include <cstring>
 #include <limits>
@@ -57,19 +58,6 @@ CHARR_CXX_HELPER std::size_t validate_ranges(
         previous_end = range.end;
     }
     return matched_bytes;
-}
-
-
-CHARR_NEUTRAL_HELPER bool span_is_ascii(
-    const char* data,
-    int length
-) noexcept
-{
-    for (int i = 0; i < length; ++i) {
-        if (static_cast<unsigned char>(data[i]) > 0x7fU)
-            return false;
-    }
-    return true;
 }
 
 } // namespace replacement
@@ -178,7 +166,7 @@ bool replacement_is_ascii(
     const std::size_t count = ranges.size();
     for (std::size_t i = 0; i < count; ++i) {
         const ByteRange& range = ranges[i];
-        if (!span_is_ascii(
+        if (!is_ascii(
                 subject.ptr+previous_end,
                 range.start-previous_end
             )) {
@@ -187,13 +175,13 @@ bool replacement_is_ascii(
         previous_end = range.end;
     }
 
-    if (!span_is_ascii(
+    if (!is_ascii(
             subject.ptr+previous_end,
             subject.len-previous_end
         )) {
         ascii = false;
     }
-    if (count > 0 && !span_is_ascii(replacement.ptr, replacement.len))
+    if (count > 0 && !is_ascii(replacement.ptr, replacement.len))
         ascii = false;
     return ascii;
 }

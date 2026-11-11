@@ -238,12 +238,12 @@ test_that("str_write_lines supports binary connections and path translation", {
   expect_identical(str_read_lines(unicode_path), "unicode path")
 })
 
-test_that("str_write_lines errors on missing values before writing", {
+test_that("str_write_lines errors on missing values", {
   path <- write_lines_path()
   on.exit(unlink(path), add = TRUE)
 
   expect_error(str_write_lines(c("ok", NA_character_), path))
-  expect_false(file.exists(path))
+  unlink(path)
   expect_error(str_write_lines(NA_character_, path, encoding = "latin1"))
   expect_false(file.exists(path))
 
@@ -306,9 +306,10 @@ test_that("str_write_lines streams ALTREP input without materializing it", {
   input_path <- write_lines_path("charr-write-lines-input-")
   output_path <- write_lines_path("charr-write-lines-output-")
   on.exit(unlink(c(input_path, output_path)), add = TRUE)
+  repetitions <- 257L
   # writeBin, not writeLines: a text-mode connection writes CRLF on Windows.
   writeBin(
-    charToRaw(strrep("stream\ncaf\u00e9\n", 100L)), input_path
+    charToRaw(strrep("stream\ncaf\u00e9\n", repetitions)), input_path
   )
 
   values <- str_read_lines(input_path, encoding = "UTF-8")
@@ -323,13 +324,38 @@ test_that("str_write_lines streams ALTREP input without materializing it", {
   expect_altrep_unmaterialized(upper)
   expect_identical(
     str_read_lines(output_path, encoding = "UTF-8"),
-    rep(c("STREAM", "CAF\u00c9"), 100L)
+    rep(c("STREAM", "CAF\u00c9"), repetitions)
   )
 
   str_write_lines(upper, output_path, encoding = "latin1")
   expect_altrep_unmaterialized(upper)
   expect_identical(
     str_read_lines(output_path, encoding = "latin1"),
-    rep(c("STREAM", "CAF\u00c9"), 100L)
+    rep(c("STREAM", "CAF\u00c9"), repetitions)
   )
+})
+
+test_that("str_write_lines reports late input errors while streaming", {
+  skip_if(identical(selected_test_backend, "reference"))
+  path <- write_lines_path()
+  on.exit(unlink(path), add = TRUE)
+  line <- strrep("x", 255L)
+  values <- rep(line, 513L)
+  expected <- charToRaw(strrep(paste0(line, "\n"), length(values)))
+
+  for (bad in c(NA_character_, write_lines_bytes_value())) {
+    writeBin(charToRaw("existing file\n"), path)
+    input <- c(values, bad)
+    if (identical(selected_test_backend, "altrep")) {
+      input <- charport::as_charvec(input)
+    }
+    expect_error(str_write_lines(input, path))
+    written <- write_lines_bytes(path)
+    expect_gt(length(written), 0L)
+    expect_lte(length(written), length(expected))
+    expect_identical(written, expected[seq_along(written)])
+
+    str_write_lines("recovered", path)
+    expect_identical(write_lines_bytes(path), charToRaw("recovered\n"))
+  }
 })

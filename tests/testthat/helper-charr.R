@@ -1,5 +1,9 @@
 selected_test_backend <- charr_backend()
 
+turkish_I <- function() {
+  coll("I", ignore_case = TRUE, locale = "tr")
+}
+
 with_backend <- function(backend, code) {
   old <- charr_backend(backend)
   on.exit(charr_backend(old), add = TRUE)

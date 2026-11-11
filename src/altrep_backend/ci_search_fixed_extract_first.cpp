@@ -81,14 +81,10 @@ CHARR_NEUTRAL_HELPER inline charport::StrView matched_output_view(
     const char* data, int length
 ) noexcept
 {
-    cetype_ext_t encoding = CETYPE_EXT_ASCII;
-    for (int i = 0; i < length; ++i) {
-        if (static_cast<unsigned char>(data[i]) > 0x7fU) {
-            encoding = CETYPE_EXT_UTF8;
-            break;
-        }
-    }
-    return charport::StrView{data, length, encoding};
+    return charport::StrView{
+        data, length,
+        shared::is_ascii(data, length) ? CETYPE_EXT_ASCII : CETYPE_EXT_UTF8
+    };
 }
 
 

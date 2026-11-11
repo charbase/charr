@@ -77,18 +77,6 @@ CHARR_NEUTRAL_HELPER std::size_t no_slot() noexcept
 }
 
 
-CHARR_NEUTRAL_HELPER bool is_ascii(
-    const char* data, int length
-) noexcept
-{
-    for (int i = 0; i < length; ++i) {
-        if (static_cast<unsigned char>(data[i]) > 0x7fU)
-            return false;
-    }
-    return true;
-}
-
-
 CHARR_NEUTRAL_HELPER shared::StringView direct_input(
     const charport::StrView& value
 ) noexcept
@@ -120,7 +108,7 @@ CHARR_NEUTRAL_HELPER shared::StringView direct_input(
     if (value.enc == CETYPE_EXT_ASCII_OR_UTF8) {
         return shared::StringView{
             data, length,
-            is_ascii(data, length)
+            shared::is_ascii(data, length)
                 ? shared::StringEncoding::ascii
                 : shared::StringEncoding::utf8
         };

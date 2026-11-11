@@ -1,4 +1,5 @@
 #include "utf8_output.h"
+#include "../../shared/ascii.h"
 
 #include <limits>
 #include <stdexcept>
@@ -23,17 +24,6 @@ CHARR_CXX_HELPER int checked_length(std::size_t length)
     return static_cast<int>(length);
 }
 
-CHARR_NEUTRAL_HELPER bool is_ascii(
-    const char* data, std::size_t length
-) noexcept
-{
-    for (std::size_t i = 0; i < length; ++i) {
-        if (static_cast<unsigned char>(data[i]) > 0x7fU)
-            return false;
-    }
-    return true;
-}
-
 CHARR_CXX_HELPER cetype_ext_t resolved_encoding(
     const char* data, std::size_t length, cetype_ext_t encoding
 )
@@ -46,7 +36,7 @@ CHARR_CXX_HELPER cetype_ext_t resolved_encoding(
     case CETYPE_EXT_NATIVE.value:
         return encoding;
     case CETYPE_EXT_ASCII_OR_UTF8.value:
-        return is_ascii(data, length)
+        return shared::is_ascii(data, length)
             ? CETYPE_EXT_ASCII
             : CETYPE_EXT_UTF8;
     case CETYPE_EXT_NA.value:

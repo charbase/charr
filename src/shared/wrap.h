@@ -2,6 +2,7 @@
 #define CHARR_SHARED_WRAP_H
 
 #include "lint.h"
+#include "ascii.h"
 #include "string_view.h"
 #include "boundary_iterator.h"
 
@@ -179,7 +180,7 @@ public:
             start.size(), body_size
         );
         const bool body_ascii = classify_ascii &&
-            (record_ascii_ || bytes_are_ascii(record_data_+begin, end-begin));
+            (record_ascii_ || shared::is_ascii(record_data_+begin, end-begin));
         return Line{
             start.data(), start.size(), record_data_+begin, body_size,
             output_size, classify_ascii && start.is_ascii() && body_ascii
@@ -288,16 +289,6 @@ private:
             );
         }
         return left+right;
-    }
-
-    CHARR_NEUTRAL_HELPER static bool bytes_are_ascii(
-        const char* data, int length
-    ) noexcept {
-        for (int i = 0; i < length; ++i) {
-            if (static_cast<unsigned char>(data[i]) >= 0x80U)
-                return false;
-        }
-        return true;
     }
 };
 

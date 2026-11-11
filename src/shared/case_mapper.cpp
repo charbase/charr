@@ -2,6 +2,7 @@
 // Copyright (c) 2013-2025, Marek Gagolewski. See inst/COPYRIGHTS.
 
 #include "case_mapper.h"
+#include "ascii.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -22,17 +23,6 @@ CHARR_NEUTRAL_HELPER bool has_bom(
         static_cast<unsigned char>(data[0]) == 0xef &&
         static_cast<unsigned char>(data[1]) == 0xbb &&
         static_cast<unsigned char>(data[2]) == 0xbf;
-}
-
-
-CHARR_NEUTRAL_HELPER bool is_ascii(
-    const char* data, int length
-) noexcept {
-    for (int i = 0; i < length; ++i) {
-        if (static_cast<unsigned char>(data[i]) >= 0x80)
-            return false;
-    }
-    return true;
 }
 
 

@@ -32,7 +32,8 @@ native_locale_operations <- function(target) {
     utf16_container = function(value) {
       str_detect(value, coll(target, locale = "en", strength = 3L))
     },
-    direct_length = str_length
+    direct_length = str_length,
+    direct_width = str_width
   )
 }
 

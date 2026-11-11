@@ -522,7 +522,10 @@ CHARR_ENTRYPOINT SEXP ci_width(SEXP str) noexcept
                     if (IS_BYTES(value))
                         throw StriException(MSG__BYTESENC);
 
-                    if (IS_UTF8(value)) {
+                    const cetype_t encoding = Rf_getCharCE(value);
+                    if (encoding == CE_UTF8 ||
+                            (encoding == CE_NATIVE &&
+                             native_to_utf8.native_is_utf8())) {
                         retint[i] = ci__width_string(data, length);
                         continue;
                     }

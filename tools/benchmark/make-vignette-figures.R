@@ -72,7 +72,7 @@ widen <- function(data) {
 }
 
 # Operations the ALTREP backend deliberately does not split. Each fails the
-# data-parallel test in `CLAUDE.md`: a reduction, a whole-vector algorithm, or
+# data-parallel test in `AGENTS.md`: a reduction, a whole-vector algorithm, or
 # an output whose cardinality is not known before the work runs.
 #
 #   ci_flatten     reduces the whole vector to one string

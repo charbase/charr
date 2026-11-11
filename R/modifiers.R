@@ -105,11 +105,6 @@ str_opts_collator <- function(
   )
 }
 
-# used for testing
-turkish_I <- function() {
-  coll("I", ignore_case = TRUE, locale = "tr")
-}
-
 #' @export
 #' @rdname modifiers
 #' @param multiline If `TRUE`, `$` and `^` match

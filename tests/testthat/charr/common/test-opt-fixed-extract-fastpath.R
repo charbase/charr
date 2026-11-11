@@ -64,6 +64,22 @@ test_that("cached fixed-extract children retain copy-on-write isolation", {
 })
 
 
+test_that("repeated fixed matches have independent writable bytes", {
+  for (replacement in c("zz", "z")) {
+    output <- with_backend(
+      "altrep", str_extract_all(strrep("ab,", 100L), fixed("ab"))
+    )
+    # More than 64 matches keeps this on the charvec path. Mutate the fresh
+    # child before reading its values, so neither caching nor a copy hides it.
+    output[[1L]][37L] <- replacement
+    expect_true(charport::is_charvec(output[[1L]]))
+    expected <- rep("ab", 100L)
+    expected[37L] <- replacement
+    expect_identical(output[[1L]], expected)
+  }
+})
+
+
 test_that("optimized fixed extract pads missing rows like stringi", {
   values <- c("aa", "none", "", NA_character_)
   operation <- function(x) {

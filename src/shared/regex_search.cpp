@@ -2,6 +2,7 @@
 // Copyright (c) 2013-2025, Marek Gagolewski. See inst/COPYRIGHTS.
 
 #include "regex_search.h"
+#include "ascii.h"
 #include "utf8.h"
 
 #include <unicode/ustring.h>
@@ -126,11 +127,7 @@ CHARR_NEUTRAL_HELPER bool is_ascii(
         return true;
     if (source.enc != StringEncoding::ascii_or_utf8)
         return false;
-    for (int i = 0; i < source.len; ++i) {
-        if (static_cast<unsigned char>(source.ptr[i]) > 0x7fU)
-            return false;
-    }
-    return true;
+    return shared::is_ascii(source.ptr, source.len);
 }
 
 

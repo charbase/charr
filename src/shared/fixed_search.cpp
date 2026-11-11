@@ -115,6 +115,8 @@ void FixedMatcher::prepare(
     if (pattern.is_na() || pattern.ptr == nullptr || pattern.len <= 0)
         throw std::invalid_argument("fixed matcher requires a pattern");
 
+    // Pointer identity is a cache key only while the pattern's storage stays
+    // valid and its bytes stay unchanged across calls using this matcher.
     if (matcher_ && pattern.ptr == pattern_ &&
             pattern.len == pattern_length_ &&
             options.case_insensitive == options_.case_insensitive &&
@@ -295,78 +297,10 @@ void plan_fixed_extract(
     FixedExtractPlan& plan
 )
 {
-    plan.rows.clear();
-    plan.matches.clear();
-    plan.max_columns = 0;
-    plan.matches_are_patterns = !options.case_insensitive;
-
-    if (output_length <= 0)
-        return;
-    if (subjects.empty() || patterns.empty()) {
-        throw std::invalid_argument(
-            "fixed extraction requires non-empty inputs"
-        );
-    }
-
-    plan.rows.resize(static_cast<std::size_t>(output_length));
-    for (int i = 0; i < output_length; ++i) {
-        const std::size_t pattern_index =
-            static_cast<std::size_t>(i) % patterns.size();
-        const StringView& subject = subjects[
-            static_cast<std::size_t>(i) % subjects.size()
-        ];
-        const StringView& pattern = patterns[pattern_index];
-        FixedExtractRow& row = plan.rows[static_cast<std::size_t>(i)];
-        row.begin = plan.matches_are_patterns
-            ? pattern_index
-            : plan.matches.size();
-        row.count = 0;
-        row.forced_na = false;
-
-        if (subject.is_na() || pattern.is_na() || pattern.len <= 0) {
-            row.forced_na = true;
-        }
-        else if (subject.len <= 0) {
-            row.forced_na = !omit_no_match;
-        }
-        else if (plan.matches_are_patterns) {
-            row.count = options.overlap
-                ? matcher.count(subject, pattern, options)
-                : count_exact_bytes(
-                    subject.ptr, subject.len,
-                    pattern.ptr, pattern.len
-                );
-            row.forced_na = row.count == 0 && !omit_no_match;
-        }
-        else {
-            matcher.find_all(subject, pattern, options, scratch);
-            const StringEncoding encoding =
-                subject.enc == StringEncoding::ascii
-                    ? StringEncoding::ascii
-                    : StringEncoding::ascii_or_utf8;
-            for (std::size_t j = 0; j < scratch.size(); ++j) {
-                const FixedRange& range = scratch[j];
-                plan.matches.push_back(StringView{
-                    subject.ptr+range.start,
-                    range.end-range.start,
-                    encoding
-                });
-            }
-            const std::size_t count = plan.matches.size()-row.begin;
-            if (count > static_cast<std::size_t>(
-                    std::numeric_limits<int>::max())) {
-                throw std::length_error(
-                    "fixed extraction result is too large"
-                );
-            }
-            row.count = static_cast<int>(count);
-            row.forced_na = row.count == 0 && !omit_no_match;
-        }
-
-        const int width = row.forced_na ? 1 : row.count;
-        if (width > plan.max_columns)
-            plan.max_columns = width;
-    }
+    plan_fixed_extract(
+        subjects, patterns, 0, output_length > 0 ? output_length : 0,
+        options, omit_no_match, matcher, scratch, plan
+    );
 }
 
 

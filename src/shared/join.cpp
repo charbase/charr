@@ -2,6 +2,7 @@
 // Copyright (c) 2013-2025, Marek Gagolewski. See inst/COPYRIGHTS.
 
 #include "join.h"
+#include "ascii.h"
 
 #include <R_ext/Arith.h>
 
@@ -32,11 +33,7 @@ CHARR_NEUTRAL_HELPER static bool is_ascii(
     if (value.enc != StringEncoding::ascii_or_utf8)
         return false;
 
-    for (int i = 0; i < value.len; ++i) {
-        if (static_cast<unsigned char>(value.ptr[i]) > 0x7fU)
-            return false;
-    }
-    return true;
+    return shared::is_ascii(value.ptr, static_cast<std::size_t>(value.len));
 }
 
 CHARR_NEUTRAL_HELPER static void add_bytes(

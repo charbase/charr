@@ -708,6 +708,10 @@ CHARR_CXX_HELPER void preflight_inputs(
             break;
         case CETYPE_EXT_LATIN1.value:
         case CETYPE_EXT_NATIVE.value:
+            // Latin-1 still needs conversion in a UTF-8 locale; native
+            // strings can be read by the worker without a converted slot.
+            if (value.enc == CETYPE_EXT_NATIVE && converter.native_is_utf8())
+                break;
             if (converted_slots.empty()) {
                 converted_slots.assign(
                     static_cast<std::size_t>(size), no_slot()
@@ -746,8 +750,8 @@ CHARR_NEUTRAL_HELPER shared::StringView input_at(
 }
 
 /*
- * The threaded path converts Latin-1 and native records on the main thread
- * before this body runs. The one-thread path keeps the original inline loop.
+ * The threaded path converts Latin-1 and non-UTF-8 native records on the main
+ * thread. Native UTF-8 bytes are read in place, as in the one-thread loop.
  */
 class Body final : public ParallelBody {
 public:
@@ -903,7 +907,9 @@ CHARR_ENTRYPOINT SEXP ci_width(SEXP str) noexcept
 
                             if (encoding == CETYPE_EXT_UTF8 ||
                                     encoding ==
-                                        CETYPE_EXT_ASCII_OR_UTF8) {
+                                        CETYPE_EXT_ASCII_OR_UTF8 ||
+                                    (encoding == CETYPE_EXT_NATIVE &&
+                                     converter.native_is_utf8())) {
                                 retint[i] = ci__width_string(data, length);
                                 continue;
                             }

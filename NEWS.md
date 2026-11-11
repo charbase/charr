@@ -1,3 +1,17 @@
+# charr 0.3.0
+
+* Requires charport 0.3.0 or later.
+
+* Under the `"altrep"` backend, repeated fixed matches from
+  `str_extract_all()` now have independent byte storage, so assigning to one
+  match cannot corrupt the others.
+
+* `str_width()` reads native strings directly in a UTF-8 locale under both
+  optimized backends, avoiding an unnecessary encoding conversion.
+
+* Both optimized backends validate `str_write_lines()` records while streaming
+  them. A late input error can leave partial output in the destination file.
+
 # charr 0.2.0
 
 * Requires charport 0.2.0 or later.

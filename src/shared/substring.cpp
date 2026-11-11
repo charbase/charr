@@ -1,4 +1,5 @@
 #include "substring.h"
+#include "ascii.h"
 
 #ifndef R_NO_REMAP
 #define R_NO_REMAP
@@ -274,13 +275,7 @@ ReplacementResult ReplacementAssembler::build(
         source_data+byte_position,
         static_cast<std::size_t>(source.len-byte_position)
     );
-    bool ascii = true;
-    for (std::size_t i = 0; i < bytes_.size(); ++i) {
-        if (static_cast<unsigned char>(bytes_[i]) > 0x7fU) {
-            ascii = false;
-            break;
-        }
-    }
+    const bool ascii = is_ascii(bytes_.data(), bytes_.size());
     return ReplacementResult{
         StringView{
             bytes_.empty() ? "" : bytes_.data(),

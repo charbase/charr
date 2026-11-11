@@ -22,13 +22,13 @@ test_that("write lines closes files and recovers after native errors", {
       .Call(native, "first", missing, "\n"),
       "cannot write file"
     )
+    expect_error(.Call(native, "first", NA_character_, "\n"), "'con'")
+    expect_error(.Call(native, "first", path, NA_character_), "'sep'")
+    expect_false(file.exists(path))
     expect_error(
       .Call(native, c("first", NA_character_), path, "\n"),
       "missing strings"
     )
-    expect_error(.Call(native, "first", NA_character_, "\n"), "'con'")
-    expect_error(.Call(native, "first", path, NA_character_), "'sep'")
-    expect_false(file.exists(path))
 
     expect_identical(
       .Call(native, c("first", "second"), path, "\n"),

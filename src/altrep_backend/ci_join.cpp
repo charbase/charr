@@ -142,18 +142,6 @@ CHARR_NEUTRAL_HELPER R_len_t recycling_length(
 }
 
 
-CHARR_NEUTRAL_HELPER bool is_ascii(
-    const char* data, int length
-) noexcept
-{
-    for (int i = 0; i < length; ++i) {
-        if (static_cast<unsigned char>(data[i]) > 0x7fU)
-            return false;
-    }
-    return true;
-}
-
-
 CHARR_CXX_HELPER bool are_direct_inputs(
     const charport::StrViews& values
 )
@@ -208,7 +196,7 @@ CHARR_NEUTRAL_HELPER shared::StringView direct_input(
 
     const bool ascii = value.enc == CETYPE_EXT_ASCII ||
         (value.enc == CETYPE_EXT_ASCII_OR_UTF8 &&
-            is_ascii(data, length));
+            shared::is_ascii(data, length));
     return shared::StringView{
         data, length,
         ascii
@@ -1053,7 +1041,7 @@ CHARR_ENTRYPOINT SEXP ci_join(
                             shared::StringEncoding::ascii ||
                         (collapse_value.enc ==
                             shared::StringEncoding::ascii_or_utf8 &&
-                            join_frame::is_ascii(
+                            shared::is_ascii(
                                 collapse_value.ptr, collapse_value.len
                             ));
                     size_t total_bytes = 0;

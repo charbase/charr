@@ -21,6 +21,7 @@ raw-acquire	r	Riconv_open	void *(const char *, const char *)	Riconv_open returns
 r	cxx	charport::Reader::reset	void (struct SEXPREC *)	charport Reader initialization may raise an R error and does not propagate C++ exceptions.
 r		charport::Reader::view	struct charport_strview (long) const	The resolved strviews callback may call CHAR and LENGTH, which signal R errors; check_access also throws on a failed status.
 r		charport::Reader::views	void (int, long, const char **, int *, struct cetype_ext_t *) const	The resolved strviews callback may call CHAR and LENGTH, which signal R errors; check_access also throws on a failed status.
+r		charport::Reader::views	void (long, long, const char **, int *, struct cetype_ext_t *) const	The resolved strviews callback may call CHAR and LENGTH, which signal R errors; check_access also throws on a failed status.
 r		charport::charvec::Builder::to_sexp	struct SEXPREC *(void) noexcept	charport permits R errors during ALTREP wrapping and does not propagate C++ exceptions.
 r		charport::charvec::GrowableBuilder::to_sexp	struct SEXPREC *(void) noexcept	charport permits R errors during ALTREP wrapping and does not propagate C++ exceptions.
 r		charport::charvec::ParallelBuilder::to_sexp	struct SEXPREC *(void) noexcept	charport permits R errors during ALTREP wrapping and does not propagate C++ exceptions.

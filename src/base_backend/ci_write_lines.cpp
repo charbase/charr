@@ -48,16 +48,6 @@ CHARR_ENTRYPOINT SEXP ci_write_lines(
                     throw StriException(MSG__BYTESENC);
 
                 const R_xlen_t size = XLENGTH(str);
-                for (R_xlen_t i = 0; i < size; ++i) {
-                    const shared::StringView value = io::as_shared_view(
-                        STRING_ELT(str, i)
-                    );
-                    if (value.is_na())
-                        throw StriException("missing strings are not supported");
-                    if (value.enc == shared::StringEncoding::bytes)
-                        throw StriException(MSG__BYTESENC);
-                }
-
                 description = Rf_translateChar(path_string);
                 expanded_path = R_ExpandFileName(description.c_str());
 
@@ -78,6 +68,10 @@ CHARR_ENTRYPOINT SEXP ci_write_lines(
                         const shared::StringView source = io::as_shared_view(
                             STRING_ELT(str, i)
                         );
+                        if (source.is_na())
+                            throw StriException("missing strings are not supported");
+                        if (source.enc == shared::StringEncoding::bytes)
+                            throw StriException(MSG__BYTESENC);
                         const shared::StringView value =
                             shared::normalize_utf8_transient(source, converter);
                         file.write_utf8(value.ptr, value.len);

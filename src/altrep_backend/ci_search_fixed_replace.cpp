@@ -95,19 +95,6 @@ CHARR_NEUTRAL_HELPER bool direct_view(
 }
 
 
-CHARR_NEUTRAL_HELPER bool span_is_ascii(
-    const char* data,
-    R_len_t length
-) noexcept
-{
-    for (R_len_t i = 0; i < length; ++i) {
-        if (static_cast<unsigned char>(data[i]) > 0x7fU)
-            return false;
-    }
-    return true;
-}
-
-
 CHARR_CXX_HELPER std::size_t checked_direct_size(
     R_len_t subject_length,
     R_len_t replacement_length,
@@ -288,7 +275,7 @@ CHARR_NEUTRAL_HELPER bool replace_direct_eligible(
     state.pattern_byte =
         static_cast<unsigned char>(pattern_value.data[0]);
     state.replacement_ascii = !replacement_value.missing &&
-        span_is_ascii(
+        shared::is_ascii(
             replacement_value.data, replacement_value.length
         );
     state.replace_all = replace_all;
@@ -343,8 +330,8 @@ CHARR_CXX_HELPER bool replace_direct_one(
         }
 
         const bool ascii = state.replacement_ascii &&
-            span_is_ascii(subject.data, match) &&
-            span_is_ascii(
+            shared::is_ascii(subject.data, match) &&
+            shared::is_ascii(
                 subject.data+match+1,
                 subject.length-match-1
             );

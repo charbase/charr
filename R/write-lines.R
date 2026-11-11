@@ -8,6 +8,7 @@
 #' are an error, as in [str_c()]. Characters that the output encoding cannot
 #' represent are written as that encoding's substitution character, with a
 #' warning.
+#' An error can leave the destination file partially written.
 #'
 #' @param string A character vector to write.
 #' @param con A file name or a connection opened in binary mode.

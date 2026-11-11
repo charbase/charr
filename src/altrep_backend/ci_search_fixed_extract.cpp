@@ -41,6 +41,7 @@
 #include "../shared/fixed_search.h"
 #include "../shared/native_to_utf8.h"
 #include "../shared/protect.h"
+#include "../shared/repeat.h"
 #include "../shared/slice_arena.h"
 #include "../shared/unwind.h"
 #include "../shared/utf8.h"
@@ -137,25 +138,29 @@ CHARR_CXX_HELPER void set_repeated_store(
     io::OutputStore& output
 )
 {
+    // Element assignment reuses each record's bytes, so matches cannot share.
+    const std::size_t pattern_bytes = static_cast<std::size_t>(pattern.len);
+    std::size_t payload_bytes = 0;
+    if (!shared::checked_repeat_size(
+            pattern_bytes, count,
+            std::numeric_limits<std::size_t>::max(), payload_bytes)) {
+        throw std::length_error("fixed extraction payload is too large");
+    }
     output = io::OutputStore(
-        static_cast<std::size_t>(count),
-        static_cast<std::size_t>(pattern.len)
+        static_cast<std::size_t>(count), payload_bytes
     );
     if (count <= 0)
         return;
 
     char* payload = output.slices.front_data();
-    if (pattern.len > 0) {
-        std::memcpy(
-            payload, pattern.ptr,
-            static_cast<std::size_t>(pattern.len)
-        );
-    }
+    shared::repeat_bytes(payload, pattern.ptr, pattern_bytes, payload_bytes);
     const charport::StrView value = io::as_charport_view(pattern);
     for (R_len_t i = 0; i < count; ++i) {
         output.records.set(
             static_cast<std::size_t>(i),
-            pattern.len == 0 ? "" : payload,
+            pattern.len == 0
+                ? charport::charvec::components::empty_data()
+                : payload + static_cast<std::size_t>(i) * pattern_bytes,
             pattern.len, value.enc
         );
     }

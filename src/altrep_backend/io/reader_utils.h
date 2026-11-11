@@ -5,6 +5,7 @@
 #define CHARR_ALTREP_IO_READER_UTILS_H
 
 #include "charport.h"
+#include "../../shared/ascii.h"
 #include "../../shared/lint.h"
 
 #include <cstddef>
@@ -28,16 +29,7 @@ CHARR_CXX_HELPER inline R_len_t checked_r_len(
 }
 
 
-CHARR_NEUTRAL_HELPER inline bool is_ascii(
-    const char* data, std::size_t length
-) noexcept
-{
-    for (std::size_t i = 0; i < length; ++i) {
-        if (static_cast<unsigned char>(data[i]) > 0x7f)
-            return false;
-    }
-    return true;
-}
+using shared::is_ascii;
 
 } // namespace io
 } // namespace altrep_backend

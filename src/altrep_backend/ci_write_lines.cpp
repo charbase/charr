@@ -33,6 +33,10 @@ CHARR_ENTRYPOINT SEXP ci_write_lines(
         shared::write_lines::FileWriter file;
         charport::Reader reader;
         charport::Reader separator_reader;
+        constexpr R_xlen_t batch_size = 256;
+        const char* ptrs[batch_size];
+        int lengths[batch_size];
+        cetype_ext_t encodings[batch_size];
         shared::NativeToUtf8 converter;
         std::string description;
         std::string expanded_path;
@@ -59,15 +63,6 @@ CHARR_ENTRYPOINT SEXP ci_write_lines(
                 reader.reset(str);
                 if (reader.size() != size)
                     throw std::runtime_error("Reader length changed during file writing");
-                for (R_xlen_t i = 0; i < size; ++i) {
-                    const shared::StringView value = io::as_shared_view(
-                        reader.view(i)
-                    );
-                    if (value.is_na())
-                        throw StriException("missing strings are not supported");
-                    if (value.enc == shared::StringEncoding::bytes)
-                        throw StriException(MSG__BYTESENC);
-                }
 
                 description = Rf_translateChar(path_string);
                 expanded_path = R_ExpandFileName(description.c_str());
@@ -85,17 +80,28 @@ CHARR_ENTRYPOINT SEXP ci_write_lines(
 
                 try {
                     file.reset(expanded_path.c_str());
-                    for (R_xlen_t i = 0; i < size; ++i) {
-                        const shared::StringView source = io::as_shared_view(
-                            reader.view(i)
-                        );
-                        const shared::StringView value =
-                            shared::normalize_utf8_transient(source, converter);
-                        file.write_utf8(value.ptr, value.len);
-                        file.write_utf8(
-                            separator_bytes.data(),
-                            static_cast<int>(separator_bytes.size())
-                        );
+                    for (R_xlen_t start = 0; start < size;) {
+                        const R_xlen_t remaining = size - start;
+                        const R_xlen_t count =
+                            remaining < batch_size ? remaining : batch_size;
+                        reader.views(start, count, ptrs, lengths, encodings);
+                        for (R_xlen_t j = 0; j < count; ++j) {
+                            if (encodings[j] == CETYPE_EXT_NA)
+                                throw StriException("missing strings are not supported");
+                            if (encodings[j] == CETYPE_EXT_BYTES)
+                                throw StriException(MSG__BYTESENC);
+                            const shared::StringView source = io::as_shared_view(
+                                make_strview(ptrs[j], lengths[j], encodings[j])
+                            );
+                            const shared::StringView value =
+                                shared::normalize_utf8_transient(source, converter);
+                            file.write_utf8(value.ptr, value.len);
+                            file.write_utf8(
+                                separator_bytes.data(),
+                                static_cast<int>(separator_bytes.size())
+                            );
+                        }
+                        start += count;
                     }
                     file.close();
                 }

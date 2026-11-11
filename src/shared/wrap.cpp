@@ -2,6 +2,7 @@
 // Copyright (c) 2013-2025, Marek Gagolewski. See inst/COPYRIGHTS.
 
 #include "wrap.h"
+#include "ascii.h"
 
 #include <unicode/bytestream.h>
 #include <unicode/stringpiece.h>
@@ -31,17 +32,6 @@ CHARR_NEUTRAL_HELPER bool has_bom(
         static_cast<unsigned char>(data[0]) == 0xefU &&
         static_cast<unsigned char>(data[1]) == 0xbbU &&
         static_cast<unsigned char>(data[2]) == 0xbfU;
-}
-
-
-CHARR_NEUTRAL_HELPER bool is_ascii(
-    const char* data, int length
-) noexcept {
-    for (int i = 0; i < length; ++i) {
-        if (static_cast<unsigned char>(data[i]) >= 0x80U)
-            return false;
-    }
-    return true;
 }
 
 
@@ -235,7 +225,7 @@ void LineStart::reset(const StringView& source, int spaces)
     bytes_.append(static_cast<std::size_t>(spaces), ' ');
     ascii_ = source.enc == StringEncoding::ascii ||
         (source.enc == StringEncoding::ascii_or_utf8 &&
-            wrap_detail::is_ascii(data, source.len));
+            shared::is_ascii(data, source.len));
     count_ = (ascii_ ? source.len : code_point_count(data, source.len)) + spaces;
     width_ = string_width(data, source.len) + spaces;
 }
