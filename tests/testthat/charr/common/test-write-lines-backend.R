@@ -112,6 +112,23 @@ test_that("str_write_lines handles empty input, empty strings, and separators", 
   expect_identical(routes$connection, routes$path)
 })
 
+test_that("str_write_lines emits one BOM for UTF-16 and UTF-32 streams", {
+  values <- c("", "first", "second\ufeffline", "")
+  for (encoding in c("UTF-16", "unicode", "UTF-32", "utf32")) {
+    for (sep in c("", "\u2028")) {
+      routes <- write_lines_both_routes(values, encoding = encoding, sep = sep)
+      expect_identical(
+        routes$path, write_lines_oracle(values, encoding = encoding, sep = sep)
+      )
+      expect_identical(routes$connection, routes$path)
+    }
+
+    routes <- write_lines_both_routes(c("", ""), encoding = encoding, sep = "")
+    expect_length(routes$path, 0L)
+    expect_length(routes$connection, 0L)
+  }
+})
+
 test_that("str_write_lines converts marked inputs and output encodings", {
   skip_if_selected_stringi_cannot_compare_native()
   latin1 <- rawToChar(as.raw(c(0x63, 0x61, 0x66, 0xe9)))

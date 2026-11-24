@@ -175,9 +175,8 @@ ci_read_lines <- function(con, encoding = NULL,
 #
 # Charr implementation, not copied from stringi: missing strings are an
 # error, and `sep` has no platform-dependent default. A single path with
-# UTF-8 output streams the records natively. Any other combination follows
-# stringi's join-then-encode order with this backend's ci_c() and ci_encode()
-# and writes the encoded records in chunks.
+# UTF-8 output streams the records natively. The fallback joins each record
+# with its separator, encodes the records, then writes them in chunks.
 ci_write_lines <- function(string, con, encoding = "UTF-8", sep = "\n")
 {
     if (identical(encoding, ""))
@@ -198,6 +197,31 @@ ci_write_lines <- function(string, con, encoding = "UTF-8", sep = "\n")
     if (any(vapply(records, is.null, logical(1L))))
         stop("missing strings are not supported")
 
+    n <- length(records)
+    bom_size <- 0L
+    if (n > 1L && !is.null(encoding)) {
+        # Empty records emit no BOM. Keep the first one actually emitted.
+        first_record <- if (length(records[[1L]])) 1L else
+            which.max(lengths(records) > 0L)
+        prefix <- records[[first_record]][seq_len(4L)]
+        if (identical(prefix[1:2], as.raw(c(0xfe, 0xff))) ||
+            identical(prefix[1:2], as.raw(c(0xff, 0xfe))) ||
+            identical(prefix, as.raw(c(0, 0, 0xfe, 0xff)))) {
+            # The same bytes can occur as text in encodings without a BOM.
+            # ICU's canonical name resolves aliases and converter versions.
+            bom_size <- switch(ci_enc_info(encoding)$Name.ICU,
+                "UTF-16" =,
+                "UTF-16,version=1" =,
+                "UTF-16,version=2" =,
+                "UTF-16BE,version=1" =,
+                "UTF-16LE,version=1" = 2L,
+                "UTF-32" = 4L,
+                0L
+            )
+            bom_indices <- seq_len(bom_size)
+        }
+    }
+
     # writeBin() would reopen, and so truncate, an unopened connection for
     # every chunk.
     if (is.character(con)) {
@@ -208,11 +232,17 @@ ci_write_lines <- function(string, con, encoding = "UTF-8", sep = "\n")
         stop("`con` must be opened in binary mode")
 
     chunk_size <- 65536L
-    n <- length(records)
     for (chunk in seq_len(ceiling(n / chunk_size))) {
         from <- (chunk - 1) * chunk_size + 1
         index <- from:min(n, from + chunk_size - 1)
-        writeBin(unlist(records[index], use.names = FALSE), con)
+        batch <- records[index]
+        if (bom_size > 0L) {
+            later <- index > first_record
+            batch[later] <- lapply(batch[later], function(record) {
+                record[-bom_indices]
+            })
+        }
+        writeBin(unlist(batch, use.names = FALSE), con)
     }
     invisible(string)
 }
