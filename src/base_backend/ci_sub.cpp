@@ -160,7 +160,8 @@ CHARR_CXX_HELPER CiSubInput ci__sub_normalize_source(
     const char* data = source.data;
     R_len_t length = source.length;
     bool converted = false;
-    if (!source.is_utf8) {
+    if (!source.is_utf8 &&
+            (source.is_latin1 || !converter.native_is_utf8())) {
         try {
             const bool native_has_bom = !source.is_latin1 &&
                 STRI__ENC_HAS_BOM_UTF8(data, length);

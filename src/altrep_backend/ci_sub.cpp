@@ -137,7 +137,10 @@ CHARR_CXX_HELPER CiSubFrameInput ci__sub_normalize_frame_input(
     }
     else if (value.enc == CETYPE_EXT_NATIVE) {
         const bool native_has_bom = STRI__ENC_HAS_BOM_UTF8(data, length);
-        output = converter.native(data, length);
+        // Keep native input in the prepared slots used by workers.
+        output = converter.native_is_utf8()
+            ? shared::ByteView{data, length}
+            : converter.native(data, length);
         if (native_has_bom &&
                 STRI__ENC_HAS_BOM_UTF8(output.ptr, output.len)) {
             return CiSubFrameInput{
@@ -1240,7 +1243,7 @@ CHARR_ENTRYPOINT SEXP ci_sub(
         io::OutputBuilder builder(0);
         io::ParallelOutputBuilder parallel_builder;
         io::OutputBuilder filtered(0);
-        io::OutputStore output_store(0, 0);
+        io::OutputStore output_store(0, 0, charport::charvec::uninitialized);
         std::vector<R_len_t> negative_length_counts;
 
         result = shared::unwind_protect(
@@ -1528,7 +1531,7 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement(
         std::vector<shared::StringView> replacement_converted_values;
         io::OutputBuilder builder(0);
         io::ParallelOutputBuilder parallel_builder;
-        io::OutputStore output_store(0, 0);
+        io::OutputStore output_store(0, 0, charport::charvec::uninitialized);
 
         result = shared::unwind_protect(
             unwind_token,
@@ -2331,7 +2334,7 @@ CHARR_ENTRYPOINT SEXP ci_sub_replacement_all(
         bool has_warning_emit_limit = false;
         io::OutputBuilder builder(0);
         io::ParallelOutputBuilder parallel_builder;
-        io::OutputStore output_store(0, 0);
+        io::OutputStore output_store(0, 0, charport::charvec::uninitialized);
 
         result = shared::unwind_protect(
             unwind_token,

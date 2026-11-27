@@ -77,6 +77,19 @@ CHARR_R_HELPER void emit_invalid_warning(
     Rf_warning("%s", message);
 }
 
+CHARR_CXX_HELPER void resize_file_bytes(
+    io::OutputStore& bytes, std::size_t capacity, std::size_t used
+)
+{
+    io::OutputStore next(0, capacity, charport::charvec::uninitialized);
+    if (used > 0) {
+        std::memcpy(
+            next.slices.front_data(), bytes.slices.front_data(), used
+        );
+    }
+    bytes = std::move(next);
+}
+
 CHARR_CXX_HELPER void build_store_records(
     const char* data,
     const shared::line_split::ScanResult& scan,
@@ -84,7 +97,8 @@ CHARR_CXX_HELPER void build_store_records(
 )
 {
     output.records = charport::charvec::components::RecordTable(
-        static_cast<R_xlen_t>(scan.lines.size())
+        static_cast<R_xlen_t>(scan.lines.size()),
+        charport::charvec::uninitialized
     );
     for (std::size_t i = 0; i < scan.lines.size(); ++i) {
         const shared::line_split::LineSlice& line = scan.lines[i];
@@ -152,15 +166,10 @@ CHARR_ENTRYPOINT SEXP ci_read_lines(
 
                 try {
                     file.reset(expanded_path.c_str());
-                    file_length = file.size();
-                    file_bytes = io::OutputStore(
-                        0, static_cast<std::size_t>(file_length)
-                    );
-                    file.read(
-                        file_length == 0
-                            ? nullptr
-                            : file_bytes.slices.front_data()
-                    );
+                    do {
+                        resize_file_bytes(file_bytes, file.capacity(), file.size());
+                    } while (file.read(file_bytes.slices.front_data()));
+                    file_length = static_cast<int>(file.size());
                     file.close();
                 }
                 catch (const shared::read_lines::FileConditionError& error) {
@@ -176,9 +185,7 @@ CHARR_ENTRYPOINT SEXP ci_read_lines(
                     throw StriException("cannot open the connection");
                 }
 
-                const char* source = file_bytes.slices.empty()
-                    ? ""
-                    : file_bytes.slices.front_data();
+                const char* source = file_bytes.slices.front_data();
                 int source_length = file_length;
                 if (shared::read_lines::has_utf8_bom(
                         source, source_length
@@ -205,7 +212,8 @@ CHARR_ENTRYPOINT SEXP ci_read_lines(
                         repaired.size()
                     );
                     output = io::OutputStore(
-                        0, static_cast<std::size_t>(output_length)
+                        0, static_cast<std::size_t>(output_length),
+                        charport::charvec::uninitialized
                     );
                     char* destination = output_length == 0
                         ? nullptr

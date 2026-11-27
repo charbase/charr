@@ -51,7 +51,8 @@ static_assert(
 class CHARR_OWNER_TYPE FileReader {
 private:
     std::FILE* handle_ = nullptr;
-    int size_ = 0;
+    std::size_t capacity_ = 0;
+    std::size_t size_ = 0;
 
 public:
     CHARR_NEUTRAL_HELPER FileReader() noexcept = default;
@@ -63,10 +64,16 @@ public:
     FileReader& operator=(FileReader&&) = delete;
 
     CHARR_CXX_HELPER void reset(const char* path);
-    CHARR_CXX_HELPER void read(char* destination);
+    // Fill the remaining capacity. True means the buffer needs to grow.
+    CHARR_CXX_HELPER bool read(char* destination);
     CHARR_CXX_HELPER void close() noexcept;
 
-    CHARR_NEUTRAL_HELPER int size() const noexcept
+    CHARR_NEUTRAL_HELPER std::size_t capacity() const noexcept
+    {
+        return capacity_;
+    }
+
+    CHARR_NEUTRAL_HELPER std::size_t size() const noexcept
     {
         return size_;
     }

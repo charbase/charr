@@ -332,7 +332,7 @@ CHARR_ENTRYPOINT SEXP ci_wrap(
         std::vector<shared::StringView> normalized_inputs;
         std::vector<io::OutputStore> stores;
         io::ChunkStores flat_stores;
-        io::OutputStore flat_store(0, 0);
+        io::OutputStore flat_store(0, 0, charport::charvec::uninitialized);
         io::OutputBuilder child_output(0);
         io::OutputBuilder joined_output(0);
         io::ParallelOutputBuilder parallel_joined_output;

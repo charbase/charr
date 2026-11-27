@@ -106,23 +106,14 @@ test_that("titlecase warns for a fallback locale before rejecting input", {
   title <- charr_test_leaf("ci_trans_totitle")
   bytes <- rawToChar(as.raw(c(0xc3, 0x28)))
   Encoding(bytes) <- "bytes"
-  inputs <- list(rep(c("iI1-ab_ab", bytes, ""), 4L))
-  # Invalid native text fails conversion only in a UTF-8 locale, and the
-  # stringi oracle does not reject it there.
-  if (isTRUE(l10n_info()[["UTF-8"]]) &&
-      !identical(charr_backend(), "reference")) {
-    invalid <- rawToChar(as.raw(c(0xc3, 0x28)))
-    inputs <- c(inputs, list(rep(c("iI1-ab_ab", invalid, ""), 4L)))
-  }
+  values <- rep(c("iI1-ab_ab", bytes, ""), 4L)
 
   for (type in c("word", "sentence")) {
     options <- list(type = type, locale = "xx_YY")
-    for (values in inputs) {
-      serial <- expect_parallel_warnings_match_serial(function() {
-        title(values, opts_brkiter = options)
-      })
-      expect_match(serial[[1L]], locale_fallback_warning_pattern)
-      expect_length(serial, 2L)
-    }
+    serial <- expect_parallel_warnings_match_serial(function() {
+      title(values, opts_brkiter = options)
+    })
+    expect_match(serial[[1L]], locale_fallback_warning_pattern)
+    expect_length(serial, 2L)
   }
 })

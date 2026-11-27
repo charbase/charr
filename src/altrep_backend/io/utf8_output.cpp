@@ -189,7 +189,7 @@ OutputStore concat_stores(std::vector<OutputStore>& stores)
         total += current;
     }
 
-    OutputStore output(total, 0);
+    OutputStore output(total, 0, charport::charvec::uninitialized);
     std::size_t position = 0;
     for (std::size_t i = 0; i < stores.size(); ++i) {
         OutputStore& current = stores[i];

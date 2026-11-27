@@ -1,4 +1,4 @@
-# charr 0.3.0
+# charr 0.3.0 (2026-11-26)
 
 * Requires charport 0.3.0 or later.
 

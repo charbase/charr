@@ -54,6 +54,16 @@ test_that("titlecase preserves word and sentence break iteration", {
   )
 })
 
+test_that("ASCII title casing keeps colons within words", {
+  skip_if(
+    identical(selected_test_backend, "reference"),
+    "stringi's ICU may split words at colons"
+  )
+  expect_identical(
+    str_to_title(c("foo:bar", "foo: bar"), locale = "en"),
+    c("Foo:bar", "Foo: Bar")
+  )
+})
 
 
 

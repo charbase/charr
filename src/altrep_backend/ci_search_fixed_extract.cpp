@@ -128,7 +128,7 @@ CHARR_CXX_HELPER void set_empty_store(
     io::OutputStore& output
 )
 {
-    output = io::OutputStore(0, 0);
+    output = io::OutputStore(0, 0, charport::charvec::uninitialized);
 }
 
 
@@ -147,7 +147,8 @@ CHARR_CXX_HELPER void set_repeated_store(
         throw std::length_error("fixed extraction payload is too large");
     }
     output = io::OutputStore(
-        static_cast<std::size_t>(count), payload_bytes
+        static_cast<std::size_t>(count), payload_bytes,
+        charport::charvec::uninitialized
     );
     if (count <= 0)
         return;
@@ -565,7 +566,7 @@ CHARR_ENTRYPOINT SEXP ci_extract_all_fixed(
         std::vector<std::vector<PlanSegment> > worker_segments;
         io::OutputBuilder child_builder(0);
         io::OutputBuilder matrix_builder(0);
-        io::OutputStore child_store(0, 0);
+        io::OutputStore child_store(0, 0, charport::charvec::uninitialized);
         std::unordered_map<
             shared::FixedExtractRepeatKey,
             SEXP,

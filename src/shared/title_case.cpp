@@ -92,7 +92,7 @@ CHARR_NEUTRAL_HELPER bool ascii_title_eligible(
         if ((!whitespace && !punctuation) || byte == '\'' || byte == '_')
             return false;
 
-        if (byte == '.' && i > 0 && i + 1 < input.length) {
+        if ((byte == '.' || byte == ':') && i > 0 && i + 1 < input.length) {
             const unsigned char previous = static_cast<unsigned char>(
                 input.data[i-1]
             );
@@ -287,9 +287,11 @@ TitleCaseInput TitleCaseMapper::prepare_impl(
             );
         }
         const bool native_bom = has_bom(data, length);
-        const ByteView converted = converter->native(data, length);
-        data = converted.ptr;
-        length = converted.len;
+        if (!converter->native_is_utf8()) {
+            const ByteView converted = converter->native(data, length);
+            data = converted.ptr;
+            length = converted.len;
+        }
         strip_bom = native_bom && has_bom(data, length);
         break;
     }

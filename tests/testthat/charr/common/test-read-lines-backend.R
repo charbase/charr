@@ -77,6 +77,12 @@ test_that("str_read_lines preserves terminal separator semantics on file paths",
   }
 })
 
+test_that("str_read_lines reads procfs files with zero reported size", {
+  path <- "/proc/sys/kernel/ostype"
+  skip_if_not(file.exists(path), "Requires Linux procfs")
+  expect_identical(str_read_lines(path, encoding = "UTF-8"), "Linux")
+})
+
 test_that("str_read_lines converts declared input encodings", {
   latin1 <- as.raw(c(0x63, 0x61, 0x66, 0xe9, 0x0a, 0x66, 0x69, 0x6e))
   actual <- expect_read_lines_backend_equal(latin1, "latin1")

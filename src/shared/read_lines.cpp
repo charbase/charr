@@ -1,5 +1,6 @@
 #include "read_lines.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <limits>
@@ -25,7 +26,8 @@ void FileReader::reset(const char* path)
     close();
 
     struct stat info;
-    if (::stat(path, &info) == 0 && S_ISDIR(info.st_mode))
+    const bool have_info = ::stat(path, &info) == 0;
+    if (have_info && S_ISDIR(info.st_mode))
         throw FileConditionError(FileCondition::directory, 0);
 
     errno = 0;
@@ -38,28 +40,33 @@ void FileReader::reset(const char* path)
         );
     }
 
-    if (std::fseek(handle_, 0, SEEK_END) != 0)
-        throw std::runtime_error("cannot determine file size");
-    const long end = std::ftell(handle_);
-    if (end < 0)
-        throw std::runtime_error("cannot determine file size");
-    if (static_cast<unsigned long long>(end) >
-            static_cast<unsigned long long>(
+    capacity_ = 4096;
+    if (have_info && info.st_size > 0) {
+        const auto size = static_cast<unsigned long long>(info.st_size);
+        if (size > static_cast<unsigned long long>(
                 std::numeric_limits<int>::max()
             )) {
-        throw std::length_error("file is too large");
+            throw std::length_error("file is too large");
+        }
+        // Leave room for EOF on the first read of a regular file.
+        capacity_ = std::max(capacity_, static_cast<std::size_t>(size) + 1);
     }
-    std::rewind(handle_);
-    size_ = static_cast<int>(end);
 }
 
-void FileReader::read(char* destination)
+bool FileReader::read(char* destination)
 {
-    if (size_ > 0 && (destination == nullptr || std::fread(
-            destination, 1, static_cast<std::size_t>(size_), handle_
-        ) != static_cast<std::size_t>(size_))) {
+    constexpr std::size_t limit = std::numeric_limits<int>::max();
+    const std::size_t room = capacity_ - size_;
+    const std::size_t count = std::fread(destination + size_, 1, room, handle_);
+    if (std::ferror(handle_))
         throw std::runtime_error("cannot read the connection");
-    }
+    size_ += count;
+    if (size_ > limit)
+        throw std::length_error("file is too large");
+    if (count < room)
+        return false;
+    capacity_ = std::min(capacity_ * 2, limit + 1);
+    return true;
 }
 
 void FileReader::close() noexcept
@@ -68,6 +75,7 @@ void FileReader::close() noexcept
         std::fclose(handle_);
         handle_ = nullptr;
     }
+    capacity_ = 0;
     size_ = 0;
 }
 

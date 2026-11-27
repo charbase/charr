@@ -93,6 +93,7 @@ CHARR_ENTRYPOINT SEXP ci_read_lines(
     shared::read_lines::FileCondition file_condition =
         shared::read_lines::FileCondition::open_failed;
     int file_errno = 0;
+    int file_length = 0;
     std::size_t invalid_warning_count = 0;
     char invalid_warning[shared::read_lines::invalid_warning_size] = {};
 
@@ -118,9 +119,10 @@ CHARR_ENTRYPOINT SEXP ci_read_lines(
 
                 try {
                     file.reset(expanded_path.c_str());
-                    const int file_length = file.size();
-                    bytes.resize(static_cast<std::size_t>(file_length));
-                    file.read(file_length == 0 ? nullptr : bytes.data());
+                    do {
+                        bytes.resize(file.capacity());
+                    } while (file.read(bytes.data()));
+                    file_length = static_cast<int>(file.size());
                     file.close();
                 }
                 catch (const shared::read_lines::FileConditionError& error) {
@@ -136,8 +138,8 @@ CHARR_ENTRYPOINT SEXP ci_read_lines(
                     throw StriException("cannot open the connection");
                 }
 
-                const char* utf8 = bytes.empty() ? "" : bytes.data();
-                int utf8_length = static_cast<int>(bytes.size());
+                const char* utf8 = bytes.data();
+                int utf8_length = file_length;
                 if (shared::read_lines::has_utf8_bom(
                         utf8, utf8_length
                     )) {

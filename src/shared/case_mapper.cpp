@@ -151,9 +151,11 @@ CaseMapInput CaseMapper::prepare_impl(
             );
         }
         const bool native_bom = has_bom(data, length);
-        const ByteView converted = converter->native(data, length);
-        data = converted.ptr;
-        length = converted.len;
+        if (!converter->native_is_utf8()) {
+            const ByteView converted = converter->native(data, length);
+            data = converted.ptr;
+            length = converted.len;
+        }
         strip_bom = native_bom && has_bom(data, length);
         break;
     }

@@ -64,6 +64,21 @@ test_that("native inputs are decoded under the startup locale", {
   expect_identical(Encoding(fixture$native), "unknown")
 })
 
+test_that("malformed native UTF-8 follows the UTF-8 input policy", {
+  skip_if_not(isTRUE(l10n_info()[["UTF-8"]]), "Requires a UTF-8 locale")
+
+  bytes <- c(0xe2, 0x82)
+  native <- rep(native_locale_marked(bytes), 4)
+  utf8 <- rep(native_locale_marked(bytes, "UTF-8"), 4)
+  for (operation in list(str_to_lower, str_to_upper, str_to_title)) {
+    expect_identical(operation(native, locale = "en"),
+                     operation(utf8, locale = "en"))
+  }
+
+  str_sub(native, 100L, NA_integer_) <- "X"
+  expect_identical(native, rep(NA_character_, 4))
+})
+
 
 test_that("str_read_lines uses the startup native encoding by default", {
   skip_if_selected_stringi_cannot_compare_native()

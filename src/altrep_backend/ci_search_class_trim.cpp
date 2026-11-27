@@ -325,7 +325,8 @@ CHARR_CXX_HELPER void trim_records(
     );
     const R_len_t output_length = output_end - output_begin;
     output = charport::charvec::Store(
-        static_cast<std::size_t>(output_length), 0
+        static_cast<std::size_t>(output_length), 0,
+        charport::charvec::uninitialized
     );
     std::size_t payload_length = 0;
 
